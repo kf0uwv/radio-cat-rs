@@ -1,0 +1,36 @@
+[package]
+name = "cat-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Generic, radio-independent client-side CAT request/response mechanics: validate against a CommandTable<C>, format outgoing bytes, interpret a CatSession's ResponseDisposition."
+
+[dependencies]
+# CommandId / CommandTable<C> / CommandDefinition<C> / ProtocolErrorKind /
+# ResponseDisposition.
+cat-framework = { path = "../cat-framework" }
+
+# CatSession trait — never a concrete transport crate. Also supplies the
+# public test_support (Exchange/ScriptedCatSession) this crate's own unit
+# tests reuse instead of hand-rolling a second CatSession fake.
+cat-transport-core = { path = "../cat-transport-core" }
+
+# Required directly per ADR 0002's Consequences section ("cat-client depends
+# on async-trait directly"), even though no method here needs the
+# #[async_trait] macro itself (CatClient's methods are inherent async fns,
+# not trait methods) — recorded, not silently dropped, in
+# planning/cat_framework/task_plan.md's Task 3 design proposal.
+async-trait = { workspace = true }
+
+# Error handling (ClientError<E>).
+thiserror = { workspace = true }
+
+# Async runtime, dev-only: #[monoio::test] for this crate's own unit tests.
+# Never a production dependency, per ADR 0002. Target-gated per ADR 0002's
+# Consequences and planning/architect/task_plan.md's ground rules.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+monoio = { workspace = true }

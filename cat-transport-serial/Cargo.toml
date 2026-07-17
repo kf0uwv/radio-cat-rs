@@ -1,0 +1,28 @@
+[package]
+name = "cat-transport-serial"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Serial CAT transport: io_uring RS-232 implementation (Linux) and the SerialCatSession read-until-';' framing wrapper."
+
+[dependencies]
+cat-transport-core = { path = "../cat-transport-core" }
+
+# Async trait support (compatible with !Send futures for monoio).
+async-trait = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Linux-specific: termios configuration and raw ioctls for RS-232 lines.
+libc = { workspace = true }
+nix = { workspace = true, features = ["term"] }
+
+# Async runtime (io_uring-based, Linux-only). Target-gated per ADR 0002 and
+# planning/architect/task_plan.md's ground rules, matching cat-transport-core.
+[target.'cfg(target_os = "linux")'.dependencies]
+monoio = { workspace = true }

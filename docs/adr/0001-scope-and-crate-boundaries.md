@@ -164,3 +164,53 @@ is the point at which it must be decided, not before.
   `CatSession`, `Transport`, or the addendum's recommended crate boundaries
   before extraction happens; `ts570d`'s ADRs remain the primary source of
   truth until this repository has its own code to diverge from them.
+
+## Amendments
+
+Recorded 2026-07-16, when extraction was authorized and this repository's
+target design was checked against `ts570d`'s actual current code (not just
+this ADR's paraphrase of it), per the architect's planning pass in
+`planning/architect/findings.md`. The original decision text above is left
+unchanged; these are corrections discovered in the process of applying it.
+
+1. **The `monoio` open item is resolved.** See
+   [ADR 0002](0002-async-runtime-binding-for-transport-crates.md): the
+   binding is retained and extended to `cat-transport-serial`,
+   `cat-transport-tcp`, `cat-transport-udp`, and `cat-server`, with an
+   explicit trigger recorded for when to revisit it.
+2. **Correction: `cat-transport-core` depends on `cat-framework`, not on
+   nothing.** `ts570d`'s `CatSession::execute` returns
+   `framework::cat::ResponseDisposition` (which itself carries
+   `ProtocolErrorKind`) — reused deliberately per `ts570d` ADR 0005 ("reused
+   here rather than inventing a parallel type"), not duplicated. Since that
+   type is defined in `cat-framework`'s scope per this ADR, `cat-transport-core`
+   must take a one-way dependency on `cat-framework` to reuse it, rather than
+   the "depends on nothing in this workspace" stated above and in `CLAUDE.md`'s
+   target diagram. This preserves the essential property — `cat-framework`
+   still has zero local dependencies and sits at the bottom of the graph,
+   and `cat-transport-core` still depends on no *transport*, client, or
+   server crate — it is a correction to a specific claim, not a reopening of
+   the dependency-direction rules. `cat-client`, `cat-transport-serial`,
+   `cat-transport-tcp`, `cat-transport-udp`, and `cat-server` are unaffected:
+   they already listed `cat-transport-core`/`cat-framework` among their
+   allowed dependencies.
+3. **Scope clarification: `cat-transport-serial` also owns the concrete
+   io_uring serial port implementation.** This ADR's description of
+   `cat-transport-serial` already says "over a real serial port (io_uring on
+   Linux today)," but the concrete `Transport for SerialPort` implementation
+   this refers to lives in `ts570d`'s separate `serial` crate
+   (`serial/src/io_uring.rs`, ~660 lines, plus `serial/src/lib.rs`), not in
+   `framework/src/session.rs` (which only defines the generic
+   `SerialCatSession<T: Transport>` wrapper). Recorded explicitly because a
+   plan built only from this ADR's crate-boundary list, without re-reading
+   `ts570d`'s actual module layout, would extract `SerialCatSession` and end
+   up with an empty shell — no real hardware transport behind it.
+4. **Scope clarification: `framework::state_machine` (`ApplicationStateMachine`,
+   `State`) is out of scope for every crate in this ADR.** It is generic
+   application-lifecycle state unrelated to CAT command processing, is not
+   named anywhere in this ADR's `cat-framework` responsibilities list, and
+   (as of this reading) has no callers anywhere in `ts570d` outside its own
+   re-export in `framework/src/lib.rs` — it is not part of the "generic CAT
+   engine" this ADR scopes `cat-framework` to. It stays in `ts570d`, unmoved,
+   pending a separate decision about its purpose; it is not silently dropped,
+   merely excluded from this extraction.

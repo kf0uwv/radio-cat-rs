@@ -1,0 +1,67 @@
+[package]
+name = "cat-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Request broker / server mode: one physical radio session shared by multiple remote clients over TCP and/or UDP."
+
+[dependencies]
+# CommandId / CommandTable<C> / CommandOperation / ParseError. Not listed
+# explicitly in the architect's Task 5 dependency list, but required
+# directly: neither `cat-client` nor `cat-transport-core` re-exports these
+# (cat-transport-core re-exports only ResponseDisposition/ProtocolErrorKind,
+# per ADR 0001 Amendment 2's precedent for the same kind of gap), and the
+# broker's malformed-request-rejection gate is literally
+# `CommandTable::parse`'s structural width/form validation — CatClient's own
+# query()/set() only check existence + readable/writable, not parameter
+# width. See planning/cat_server/progress.md for the full note (same
+# pattern as Amendment 2: a corrected dependency, not a deviation).
+cat-framework = { path = "../cat-framework" }
+
+# CatClient<C, S> — the generic, radio-independent client this broker wraps
+# and serializes access to. Never a concrete radio's client type (see
+# planning/architect/task_plan.md Task 5 / .claude/agents/cat_server.md).
+cat-client = { path = "../cat-client" }
+
+# CatSession trait (generic over the physical session type this broker
+# owns) and ScriptedCatSession/conformance test doubles, sufficient for this
+# crate's own unit tests without real sockets.
+cat-transport-core = { path = "../cat-transport-core" }
+
+# `read_frame_or_eof`/`write_frame`/`MAX_FRAME_SIZE` -- the length-prefixed
+# TCP frame codec `cat-transport-tcp::TcpCatSession` uses on the
+# client/requester side, made `pub` specifically so this crate's server-side
+# accept loop (`src/tcp.rs`) can call the exact same encode/decode logic
+# instead of maintaining a hand-rolled duplicate that could drift out of
+# sync (Task 6). These are plain free functions with no requester-shaped
+# role baked in, so importing them does not run into the role-inversion
+# concern that ruled out depending on `TcpCatSession` itself.
+cat-transport-tcp = { path = "../cat-transport-tcp" }
+
+# `encode_envelope`/`decode_envelope`/`ENVELOPE_HEADER_LEN`/
+# `MAX_PAYLOAD_SIZE` -- the envelope codec `cat-transport-udp::UdpCatSession`
+# uses, made `pub` for the same reason as `cat-transport-tcp` above (Task 6):
+# this crate's server-side UDP listener (`src/udp.rs`) both decodes incoming
+# request envelopes and encodes outgoing response envelopes, so it needs
+# both directions of the same codec `UdpCatSession` uses.
+cat-transport-udp = { path = "../cat-transport-udp" }
+
+# Async trait support (compatible with !Send futures for monoio).
+async-trait = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Async runtime (io_uring-based, Linux-only). A real dependency: the
+# broker's single ordered worker and the server-side TCP/UDP accept/dispatch
+# loops are built directly on monoio::net::{TcpListener, TcpStream,
+# udp::UdpSocket} and monoio::time (for the broker-level request timeout).
+# Target-gated per ADR 0002's Consequences and
+# planning/architect/task_plan.md's ground rules, matching every other
+# monoio-dependent crate in this workspace.
+[target.'cfg(target_os = "linux")'.dependencies]
+monoio = { workspace = true }

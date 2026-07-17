@@ -1,0 +1,12 @@
+# Build directories
+target/
+Cargo.lock
+
+# IDE
+.idea/
+
+# Temporary files
+*.swp
+*.swo
+*~
+.DS_Store

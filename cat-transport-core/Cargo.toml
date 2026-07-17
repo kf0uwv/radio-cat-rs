@@ -1,0 +1,30 @@
+[package]
+name = "cat-transport-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Transport/CatSession trait abstractions for CAT protocol sessions, plus in-memory test doubles and a reusable conformance suite."
+
+[dependencies]
+# Reused for ResponseDisposition/ProtocolErrorKind (see ADR 0001 Amendment 2)
+# rather than duplicating a parallel type.
+cat-framework = { path = "../cat-framework" }
+
+# Async trait support (compatible with !Send futures for monoio).
+async-trait = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Async runtime (io_uring-based, Linux-only). A real dependency, not just a
+# dev-dependency: Transport/CatSession are #[async_trait(?Send)] per ADR 0002,
+# and this crate owns the monoio convenience re-export. Target-gated per
+# ADR 0002's Consequences and planning/architect/task_plan.md's ground rules,
+# so `cargo check` on a non-Linux host fails fast on a missing dependency
+# rather than deep inside monoio's io_uring internals.
+[target.'cfg(target_os = "linux")'.dependencies]
+monoio = { workspace = true }

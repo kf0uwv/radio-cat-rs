@@ -1,0 +1,41 @@
+[workspace]
+members = [
+    "cat-framework",
+    "cat-transport-core",
+    "cat-transport-serial",
+    "cat-transport-tcp",
+    "cat-transport-udp",
+    "cat-client",
+    "cat-server",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Matt Franklin <radiombf@gmail.com>"]
+license = "Apache-2.0"
+homepage = "https://github.com/kf0uwv/radio-cat-rs"
+repository = "https://github.com/kf0uwv/radio-cat-rs"
+description = "Shared, radio-independent CAT protocol library"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Async runtime (io_uring-based, Linux-only). Not a dependency of
+# cat-framework itself (it has no async code) — recorded here for
+# cross-crate version consistency as cat-transport-core and later crates
+# land, per planning/architect/findings.md §2.
+monoio = { version = "0.2.3" }
+
+# Async trait support (compatible with !Send futures for monoio).
+async-trait = "0.1"
+
+# Error handling
+thiserror = "1.0.61"
+
+# Logging
+tracing = "0.1.40"
+
+# Linux-specific
+libc = "0.2.153"
+nix = "0.27.1"

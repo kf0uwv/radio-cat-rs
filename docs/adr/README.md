@@ -6,19 +6,29 @@ never reused.
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [0001](0001-scope-and-crate-boundaries.md) | Scope and crate boundaries for the shared CAT library | Accepted |
+| [0001](0001-scope-and-crate-boundaries.md) | Scope and crate boundaries for the shared CAT library | Accepted (amended) |
+| [0002](0002-async-runtime-binding-for-transport-crates.md) | Async runtime binding for cat-transport-core and dependents | Accepted |
 
 ## Repository status
 
-**No extraction has happened.** This repository holds planning and agent
-scaffolding only — no crate source exists yet. Extraction from `ts570d` is
-gated on:
+**Extraction is authorized and planned; no code has been written yet.**
+`ts570d`'s `refactor/generic-cat-framework` work (the `CatSession` migration)
+has landed, and the user has given an explicit go-ahead to (A) extract
+`ts570d`'s generic engine into real crates here, and (B) implement TCP/UDP
+transports and a `cat-server` request broker (see ADR 0005 in `ts570d`).
 
-1. `ts570d`'s own `refactor/generic-cat-framework` work completing (see
-   `ts570d`'s `docs/adr/README.md` refactor-status table), and
-2. an explicit go-ahead to begin the move, since ADR 0004 in `ts570d`
-   deliberately keeps extraction itself out of scope of that refactor.
+The open item ADR 0001 recorded — whether `cat-transport-core` stays bound to
+`monoio`/`#[async_trait(?Send)]` — is resolved by [ADR 0002](0002-async-runtime-binding-for-transport-crates.md):
+the binding is retained. ADR 0001 also carries two amendments recorded once
+extraction was actually planned against `ts570d`'s current code: a dependency
+correction (`cat-transport-core` depends on `cat-framework`, not on nothing)
+and two scope clarifications (`cat-transport-serial` includes the concrete
+io_uring `SerialPort` implementation from `ts570d`'s `serial` crate;
+`framework::state_machine` is out of scope entirely). See ADR 0001's
+"Amendments" section and `planning/architect/findings.md` for the full
+reasoning.
 
-When extraction begins, start from [ADR 0001](0001-scope-and-crate-boundaries.md)
-and the source ADRs it points to in `ts570d`, rather than re-deriving the
-target design from scratch.
+The concrete dispatch queue for `cat_framework`, `cat_transport`, and
+`cat_server` is in `planning/architect/task_plan.md`. No subagent should
+begin implementation on a task that queue doesn't list, and no subagent
+proceeds past its own task without an architect/user review checkpoint.
