@@ -199,6 +199,79 @@ policy for UDP) precisely enough for the `cat_server` agent to implement a
 wire-compatible listener in Task 5 without re-deriving the format
 independently. Sequenced accordingly in the dispatch queue.
 
+## 11. Windows serial backend (2026-07-19) — ADR 0002's revisit trigger fired
+
+Full decision record: [ADR 0004](../../docs/adr/0004-windows-serial-backend.md).
+This section is the supporting research read directly for that decision,
+kept here per this file's existing convention of recording what was learned
+from the real code rather than an ADR's paraphrase of it.
+
+**What was actually read, and why it mattered:**
+
+- `ft991a/ui/src/terminal.rs` + `ft991a/src/main.rs` (read in full): a
+  single sequential loop under `#[monoio::main]`. No `monoio::spawn`
+  anywhere in this repo — `poll_radio_state` awaits 10 sequential CAT round
+  trips, `draw_frame`, a blocking `crossterm::event::poll(10ms)` (already
+  synchronous today), then `monoio::time::sleep(5ms)`. Exactly one live
+  task; nothing else could ever be starved by that task blocking.
+- `ts570d/ui/src/terminal.rs` (read in full): genuinely concurrent.
+  `run()` spawns a `radio_task` via `monoio::spawn` alongside a `ui_task`,
+  linked by `Rc<RefCell<VecDeque<T>>>` channels, specifically so key events
+  stay responsive during a slow poll or a 107-step diagnostic run (the
+  module's own doc comment says so explicitly). This is real cooperative
+  concurrency on one OS thread — if either task blocks that thread
+  synchronously, so does the other.
+- This asymmetry between the two consuming repos is the crux of the
+  decision: a design that's fine for `ft991a` today (naive blocking Win32
+  calls disguised as `async fn`) would silently defeat `ts570d`'s
+  responsiveness design the moment `ts570d` targets Windows — and
+  `cat-transport-serial`, as shared infrastructure, has no visibility into
+  which consumer is using it, so it cannot assume the `ft991a` shape is
+  the only one that matters. This ruled out "blocking-in-async-fn" as the
+  crate's general mechanism, even though it would have been the simplest
+  thing that works for the one consumer currently being built against.
+- `cat-transport-serial/src/{io_uring.rs,lib.rs,session.rs}` (read in
+  full): confirmed `SerialCatSession<T: Transport>` is already fully
+  generic and platform-agnostic — it needed zero changes. Confirmed the
+  exact shape of `SerialConfig`/`Parity`/`FlowControl` (currently defined
+  inline in `io_uring.rs`, moved to a new shared `config.rs` per ADR 0004
+  §2 rather than duplicated) and the exact `READ_TIMEOUT`
+  production/test-constant split that Task 7's `SetCommTimeouts` design
+  reuses rather than reinventing.
+- `docs/adr/0003-modem-control-lines.md` + `cat-transport-core/src/
+  modem.rs`: confirmed `ModemControlLines` methods are plain sync `fn`s
+  ("direct `ioctl(2)` calls with no I/O wait") — this precedent is what
+  justifies calling `EscapeCommFunction`/`GetCommModemStatus` directly and
+  synchronously on Windows too, rather than routing them through the
+  worker thread the way `Transport::read`/`write` are.
+
+**Why option 3 (a third async-runtime crate) was rejected, restated
+precisely:** the actual requirement — "let a background OS thread report
+one I/O completion back to whatever is polling this future" — does not
+need a scheduler or reactor, only a `Future`-compatible completion value.
+A hand-rolled `Mutex<Option<T>> + Option<Waker>` primitive (the same shape
+as `futures::channel::oneshot`) satisfies it completely, at the cost of
+~50 lines of `std`-only code instead of a new dependency. Its correctness
+is guaranteed by `std::task::Waker`'s own contract (`wake()` must be safe
+from any thread — that is the entire reason `Waker` exists as opposed to a
+plain closure), not by anything specific to an executor. Importantly,
+`monoio` itself is never in the picture on the Windows side at all (it
+cannot compile there — io_uring is a Linux kernel interface, not a library
+choice), so there was no need to empirically verify anything against
+`monoio`'s own `Waker` implementation, which simplified this decision
+considerably once made explicit.
+
+**What this leaves for `ft991a`/`ts570d` themselves (not authorized, not
+dispatched, informational only):** since `#[monoio::main]` cannot exist on
+Windows, each application needs its own Windows entry point eventually.
+`ft991a`'s single-sequential-loop shape only needs a ~30-line hand-rolled
+thread-parking `block_on` (no new crate) with `std::thread::sleep`
+replacing `monoio::time::sleep`. `ts570d`'s concurrent two-task shape would
+need `std::thread::spawn` replacing `monoio::spawn` to preserve its
+responsiveness property. Recorded in ADR 0004 §1 for whoever eventually
+plans that work in each of those repos — not touched by this session, per
+this repo's own "`ts570d`/`ft991a` not touched" ground rule.
+
 ## Agent-roster note: `cat-client` is `cat_framework`'s task, not `cat_transport`'s
 
 Worth flagging since it could otherwise look like a slip: the established

@@ -143,3 +143,19 @@ Until then, this is settled.
 - Nothing in this ADR moves code or writes a `Cargo.toml` — it is a design
   record, same as ADR 0001. The dispatch queue in
   `planning/architect/task_plan.md` applies it.
+
+## Amendment (2026-07-19): the revisit trigger fired
+
+The first bullet under "Explicit revisit trigger" — "Windows serial support
+(no io_uring) enters scope for `cat-transport-serial`" — has fired: the user
+wants real Windows COM-port control from a native Windows build. Per this
+ADR's own §6 ("Reversal later is bounded, not foreclosed ... an acceptable
+place to pay this cost: when a concrete need exists, not unconditionally
+today"), that cost is now paid, recorded as its own new decision rather than
+a rewrite of this one: see
+[ADR 0004](0004-windows-serial-backend.md). The decision made there is
+consistent with this ADR's Linux/`monoio` binding, not a reversal of it:
+`monoio`/io_uring stays exactly as decided above for Linux; Windows gets a
+genuinely separate backend inside the same crate, gated by
+`#[cfg(target_os = "windows")]`, not a runtime-agnostic redesign of
+`Transport`/`CatSession` touching the Linux path.

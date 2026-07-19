@@ -248,3 +248,199 @@ choices.
 Not in this queue, and not dropped: migrating `ts570d` itself onto these
 crates once they exist (see `findings.md` §4) — a separate planning pass,
 later.
+
+## Planning pass 2026-07-19: Windows serial backend (ADR 0002's revisit trigger fired)
+
+Governing document: [ADR 0004](../../docs/adr/0004-windows-serial-backend.md)
+— read it in full before dispatching any task below; it carries the async-
+execution reasoning, the crate/module-structure decision, the full
+`SerialConfig` ↔ `DCB` field mapping, and the `ModemControlLines` mapping
+that these tasks implement. `planning/architect/findings.md` §11 records the
+supporting research (what was read in `ft991a`/`ts570d`, and why each
+rejected option was rejected).
+
+**Scope note carried over unchanged from the ground rules above**: `ts570d`
+and `ft991a` are not touched by any task below — read-only reference only.
+This queue only touches `cat-transport-serial` (and, trivially, its
+`Cargo.toml`). Both applications' own Windows entry-point follow-on work
+(replacing `#[monoio::main]`, since `monoio` cannot compile on Windows at
+all) is out of scope here, per ADR 0004 §1's "informational" note — it is a
+future planning pass in each of those repos, not this one.
+
+**Verification boundary, different from every task above**: this sandboxed
+environment is Linux-only and cannot execute Windows binaries. Tasks 7–8's
+"done when" is `cargo check --target x86_64-pc-windows-gnu -p
+cat-transport-serial` (compiles cleanly cross-compiled) — never `cargo
+test` for the Windows-specific code paths themselves. The user has stated
+they will validate against real Windows hardware. Task 6's new code
+(`oneshot.rs`) has no OS dependency of its own and gets real, executable
+`cargo test` coverage on Linux, same as every other task in this file.
+
+### Task 6 — `cat_transport` agent: extract shared `SerialConfig`/`Parity`/`FlowControl`; add the portable completion primitive
+
+Two pieces of groundwork, one dispatch slot, both prerequisites for Task 7/8:
+
+1. **Behavior-preserving refactor of the Linux path.** Move
+   `SerialConfig`, `Parity`, `FlowControl` (pure data, no platform-specific
+   code, currently defined inline in `io_uring.rs`) into a new, ungated
+   `cat-transport-serial/src/config.rs` — same fields, same `Default` impl,
+   same doc comments, byte-for-byte behavior. Update `io_uring.rs` to `use
+   crate::config::{SerialConfig, Parity, FlowControl};` instead of defining
+   them. Update `lib.rs`'s re-exports to pull these three from `config`
+   rather than `io_uring` (still `pub use config::{FlowControl, Parity,
+   SerialConfig};`, `SerialPort` re-export unchanged for now). This must not
+   change any existing test's behavior — run the full existing
+   `cat-transport-serial` suite before and after and confirm no diff in
+   pass/fail.
+2. **New portable completion primitive**, `cat-transport-serial/src/
+   oneshot.rs` (private module, not part of the crate's public API — it is
+   an internal implementation detail of the Windows worker-thread design,
+   not a `Transport`-facing type): `struct Completion<T>` /
+   `fn channel<T>() -> (CompletionTx<T>, CompletionRx<T>)`, a
+   `Mutex<Option<T>> + Option<Waker>` pair; `CompletionRx<T>: Future<Output
+   = T>` (or `Result<T, Canceled>` if the sender can be dropped before
+   sending — needed for the worker-thread-exits-mid-request case). See ADR
+   0004 §1 for the exact shape and the reasoning for why this is not "a
+   third async runtime." Real unit tests here (this file has zero OS
+   dependency, runs on Linux CI): poll-before-ready returns `Pending` and
+   registers a waker; a value sent from a spawned `std::thread` after a
+   delay wakes and resolves the receiver with the correct value; dropping
+   the sender before sending resolves the receiver to an error rather than
+   hanging forever.
+
+Dependencies: no new external crate for this task (`oneshot.rs` is pure
+`std`). Cargo.toml is otherwise untouched in this task — `windows-sys` is
+Task 7's addition, not this one's.
+
+Done when: `cargo test -p cat-transport-serial` is green (existing Linux
+tests unaffected, new `oneshot` tests passing); `cargo clippy`, `cargo fmt`
+pass.
+
+### Task 7 — `cat_transport` agent: Windows `SerialPort::open` — `CreateFileW`, `DCB` configuration, `SetCommTimeouts`
+
+Add the `windows-sys` dependency and the Windows module's open/configure
+path only — no `Transport`/`ModemControlLines` implementation yet (that is
+Task 8), so this task's surface is independently reviewable and
+independently `cargo check`-able.
+
+- `Cargo.toml`: add
+  `[target.'cfg(target_os = "windows")'.dependencies] windows-sys = { version
+  = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem",
+  "Win32_Devices_Communication"] }` (confirm the exact current `windows-sys`
+  version against what's already available/vendored; do not add
+  `Win32_System_IO` — see ADR 0004 §3 for why overlapped I/O is deliberately
+  out of scope). Mirrors the existing
+  `[target.'cfg(target_os = "linux")'.dependencies] monoio` entry exactly —
+  same section shape, same "fails fast on a non-matching host" property.
+- New `cat-transport-serial/src/windows.rs`, `#[cfg(target_os =
+  "windows")]`-gated from `lib.rs`. Implement:
+  - A raw `HANDLE` newtype (`unsafe impl Send` — justify the safety
+    argument in a doc comment, mirroring `io_uring.rs`'s existing SAFETY
+    comment style for its own unsafe blocks).
+  - `SerialPort::open(path: &str, config: SerialConfig) ->
+    crate::SerialResult<Self>`: prepend `\\.\` to `path` if not already
+    present (ADR 0004 §3 — required for COM10+, harmless for lower
+    numbers), `CreateFileW`, map `ERROR_FILE_NOT_FOUND`/
+    `ERROR_PATH_NOT_FOUND` → `SerialError::DeviceNotFound`,
+    `ERROR_ACCESS_DENIED` → `SerialError::PermissionDenied`, else →
+    `SerialError::Io`.
+  - `configure_dcb(handle, &SerialConfig) -> SerialResult<()>`:
+    `GetCommState`/mutate `DCB`/`SetCommState`, implementing every field
+    per ADR 0004 §5's table exactly, including the deliberate
+    baud-rate-validation parity choice (reuse `baud_rate_from_u32`'s
+    validated rate set rather than accepting Windows' more permissive
+    arbitrary-`u32` `DCB.BaudRate`).
+  - `SetCommTimeouts`: `ReadIntervalTimeout = 0`,
+    `ReadTotalTimeoutMultiplier = 0`, `ReadTotalTimeoutConstant =
+    READ_TIMEOUT.as_millis()` (reuse the existing `#[cfg(not(test))]`
+    2s / `#[cfg(test)]` 100ms split — do not redefine a second timeout
+    constant), `WriteTotalTimeoutConstant` set to a generous bound (state
+    the chosen value and reasoning in `progress.md`; ADR 0004 suggests 5s
+    as a starting point, not a hard requirement).
+  - `SerialPort::path(&self) -> &str` for parity with the Linux type's
+    existing method.
+  - Do not yet implement `Transport`, `ModemControlLines`, or the worker
+    thread — stub or `todo!()` is acceptable for this task's boundary, but
+    prefer leaving them entirely for Task 8 to add cleanly rather than
+    half-writing them here.
+
+Done when: `cargo check --target x86_64-pc-windows-gnu -p
+cat-transport-serial` compiles cleanly (install the target via `rustup
+target add x86_64-pc-windows-gnu` if not already present — this is a
+`cargo check` cross-compile, not a link/run, so the `-gnu` target should not
+require an actual Windows toolchain to type-check successfully; if it does
+turn out to require one that isn't available in this environment, STOP and
+report it rather than working around it by skipping verification — this is
+exactly the kind of obstacle the agent's charter says to escalate, not
+route around). `cargo clippy`/`cargo fmt` for whatever compiles.
+
+**Depends on Task 6** (needs `config.rs`'s `SerialConfig`/`Parity`/
+`FlowControl` to exist and be shared, not duplicated).
+
+### Task 8 — `cat_transport` agent: Windows `Transport`/`ModemControlLines` — worker thread, completion wiring, `EscapeCommFunction`/`GetCommModemStatus`
+
+Completes the Windows `SerialPort` from Task 7:
+
+- Worker-thread request enum and `std::sync::mpsc` channel, per ADR 0004
+  §1's design: `Write(Vec<u8>, CompletionTx<Result<usize, TransportError>>)`,
+  `Read(usize, CompletionTx<Result<Vec<u8>, TransportError>>)`. The worker
+  thread owns the `HANDLE`, performs blocking, non-overlapped
+  `ReadFile`/`WriteFile`, and reports results via the `oneshot.rs`
+  primitive from Task 6. A `ReadFile` that succeeds with 0 bytes (timeout
+  elapsed, no data) maps to `Err(TransportError::ReadTimeout)` — `Ok(0)`
+  must never reach a caller, matching the Linux contract exactly.
+- `impl Transport for SerialPort`: `write`/`read` send a request and
+  `.await` the `CompletionRx`; `flush_rx` calls `PurgeComm(handle,
+  PURGE_RXCLEAR)` directly and synchronously (not via the worker thread —
+  same reasoning as `ModemControlLines`); `flush` calls
+  `FlushFileBuffers(handle)` directly and synchronously inside the `async
+  fn` body (ADR 0004 §3's deliberate, narrow exception, mirroring the
+  Linux `tcdrain` precedent — do not route this through the worker thread).
+- `impl ModemControlLines for SerialPort`: direct, synchronous calls on the
+  calling thread against the same `HANDLE` the worker thread uses — `
+  set_rts`/`set_dtr` via `EscapeCommFunction(SETRTS/CLRRTS/SETDTR/CLRDTR)`,
+  `read_cts`/`read_dsr`/`read_dcd` via `GetCommModemStatus` testing
+  `MS_CTS_ON`/`MS_DSR_ON`/`MS_RLSD_ON`. Do not route these through the
+  worker thread or the completion primitive.
+- `SerialPort::open` (from Task 7) now also spawns the worker thread after
+  `configure_dcb`/`SetCommTimeouts` succeed, and calls `self.set_rts(true)`/
+  `self.set_dtr(true)` post-open when `config.initial_rts`/`initial_dtr`
+  are set — identical sequencing to the Linux implementation.
+- `Drop for SerialPort` (Windows): drop the request sender (worker's
+  `recv()` then returns `Err`, its loop exits), join the thread, then
+  `CloseHandle`.
+- Update `lib.rs`: `#[cfg(target_os = "windows")] pub mod windows;
+  #[cfg(target_os = "windows")] pub use windows::SerialPort;` alongside the
+  existing Linux `pub use io_uring::SerialPort;`, both now gated (today
+  only the module is implicitly Linux-only; after this task both platforms'
+  `SerialPort` re-export must be explicitly `cfg`-gated so exactly one
+  compiles per target).
+
+Done when: `cargo check --target x86_64-pc-windows-gnu -p
+cat-transport-serial` compiles cleanly with `Transport`/`ModemControlLines`
+fully implemented (same verification boundary as Task 7 — no `cargo test`
+for Windows-specific code in this sandbox). `cargo clippy`/`cargo fmt` pass.
+Existing Linux `cargo test -p cat-transport-serial` remains green and
+unaffected (confirm explicitly in `progress.md` — this is the same
+"Linux path completely unaffected" bar every prior task in this queue was
+held to).
+
+**Depends on Task 6 and Task 7.**
+
+## Summary / ordering (Windows backend)
+
+```
+Task 6 (cat_transport: config.rs extraction + oneshot.rs primitive)
+   │
+   ▼
+Task 7 (cat_transport: Windows open/DCB/SetCommTimeouts)
+   │
+   ▼
+Task 8 (cat_transport: Windows Transport/ModemControlLines + worker thread)
+```
+
+Not in this queue, and not dropped: `ft991a`'s and `ts570d`'s own Windows
+entry-point work (replacing `#[monoio::main]`), per ADR 0004 §1 — a future
+planning pass in each of those repositories, gated on Task 8 landing here
+first and, per this repo's own ground rules, on `ts570d`/`ft991a` not being
+touched by this session.

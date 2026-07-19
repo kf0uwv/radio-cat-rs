@@ -942,3 +942,772 @@ discipline applies: nothing committed, per standing rule. The actual
 `cat-server` consumption of this new `pub` API is explicitly a different
 agent's follow-up task, not started here. `ts570d`/`ft991a` untouched;
 `cat-server/` read only, never edited.
+
+## ADR 0004 dispatch queue, Task 6 — `config.rs` extraction + `oneshot.rs`
+## completion primitive (2026-07-19)
+
+Full spec: `docs/adr/0004-windows-serial-backend.md` (read in full) +
+`planning/architect/task_plan.md`'s `### Task 6` heading (that file's
+Task 6, not this file's own unrelated, already-completed, identically
+numbered "Task 6" section above — see the disambiguating note in
+`task_plan.md`'s new section for why the collision exists). Both pieces are
+groundwork for Tasks 7/8's Windows `SerialPort`; neither Windows-specific
+code nor `Cargo.toml` changes are part of this task.
+
+### Baseline, before touching any file
+
+```
+$ cargo test -p cat-transport-serial
+18 passed; 0 failed; 0 ignored
+```
+(io_uring::tests × 12, session::tests × 6 — full list matches the "after"
+run below minus the 4 new `oneshot::tests`.)
+
+```
+$ cargo test --workspace
+cat-client 13, cat-framework 8, cat-server 46, cat-transport-core 12,
+cat-transport-serial 18, cat-transport-tcp 7, cat-transport-udp 15
+= 119 passed total across all 7 crates; 0 failed.
+```
+
+### Created / changed
+
+- `cat-transport-serial/src/config.rs` (new, ungated) — `SerialConfig`,
+  `Parity`, `FlowControl`, and `SerialConfig`'s `Default` impl, moved out of
+  `io_uring.rs` verbatim (same fields, same `Default` values, same doc
+  comment prose). The `initial_rts`/`initial_dtr` doc comments' intra-doc
+  links were re-qualified to resolve from the new location (`SerialPort` and
+  `ModemControlLines` aren't in scope in `config.rs` the way they were in
+  `io_uring.rs`) — `[`SerialPort::open`]` → `[`crate::SerialPort::open`]`,
+  `[`ModemControlLines::set_rts`]` →
+  `[`cat_transport_core::ModemControlLines::set_rts`]`. Prose text is
+  unchanged; only the link targets were adjusted, which is a necessary
+  correctness fix for the move, not a content change — flagged here as a
+  judgment call since "byte-for-byte identical" doc comments was the
+  starting instruction and this is the one place actual bytes differ.
+- `cat-transport-serial/src/io_uring.rs` — the `SerialConfig`/`Parity`/
+  `FlowControl` definitions and `Default` impl removed; replaced with
+  `use crate::config::{FlowControl, Parity, SerialConfig};`. No other line
+  in this file changed — `configure_termios`, `baud_rate_from_u32`,
+  `SerialPort::open`/`Transport`/`ModemControlLines` impls, and every
+  existing test are untouched (diff is exactly the deletion + one new
+  `use` line, confirmed via `git diff --stat`: 49 deletions, 0 unrelated
+  insertions besides the new `use`).
+- `cat-transport-serial/src/oneshot.rs` (new, **private**: `mod oneshot;`
+  in `lib.rs`, no `pub`) — the completion primitive. Key signatures:
+
+  ```rust
+  pub struct Canceled;
+
+  enum Slot<T> { Empty, Value(T), Canceled }
+
+  struct Completion<T> {
+      slot: Mutex<Slot<T>>,
+      waker: Mutex<Option<Waker>>,
+  }
+
+  pub struct CompletionTx<T> { shared: Arc<Completion<T>> }
+  pub struct CompletionRx<T> { shared: Arc<Completion<T>> }
+
+  impl<T> CompletionTx<T> {
+      pub fn send(self, value: T) { .. }
+  }
+  impl<T> Drop for CompletionTx<T> { .. } // Empty -> Canceled + wake, if `send` was never called
+
+  impl<T> Future for CompletionRx<T> {
+      type Output = Result<T, Canceled>;
+      fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> { .. }
+  }
+
+  pub fn channel<T>() -> (CompletionTx<T>, CompletionRx<T>) { .. }
+  ```
+
+  `Slot<T>` (not a bare `Option<T>`) because the empty/canceled distinction
+  needs a third state a plain `Option` can't express — still the
+  `Mutex<Option<T>> + Option<Waker>` *shape* ADR 0004 §1 specifies, just
+  with a 3-variant enum standing in for the 2-variant `Option`.
+  `#![allow(dead_code)]` added at module top (documented inline): every
+  item here is genuinely unreferenced by non-test code until Task 7/8 wires
+  in the Windows worker thread, which trips `-D warnings` dead-code
+  otherwise; same pattern as the pre-existing `write_to_master`
+  `#[allow(dead_code)]` in `io_uring.rs`'s tests.
+- `cat-transport-serial/src/lib.rs` — added `pub mod config;` and
+  `mod oneshot;`; changed `pub use io_uring::{FlowControl, Parity,
+  SerialConfig, SerialPort};` to `pub use config::{FlowControl, Parity,
+  SerialConfig};` + `pub use io_uring::SerialPort;` (two lines instead of
+  one, same net re-export set from the crate root — `SerialPort` still
+  comes from `io_uring`, the config types now come from `config`). Crate
+  doc comment extended with a short paragraph pointing at ADR 0004 §1/§2
+  for why `config.rs`/`oneshot.rs` exist, without touching the existing
+  historical extraction-provenance paragraphs above it.
+
+### Compile-error correction while implementing `oneshot.rs`
+
+`Pin<&mut CompletionRx<T>>::get_ref()` does not exist — `get_ref` is only
+defined for `Pin<&Self>` (immutable), not `Pin<&mut Self>`. Caught by
+`cargo build -p cat-transport-serial` immediately (`E0599`). Fixed by using
+`&*self` (via `Pin`'s `Deref` impl) instead, which is sound here because
+`CompletionRx<T>` has no `!Unpin` fields (just an `Arc`) and nothing in
+`poll` needs a pinned field projection — documented inline in the method's
+comment.
+
+### Test scenarios and results (`oneshot::tests`, all pure `std`, no new
+### dependency — `Cargo.toml` untouched, confirmed via `git diff`)
+
+1. `poll_before_send_returns_pending_and_registers_waker` (task's (a)) — a
+   `RecordingWaker` (`impl std::task::Wake`, records a bool) is polled
+   against a fresh `CompletionRx` before any `send`: asserts `Poll::Pending`
+   and that the waker has NOT fired yet. Then `send(7)` is called
+   (same-thread, synchronous) and asserts the *previously-registered* waker
+   now HAS fired, then polls again and asserts `Ready(Ok(7))`. Result: PASS.
+2. `cross_thread_send_after_delay_wakes_and_resolves_with_value` (task's
+   (b)) — a separate `std::thread::spawn`, after a genuine
+   `sleep(Duration::from_millis(50))` (not same-tick/immediate), calls
+   `tx.send(42)`. The main thread awaits via a small test-only
+   `block_on_with_timeout` helper (park-loop + a `ThreadWaker` that
+   unparks, the same shape ADR 0004 §1 describes for `ft991a`'s eventual
+   Windows `block_on`), bounded by a 5-second deadline. Asserts
+   `Some(Ok(42))` (not `None`, which would mean it timed out instead of
+   being woken). Result: PASS — genuinely exercises the cross-thread wake
+   path, not a same-thread immediately-ready shortcut.
+3. `dropping_sender_before_send_resolves_to_canceled_not_hang` (task's
+   (c)) — same cross-thread-with-delay shape as (2), but the spawned
+   thread `drop(tx)`s instead of sending. Bounded by the same
+   `block_on_with_timeout` 5-second deadline, so a regression in the
+   cancellation-wake path (e.g. `Drop` failing to check `Slot::Empty`
+   correctly, or failing to wake the registered waker) fails this test
+   with a clear assertion mismatch instead of hanging the test binary.
+   Asserts `Some(Err(Canceled))`. Result: PASS.
+4. `send_before_first_poll_resolves_immediately` (extra, not explicitly
+   required by the task but a cheap gap-closer) — `send` called before any
+   `poll` at all; first poll must resolve `Ready(Ok(..))` immediately
+   without ever registering/needing a waker. Result: PASS.
+
+### Before/after verification (full commands + output)
+
+```
+$ cargo test -p cat-transport-serial
+running 22 tests
+... (all 18 pre-existing tests, same names as the baseline run above, all `ok`) ...
+test oneshot::tests::poll_before_send_returns_pending_and_registers_waker ... ok
+test oneshot::tests::cross_thread_send_after_delay_wakes_and_resolves_with_value ... ok
+test oneshot::tests::dropping_sender_before_send_resolves_to_canceled_not_hang ... ok
+test oneshot::tests::send_before_first_poll_resolves_immediately ... ok
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Intermediate checkpoint (not part of the final diff — done to verify the
+`config.rs` extraction alone is behavior-neutral, independent of
+`oneshot.rs`'s additions): temporarily moved `oneshot.rs` aside and removed
+its `mod oneshot;` line, re-ran `cargo test -p cat-transport-serial` →
+**18 passed, 0 failed**, same 18 test names as the pre-change baseline,
+confirming the extraction alone changes nothing observable. Then restored
+`oneshot.rs` and the `mod` declaration and re-ran the full suite (22/22,
+above).
+
+```
+$ cargo clippy -p cat-transport-serial --all-targets -- -D warnings
+Finished `dev` profile [unoptimized + debuginfo] target(s) -- 0 warnings, 0 errors
+
+$ cargo fmt --check -p cat-transport-serial
+(no output, exit 0 -- clean)
+
+$ cargo test --workspace
+cat-client 13, cat-framework 8, cat-server 46, cat-transport-core 12,
+cat-transport-serial 22 (was 18), cat-transport-tcp 7, cat-transport-udp 15
+= 123 passed total; 0 failed. Every crate's count identical to the 119
+baseline except cat-transport-serial's +4 (the new oneshot tests).
+
+$ cargo clippy --workspace --all-targets -- -D warnings
+Finished -- 0 warnings, 0 errors (no pre-existing warnings surfaced this
+time; the write_to_master allow from Task 7 is still in place and still
+suppresses that one).
+
+$ cargo fmt --all --check
+(no output, exit 0 -- clean)
+```
+
+Grep confirming no other in-workspace crate references
+`SerialConfig`/`Parity`/`FlowControl` (so the re-export-path move is
+zero-risk beyond `cat-transport-serial` itself): logged in `findings.md`'s
+matching section.
+
+### Files touched (confirmed via `git status`/`git diff --stat`)
+
+```
+ M cat-transport-serial/src/io_uring.rs   | 49 deletions, 1 insertion (the new `use`)
+ M cat-transport-serial/src/lib.rs        | 14 insertions/changes (mod + re-export split + doc paragraph)
+?? cat-transport-serial/src/config.rs     | new file
+?? cat-transport-serial/src/oneshot.rs    | new file
+```
+
+`Cargo.toml` (crate-level and workspace-level) untouched. No file outside
+`cat-transport-serial/` touched by this task's code changes (planning files
+in `planning/cat_transport/` excepted, per this crate's own planning
+convention). No Windows-specific `SerialPort`/`Transport`/
+`ModemControlLines` code written. `cat-transport-core`,
+`cat-transport-tcp`, `cat-transport-udp`, `cat-server`, `cat-framework`,
+`cat-client` untouched. `ts570d`/`ft991a` (sibling repos) untouched.
+
+### Judgment calls / discrepancies vs. ADR 0004 §1
+
+- ADR 0004 §1 names the shape as "`struct Completion<T>` / `channel<T>() ->
+  (CompletionTx<T>, CompletionRx<T>)`, a `Mutex<Option<T>> + Option<Waker>`
+  pair." Implemented `Completion<T>` as the private shared struct exactly
+  as named, but its slot is `Mutex<Slot<T>>` (a 3-variant enum: `Empty` /
+  `Value(T)` / `Canceled`) rather than a literal `Mutex<Option<T>>`. This is
+  necessary, not a deviation in spirit: the ADR's own next sentence requires
+  distinguishing "no value yet" from "sender dropped without sending" (the
+  `Result<T, Canceled>` output type it specifies), and a bare
+  `Mutex<Option<T>>` cannot represent three states. Flagged explicitly
+  rather than silently picked, per this crate's "if the plan specifies a
+  shape, don't substitute without flagging" rule — judged as filling in an
+  implementation detail the ADR's prose left slightly underspecified
+  (`Option<T>` vs. a 3-state slot), not overriding a decision it made
+  explicitly.
+- ADR 0004 §1 says `CompletionRx<T>: Future<Output = T>` in one sentence,
+  then "(or `Result<T, Canceled>` if the sender can be dropped before
+  sending — needed for the worker-thread-exits-mid-request case)" in the
+  next — and the ADR's own later prose ("SerialPort::drop drops the request
+  sender ... the thread exits its loop") confirms the sender-dropped case
+  is real and expected. Implemented `Result<T, Canceled>`, matching the
+  task's own dispatch text (`planning/architect/task_plan.md`'s Task 6
+  section), which states the `Result` form directly rather than as an
+  alternative — no actual ambiguity once both documents are read together.
+- No other discrepancy found. Everything else (private module, not
+  `Transport`-facing, pure `std`, `Waker`-stores-on-`Pending`,
+  `send`/`Drop` both wake) matches ADR 0004 §1 as specified.
+
+### Status: implementation complete, all acceptance checks green, awaiting
+### architect/user review
+
+Not committed, per standing rule. STOPPING here per the one-task-at-a-time
+workflow — Tasks 7/8 (Windows `SerialPort::open` / `Transport` /
+`ModemControlLines` implementations over `windows-sys`) are separate, later
+tasks, not started, not authorized by this task.
+
+## ADR 0004 Task 7 (Windows `SerialPort::open`/`configure_dcb`/
+## `SetCommTimeouts`) — 2026-07-19
+
+### Files touched
+
+```
+ M cat-transport-serial/Cargo.toml       (+27, new [target.'cfg(target_os = "windows")'.dependencies] section)
+ M cat-transport-serial/src/io_uring.rs  (baud_rate_from_u32 delegates to crate::baud; READ_TIMEOUT moved out)
+ M cat-transport-serial/src/lib.rs       (mod baud/timeouts; #[cfg(target_os = "linux")] on io_uring mod+re-export; #[cfg(target_os = "windows")] pub mod windows;)
+?? cat-transport-serial/src/baud.rs       (new, shared, ungated)
+?? cat-transport-serial/src/timeouts.rs   (new, shared, ungated)
+?? cat-transport-serial/src/windows.rs    (new, #[cfg(target_os = "windows")]-gated)
+```
+
+`git diff --stat` for the three modified files:
+```
+ cat-transport-serial/Cargo.toml      | 27 ++++++++++++
+ cat-transport-serial/src/io_uring.rs | 83 ++++++++++--------------------------
+ cat-transport-serial/src/lib.rs      | 37 +++++++++++++++-
+```
+
+No file outside `cat-transport-serial/` touched by this task's code
+changes (planning files in `planning/cat_transport/` excepted). Confirmed
+via `git status`: `docs/adr/0002-...md`, `docs/adr/README.md`,
+`planning/architect/*`, `docs/adr/0003-...md` (untracked), `docs/adr/0004-...md`
+(untracked) all show as already-modified/untracked *before* this task
+touched anything — pre-existing state from earlier sessions (ADR 0004
+authoring, Task 6 landing), not something this task changed.
+`cat-transport-core`, `cat-transport-tcp`, `cat-transport-udp`,
+`cat-server`, `cat-framework`, `cat-client` untouched. `ts570d`/`ft991a`
+(sibling repos) not present in this workspace at all, untouched.
+
+### `windows-sys` dependency added
+
+```toml
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_Devices_Communication",
+    "Win32_Security",
+] }
+```
+
+Version `0.59` is exactly what the task brief specified, empirically
+confirmed real/resolvable (see `task_plan.md`'s Task 7 section — `cargo
+check` actually resolved and downloaded `windows-sys v0.59.0`, log line
+"Adding windows-sys v0.59.0 (available: v0.61.2)"). `Win32_Security` is an
+addition beyond the task brief's literal three-feature list — mechanically
+required for `CreateFileW`'s own `windows-sys` binding to exist at all
+(confirmed by source inspection and by an empirical remove/re-add
+experiment, both logged in `findings.md`). `Win32_System_IO` deliberately
+NOT added, per the ADR.
+
+### Verification — full command/output log
+
+**1. Baseline, before touching anything** (establishes the pre-existing gap
+this task had to fix as a prerequisite, and the pre-existing green state to
+diff against):
+
+```
+$ rustup target list --installed
+x86_64-unknown-linux-gnu
+
+$ rustup target add x86_64-pc-windows-gnu
+info: downloading component 'rust-std' for 'x86_64-pc-windows-gnu'
+info: installing component 'rust-std' for 'x86_64-pc-windows-gnu'
+(succeeded)
+
+$ cargo check --target x86_64-pc-windows-gnu -p cat-transport-serial   # BEFORE any of this task's edits
+error[E0425]: cannot find value `TIOCMBIS` in crate `libc`
+... (19 errors total, all Linux-only libc symbols missing on the Windows
+    target, from io_uring.rs being unconditionally compiled)
+error: could not compile `cat-transport-serial` (lib) due to 19 previous errors
+
+$ cargo build --workspace     # BEFORE
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
+
+$ cargo test -p cat-transport-serial   # BEFORE
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+**2. The acceptance bar itself, after all edits (including the `io_uring.rs`
+gating fix and the `HANDLE`-type/`Win32_Security` fixes discovered along the
+way):**
+
+```
+$ cargo check --target x86_64-pc-windows-gnu -p cat-transport-serial
+    Checking cat-transport-serial v0.1.0 (.../cat-transport-serial)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s
+```
+
+Clean. No Windows toolchain/linker was invoked or needed — `cargo check`
+stops before the link step, as the task brief anticipated ("a cargo
+check cross-compile, not a link/run").
+
+```
+$ cargo clippy --target x86_64-pc-windows-gnu -p cat-transport-serial --lib -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+```
+
+Clean, zero warnings, on the lib target (the crate's actual default build
+target and this task's literal "Done when" surface).
+
+`cargo clippy --target x86_64-pc-windows-gnu -p cat-transport-serial
+--all-targets -- -D warnings` (broader than the task's own bar) fails, but
+only inside `session.rs` (untouched, pre-existing, out of this task's
+scope per ADR 0004 §2 -- see `findings.md`'s "Residual, not fixed" entry
+for the full explanation and why it isn't this task's to fix).
+
+**3. Linux side, after all edits — confirming complete non-regression:**
+
+```
+$ cargo test -p cat-transport-serial
+running 24 tests
+test baud::tests::accepts_every_supported_rate ... ok
+test baud::tests::rejects_unsupported_rate ... ok
+... (all 22 pre-existing tests, same names, still ok) ...
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ cargo build --workspace
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
+
+$ cargo clippy -p cat-transport-serial --all-targets -- -D warnings
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.25s   -- 0 warnings
+
+$ cargo fmt -p cat-transport-serial -- --check
+(exit 0, clean, after running `cargo fmt -p cat-transport-serial` once to
+apply two formatting fixups `rustfmt` wanted in windows.rs -- a long match
+arm and a long function-call argument list, both purely cosmetic line
+wraps, no logic change)
+
+$ cargo test --workspace
+cat-client 13, cat-framework 8, cat-server 46, cat-transport-core 12,
+cat-transport-serial 24 (was 22, +2 new baud::tests), cat-transport-tcp 7,
+cat-transport-udp 15 = 125 passed total; 0 failed. Every crate's count
+identical to before except cat-transport-serial's +2.
+
+$ cargo clippy --workspace --all-targets -- -D warnings
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.04s   -- 0 warnings
+
+$ cargo fmt --all -- --check
+(exit 0, clean)
+```
+
+Every pre-existing Linux test (all 24 now, 22 pre-existing + 2 new
+`baud::tests`) passes with unchanged names/behavior. `Transport::read`'s
+`READ_TIMEOUT`-driven tests (`test_read_blocks_until_data_arrives`, etc.)
+still pass, confirming the `crate::timeouts::READ_TIMEOUT` move didn't
+change its `#[cfg(test)]` 100ms value or behavior.
+
+### `DCB` field-by-field mapping — confirmed against ADR 0004 §5's table,
+### row by row
+
+| ADR 0004 §5 row | `configure_dcb` implementation |
+|---|---|
+| `baud_rate: u32` — reuse Linux's validated rate set, same `SerialError::InvalidConfig` | `dcb.BaudRate = crate::baud::validate_baud_rate(config.baud_rate)?;` — same shared validator Linux's `baud_rate_from_u32` now calls first |
+| `data_bits: u8` (5-8) → `DCB.ByteSize` | `match config.data_bits { 5=>5, 6=>6, 7=>7, _=>8 }` — mirrors `configure_termios`'s exact fallback-to-8 shape |
+| `stop_bits: u8` (1 or 2) → `DCB.StopBits`: `ONESTOPBIT`(0)/`TWOSTOPBITS`(2) | `if config.stop_bits >= 2 { TWOSTOPBITS } else { ONESTOPBIT }` — identical test to Linux's `if config.stop_bits >= 2` |
+| `parity: Parity` → `DCB.Parity` + `fParity` | `Parity::None => (NOPARITY, fParity=0)`, `Even => (EVENPARITY, fParity=1)`, `Odd => (ODDPARITY, fParity=1)` |
+| `flow_control: FlowControl` → `fOutxCtsFlow`/`fRtsControl` (Hardware); `fInX`/`fOutX` (Software); all-off + `RTS_CONTROL_ENABLE` (None) | `Hardware => (outx_cts=true, in_x=false, out_x=false, RTS_CONTROL_HANDSHAKE)`; `Software => (false, true, true, RTS_CONTROL_ENABLE)`; `None => (false, false, false, RTS_CONTROL_ENABLE)`; `XonChar`/`XoffChar` set to `0x11`/`0x13` unconditionally (harmless when `fInX`/`fOutX` are off) |
+| `initial_rts`/`initial_dtr` — Task 8's `EscapeCommFunction` calls, not this task | Not implemented here (correctly out of scope); `fDtrControl` set to `DTR_CONTROL_ENABLE` at configure time so Task 8's calls will actually take effect (judgment call, logged in `task_plan.md`/`findings.md`) |
+
+Every row matches. Two fields the table doesn't name (`fBinary`,
+`fDtrControl`) and several conservative-default fields with no
+`SerialConfig`/Linux-termios equivalent (`fOutxDsrFlow`,
+`fDsrSensitivity`, `fTXContinueOnXoff`, `fErrorChar`, `fNull`,
+`fAbortOnError`) are set as judgment calls, documented inline in
+`windows.rs` and in `task_plan.md`'s Task 7 section.
+
+### `SetCommTimeouts` mapping
+
+`ReadIntervalTimeout = 0`, `ReadTotalTimeoutMultiplier = 0`,
+`ReadTotalTimeoutConstant = READ_TIMEOUT.as_millis() as u32` (the shared
+`crate::timeouts::READ_TIMEOUT`, moved verbatim out of `io_uring.rs` — same
+2000ms production / 100ms test split), `WriteTotalTimeoutMultiplier = 0`,
+`WriteTotalTimeoutConstant = 5000` (5s, matching ADR 0004 §3's own
+suggested value; reasoning logged in `task_plan.md`'s Task 7 section — no
+real Windows hardware reachable from this sandbox to empirically tune it
+further).
+
+### `SerialPort::path` parity confirmed
+
+Linux: `pub fn path(&self) -> &str { &self.path }`. Windows: identical
+signature, identical body, in `windows.rs`.
+
+### Judgment calls / discrepancies — summary (full reasoning in
+### `task_plan.md`/`findings.md`, this is the index)
+
+1. Gated `mod io_uring;`/`pub use io_uring::SerialPort;` to
+   `#[cfg(target_os = "linux")]` — a prerequisite this task's own Done-when
+   bar could not be met without, contrary to what the ADR's prose assumed
+   was already true post-Task-6.
+2. Added `Win32_Security` to the `windows-sys` feature list, beyond the
+   task brief's literal three — mechanically required for `CreateFileW`'s
+   binding to exist in `windows-sys` at all.
+3. Extracted `baud.rs`/`timeouts.rs` as new shared, ungated modules
+   (mirroring Task 6's `config.rs` precedent) rather than duplicating
+   `READ_TIMEOUT`/the baud-rate-validated-set into `windows.rs`.
+4. Set `fBinary = 1` and `fDtrControl = DTR_CONTROL_ENABLE` unconditionally
+   in `configure_dcb` — fields ADR 0004 §5's table doesn't name a row for,
+   filled in with documented reasoning (raw-mode prerequisite; manual DTR
+   control so Task 8's `EscapeCommFunction` calls work), not overriding
+   anything the ADR stated explicitly.
+5. `WriteTotalTimeoutConstant = 5000` (5s) — the ADR's own suggested
+   starting value, adopted as-is.
+6. Used `std::ptr::null_mut()` (not a literal `0`) for `CreateFileW`'s
+   `hTemplateFile` argument — forced by `windows-sys` 0.59's `HANDLE` being
+   `*mut c_void`, not `isize` as in the locally-vendored 0.52.0/0.48.0
+   sources initially consulted; caught by the compiler on the first real
+   `cargo check` run against `windows.rs`, not missed.
+
+None of these reach into Task 8's scope (`Transport`/`ModemControlLines`/
+worker thread) — all are either mechanical prerequisites for this task's
+own stated verification bar, or judgment calls explicitly invited by the
+task brief's own wording ("your call", "use your judgment").
+
+### Not fixed, flagged for the architect (out of this task's scope)
+
+`session.rs`'s `#[cfg(test)]` module uses `#[monoio::test(driver =
+"legacy")]` unconditionally (no `#[cfg(target_os = "linux")]`), so `cargo
+check --target x86_64-pc-windows-gnu -p cat-transport-serial --all-targets`
+(as opposed to this task's actual lib-only Done-when bar) fails. Pre-
+existing, not introduced by this task, and outside this task's authorized
+file scope (`session.rs` is explicitly untouched per ADR 0004 §2). See
+`findings.md` for full detail.
+
+### Done when (task's literal bar, restated and confirmed)
+
+`cargo check --target x86_64-pc-windows-gnu -p cat-transport-serial`
+compiles cleanly — **confirmed, exact command/output above**. `cargo
+clippy`/`cargo fmt` for whatever compiles — confirmed clean on the Windows
+lib target and on the full Linux crate/workspace. Linux `cargo test -p
+cat-transport-serial` (24/24) and `cargo build --workspace` completely
+unaffected in behavior (only test count grew by the 2 new `baud::tests`,
+every pre-existing test name/behavior unchanged).
+
+### Status: implementation complete, all acceptance checks green, awaiting
+### architect/user review
+
+Not committed, per standing rule. STOPPING here per the one-task-at-a-time
+workflow — Task 8 (Windows `Transport`/`ModemControlLines`/worker thread)
+is a separate, later task, not started, not authorized by this task.
+
+## ADR 0004 Task 8 — Windows `Transport`/`ModemControlLines` + worker
+## thread (2026-07-19)
+
+Completes the Windows `SerialPort` (`cat-transport-serial/src/windows.rs`),
+per ADR 0004 §1/§3/§4 and `planning/architect/task_plan.md`'s Task 8
+(verbatim spec) / this file's own `task_plan.md` Task 8 section (full
+re-statement). Depends on Task 6 (`oneshot.rs`) and Task 7 (`SerialPort::
+open`/`configure_dcb`/`set_comm_timeouts`), both already landed and
+independently verified.
+
+### Worker-thread request/reply design (as actually built)
+
+```rust
+enum WorkerRequest {
+    Read {
+        len: usize,
+        reply: oneshot::CompletionTx<Result<Vec<u8>, TransportError>>,
+    },
+    Write {
+        data: Vec<u8>,
+        reply: oneshot::CompletionTx<Result<usize, TransportError>>,
+    },
+}
+
+fn worker_loop(handle: RawHandle, rx: mpsc::Receiver<WorkerRequest>) {
+    while let Ok(request) = rx.recv() {
+        match request {
+            WorkerRequest::Read { len, reply } => reply.send(worker_read(handle, len)),
+            WorkerRequest::Write { data, reply } => reply.send(worker_write(handle, &data)),
+        }
+    }
+}
+```
+
+`worker_read` performs one blocking, non-overlapped `ReadFile` call
+(`lpOverlapped = null_mut()`); a successful zero-byte completion (the
+configured `ReadTotalTimeoutConstant` elapsed with no data, per Task 7's
+`set_comm_timeouts`) is mapped to `Err(TransportError::ReadTimeout)`
+*inside the worker*, before it ever replies — `Ok(bytes)` is therefore
+always non-empty, matching `Transport::read`'s "`Ok(n)` is always `> 0`"
+contract exactly (confirmed against `io_uring.rs`'s own doc comment on this
+same contract, which is identical in spirit).
+
+`worker_write` performs one blocking, non-overlapped `WriteFile` call; a
+successful completion with `bytes_written < data.len()` (a short write —
+the well-documented Win32 serial-I/O behavior when `WriteTotalTimeoutConstant`
+elapses before the full buffer is transmitted, matching `pyserial`'s own
+`serialwin32.py` handling) is mapped to `Err(TransportError::WriteTimeout)`
+rather than returned as `Ok(partial_n)` — this gives `WriteTotalTimeoutConstant`
+its first real caller on this platform, exactly as ADR 0004 §3 anticipated
+("an existing variant that has no caller on Linux today and gets its first
+real one here"). **Not independently verifiable against real hardware in
+this sandbox** — the "partial write on timeout, not an outright `WriteFile`
+failure" behavior is documented/standard Win32 serial-I/O interpretation,
+not something this environment can empirically confirm; flagged here as a
+judgment call rather than overclaimed as tested.
+
+`SerialPort` gained two new fields: `request_tx: Option<mpsc::Sender<
+WorkerRequest>>` and `worker: Option<thread::JoinHandle<()>>`, both `Some`
+for the entire lifetime of an open port and only ever `take()`n by `Drop`.
+The `Option` wrapping (rather than a bare `Sender`/`JoinHandle`) is what
+makes `Drop::drop`'s exact required sequencing possible: `self.request_tx
+.take()` drops the real sender in place (not a clone) so the worker's
+`recv()` observes disconnection immediately; only then is `worker.join()`
+called; only then `CloseHandle`. Joining before dropping the sender would
+hang forever (the worker would still be parked in `recv()` with nothing
+left to wake it) — this exact ordering is called out as "load-bearing for
+clean shutdown" in both ADRs 0004 §1 and the dispatching prompt, and is
+implemented exactly as specified.
+
+`SerialPort::open` (Task 7's implementation, extended): after `configure_dcb`/
+`set_comm_timeouts` succeed, constructs the `mpsc::channel()`, spawns
+`thread::spawn(move || worker_loop(raw_handle, request_rx))`, builds `Self`,
+then calls `self.set_rts(true)`/`self.set_dtr(true)` when `config.
+initial_rts`/`initial_dtr` (both default `true`), discarding errors —
+identical sequencing to `io_uring.rs`'s Linux implementation.
+
+### `Transport for SerialPort`
+
+- `write`/`read`: build an `oneshot::channel()` pair, send a `WorkerRequest`
+  over `request_tx`, `.await` the `CompletionRx`. Both the `mpsc::Sender::
+  send` failure case (worker's `Receiver` already dropped — i.e. the
+  worker thread already exited, most plausibly via a panic since the
+  ordinary shutdown path always joins first) and an `Err(oneshot::Canceled)`
+  from the awaited `CompletionRx` (the `CompletionTx` was dropped without
+  sending — same underlying cause) both map through a new helper,
+  `worker_gone_error()`, to `TransportError::Io` wrapping a synthetic
+  `ErrorKind::BrokenPipe` `std::io::Error`. Judgment call: `TransportError`
+  has no dedicated "worker thread gone" variant; reusing `Io` matches ADR
+  0004's own "no new `SerialError` variant is expected to be needed"
+  spirit for the open/configure path, extended here to the read/write path
+  for the same minimal-surface-change reasoning — `Io` already models
+  "something went wrong at the OS/transport boundary," and a gone worker
+  thread is exactly that.
+- `read` copies the worker's returned `Vec<u8>` into the caller's `buf`
+  (`buf[..n].copy_from_slice(&bytes)`), mirroring `io_uring.rs`'s own
+  `VecBuf`-to-caller-buffer copy shape.
+- `flush_rx` (plain sync `fn`, overriding the base trait's no-op default):
+  `PurgeComm(handle, PURGE_RXCLEAR)`, called directly and synchronously —
+  NOT routed through the worker thread, per ADR 0004 §3.
+- `flush` (`async fn`): `FlushFileBuffers(handle)`, called directly and
+  synchronously inside the async body — NOT routed through the worker
+  thread, mirroring `io_uring.rs`'s `flush`'s own `tcdrain`-inside-async-
+  body exception precisely (same doc-comment justification: a short,
+  deliberately-blocking synchronous call is acceptable in an async context
+  where callers invoke `flush` deliberately).
+
+### `ModemControlLines for SerialPort`
+
+Direct, synchronous Win32 calls on the calling thread against the same
+`HANDLE` the worker thread also uses — never touching `request_tx`/a
+`CompletionTx`/`CompletionRx`, per ADR 0004 §4:
+
+```
+set_rts(true/false)  → EscapeCommFunction(SETRTS / CLRRTS)
+set_dtr(true/false)  → EscapeCommFunction(SETDTR / CLRDTR)
+read_cts()            → GetCommModemStatus, test MS_CTS_ON
+read_dsr()            → GetCommModemStatus, test MS_DSR_ON
+read_dcd()            → GetCommModemStatus, test MS_RLSD_ON
+```
+
+via two small private helpers, `escape_comm_function`/`modem_status_bit`,
+mirroring `io_uring.rs`'s `modem_bits_set`/`modem_bit_get` shape exactly
+(same method-to-primitive mapping, same "no I/O wait" reasoning restated
+in the doc comments).
+
+### `Drop for SerialPort`
+
+Implemented exactly as specified: `self.request_tx.take()` (drops the real
+sender in place) → `self.worker.take()` then `.join()` (panic payload
+swallowed via `let _ =`, per the ordinary Rust guidance against panicking
+during unwind/drop) → `CloseHandle(self.handle.0)`.
+
+### `lib.rs`
+
+Added `#[cfg(target_os = "windows")] pub use windows::SerialPort;`
+alongside the existing (already-gated, per Task 7) Linux `pub use
+io_uring::SerialPort;` line, and updated the crate-root doc comment to
+describe Task 8's completion instead of deferring to it.
+
+### `session.rs` test-gating fix (the flagged Task 7 residual)
+
+`#[cfg(test)] mod tests` → `#[cfg(all(test, target_os = "linux"))] mod
+tests`, with an explanatory doc comment. Every async test in that module
+uses `#[monoio::test(driver = "legacy")]`, and `monoio` is a Linux-only
+*target-gated* Cargo dependency (`[target.'cfg(target_os = "linux")'.
+dependencies] monoio`) — entirely absent from the dependency graph on a
+Windows target, so the `monoio::test` attribute macro cannot resolve there
+regardless of any code inside the module. `io_uring.rs` has no analogous
+in-file gate to mirror (confirmed by re-reading it, as the task instructed):
+that whole file is already `#[cfg(target_os = "linux")]`-gated at the
+`lib.rs` module-declaration level, so its test module inherits the gate for
+free without needing one of its own. `session.rs` is different because the
+file itself (`SerialCatSession<T: Transport>`) is genuinely cross-platform
+and compiles on both targets — only its test module, which happens to lean
+entirely on `monoio`, needed the extra gate. The module's one plain
+`#[test]` fn (`modem_control_lines_delegate_to_transport`, no `monoio`
+dependency of its own) is swept into the same gate rather than special-cased
+out, since it lives in the same `mod tests` block and gating the whole
+block is simpler and no less correct than gating tests individually one by
+one — the task's own phrasing explicitly allowed either shape ("on the test
+module, or on each test").
+
+### A real discrepancy against ADR 0004 §3's literal feature list, found
+### and resolved the same way Task 7 resolved its `Win32_Security` finding
+
+The first `cargo check --target x86_64-pc-windows-gnu -p cat-transport-serial
+--all-targets` run against the actually-written `worker_read`/`worker_write`
+failed: `error[E0432]: unresolved imports ... no ReadFile in
+Win32::Storage::FileSystem` / `no WriteFile in Win32::Storage::FileSystem`.
+Investigated the same way Task 7 investigated `CreateFileW`/`Win32_Security`
+— grepped the actually-resolved `windows-sys` 0.59.0 source (now present in
+the local registry cache at `~/.cargo/registry/src/index.crates.io-.../
+windows-sys-0.59.0/src/Windows/Win32/Storage/FileSystem/mod.rs`) directly,
+rather than guessing:
+
+```
+#[cfg(feature = "Win32_System_IO")]
+windows_targets::link!("kernel32.dll" "system" fn ReadFile(hfile: HANDLE,
+    lpbuffer: *mut u8, nnumberofbytestoread: u32, lpnumberofbytesread: *mut u32,
+    lpoverlapped: *mut super::super::System::IO::OVERLAPPED) -> BOOL);
+```
+
+`ReadFile`'s and `WriteFile`'s own generated bindings are themselves
+`#[cfg(feature = "Win32_System_IO")]`-gated — because their `lpOverlapped`
+parameter's *type* (`OVERLAPPED`) is defined under that feature, exactly
+the same shape as Task 7's `CreateFileW`/`Win32_Security` finding
+(`SECURITY_ATTRIBUTES` gating `CreateFileW` even though the parameter is
+always `null`). This function-existing-at-all requirement is unrelated to
+*using* overlapped I/O — this code always passes `lpOverlapped =
+null_mut()` and never sets `FILE_FLAG_OVERLAPPED` on the handle, so no
+overlapped/IOCP-based I/O is actually performed or newly introduced.
+
+**Judgment call, not a design change, but flagged prominently because it
+brushes directly against ADR 0004 §3's literal text**: added
+`Win32_System_IO` to `Cargo.toml`'s Windows feature list. ADR 0004 §3 says
+"No `Win32_System_IO`/`OVERLAPPED` features" — read in context, that
+sentence is explaining a *design* decision (don't reimplement IOCP-based
+overlapped async I/O; confine everything to simple blocking calls on a
+dedicated worker thread), not asserting that the `windows-sys` crate
+feature literally named `Win32_System_IO` would never need to be enabled
+for any reason. Confirmed empirically, the same way Task 7 confirmed its
+own analogous finding: removed the feature again after implementation was
+otherwise complete, re-ran `cargo check --target x86_64-pc-windows-gnu -p
+cat-transport-serial --all-targets`, watched it fail with the exact same
+`unresolved imports` error, added the feature back, watched it pass. This
+is windows-sys's own binding structure — the same *kind* of mechanical
+requirement as `Win32_Security`, not a reopening of the async-execution
+decision (worker thread + hand-rolled completion primitive, ADR 0004 §1,
+implemented exactly as specified above, with zero IOCP/overlapped-I/O
+machinery anywhere in this code). Full reasoning also recorded inline as a
+`Cargo.toml` comment.
+
+### `WriteFile`/`ReadFile` pointer types
+
+`windows-sys` 0.59.0 generates `lpBuffer: *mut u8` / `*const u8` for
+`ReadFile`/`WriteFile` (not `*mut c_void`, unlike some other Win32
+bindings) — `buf.as_mut_ptr()`/`data.as_ptr()` (already `*mut u8`/`*const
+u8` from a `Vec<u8>`/`&[u8]`) pass directly with no cast needed; an initial
+`.cast()` call was written defensively and then removed once the compiler
+confirmed the types already matched exactly.
+
+### Verification — same unusual bar as Task 7, both halves confirmed
+
+`cargo check --target x86_64-pc-windows-gnu -p cat-transport-serial
+--all-targets` — **compiles cleanly**: `Finished \`dev\` profile
+[unoptimized + debuginfo] target(s) in 0.11s` (this run, after all fixes
+above; the `--all-targets` flag now succeeds, clearing the exact residual
+Task 7 flagged and did not clear). `cargo clippy --target
+x86_64-pc-windows-gnu -p cat-transport-serial --all-targets -- -D warnings`
+— **clean**, no downgrade to `--lib`-only needed: `Finished \`dev\` profile
+[unoptimized + debuginfo] target(s) in 0.15s`.
+
+Linux, re-measured directly before touching any file and again after every
+change:
+- `cargo test -p cat-transport-serial`: **24 passed** before and after —
+  identical test names, zero behavior change (confirmed the dispatching
+  prompt's cited baseline of 24 was accurate; this file's own Task 6
+  section's "22" figure was stale, predating Task 7's `baud.rs`/
+  `timeouts.rs` extraction, which added 2 more tests without this session's
+  involvement).
+- `cargo test --workspace`: **125 passed** before and after (13
+  cat-client + 8 cat-framework + 46 cat-server + 12 cat-transport-core +
+  24 cat-transport-serial + 7 cat-transport-tcp + 15 cat-transport-udp) —
+  matches the dispatching prompt's cited baseline of 125 exactly, every
+  other crate's count unchanged.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo fmt --all -- --check`: clean (one round of `cargo fmt --all`
+  needed after the initial implementation — import-list line-wrapping in
+  `windows.rs`'s new `windows_sys::Win32::Devices::Communication` import
+  block only; re-verified clean afterward, and re-ran every other check
+  above after formatting to confirm nothing regressed).
+
+### What is, and is not, verified (explicit, per this task's standing
+### instruction not to overclaim)
+
+Verified: the Windows-specific code (`windows.rs`'s worker thread,
+`Transport`/`ModemControlLines` impls, `Drop`) type-checks correctly against
+the real `windows-sys` 0.59.0 FFI surface for `x86_64-pc-windows-gnu`,
+including `--all-targets` (test-target code, not just the library). Linux
+is completely unaffected — full workspace test suite, clippy, and fmt all
+green, byte-for-byte the same test counts as before this task.
+
+NOT verified, and not claimed to be: any actual runtime behavior of the
+worker thread, `ReadFile`/`WriteFile`/`EscapeCommFunction`/
+`GetCommModemStatus`/`PurgeComm`/`FlushFileBuffers` against a real Windows
+serial port or COM device, the exact shutdown-ordering behavior under
+`Drop` (no way to construct/drop a real `SerialPort` in this Linux
+sandbox), or the `WriteFile` short-write-on-timeout interpretation. Per
+ADR 0004's Consequences section and this crate's standing decision for
+Windows-targeting work, the type-check bar above is the acceptance
+criterion for this task — actual hardware validation is the user's own,
+separate, later step against a physical FT-991A.
+
+### Status: implementation complete, all acceptance checks green, awaiting
+### architect/user review
+
+Not committed, per standing rule. This completes ADR 0004's dispatch queue
+(Tasks 6/7/8, all now landed) — no further Windows serial-backend work is
+authorized or outstanding in this queue. STOPPING here per the
+one-task-at-a-time workflow.

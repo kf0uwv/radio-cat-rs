@@ -8,6 +8,8 @@ never reused.
 |-----|-------|--------|
 | [0001](0001-scope-and-crate-boundaries.md) | Scope and crate boundaries for the shared CAT library | Accepted (amended) |
 | [0002](0002-async-runtime-binding-for-transport-crates.md) | Async runtime binding for cat-transport-core and dependents | Accepted |
+| [0003](0003-modem-control-lines.md) | `ModemControlLines`: a separate, additive capability trait for RTS/DTR/CTS/DSR/DCD | Accepted |
+| [0004](0004-windows-serial-backend.md) | Windows serial backend for `cat-transport-serial` | Accepted |
 
 ## Repository status
 
@@ -32,3 +34,11 @@ The concrete dispatch queue for `cat_framework`, `cat_transport`, and
 `cat_server` is in `planning/architect/task_plan.md`. No subagent should
 begin implementation on a task that queue doesn't list, and no subagent
 proceeds past its own task without an architect/user review checkpoint.
+
+[ADR 0004](0004-windows-serial-backend.md) resolves ADR 0002's Windows
+revisit trigger: `cat-transport-serial` gains a `#[cfg(target_os =
+"windows")]` backend (Win32 COM ports via `windows-sys`, a dedicated
+background thread + hand-rolled completion primitive for `Transport`,
+direct `EscapeCommFunction`/`GetCommModemStatus` calls for
+`ModemControlLines`) alongside the existing, unchanged Linux io_uring path.
+Tasks 6–8 in `planning/architect/task_plan.md` are the dispatch queue for it.

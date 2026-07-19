@@ -46,7 +46,91 @@ Not done, and explicitly not silently dropped:
   review before the next" workflow, Task 1 is next, pending user review of
   this planning pass.
 
-## Next action
+## Next action (superseded by the entry below for the Windows planning pass;
+kept for history)
 
 Await review of ADR 0002, the ADR 0001 amendments, and the task_plan.md
 dispatch queue. On approval, dispatch Task 1 to the `cat_framework` agent.
+
+## 2026-07-19 — Planning pass: Windows serial backend (ADR 0002's revisit trigger fired)
+
+Status: **planning complete, no code written** (same constraints as every
+prior pass — no Rust/Cargo, no edits to `ts570d`/`ft991a`).
+
+Trigger: the user wants real Windows COM-port control of a physical FT-991A
+from a native Windows `ft991a` build (and eventually `ts570d`), with
+explicit direction to keep `monoio`/io_uring unchanged for Linux and add a
+genuinely separate Windows backend inside `cat-transport-serial` — not a
+runtime-agnostic redesign touching the Linux path.
+
+Read before deciding (not touched, reference only): `ft991a/ui/src/
+terminal.rs`, `ft991a/src/main.rs` (single sequential loop, no
+`monoio::spawn`), `ts570d/ui/src/terminal.rs` (genuine concurrent two-task
+design via `monoio::spawn` + channels, for UI responsiveness during slow
+polls), plus this repo's own `cat-transport-serial/src/{io_uring.rs,lib.rs,
+session.rs}`, `cat-transport-core/src/{transport.rs,modem.rs,errors.rs}`,
+and ADR 0002/0003 in full.
+
+Delivered:
+- `docs/adr/0004-windows-serial-backend.md` — new ADR. Async-execution
+  decision: a dedicated background OS thread doing blocking Win32
+  `ReadFile`/`WriteFile`, paired with a small hand-rolled single-slot
+  completion primitive (not blocking-in-async-fn as the general mechanism,
+  not a third async-runtime crate) — reasoning tied directly to `ts570d`'s
+  concurrent two-task architecture, which a naive blocking implementation
+  would silently break on a future Windows port even though it would be
+  harmless for `ft991a`'s simpler single-loop shape today. Crate/module
+  structure: same `cat-transport-serial` crate, same public type names
+  (`SerialPort`/`SerialConfig`/`Parity`/`FlowControl`), `#[cfg(target_os =
+  "windows")]`-gated internals in a new `windows.rs` alongside the existing
+  `io_uring.rs`, with `SerialConfig`/`Parity`/`FlowControl` extracted into a
+  new shared, ungated `config.rs` (behavior-preserving move, not a
+  duplication) — not a new crate. Full `SerialConfig` ↔ `DCB` field mapping
+  table (every field maps cleanly; one deliberate cross-platform
+  consistency choice flagged — reusing Linux's validated baud-rate set on
+  Windows even though `DCB.BaudRate` itself is more permissive). Win32
+  dependency: `windows-sys`, target-gated exactly like the existing
+  Linux-gated `monoio` entry. `ModemControlLines` maps to direct,
+  synchronous `EscapeCommFunction`/`GetCommModemStatus` calls, mirroring
+  ADR 0003's "no I/O wait" precedent exactly.
+- `docs/adr/0002-...md` — small appended "Amendment" section (not a
+  rewrite) pointing at ADR 0004 as the resolution of the revisit trigger
+  ADR 0002 itself named.
+- `docs/adr/README.md` — ADR 0004 row added; a short paragraph added
+  pointing at the new dispatch queue.
+- `planning/architect/findings.md` §11 — the supporting research: what was
+  read in both consuming repos and why the asymmetry between `ft991a`'s and
+  `ts570d`'s UI architectures drove the async-execution decision; why
+  option 3 (a third runtime) was rejected in concrete terms; explicit note
+  that `monoio` is never in the picture on the Windows side at all, which
+  is what makes the hand-rolled completion primitive's correctness rest on
+  `std::task::Waker`'s ordinary contract rather than on `monoio`
+  internals.
+- `planning/architect/task_plan.md` — Tasks 6, 7, 8 appended (`cat_transport`
+  agent, sequential): Task 6 extracts `config.rs` and adds the portable
+  `oneshot.rs` completion primitive (real `cargo test` coverage, since it
+  has no OS dependency); Task 7 implements Windows `SerialPort::open`/`DCB`
+  configuration/`SetCommTimeouts` only; Task 8 implements
+  `Transport`/`ModemControlLines` plus the worker thread. Verification
+  boundary stated explicitly and differently from every prior task in this
+  file: this sandbox is Linux-only and cannot execute Windows binaries, so
+  Tasks 7–8's "done when" is `cargo check --target x86_64-pc-windows-gnu`
+  compiling cleanly, not `cargo test` — matching the user's own statement
+  that they will validate against real hardware.
+
+Not done, and explicitly not silently dropped:
+- No task dispatched yet — same one-task-at-a-time, review-before-next
+  workflow as every prior pass. Task 6 is next, pending review of ADR 0004
+  and this task_plan.md addition.
+- `ft991a`'s and `ts570d`'s own Windows entry-point work (replacing
+  `#[monoio::main]`, since `monoio` cannot compile on Windows at all) is
+  recorded as a needed follow-on in ADR 0004 §1 but is explicitly out of
+  scope for this repository's dispatch queue — a future planning pass in
+  each of those repos, gated on Task 8 landing here and on those repos'
+  own architects picking it up, not something this session touched or
+  authorized.
+
+## Next action
+
+Await review of ADR 0004 and the Task 6–8 additions to `task_plan.md`. On
+approval, dispatch Task 6 to the `cat_transport` agent.

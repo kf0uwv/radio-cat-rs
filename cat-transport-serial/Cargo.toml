@@ -26,3 +26,53 @@ nix = { workspace = true, features = ["term"] }
 # planning/architect/task_plan.md's ground rules, matching cat-transport-core.
 [target.'cfg(target_os = "linux")'.dependencies]
 monoio = { workspace = true }
+
+# Windows COM-port serial backend (docs/adr/0004-windows-serial-backend.md).
+# Target-gated so a Linux build never pulls this in, mirroring the Linux
+# `monoio` entry above exactly (same section shape, same "fails fast on a
+# non-matching host" property).
+#
+# `Win32_Security` is required in addition to the three features named by
+# `planning/architect/task_plan.md`'s Task 7 dispatch text: `CreateFileW`'s
+# own generated binding in `windows-sys` is itself gated
+# `#[cfg(all(feature = "Win32_Foundation", feature = "Win32_Security"))]`
+# because its `lpSecurityAttributes` parameter's type (`SECURITY_ATTRIBUTES`)
+# is defined under `Win32_Security` -- confirmed by inspecting the
+# locally-vendored `windows-sys` 0.52.0 source
+# (`src/Windows/Win32/Storage/FileSystem/mod.rs`). Without this feature,
+# `CreateFileW` does not exist as a callable item at all, regardless of how
+# it's invoked -- this is a mechanical requirement of windows-sys's own
+# binding structure, not a design change. See
+# `planning/cat_transport/progress.md`'s Task 7 section for the full
+# investigation.
+#
+# `Win32_System_IO` was added by Task 8 (worker-thread `ReadFile`/
+# `WriteFile`), for the exact same *kind* of mechanical reason as
+# `Win32_Security` above -- confirmed by grepping the actually-resolved
+# `windows-sys` 0.59.0 source (`~/.cargo/registry/src/.../windows-sys-0.59.0/
+# src/Windows/Win32/Storage/FileSystem/mod.rs`): `ReadFile`'s and
+# `WriteFile`'s own generated bindings are themselves
+# `#[cfg(feature = "Win32_System_IO")]`-gated, because their `lpOverlapped`
+# parameter's type (`OVERLAPPED`) is defined under `Win32_System_IO`, even
+# though this crate always passes `lpOverlapped = null_mut()` (deliberately
+# non-overlapped, blocking I/O, confined to a dedicated worker thread --
+# ADR 0004 §3/§1). ADR 0004 §3's "No Win32_System_IO/OVERLAPPED features"
+# language is about not reimplementing IOCP-based overlapped *async* I/O as
+# this crate's design -- a design axis this dependency-feature name
+# happens to share a label with, not the same decision: enabling this
+# Cargo feature only makes the `OVERLAPPED` type and the `ReadFile`/
+# `WriteFile` FFI declarations exist at all; it does not itself add
+# overlapped I/O usage, register a handle with `FILE_FLAG_OVERLAPPED`, or
+# reopen the async-execution decision. Flagged explicitly here (and in
+# `planning/cat_transport/progress.md`'s Task 8 section) as a discrepancy
+# against the ADR's literal feature list, resolved the same way Task 7
+# resolved the `Win32_Security` discrepancy: a mechanical binding
+# requirement, not a design change.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_Devices_Communication",
+    "Win32_Security",
+    "Win32_System_IO",
+] }

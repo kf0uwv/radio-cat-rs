@@ -38,6 +38,7 @@ use nix::sys::termios::{
 
 use cat_transport_core::{ModemControlLines, Transport, TransportError};
 
+use crate::config::{FlowControl, Parity, SerialConfig};
 use crate::SerialError;
 
 /// RTS (Request To Send) bit for `TIOCMGET`/`TIOCMBIS`/`TIOCMBIC`.
@@ -89,70 +90,25 @@ fn modem_bit_get(fd: RawFd, bit: libc::c_int) -> Result<bool, TransportError> {
     Ok(status & bit != 0)
 }
 
-/// Timeout for `Transport::read` retries on EAGAIN.
-///
-/// When the serial port has no data (EAGAIN / `WouldBlock`), `Transport::read`
-/// retries the readv operation until data arrives or this deadline elapses.
-/// 2 seconds is generous for TS-570D command-response latency (typically < 100 ms).
-///
-/// In tests, a shorter timeout is used to keep the test suite fast.
-#[cfg(not(test))]
-const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// Short read timeout used in tests to avoid 2-second waits in the test suite.
-#[cfg(test)]
-const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
-
-/// Serial port configuration
-#[derive(Debug, Clone)]
-pub struct SerialConfig {
-    pub baud_rate: u32,
-    pub data_bits: u8,
-    pub stop_bits: u8,
-    pub parity: Parity,
-    pub flow_control: FlowControl,
-    /// Whether [`SerialPort::open`] asserts RTS high at construction time
-    /// (via [`ModemControlLines::set_rts`]`(true)`). Defaults to `true`,
-    /// preserving this crate's historical unconditional-assert behavior
-    /// exactly. Set `false` if a consumer wants full runtime control over
-    /// RTS from the moment the port opens — e.g. RTS-keyed CW/PTT, where
-    /// idle/asserted polarity matters and this crate asserting it first
-    /// would be an unwanted side effect.
-    pub initial_rts: bool,
-    /// Same as `initial_rts`, for DTR. Defaults to `true`.
-    pub initial_dtr: bool,
-}
-
-#[derive(Debug, Clone)]
-pub enum Parity {
-    None,
-    Even,
-    Odd,
-}
-
-#[derive(Debug, Clone)]
-pub enum FlowControl {
-    None,
-    Software,
-    Hardware,
-}
-
-impl Default for SerialConfig {
-    fn default() -> Self {
-        Self {
-            baud_rate: 9600,
-            data_bits: 8,
-            stop_bits: 2,
-            parity: Parity::None,
-            flow_control: FlowControl::None,
-            initial_rts: true,
-            initial_dtr: true,
-        }
-    }
-}
+// `READ_TIMEOUT` (`#[cfg(not(test))]` 2s / `#[cfg(test)]` 100ms) now lives in
+// the shared, ungated `crate::timeouts` module -- both this backend and the
+// Windows backend (`windows.rs`) consult it, per
+// `docs/adr/0004-windows-serial-backend.md` §3 ("reusing the existing
+// 2s-production/100ms-test split already in `io_uring.rs`", not a second
+// parallel constant). See `crate::io_uring::tests` below, which still
+// exercises this indirectly via `Transport::read`'s timeout behavior.
+use crate::timeouts::READ_TIMEOUT;
 
 /// Map a u32 baud rate to the nix `BaudRate` enum.
+///
+/// The set of *accepted* `u32` values is `crate::baud`'s
+/// `SUPPORTED_BAUD_RATES` -- the single, platform-neutral source of truth
+/// shared with the Windows backend (ADR 0004 §5's deliberate
+/// cross-platform baud-rate-validation-parity choice) -- validated here via
+/// [`crate::baud::validate_baud_rate`], then mapped to the Linux-only
+/// `nix::sys::termios::BaudRate` enum this function alone needs.
 fn baud_rate_from_u32(baud: u32) -> Result<BaudRate, SerialError> {
+    let baud = crate::baud::validate_baud_rate(baud)?;
     match baud {
         1200 => Ok(BaudRate::B1200),
         2400 => Ok(BaudRate::B2400),
@@ -163,6 +119,11 @@ fn baud_rate_from_u32(baud: u32) -> Result<BaudRate, SerialError> {
         57600 => Ok(BaudRate::B57600),
         115200 => Ok(BaudRate::B115200),
         230400 => Ok(BaudRate::B230400),
+        // Unreachable: `validate_baud_rate` above already rejected any value
+        // not in `SUPPORTED_BAUD_RATES`, which lists exactly the 9 rates
+        // matched above -- kept as a hard error (not `unreachable!()`) so a
+        // future edit that lets the two lists drift fails loudly instead of
+        // panicking.
         other => Err(SerialError::InvalidConfig(format!(
             "Unsupported baud rate: {}",
             other

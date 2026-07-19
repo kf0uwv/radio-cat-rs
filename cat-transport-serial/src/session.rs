@@ -121,7 +121,22 @@ impl<T: Transport + ModemControlLines> ModemControlLines for SerialCatSession<T>
     }
 }
 
-#[cfg(test)]
+// Gated `target_os = "linux"` in addition to `test`: every async test below
+// uses `#[monoio::test(driver = "legacy")]`, and `monoio` is a Linux-only
+// *target-gated* dependency (`[target.'cfg(target_os = "linux")'.
+// dependencies]` in `Cargo.toml`) -- not present at all when building for
+// `x86_64-pc-windows-gnu`. Without this gate, `cargo check --target
+// x86_64-pc-windows-gnu -p cat-transport-serial --all-targets` fails to
+// resolve the `monoio::test` attribute macro even though `SerialCatSession`
+// itself (this file's non-test code) is genuinely cross-platform and needs
+// no gating of its own. `io_uring.rs` has no analogous in-file gate to
+// mirror -- that whole file is already `#[cfg(target_os = "linux")]`-gated
+// at the `lib.rs` module-declaration level, so its test module inherits the
+// gate for free; `session.rs` is different because the file itself compiles
+// on both platforms and only its *tests* (which happen to all lean on
+// `monoio`, including the one plain `#[test]` fn that lives in the same
+// module) need this.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::cell::Cell;
