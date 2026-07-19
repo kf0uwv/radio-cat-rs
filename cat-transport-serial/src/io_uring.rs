@@ -23,7 +23,7 @@
 
 use std::fmt;
 use std::io::ErrorKind;
-use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::UnixStream as StdUnixStream;
 
@@ -36,9 +36,58 @@ use nix::sys::termios::{
     InputFlags, SetArg,
 };
 
-use cat_transport_core::{Transport, TransportError};
+use cat_transport_core::{ModemControlLines, Transport, TransportError};
 
 use crate::SerialError;
+
+/// RTS (Request To Send) bit for `TIOCMGET`/`TIOCMBIS`/`TIOCMBIC`.
+const TIOCM_RTS: libc::c_int = 0x004;
+/// DTR (Data Terminal Ready) bit for `TIOCMGET`/`TIOCMBIS`/`TIOCMBIC`.
+const TIOCM_DTR: libc::c_int = 0x002;
+/// CTS (Clear To Send) status bit, read-only via `TIOCMGET`.
+const TIOCM_CTS: libc::c_int = 0x020;
+/// DSR (Data Set Ready) status bit, read-only via `TIOCMGET`.
+const TIOCM_DSR: libc::c_int = 0x100;
+/// DCD/Carrier Detect status bit (`TIOCM_CAR` in `<sys/ttycom.h>`/glibc's
+/// ioctl-types header naming), read-only via `TIOCMGET`.
+const TIOCM_CAR: libc::c_int = 0x040;
+
+/// Set or clear modem-control bits on `fd` via `TIOCMBIS`/`TIOCMBIC`.
+///
+/// PTY devices don't support modem control lines and return `ENOTTY` —
+/// callers that need "best effort, ignore on PTY" semantics (e.g.
+/// `SerialPort::open`'s startup assert) discard this `Err` explicitly
+/// rather than this helper swallowing it, since [`ModemControlLines`]'s
+/// contract requires surfacing real failures to callers who need to know.
+fn modem_bits_set(fd: RawFd, bit: libc::c_int, asserted: bool) -> Result<(), TransportError> {
+    let request = if asserted {
+        libc::TIOCMBIS
+    } else {
+        libc::TIOCMBIC
+    };
+    // SAFETY: `fd` is a valid open serial-port (or PTY) fd for the duration
+    // of this call; `&bit` is a valid pointer to a `c_int` as TIOCMBIS/
+    // TIOCMBIC expect.
+    let rc = unsafe { libc::ioctl(fd, request, &bit) };
+    if rc == -1 {
+        return Err(TransportError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+/// Read the modem status register on `fd` via `TIOCMGET` and test whether
+/// `bit` is set.
+fn modem_bit_get(fd: RawFd, bit: libc::c_int) -> Result<bool, TransportError> {
+    let mut status: libc::c_int = 0;
+    // SAFETY: `fd` is a valid open serial-port (or PTY) fd for the duration
+    // of this call; `&mut status` is a valid pointer to a `c_int` as
+    // TIOCMGET expects to write into.
+    let rc = unsafe { libc::ioctl(fd, libc::TIOCMGET, &mut status) };
+    if rc == -1 {
+        return Err(TransportError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(status & bit != 0)
+}
 
 /// Timeout for `Transport::read` retries on EAGAIN.
 ///
@@ -62,6 +111,16 @@ pub struct SerialConfig {
     pub stop_bits: u8,
     pub parity: Parity,
     pub flow_control: FlowControl,
+    /// Whether [`SerialPort::open`] asserts RTS high at construction time
+    /// (via [`ModemControlLines::set_rts`]`(true)`). Defaults to `true`,
+    /// preserving this crate's historical unconditional-assert behavior
+    /// exactly. Set `false` if a consumer wants full runtime control over
+    /// RTS from the moment the port opens — e.g. RTS-keyed CW/PTT, where
+    /// idle/asserted polarity matters and this crate asserting it first
+    /// would be an unwanted side effect.
+    pub initial_rts: bool,
+    /// Same as `initial_rts`, for DTR. Defaults to `true`.
+    pub initial_dtr: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +145,8 @@ impl Default for SerialConfig {
             stop_bits: 2,
             parity: Parity::None,
             flow_control: FlowControl::None,
+            initial_rts: true,
+            initial_dtr: true,
         }
     }
 }
@@ -270,21 +331,6 @@ impl SerialPort {
             libc::tcflush(owned_fd.as_raw_fd(), libc::TCIFLUSH);
         }
 
-        // Assert RTS and DTR. The TS-570D uses RTS as "receive enable" — when RTS is
-        // LOW the radio suppresses responses. Assert it explicitly so the OS/driver
-        // default doesn't leave it undriven.
-        {
-            use std::os::unix::io::AsRawFd;
-            let fd = owned_fd.as_raw_fd();
-            const TIOCM_RTS: libc::c_int = 0x004;
-            const TIOCM_DTR: libc::c_int = 0x002;
-            let bits: libc::c_int = TIOCM_RTS | TIOCM_DTR;
-            // SAFETY: fd is a valid open serial port fd; &bits is a valid c_int pointer.
-            unsafe { libc::ioctl(fd, libc::TIOCMBIS, &bits) };
-            // Ignore ioctl error — PTY devices don't support modem control lines and
-            // will return ENOTTY, which is harmless.
-        }
-
         // Wrap in monoio::net::UnixStream for AsyncReadRent + AsyncWriteRent.
         //
         // SAFETY: `owned_fd` is a valid open file descriptor (serial port or PTY).
@@ -298,10 +344,29 @@ impl SerialPort {
         std_unix.set_nonblocking(true).map_err(SerialError::Io)?;
         let stream = UnixStream::from_std(std_unix).map_err(SerialError::Io)?;
 
-        Ok(Self {
+        let port = Self {
             stream,
             path: path.to_string(),
-        })
+        };
+
+        // Assert RTS and/or DTR per `config` (both default `true`, preserving
+        // this crate's historical unconditional-assert behavior exactly). The
+        // TS-570D uses RTS as "receive enable" — when RTS is LOW the radio
+        // suppresses responses. Assert it explicitly so the OS/driver default
+        // doesn't leave it undriven.
+        //
+        // Generalized to reuse the same runtime `ModemControlLines::set_rts`/
+        // `set_dtr` a caller uses later, rather than duplicating the ioctl
+        // call here. Errors are ignored deliberately — PTY devices don't
+        // support modem control lines and return ENOTTY, which is harmless.
+        if config.initial_rts {
+            let _ = port.set_rts(true);
+        }
+        if config.initial_dtr {
+            let _ = port.set_dtr(true);
+        }
+
+        Ok(port)
     }
 
     /// Get the device path this port was opened on.
@@ -411,9 +476,40 @@ impl AsRawFd for SerialPort {
     }
 }
 
+/// Direct RS-232 modem control/status line access, independent of
+/// [`Transport`]'s byte-level CAT framing. See the trait's own docs for why
+/// this is a separate, additively-implemented capability rather than folded
+/// into `Transport`.
+///
+/// `set_rts`/`set_dtr` use `TIOCMBIS`/`TIOCMBIC` (set/clear a single bit);
+/// `read_cts`/`read_dsr`/`read_dcd` use `TIOCMGET` (read the full status
+/// register, then test the relevant bit) — CTS/DSR/DCD are status lines
+/// only, never settable from this side of the link.
+impl ModemControlLines for SerialPort {
+    fn set_rts(&self, asserted: bool) -> Result<(), TransportError> {
+        modem_bits_set(self.stream.as_raw_fd(), TIOCM_RTS, asserted)
+    }
+
+    fn set_dtr(&self, asserted: bool) -> Result<(), TransportError> {
+        modem_bits_set(self.stream.as_raw_fd(), TIOCM_DTR, asserted)
+    }
+
+    fn read_cts(&self) -> Result<bool, TransportError> {
+        modem_bit_get(self.stream.as_raw_fd(), TIOCM_CTS)
+    }
+
+    fn read_dsr(&self) -> Result<bool, TransportError> {
+        modem_bit_get(self.stream.as_raw_fd(), TIOCM_DSR)
+    }
+
+    fn read_dcd(&self) -> Result<bool, TransportError> {
+        modem_bit_get(self.stream.as_raw_fd(), TIOCM_CAR)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use cat_transport_core::Transport;
+    use cat_transport_core::{ModemControlLines, Transport};
     use monoio::RuntimeBuilder;
 
     use super::*;
@@ -465,6 +561,15 @@ mod tests {
     }
 
     /// Helper: write bytes to a raw fd (master side of PTY) synchronously.
+    ///
+    /// Pre-existing (not added by the `ModemControlLines` work) and
+    /// currently unused by any test in this module — kept for symmetry with
+    /// `read_from_master` below, which IS used. `#[allow(dead_code)]`
+    /// because `cargo clippy --all-targets -- -D warnings` treats unused
+    /// private test fns as a hard error; this predates and is unrelated to
+    /// this session's changes (confirmed against a clean-HEAD worktree
+    /// before touching it).
+    #[allow(dead_code)]
     fn write_to_master(master_fd: std::os::fd::RawFd, data: &[u8]) {
         let written =
             unsafe { libc::write(master_fd, data.as_ptr() as *const libc::c_void, data.len()) };
@@ -594,6 +699,110 @@ mod tests {
             config.stop_bits, 2,
             "SerialConfig::default() must use 2 stop bits (8N2) for TS-570D compatibility"
         );
+    }
+
+    /// `SerialConfig::default()` must assert RTS and DTR at open time, matching
+    /// the crate's historical unconditional-assert behavior exactly (no
+    /// existing caller opts out, so the default must preserve it).
+    #[test]
+    fn test_default_config_initial_rts_dtr_are_true() {
+        let config = SerialConfig::default();
+        assert!(
+            config.initial_rts,
+            "SerialConfig::default() must assert RTS at open time"
+        );
+        assert!(
+            config.initial_dtr,
+            "SerialConfig::default() must assert DTR at open time"
+        );
+    }
+
+    /// Opting out of the startup RTS/DTR assert must not prevent the port
+    /// from opening — `initial_rts`/`initial_dtr` only gate the assert call,
+    /// they are not a precondition for `open()` succeeding.
+    #[test]
+    fn test_open_with_initial_rts_dtr_opted_out_still_succeeds() {
+        let pair = TestPtyPair::new();
+        let slave = pair.slave_path().to_string();
+
+        make_runtime().block_on(async {
+            let config = SerialConfig {
+                initial_rts: false,
+                initial_dtr: false,
+                ..SerialConfig::default()
+            };
+            let port = SerialPort::open(&slave, config)
+                .expect("SerialPort::open must succeed even with the startup assert opted out");
+            assert_eq!(port.path(), slave);
+        });
+    }
+
+    /// `ModemControlLines` methods must exercise the real ioctl code path
+    /// against a PTY-backed `SerialPort`.
+    ///
+    /// PTY devices do not support modem control line ioctls at all —
+    /// verified empirically (Python `fcntl.ioctl` against a fresh
+    /// `pty.openpty()` pair): `TIOCMGET`/`TIOCMBIS`/`TIOCMBIC` all return
+    /// `ENOTTY` on both master and slave sides on this kernel. This matches
+    /// the comment already on `SerialPort::open`'s pre-existing RTS/DTR
+    /// assert ("PTY devices don't support modem control lines ... ENOTTY,
+    /// which is harmless").
+    ///
+    /// Because of this, `TestPtyPair` (this module's only test-double
+    /// infrastructure, built on `nix::pty`) cannot exercise the SUCCESS path
+    /// of any `ModemControlLines` method — there is no PTY-level way to make
+    /// `TIOCMBIS`/`TIOCMGET` succeed. What CAN be verified here, and is
+    /// verified below, is that the production code path (real `ioctl(2)`
+    /// call against a real fd) is reached for all five methods and fails
+    /// predictably as `Err(TransportError::Io(_))` carrying `ENOTTY` rather
+    /// than panicking, hanging, or silently reporting success. The
+    /// bit-actually-toggles success path requires real serial hardware (or a
+    /// kernel virtual null-modem pair, e.g. `tty0tty`) and is out of reach of
+    /// this crate's existing PTY-only test infrastructure — not fabricated
+    /// here.
+    #[test]
+    fn test_modem_control_lines_return_err_on_pty() {
+        let pair = TestPtyPair::new();
+        let slave = pair.slave_path().to_string();
+
+        make_runtime().block_on(async {
+            let port =
+                SerialPort::open(&slave, SerialConfig::default()).expect("SerialPort::open failed");
+
+            let assert_enotty = |result: Result<(), TransportError>, what: &str| match result {
+                Err(TransportError::Io(e)) => {
+                    assert_eq!(
+                        e.raw_os_error(),
+                        Some(libc::ENOTTY),
+                        "{what}: expected ENOTTY, got {:?}",
+                        e
+                    );
+                }
+                other => panic!("{what}: expected Err(TransportError::Io(ENOTTY)), got {other:?}"),
+            };
+            let assert_enotty_bool = |result: Result<bool, TransportError>, what: &str| match result
+            {
+                Err(TransportError::Io(e)) => {
+                    assert_eq!(
+                        e.raw_os_error(),
+                        Some(libc::ENOTTY),
+                        "{what}: expected ENOTTY, got {:?}",
+                        e
+                    );
+                }
+                other => {
+                    panic!("{what}: expected Err(TransportError::Io(ENOTTY)), got {other:?}")
+                }
+            };
+
+            assert_enotty(port.set_rts(true), "set_rts(true)");
+            assert_enotty(port.set_rts(false), "set_rts(false)");
+            assert_enotty(port.set_dtr(true), "set_dtr(true)");
+            assert_enotty(port.set_dtr(false), "set_dtr(false)");
+            assert_enotty_bool(port.read_cts(), "read_cts()");
+            assert_enotty_bool(port.read_dsr(), "read_dsr()");
+            assert_enotty_bool(port.read_dcd(), "read_dcd()");
+        });
     }
 
     /// `Transport::read` waits for data and returns it once available.

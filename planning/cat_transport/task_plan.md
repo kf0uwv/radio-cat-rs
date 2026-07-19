@@ -274,3 +274,99 @@ untouched.
 
 Not committed, per standing rule. Full details and acceptance-check output
 in `progress.md`'s Task 6 section.
+
+## Task 7 (coordinating session dispatch, direct instruction) — `ModemControlLines`
+## trait for RTS/DTR/CTS/DSR/DCD, new capability for `ft991a`'s PC KEYING support
+
+Authorized directly by the coordinating session: `ft991a` (sibling repo,
+FT-991A radio control) needs direct control of RS-232 modem control lines
+(RTS, DTR) and status lines (CTS, DSR, DCD) independent of byte-level CAT
+framing, for the radio's Menu 060 "PC KEYING" (RTS/DTR hardware PTT/CW
+keying as an alternative to CAT commands). Generic serial-transport
+capability per `docs/adr/0001-scope-and-crate-boundaries.md`'s boundary
+rules — belongs in `cat-transport-serial`/`cat-transport-core`, not
+duplicated in a radio crate.
+
+### Plan
+
+New `ModemControlLines` trait in `cat-transport-core/src/modem.rs` (new
+file, re-exported from `lib.rs` alongside `Transport`/`CatSession`), exact
+shape dictated by the task (verbatim signatures). Plain sync fns (no
+`#[async_trait]`) — direct ioctl(2) calls, no I/O wait, matching the
+existing `Transport::flush_rx`/`CatSession::flush_rx` precedent (both
+already plain sync fns on otherwise-async traits for the same reason). Not
+folded into `Transport`/`CatSession` — TCP/UDP have no physical modem
+lines, so this stays a separate, additively-implemented capability trait, a
+consumer bounds on `S: CatSession + ModemControlLines` rather than
+requiring it universally. `TransportError` (already has `Io(#[from]
+std::io::Error)`) is reused verbatim for ioctl failures — `std::io::Error::
+last_os_error()`/`from_raw_os_error()` after a `-1` return from
+`libc::ioctl` fits this exactly, no new variant needed.
+
+`cat-transport-serial`: `impl ModemControlLines for SerialPort` in
+`io_uring.rs`, generalizing the existing constructor-time-only RTS+DTR
+assert block (`TIOCMBIS`/local `TIOCM_RTS`/`TIOCM_DTR` consts) into runtime
+`&self` methods, reusing `TIOCMBIS`/`TIOCMBIC` (set/clear via ioctl) for
+`set_rts`/`set_dtr` and `TIOCMGET` (read status register, test bit) for
+`read_cts`/`read_dsr`/`read_dcd`. New consts needed: `TIOCM_CTS = 0x020`,
+`TIOCM_DSR = 0x100`, `TIOCM_CAR = 0x040` (DCD). `SerialPort::open`'s
+existing inline assert block refactored to call the new `set_rts`/`set_dtr`
+methods instead of duplicating the ioctl call, preserving the exact
+ignore-ENOTTY-on-PTY behavior already documented there.
+
+Blanket delegating `impl<T: Transport + ModemControlLines> ModemControlLines
+for SerialCatSession<T>` in `session.rs`, copying the exact delegation shape
+`CatSession::flush_rx`'s `self.transport.flush_rx()` already uses.
+
+Judgment call (per the task's explicit "consider, not required" framing):
+add `initial_rts: bool` / `initial_dtr: bool` to `SerialConfig`, default
+`true` via `Default` (preserves today's unconditional-assert behavior
+exactly). Confirmed low-risk before doing it: grepped every `SerialConfig`
+construction site in this workspace AND in `ft991a`/`ts570d` (read-only,
+not edited) — all use `SerialConfig { ..., ..SerialConfig::default() }`
+functional-update syntax, never an exhaustive struct literal, so adding new
+`Default`-backed fields cannot break any existing caller's compile.
+
+### Known test-infrastructure limitation (flagged before writing tests, not
+### silently discovered after)
+
+Verified empirically (Python `fcntl.ioctl` against a fresh `pty.openpty()`
+pair on this dev machine) that `TIOCMGET`/`TIOCMBIS`/`TIOCMBIC` all return
+`ENOTTY` on BOTH master and slave sides of a Linux PTY — this is not new
+information (the existing `SerialPort::open` RTS/DTR block already
+documents this exact failure mode as "harmless" for its own use), but it
+means the existing `TestPtyPair` helper (built on `nix::pty` per this
+file's Task 2 section) CANNOT exercise the success path of any
+`ModemControlLines` method — every call against a PTY-backed `SerialPort`
+in the test suite deterministically returns
+`Err(TransportError::Io(ENOTTY))`. Per this crate's "if it feels like scope
+creep... STOP and report" guidance, and per the top-level task's explicit
+"if the existing test PTY helper doesn't support ioctl the way you need...
+STOP and report rather than improvising something that might be wrong":
+NOT inventing new test infrastructure (e.g. mocking `libc::ioctl`, or a
+fake character device) to fabricate a success path. Instead, tests use the
+existing `TestPtyPair` to verify the REAL, production ioctl code path is
+exercised correctly and fails predictably/non-panically
+(`Err(TransportError::Io(_))` with `ENOTTY`), for all five methods — this
+is genuine coverage of the error-propagation plumbing, not a fabricated
+pass. The success path (bit actually toggles on real hardware) is not
+verifiable in this environment and is reported as a gap, not silently
+glossed over.
+
+### Done when
+
+`cargo test -p cat-transport-core -p cat-transport-serial` green, `cargo
+clippy -p cat-transport-core -p cat-transport-serial --all-targets -- -D
+warnings` clean, `cargo fmt --all -- --check` clean, `cargo test --workspace`
+(all 7 crates) still green. `cat-framework`/`cat-client`/
+`cat-transport-tcp`/`cat-transport-udp`/`cat-server` untouched. `ts570d`/
+`ft991a` untouched. Not committed.
+
+### Status: implementation complete, awaiting architect/user review
+
+All acceptance checks green — full detail in `progress.md`'s Task 7
+section, including the one pre-existing/unrelated clippy fix
+(`write_to_master` dead code) and the PTY test-infrastructure limitation
+(ENOTTY on all `TIOCM*` ioctls) flagged there rather than worked around.
+Not committed, per standing rule. STOPPING here per the one-task-at-a-time
+workflow.

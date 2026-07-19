@@ -34,6 +34,11 @@
 //!   `cat-transport-tcp`/`cat-transport-udp`) implements this with its own
 //!   framing — never inherited from another transport's strategy.
 //! - [`TransportError`] — errors from `Transport` implementations.
+//! - [`ModemControlLines`] — optional capability for direct RS-232 modem
+//!   control/status line access (RTS/DTR/CTS/DSR/DCD), independent of
+//!   byte-level CAT framing. Not every transport has physical modem lines
+//!   (TCP/UDP do not), so this is a separate, additively-implemented trait
+//!   — never folded into `Transport`/`CatSession`.
 //! - [`test_support`] — [`Exchange`]/[`ScriptedCatSession`], an in-memory
 //!   `CatSession` test double, plus the [`conformance`] module of reusable
 //!   `CatSession` behavior checks that any transport crate's own test suite
@@ -59,12 +64,14 @@
 //! `cfg`-gated to match.
 
 pub mod errors;
+pub mod modem;
 pub mod session;
 pub mod test_support;
 pub mod transport;
 
 pub use cat_framework::{ProtocolErrorKind, ResponseDisposition};
 pub use errors::TransportError;
+pub use modem::ModemControlLines;
 pub use session::CatSession;
 pub use test_support::{conformance, Exchange, ScriptedCatSession};
 pub use transport::Transport;

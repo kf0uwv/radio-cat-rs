@@ -1,5 +1,124 @@
 # Progress — cat_transport
 
+## Task 7 — `ModemControlLines` trait (RTS/DTR/CTS/DSR/DCD) (2026-07-18)
+
+### Created / changed
+
+- `cat-transport-core/src/modem.rs` (new) — `ModemControlLines` trait,
+  verbatim signatures from the dispatch. Re-exported from `lib.rs`
+  (`pub mod modem;` / `pub use modem::ModemControlLines;`), doc comment
+  updated alongside the other trait summaries.
+- `cat-transport-serial/src/io_uring.rs`:
+  - New consts `TIOCM_RTS = 0x004`, `TIOCM_DTR = 0x002` (hoisted out of
+    `open()`'s old inline block), plus new `TIOCM_CTS = 0x020`,
+    `TIOCM_DSR = 0x100`, `TIOCM_CAR = 0x040` (DCD).
+  - New private helpers `modem_bits_set(fd, bit, asserted)` (TIOCMBIS/
+    TIOCMBIC) and `modem_bit_get(fd, bit)` (TIOCMGET + bitmask test), both
+    returning `Result<_, TransportError>` via
+    `TransportError::Io(std::io::Error::last_os_error())` on `ioctl`'s `-1`.
+  - `impl ModemControlLines for SerialPort`: `set_rts`/`set_dtr` call
+    `modem_bits_set`; `read_cts`/`read_dsr`/`read_dcd` call `modem_bit_get`.
+  - `SerialPort::open`'s old inline "assert RTS+DTR via one combined
+    TIOCMBIS ioctl call, ignore the error" block replaced: constructs
+    `Self` first, then calls `port.set_rts(true)`/`port.set_dtr(true)`
+    (discarding errors, same as before) gated on the new
+    `config.initial_rts`/`config.initial_dtr` fields. Minor behavior note:
+    this is now two separate ioctl syscalls instead of one combined
+    `TIOCMBIS(RTS|DTR)` call — same end state, not atomic together; judged
+    harmless since nothing depends on that atomicity.
+  - `SerialConfig` gained `pub initial_rts: bool` / `pub initial_dtr: bool`,
+    both `true` in `Default` — preserves today's unconditional-assert
+    behavior exactly for every existing caller.
+- `cat-transport-serial/src/session.rs` — blanket
+  `impl<T: Transport + ModemControlLines> ModemControlLines for
+  SerialCatSession<T>`, each method one-line-forwarding to
+  `self.transport.*`, copying `CatSession::flush_rx`'s existing delegation
+  shape exactly.
+- Also fixed (pre-existing, unrelated to this task, discovered while
+  running the required clippy check — see "Judgment calls" below):
+  `#[allow(dead_code)]` added to the never-called `write_to_master` test
+  helper in `io_uring.rs`'s test module.
+
+### `TransportError` handling
+
+No new variant. `TransportError::Io(#[from] std::io::Error)` already exists
+and fits ioctl failures exactly — `std::io::Error::last_os_error()` after
+`libc::ioctl` returns `-1` produces the same shape any other I/O failure in
+this crate already uses. Checked all variants (`NotOpen`, `WriteTimeout`,
+`ReadTimeout`, `Other(String)`) before concluding `Io` was the right fit;
+none of the others describe a syscall failure.
+
+### `SerialConfig::initial_rts`/`initial_dtr` — added, low risk confirmed
+
+Added both fields. Before adding, grepped every `SerialConfig` construction
+site in this workspace AND in `ft991a`/`ts570d` (read-only, not edited):
+all three use `SerialConfig { ..., ..SerialConfig::default() }`
+functional-update syntax, never an exhaustive struct literal — so no
+existing caller's compile breaks. `cargo test --workspace` (this repo's own
+7 crates) confirms nothing in this workspace broke either.
+
+### Test-infrastructure limitation (real, not worked around)
+
+Verified empirically (Python `fcntl.ioctl` against a fresh `pty.openpty()`
+pair) that `TIOCMGET`/`TIOCMBIS`/`TIOCMBIC` return `ENOTTY` on both sides of
+a Linux PTY on this kernel — consistent with the pre-existing comment on
+`SerialPort::open`'s old RTS/DTR block. This means the existing
+`TestPtyPair` test double (built on `nix::pty`, from Task 2) cannot
+exercise the SUCCESS path of any `ModemControlLines` method — only the
+error path. Did not invent new test infrastructure (no `libc::ioctl` mock,
+no fake character device) to fabricate a success path; instead:
+- `io_uring.rs::tests::test_modem_control_lines_return_err_on_pty` —
+  exercises the real production ioctl code path against a real PTY-backed
+  `SerialPort` for all 5 methods, asserting each returns
+  `Err(TransportError::Io(_))` with `raw_os_error() == Some(libc::ENOTTY)`
+  (not a panic, not a false success).
+- `session.rs::tests::modem_control_lines_delegate_to_transport` — a
+  `FakeTransport` (in-memory, `Cell`-backed for `&self` interior
+  mutability) implementing `ModemControlLines` directly, proving the
+  `SerialCatSession<T>` blanket-delegation SUCCESS path (values pass
+  through unchanged in both directions) without needing real hardware.
+- `io_uring.rs::tests::test_default_config_initial_rts_dtr_are_true` and
+  `test_open_with_initial_rts_dtr_opted_out_still_succeeds` — cover the new
+  `SerialConfig` fields' default and opt-out behavior.
+
+The bit-actually-toggles-on-real-hardware success path for
+`SerialPort::{set_rts,set_dtr,read_cts,read_dsr,read_dcd}` is not
+verifiable in this environment (no real serial hardware, no kernel virtual
+null-modem pair such as `tty0tty` available) and is reported as a genuine
+gap, not silently glossed over.
+
+### Acceptance checks (all run 2026-07-18, after restoring from an
+### accidental mid-task `git stash`/`git stash pop` — verified no changes
+### were lost)
+
+- `cargo test -p cat-transport-core -p cat-transport-serial`: 12 + 18 = 30
+  passed, 0 failed.
+- `cargo clippy -p cat-transport-core -p cat-transport-serial --all-targets
+  -- -D warnings`: clean, after the pre-existing `write_to_master`
+  dead-code fix above (confirmed via a throwaway `git worktree` on HEAD
+  that this failure predates this session's changes).
+- `cargo fmt --all -- --check`: clean.
+- `cargo test --workspace` (all 7 crates): 13 + 8 + 46 + 12 + 18 + 7 + 15 =
+  119 passed, 0 failed, plus 7 clean (0-test) doc-test runs.
+- `cargo clippy --workspace --all-targets -- -D warnings`: also run for
+  extra confidence beyond the two required crates — clean.
+
+### Judgment calls
+
+1. `write_to_master` dead-code fix (see above) — pre-existing, unrelated,
+   fixed with a 1-line `#[allow(dead_code)]` plus a comment explaining why,
+   rather than deleting the helper or leaving the required clippy check
+   red. Disclosed here rather than silently bundled in.
+2. Two separate ioctl syscalls at `open()` time instead of the original
+   single combined `TIOCMBIS(RTS|DTR)` call (see above) — same end state,
+   judged harmless.
+3. Mid-task, ran `git stash` while investigating whether a test module was
+   pre-existing, which stashed this session's uncommitted work-in-progress
+   changes. Caught immediately (system reminders showed reverted file
+   content) and recovered with `git stash pop` — confirmed via `grep -c
+   ModemControlLines` across all 4 changed files that nothing was lost.
+   Recorded here for transparency, not because any work was actually lost.
+
 ## Task 2 — `cat-transport-core` + `cat-transport-serial` (2026-07-16)
 
 ### Created

@@ -21,7 +21,9 @@
 
 use async_trait::async_trait;
 
-use cat_transport_core::{CatSession, ResponseDisposition, Transport, TransportError};
+use cat_transport_core::{
+    CatSession, ModemControlLines, ResponseDisposition, Transport, TransportError,
+};
 
 /// [`CatSession`] backed by a byte-level [`Transport`], reproducing today's
 /// serial framing: write the request, then read bytes until a terminating
@@ -91,16 +93,58 @@ impl<T: Transport> CatSession for SerialCatSession<T> {
     }
 }
 
+/// Blanket delegation: whenever the wrapped `Transport` also implements
+/// [`ModemControlLines`] (e.g. `cat-transport-serial::SerialPort`),
+/// `SerialCatSession<T>` forwards the capability unchanged, mirroring
+/// `CatSession::flush_rx`'s delegation to `self.transport.flush_rx()` above.
+/// A `SerialCatSession<T>` wrapping a transport WITHOUT modem lines (e.g. a
+/// test fake) simply does not get this impl — nothing to opt out of.
+impl<T: Transport + ModemControlLines> ModemControlLines for SerialCatSession<T> {
+    fn set_rts(&self, asserted: bool) -> Result<(), TransportError> {
+        self.transport.set_rts(asserted)
+    }
+
+    fn set_dtr(&self, asserted: bool) -> Result<(), TransportError> {
+        self.transport.set_dtr(asserted)
+    }
+
+    fn read_cts(&self) -> Result<bool, TransportError> {
+        self.transport.read_cts()
+    }
+
+    fn read_dsr(&self) -> Result<bool, TransportError> {
+        self.transport.read_dsr()
+    }
+
+    fn read_dcd(&self) -> Result<bool, TransportError> {
+        self.transport.read_dcd()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::collections::VecDeque;
 
     /// A minimal in-memory `Transport` fake, local to this test module.
+    ///
+    /// Also implements `ModemControlLines` (via `Cell`s for interior
+    /// mutability, since the trait's methods take `&self`) so
+    /// `SerialCatSession<T>`'s blanket delegating impl can be exercised
+    /// without any real ioctl/hardware — unlike `cat-transport-serial`'s
+    /// PTY-backed `SerialPort` tests, which can only reach the ENOTTY error
+    /// path, this fake proves the delegation itself (values pass through
+    /// unchanged) on its success path.
     struct FakeTransport {
         writes: Vec<u8>,
         reads: VecDeque<u8>,
         flush_rx_calls: usize,
+        last_set_rts: Cell<Option<bool>>,
+        last_set_dtr: Cell<Option<bool>>,
+        cts: Cell<bool>,
+        dsr: Cell<bool>,
+        dcd: Cell<bool>,
     }
 
     impl FakeTransport {
@@ -109,11 +153,40 @@ mod tests {
                 writes: Vec::new(),
                 reads: VecDeque::new(),
                 flush_rx_calls: 0,
+                last_set_rts: Cell::new(None),
+                last_set_dtr: Cell::new(None),
+                cts: Cell::new(false),
+                dsr: Cell::new(false),
+                dcd: Cell::new(false),
             }
         }
 
         fn enqueue_response(&mut self, response: &str) {
             self.reads.extend(response.as_bytes());
+        }
+    }
+
+    impl ModemControlLines for FakeTransport {
+        fn set_rts(&self, asserted: bool) -> Result<(), TransportError> {
+            self.last_set_rts.set(Some(asserted));
+            Ok(())
+        }
+
+        fn set_dtr(&self, asserted: bool) -> Result<(), TransportError> {
+            self.last_set_dtr.set(Some(asserted));
+            Ok(())
+        }
+
+        fn read_cts(&self) -> Result<bool, TransportError> {
+            Ok(self.cts.get())
+        }
+
+        fn read_dsr(&self) -> Result<bool, TransportError> {
+            Ok(self.dsr.get())
+        }
+
+        fn read_dcd(&self) -> Result<bool, TransportError> {
+            Ok(self.dcd.get())
         }
     }
 
@@ -230,6 +303,29 @@ mod tests {
         session.flush_rx();
 
         assert_eq!(session.transport.flush_rx_calls, 1);
+    }
+
+    /// `ModemControlLines` methods on `SerialCatSession<T>` must delegate
+    /// unchanged to the wrapped transport, exactly mirroring
+    /// `flush_rx_delegates_to_transport` above.
+    #[test]
+    fn modem_control_lines_delegate_to_transport() {
+        let transport = FakeTransport::new();
+        transport.cts.set(true);
+        transport.dsr.set(false);
+        transport.dcd.set(true);
+        let session = SerialCatSession::new(transport);
+
+        session.set_rts(true).expect("set_rts must succeed");
+        session.set_dtr(false).expect("set_dtr must succeed");
+
+        assert_eq!(session.transport.last_set_rts.get(), Some(true));
+        assert_eq!(session.transport.last_set_dtr.get(), Some(false));
+        // TransportError has no PartialEq impl, so compare the unwrapped
+        // bools rather than the Results directly.
+        assert!(session.read_cts().expect("read_cts must succeed"));
+        assert!(!session.read_dsr().expect("read_dsr must succeed"));
+        assert!(session.read_dcd().expect("read_dcd must succeed"));
     }
 
     #[monoio::test(driver = "legacy")]
