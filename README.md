@@ -1,71 +1,82 @@
 # radio-cat-rs
 
 A shared, radio-independent CAT (Computer Aided Transceiver) protocol library
-for Rust: a generic command engine, a set of transport implementations
-(serial, TCP, UDP), and a request broker for running a physical radio as a
-network-shared server. It is designed to be consumed by more than one
-radio-control application — starting with
-[`ts570d`](https://github.com/kf0uwv/ts570d) (Kenwood TS-570D) and, later, a
-second client for the Yaesu FT-991A (`ft991a`) — without either application
-needing radio-specific code duplicated into it.
+for Rust: a generic command engine, transport implementations (serial, TCP,
+UDP), and a request broker for running a physical radio as a network-shared
+server. Consumed by more than one radio-control application —
+[`ts570d`](https://github.com/kf0uwv/ts570d) (Kenwood TS-570D) and
+[`ft991a`](https://github.com/kf0uwv/ft991a) (Yaesu FT-991A) — without either
+application needing radio-specific code duplicated into it.
 
-## Status: pre-extraction, scaffolding only
+## Status: extracted and in active use
 
-**This repository currently contains no Rust code.** `ts570d`'s `framework`
-crate was designed from the start to be radio-independent and liftable into a
-shared library "as-is" once its own refactor is complete and extraction is
-explicitly warranted (see `ts570d` ADR 0004). That extraction **has not
-happened yet**. What exists here today is planning and agent scaffolding —
-ADRs recording the target scope and crate boundaries, and `.claude/agents/`
-definitions for the specialist subagents that will do the extraction and
-subsequent development — so that when extraction does happen, it is a
-deliberate move guided by a pre-recorded design rather than an improvised one.
+Seven crates, all implemented, tested, and consumed by both sibling
+applications via git dependency:
 
-Do not expect a `Cargo.toml`, a workspace, or any crate source under this
-repository yet.
+- **`cat-framework`** — the generic CAT command engine: command table,
+  parsing, structural validation, dispatch lifecycle, response building.
+  Radio-independent — contains no radio-specific command ids, modes,
+  frequencies, or handlers. Extracted from `ts570d`'s original `framework`
+  crate.
+- **`cat-transport-core`** — the `Transport`/`CatSession` trait abstractions
+  every concrete transport implements, plus `ModemControlLines` (direct RTS/
+  DTR/CTS/DSR/DCD control, additive and separate from the base traits since
+  not every transport has physical modem-control lines).
+- **`cat-transport-serial`** — serial CAT transport. **Two platform
+  backends**: io_uring on Linux (`monoio`), and native Win32 COM-port I/O on
+  Windows (`windows-sys`, a dedicated worker thread + hand-rolled completion
+  primitive, since `monoio`/`tokio` are unavailable there). Same public
+  types (`SerialPort`, `SerialConfig`, `SerialCatSession`) on both platforms
+  — application code needs no platform-specific branching to use it.
+- **`cat-transport-tcp`** — `TcpCatSession`, length-prefixed framing.
+- **`cat-transport-udp`** — `UdpCatSession`, envelope format + client-side
+  dedup cache + per-request timeout (UDP has no delivery/ordering guarantee).
+- **`cat-client`** — generic client-side request/response mechanics
+  (`CatClient<C: CommandId, S: CatSession>`), used by each radio's typed
+  controller client.
+- **`cat-server`** — the request broker: single ordered worker, TCP/UDP
+  accept loops (reusing `cat-transport-tcp`/`-udp`'s own codec functions,
+  not duplicating them), request/response correlation, timeout/disconnect/
+  malformed-request handling.
 
-## What this repository will eventually hold
+125 tests passing across the workspace on Linux; the Windows serial backend
+is verified via `cargo check --target x86_64-pc-windows-gnu` (real
+cross-compilation type-checking) — actual runtime behavior against physical
+Windows hardware has not been validated in this environment.
 
-Per `ts570d` ADR 0005 (and this repo's own [ADR 0001](docs/adr/0001-scope-and-crate-boundaries.md)),
-the target crate layout is:
+## Design record
 
-- `cat-framework` — the generic CAT command engine (command table, parsing,
-  dispatch, response building), radio-independent.
-- `cat-client` — the generic client-side request/response mechanics used by a
-  radio's typed controller client.
-- `cat-transport-core` — the `Transport` / `CatSession` abstractions shared by
-  all transport implementations.
-- `cat-transport-serial`, `cat-transport-tcp`, `cat-transport-udp` — concrete
-  transport implementations (serial/io_uring today; TCP and UDP framing to
-  come).
-- `cat-server` — the request broker that lets one physical radio connection be
-  shared by multiple remote clients.
+- [ADR 0001](docs/adr/0001-scope-and-crate-boundaries.md) — scope and crate
+  boundaries (as amended once extraction actually happened).
+- [ADR 0002](docs/adr/0002-async-runtime-binding-for-transport-crates.md) —
+  why `monoio`/io_uring was retained for Linux rather than a runtime-agnostic
+  redesign, with an explicit revisit trigger.
+- [ADR 0003](docs/adr/0003-modem-control-lines.md) — `ModemControlLines`, a
+  separate, additive capability trait for RTS/DTR/CTS/DSR/DCD line control.
+- [ADR 0004](docs/adr/0004-windows-serial-backend.md) — the Windows COM
+  backend: resolves ADR 0002's revisit trigger by adding a genuinely separate
+  platform backend rather than redesigning the Linux path.
 
-## Source of truth
+See [`docs/adr/README.md`](docs/adr/README.md) for the full index and current
+repository status.
 
-The target design for this repository is recorded primarily in `ts570d`, not
-here, because it was written while extracting `ts570d`'s own `framework` crate
-was still in progress:
+## Using this library
 
-- `ts570d` ADR [0001](../ts570d/docs/adr/0001-generic-cat-framework.md) — why
-  the generic CAT engine is radio-independent in the first place.
-- `ts570d` ADR [0004](../ts570d/docs/adr/0004-extraction-boundary.md) — the
-  extraction boundary: what moves here, what stays, and that extraction itself
-  is out of scope until `ts570d`'s refactor is mature.
-- `ts570d` ADR [0005](../ts570d/docs/adr/0005-network-transport-readiness.md) —
-  the network-transport/server-mode addendum that names this repository's
-  target crate layout and the open design questions it must resolve.
-- `ts570d`'s [`docs/architecture/network-readiness.md`](../ts570d/docs/architecture/network-readiness.md) —
-  diagrams of how serial/TCP/UDP and control/server mode attach.
+Not published to crates.io — consumed as a git dependency:
 
-This repo's own [`docs/adr/0001-scope-and-crate-boundaries.md`](docs/adr/0001-scope-and-crate-boundaries.md)
-reconstructs and records that target design in this repository's terms, so it
-does not have to be re-derived from `ts570d` every time this repo is picked
-back up.
+```toml
+cat-framework       = { git = "https://github.com/kf0uwv/radio-cat-rs", branch = "main" }
+cat-client          = { git = "https://github.com/kf0uwv/radio-cat-rs", branch = "main" }
+cat-transport-core  = { git = "https://github.com/kf0uwv/radio-cat-rs", branch = "main" }
+cat-transport-serial = { git = "https://github.com/kf0uwv/radio-cat-rs", branch = "main" }
+```
 
-## Contributing / working in this repo right now
+See `ts570d/Cargo.toml` or `ft991a/Cargo.toml` for real, working examples of
+the full dependency wiring.
+
+## Contributing
 
 See [`CLAUDE.md`](CLAUDE.md) for the planning-with-files convention and the
-agent roster in `.claude/agents/`. Until extraction is explicitly approved,
-work here is limited to planning documents — no Rust code, no `cargo init`,
-no files moved out of `ts570d`.
+agent roster in `.claude/agents/`. Every crate has its own dependency-boundary
+rules — read `docs/adr/0001` before adding a new one or changing an existing
+crate's dependency graph.
