@@ -1,28 +1,26 @@
 # radio-cat-rs - Agent Guidelines
 
-## Repository status: no code yet
+## Repository status: extracted and in active use
 
-This repository holds **planning and agent scaffolding only**. There is no
-`Cargo.toml`, no crate source, and no workspace. Extraction from `ts570d`
-(the sibling repository this library is extracted from) has not happened and
-must not be started without an explicit go-ahead — see
+Seven crates exist, are implemented, and are consumed by both `ts570d` and
+`ft991a` via git dependency. Extraction from `ts570d` (the sibling repo this
+library was originally lifted from) is complete — see
 [`docs/adr/0001-scope-and-crate-boundaries.md`](docs/adr/0001-scope-and-crate-boundaries.md)
-for why, and `ts570d`'s ADR 0004/0005 for the source design this repository
-is scaffolded to receive.
+for the target design that guided it, `ts570d`'s ADR 0004/0005 for the
+source design, and [`docs/adr/README.md`](docs/adr/README.md) for the
+current status summary and links to every ADR.
 
-Until that go-ahead is given, all agents working in this repository are
-limited to:
+Agents working in this repository now touch real source under
+`cat-framework/`, `cat-transport-core/`, `cat-transport-serial/`,
+`cat-transport-tcp/`, `cat-transport-udp/`, `cat-client/`, `cat-server/`,
+plus:
 
 - planning documents under `./planning/`;
 - ADRs under `docs/adr/`;
 - agent definitions under `.claude/agents/`;
 - this file and the root `README.md`.
 
-No agent should run `cargo init`/`cargo new`, write `.rs` or `.toml` files,
-or move/copy files out of `ts570d`, without an explicit instruction that
-overrides this.
-
-## Superpowers Coding Model (MANDATORY, once code work begins)
+## Superpowers Coding Model (MANDATORY)
 - Use planning-with-files skill for ALL implementation work
 - Follow TDD, frequent commits, verification-before-completion
 - Check for applicable skills BEFORE any action
@@ -30,7 +28,7 @@ overrides this.
 ## Planning-with-Files Requirement
 - Each agent and subagent must maintain their own planning-with-files in a
   directory under `./planning/` with their name
-- Directories today: `./planning/architect/`, `./planning/cat_framework/`,
+- Directories: `./planning/architect/`, `./planning/cat_framework/`,
   `./planning/cat_transport/`, `./planning/cat_server/`,
   `./planning/code_review/`
 - Planning files include: `task_plan.md`, `findings.md`, `progress.md` in
@@ -50,7 +48,7 @@ overrides this.
   `progress.md` in their own directory only
 - Any violation of these boundaries is a critical issue
 
-## Architect Review Workflow (MANDATORY, once code work begins)
+## Architect Review Workflow (MANDATORY)
 - ALL subagents must write their implementation plan to their `task_plan.md`
   BEFORE writing any code
 - Plans are reviewed by the architect and user before work proceeds
@@ -59,12 +57,13 @@ overrides this.
 - The architect coordinates parallelization across subagents
 - No subagent proceeds past planning without architect approval
 
-## (Future) Crate Dependency Model — target design, not yet built
+## Crate Dependency Model
 
-This is the target shape recorded in
+The target design recorded in
 [`docs/adr/0001-scope-and-crate-boundaries.md`](docs/adr/0001-scope-and-crate-boundaries.md)
-and in `ts570d` ADR 0005. It describes what will exist after extraction, not
-what exists today.
+and refined in [ADR 0002](docs/adr/0002-async-runtime-binding-for-transport-crates.md)
+(async runtime binding) and [ADR 0004](docs/adr/0004-windows-serial-backend.md)
+(Windows serial backend) — this describes what actually exists, not a plan:
 
 ```
 cat-framework        (NO local crate dependencies — generic, radio-independent)
@@ -74,77 +73,96 @@ cat-framework        (NO local crate dependencies — generic, radio-independent
   └── generic errors (FrameworkError)
   └── contains NO radio-specific command ids, modes, frequencies, state, or handlers
 
-cat-transport-core   (depends on: nothing in this workspace)
+cat-transport-core   (depends on: cat-framework, for ResponseDisposition/ProtocolErrorKind reuse)
   └── Transport trait (byte-level read/write/flush)
   └── CatSession trait (request/response framing above Transport)
-  └── MockCatSession / ScriptedCatSession test doubles
+  └── ModemControlLines trait (RTS/DTR/CTS/DSR/DCD line control — additive,
+      NOT part of Transport/CatSession, since not every transport has
+      physical modem-control lines)
+  └── ScriptedCatSession test double, conformance test suite
 
 cat-transport-serial (depends on: cat-transport-core)
+  └── Two platform backends, same public types on both:
+      Linux — io_uring via monoio (`[target.'cfg(target_os = "linux")'.dependencies]`)
+      Windows — native Win32 COM-port I/O via windows-sys: a dedicated
+      worker thread (blocking ReadFile/WriteFile) driven by a hand-rolled
+      completion primitive, since monoio/tokio don't exist on Windows;
+      ModemControlLines via EscapeCommFunction/GetCommModemStatus
+  └── SerialPort, SerialConfig, SerialCatSession — identical public API
+      on both platforms; application code needs no platform branching
+
 cat-transport-tcp    (depends on: cat-transport-core)
+  └── TcpCatSession — length-prefixed frames
+
 cat-transport-udp    (depends on: cat-transport-core)
-  └── each implements CatSession with its own framing:
-      serial = read-until-';' (io_uring on Linux today);
-      tcp = length-prefixed frames; udp = envelope + dedup cache
+  └── UdpCatSession — envelope format (session/request IDs) + client-side
+      dedup cache + per-request timeout
 
 cat-client           (depends on: cat-framework, cat-transport-core)
   └── generic client-side request/response mechanics: validate against a
       CommandTable<C>, format outgoing bytes, interpret ResponseDisposition
-  └── a radio crate (e.g. ts570d's `radio`, a future `ft991a`) wraps this
+  └── a radio crate (`ts570d`'s `radio`, `ft991a`'s `radio`) wraps this
       with its own typed get/set methods — cat-client itself stays generic
 
-cat-server           (depends on: cat-client or a radio's client type, a CatSession impl)
+cat-server           (depends on: cat-client, a cat-transport-* implementation)
   └── request broker: client session management, physical radio session
       ownership, single ordered worker, request/response correlation by ID,
       timeout handling, disconnect handling, malformed-request rejection
   └── never the reverse dependency: a radio crate never depends on cat-server
 ```
 
-### Rules (violation is a blocking issue, once code exists)
-1. **`cat-framework`** has NO local crate dependencies and contains NO
-   radio-specific types. It defines the generic CAT engine and generic
-   errors only.
-2. **`cat-framework`** NEVER depends on a transport crate, `cat-client`,
-   `cat-server`, or any radio crate. Verify with `cargo tree -p
+### Rules (violation is a blocking issue)
+1. **`cat-framework`** has NO local crate dependencies beyond what's listed
+   above and contains NO radio-specific types. Verify with `cargo tree -p
    cat-framework` — no other local crate should appear.
-3. **`cat-transport-core`** depends on nothing else in this workspace; the
-   concrete transport crates depend on it, never the reverse.
+2. **`cat-framework`** NEVER depends on a transport crate, `cat-client`,
+   `cat-server`, or any radio crate.
+3. **`cat-transport-core`** depends only on `cat-framework`; the concrete
+   transport crates depend on it, never the reverse.
 4. **`cat-client`** never names a concrete transport type — it is generic
    over `CatSession`.
 5. **`cat-server`** sits above a radio's client and a transport
    implementation; it never leaks broker/session/client-id concepts into
    `cat-framework` or a radio's state machine.
-6. A consuming application's wiring layer (e.g. `ts570d`'s `src/main.rs`) is
-   the ONLY place concrete transport types are chosen and instantiated.
+6. A consuming application's wiring layer (e.g. `ts570d`'s/`ft991a`'s
+   `src/main.rs`) is the ONLY place concrete transport types are chosen and
+   instantiated.
 7. Unit tests use mock/fake implementations of the relevant trait — never a
    concrete transport pulled in from another crate.
+8. `monoio` is a Linux-only, target-gated dependency in every crate that
+   needs it. Windows code lives in `#[cfg(target_os = "windows")]`-gated
+   modules with no `monoio`/`tokio` dependency at all — see ADR 0004.
 
-## Core Technologies (inherited constraint, subject to the open item below)
-- monoio: io_uring async runtime — `ts570d`'s `Transport`/`CatSession` traits
-  are currently bound to it (`#[async_trait(?Send)]`, re-exporting `monoio`).
-  Whether `cat-transport-core` keeps this binding or adopts a
-  runtime-agnostic associated-future design is an **open item**, recorded in
-  ADR 0001, to be decided when `cat-transport-core` is actually extracted —
-  not assumed away in the meantime.
+## Core Technologies
+- monoio: io_uring async runtime, Linux only, target-gated
+  (`[target.'cfg(target_os = "linux")'.dependencies]`) in every crate that
+  needs it
+- windows-sys: Win32 FFI bindings, Windows only, target-gated, used solely
+  by `cat-transport-serial`'s Windows backend
 - Tokio should NEVER be used in this project unless a future ADR explicitly
-  changes this.
+  changes this
 - Error handling: thiserror + `Result<T, E>`
 - Imports: std → external → local
 - Naming: snake_case for functions/variables, PascalCase for types
 
 ## Essential Commands
-
-There is nothing to build yet. Once a workspace exists:
-- Build: `cargo build` / `cargo build --release`
-- Test: `cargo test` / `cargo test test_name`
-- Lint: `cargo clippy` / `cargo fmt`
+- Build: `cargo build --workspace` / `cargo build --workspace --release`
+- Test: `cargo test --workspace` / `cargo test -p <crate> test_name`
+- Lint: `cargo clippy --workspace --all-targets -- -D warnings` / `cargo fmt`
+- Windows cross-compile check: `cargo check --target x86_64-pc-windows-gnu -p cat-transport-serial`
+  (requires `rustup target add x86_64-pc-windows-gnu`; type-checks only, no
+  link/run — actual Windows runtime behavior is validated by consumers on
+  real hardware, not in this repo's own test suite)
 
 ## Architecture
 
-- `cat-framework/` — generic radio-independent CAT engine (not yet created)
-- `cat-client/` — generic client-side request/response mechanics (not yet created)
-- `cat-transport-core/` — `Transport` / `CatSession` trait abstractions (not yet created)
-- `cat-transport-serial/`, `cat-transport-tcp/`, `cat-transport-udp/` — transport implementations (not yet created)
-- `cat-server/` — request broker / server mode (not yet created)
-- `docs/adr/` — ADRs recording the target design (see ADR 0001)
+- `cat-framework/` — generic radio-independent CAT engine
+- `cat-client/` — generic client-side request/response mechanics
+- `cat-transport-core/` — `Transport` / `CatSession` / `ModemControlLines`
+  trait abstractions
+- `cat-transport-serial/`, `cat-transport-tcp/`, `cat-transport-udp/` —
+  transport implementations
+- `cat-server/` — request broker / server mode
+- `docs/adr/` — ADRs recording the design (see ADR 0001 for the index)
 - `.claude/agents/` — subagent roster for this repository
 - `planning/` — per-agent planning-with-files directories
