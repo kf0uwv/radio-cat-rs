@@ -184,18 +184,38 @@ where
         // `parse`'s structural operation label does not always match the
         // documented readable/writable *intent*: some commands document a
         // selector-parameterized *read* (e.g. a signal-meter read like
-        // TS-570D's `SM`/`RM`) using a `Set`-shaped form, because the
-        // generic query/set/action form model has no other way to express
-        // "read with a required parameter" — see
-        // `CommandDefinition::readable`'s own doc comment, which names
-        // this exact case. Route by the documented `readable`/`writable`
-        // capability flags whenever the structural label is `Set`, never
-        // blindly by the label — otherwise a selector read would go to
-        // `CatClient::set()`, which both rejects it (`CommandNotWritable`,
-        // discovered by this crate's own test suite) and, for a *real*
-        // session type such as `SerialCatSession`, would be the wrong
-        // choice regardless (fire-and-forget vs. read-and-await-a-response
-        // are genuinely different session-level operations).
+        // TS-570D's `SM`/`RM`, or the FT-991A's `MD`/`EX`) using a
+        // `Set`-shaped form, because the generic query/set/action form
+        // model has no other way to express "read with a required
+        // parameter" — see `CommandDefinition::readable`'s own doc
+        // comment, which names this exact case.
+        //
+        // A command that is *only* readable (never writable) — e.g.
+        // TS-570D's `SM`/`RM` — is unambiguous from the coarse
+        // `readable`/`writable` flags alone: never writable, so route by
+        // `is_readable()`. But a command that is **both** readable and
+        // writable via *different widths of the same `Set`-shaped form*
+        // (e.g. the FT-991A's `MD0;` 1-byte selector read vs. `MD0<hex>;`
+        // 2-byte write, or `EX047;` 3-byte read vs. `EX047<value>;` wider
+        // write) cannot be routed correctly by those flags alone — both
+        // widths are structurally `Set` and both flags are `true`
+        // regardless of which width actually arrived, so a naive
+        // "writable wins" rule would silently route every selector-read
+        // request to `CatClient::set()` too, discarding the real read
+        // response a fire-and-forget write never expects (found via live
+        // testing against `ft991a`'s `MD`/`EX` commands — this crate's own
+        // test suite only ever exercised the *read-only* case, which
+        // can't surface this).
+        //
+        // So: check the *specific matched width*'s
+        // [`CommandForm::is_selector_read`] tag first — set by a radio's
+        // command table only on the exact form that is a read despite its
+        // `Set` shape (see that field's own doc comment) — and fall back
+        // to the coarse `readable`/`writable` flags only when the command
+        // doesn't use this pattern at all (`is_selector_read` is `false`
+        // for every form built via `CommandForm::fixed`/`variable`, so
+        // this fallback is exact, not approximate, for every existing
+        // command table).
         let definition = self
             .table
             .find(code)
@@ -205,7 +225,9 @@ where
             CommandOperation::Query => true,
             CommandOperation::Action => false,
             CommandOperation::Set => {
-                if definition.is_writable() {
+                if definition.is_selector_read(params.len()) {
+                    true
+                } else if definition.is_writable() {
                     false
                 } else if definition.is_readable() {
                     true
@@ -401,6 +423,7 @@ mod tests {
         SignalMeter,
         Transmit,
         Information,
+        Mode,
     }
 
     const QUERY: &[CommandForm] = &[CommandForm::fixed(CommandOperation::Query, 0)];
@@ -416,6 +439,22 @@ mod tests {
     // below is what tells `Broker::dispatch` to route it through
     // `query_with_param` despite the `Set` structural label.
     const SELECTOR_READ_AS_SET_1: &[CommandForm] = &[CommandForm::fixed(CommandOperation::Set, 1)];
+    // A command that is **both** readable and writable via *different
+    // widths of the same `Set`-shaped form — the FT-991A's `MD` (mode) is
+    // the real-world case this reproduces: `MD0;` (1-byte selector read)
+    // vs. `MD0<hex>;` (2-byte write). Unlike `SELECTOR_READ_AS_SET_1`
+    // above (read-only, so the coarse `readable`/`writable` flags alone
+    // already route it correctly), this is the shape that broke before
+    // `CommandForm::selector_read`/`CommandDefinition::is_selector_read`
+    // existed: both widths are structurally `Set` and both flags are
+    // `true`, so a naive "writable wins" rule misrouted *even the read
+    // width* to a fire-and-forget write, discarding the real response
+    // (found via live testing against `ft991a`, not by this crate's own
+    // prior test suite — see `Broker::dispatch`'s doc comment).
+    const MODE_SET_FORMS: &[CommandForm] = &[
+        CommandForm::selector_read(1),
+        CommandForm::fixed(CommandOperation::Set, 2),
+    ];
 
     static DEFINITIONS: &[CommandDefinition<FakeCommand>] = &[
         CommandDefinition {
@@ -465,6 +504,18 @@ mod tests {
             response_forms: NONE,
             readable: true,
             writable: false,
+        },
+        CommandDefinition {
+            id: FakeCommand::Mode,
+            code: "MD",
+            name: "Mode",
+            description: "Test readable-and-writable selector read (FT-991A MD shape)",
+            query_forms: NONE,
+            set_forms: MODE_SET_FORMS,
+            action_forms: NONE,
+            response_forms: NONE,
+            readable: true,
+            writable: true,
         },
     ];
 
@@ -523,6 +574,30 @@ mod tests {
         let outcome = broker.dispatch(b"SM0;").await.unwrap();
 
         assert_eq!(outcome, DispatchOutcome::Response("SM0015;".to_string()));
+    }
+
+    #[monoio::test(driver = "legacy", timer_enabled = true)]
+    async fn selector_read_on_a_readable_and_writable_command_returns_the_response() {
+        // The bug this reproduces: before `is_selector_read` existed, `MD`
+        // being `writable: true` meant this 1-byte selector-read request
+        // was routed to `client.set()` (fire-and-forget), silently
+        // discarding the real response instead of returning it.
+        let mut broker = broker_with_script([Exchange::new("MD0;", "MD02;")]);
+
+        let outcome = broker.dispatch(b"MD0;").await.unwrap();
+
+        assert_eq!(outcome, DispatchOutcome::Response("MD02;".to_string()));
+    }
+
+    #[monoio::test(driver = "legacy", timer_enabled = true)]
+    async fn wider_set_form_on_the_same_command_still_writes() {
+        // The 2-byte write form on the *same* command must still route to
+        // `client.set()` — `is_selector_read` is per-form, not per-command.
+        let mut broker = broker_with_script([Exchange::new("MD02;", "")]);
+
+        let outcome = broker.dispatch(b"MD02;").await.unwrap();
+
+        assert_eq!(outcome, DispatchOutcome::NoResponse);
     }
 
     #[monoio::test(driver = "legacy", timer_enabled = true)]

@@ -34,6 +34,24 @@ pub struct CommandForm {
     pub min_len: usize,
     /// Maximum payload width after the command code.
     pub max_len: usize,
+    /// `true` if this form, despite being structurally [`CommandOperation::Set`]
+    /// (a non-empty parameter was needed to select it — the generic
+    /// `Query`/`Action` forms recognized by [`CommandTable::parse`] are
+    /// always zero-width), is semantically a **read**: a "selector read"
+    /// like the FT-991A's `MD0;` (query the current mode) or `EX047;`
+    /// (query one settings-menu item) — a required selector parameter with
+    /// no zero-width query form to express it. Always `false` for forms
+    /// built via [`CommandForm::fixed`]/[`CommandForm::variable`]; only
+    /// `true` for forms built via [`CommandForm::selector_read`].
+    ///
+    /// Consulted by generic dispatch code that needs to choose between a
+    /// session's read-and-await-response path and its fire-and-forget
+    /// write path for an otherwise-ambiguous `Set`-shaped request on a
+    /// command that is both `readable` and `writable` (e.g.
+    /// `cat-server::Broker::dispatch`) — a radio's own `CatRadio::
+    /// handle_command` already disambiguates this by parameter width
+    /// directly and does not need this field.
+    pub is_selector_read: bool,
 }
 
 impl CommandForm {
@@ -43,6 +61,7 @@ impl CommandForm {
             operation,
             min_len: len,
             max_len: len,
+            is_selector_read: false,
         }
     }
 
@@ -52,6 +71,22 @@ impl CommandForm {
             operation,
             min_len,
             max_len,
+            is_selector_read: false,
+        }
+    }
+
+    /// Create a fixed-width, structurally-`Set` "selector read" form: a
+    /// required selector parameter with no response-producing zero-width
+    /// query form to express it (see [`CommandForm::is_selector_read`]).
+    /// Fixed-width only — every known selector-read form across this
+    /// workspace's radios is a single fixed width, distinct from its
+    /// command's real write width(s).
+    pub const fn selector_read(len: usize) -> Self {
+        Self {
+            operation: CommandOperation::Set,
+            min_len: len,
+            max_len: len,
+            is_selector_read: true,
         }
     }
 
@@ -116,6 +151,16 @@ impl<C: CommandId> CommandDefinition<C> {
     /// includes parameterless action writes such as `TX`.
     pub fn is_writable(&self) -> bool {
         self.writable
+    }
+
+    /// Whether the `Set`-shaped form matching a `param_len`-byte parameter
+    /// is actually a "selector read" (see [`CommandForm::is_selector_read`])
+    /// rather than a write. `false` for any `param_len` that doesn't match
+    /// one of this command's `set_forms` at all.
+    pub fn is_selector_read(&self, param_len: usize) -> bool {
+        self.set_forms
+            .iter()
+            .any(|form| form.matches(CommandOperation::Set, param_len) && form.is_selector_read)
     }
 }
 
