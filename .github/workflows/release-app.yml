@@ -1,0 +1,211 @@
+name: Reusable app release build
+
+# Shared release automation for radio-cat-rs's consuming applications
+# (ft991a, ts570d). See docs/adr/0008-shared-release-workflow.md for the
+# full design record and the exact contract a calling repo must provide.
+#
+# Builds a Linux x86_64 release binary + a Debian .deb package on
+# ubuntu-latest, and a Windows x86_64 release binary + a Windows package
+# (zip and/or installer) on windows-latest, then uploads all four as raw
+# assets on the GitHub Release that triggered the calling workflow.
+#
+# Contract the calling repository must satisfy:
+#   1. `packaging/build-deb.sh [--skip-build]` at the repo root — this
+#      workflow calls it with `--skip-build` (release binaries are already
+#      built by this workflow) and expects it to produce one or more
+#      `*.deb` files directly in the repo root, matching
+#      `ts570d/packaging/build-deb.sh`'s existing, unchanged contract.
+#   2. `packaging/build-windows-package.ps1` at the repo root — invoked via
+#      `pwsh` with no arguments, on windows-latest, after this workflow has
+#      already run `cargo build --release` for `main_binary` (and every
+#      entry in `extra_binaries`). It must produce one or more package
+#      files (a `.zip`, an installer `.exe`, or both) directly in the repo
+#      root, mirroring `build-deb.sh`'s "stage, don't rebuild" convention.
+#   3. `Cargo.toml` at the repo root defining `main_binary` as a `[[bin]]`
+#      (directly or via a workspace member) buildable with
+#      `cargo build --release -p <main_binary>`.
+#
+# The calling job MUST set `permissions: contents: write` and pass
+# `secrets: inherit` (or an explicit `gh_token` secret) — see the ADR for
+# the exact calling snippet.
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: >
+          Display name used in step names (e.g. "ts570d-radio-control").
+          Purely cosmetic.
+        required: true
+        type: string
+      main_binary:
+        description: >
+          The primary binary's cargo package name (e.g. "ts570d",
+          "ft991a"). Built via `cargo build --release -p <main_binary>` and
+          uploaded raw (tar.gz on Linux, zip on Windows) in addition to
+          being included in the packaged .deb/Windows package.
+        required: true
+        type: string
+      extra_binaries:
+        description: >
+          Space-separated list of additional binaries to build alongside
+          main_binary, each either a bare cargo package name (e.g.
+          "emulator", when the package name equals the binary name) or
+          "package:binary" (e.g. "cat-transport-serial:pin-test", when the
+          binary lives in a different package than its own name --
+          radio-cat-rs's shared pin-test tool is exactly this case, see
+          docs/adr/0006-windows-network-transport.md). Each entry is built
+          via `cargo build --release -p <package> --bin <binary>`. Leave
+          empty (the default) if there are none. These binaries are built
+          so packaging scripts can stage them, but are not individually
+          uploaded as raw release assets -- only main_binary is.
+        required: false
+        type: string
+        default: ""
+      rust_toolchain:
+        description: "rustup toolchain channel/version to install on both runners."
+        required: false
+        type: string
+        default: "stable"
+      apt_packages:
+        description: >
+          Space-separated apt packages to install on the Linux build
+          runner before building (e.g. "libudev-dev"). Leave empty if none.
+        required: false
+        type: string
+        default: ""
+      build_windows:
+        description: >
+          Whether to build+package a Windows release at all. Set false for
+          an app with no Windows support yet -- only the Linux job runs.
+        required: false
+        type: boolean
+        default: true
+      deb_glob:
+        description: "Glob (relative to repo root) matching build-deb.sh's output."
+        required: false
+        type: string
+        default: "*.deb"
+      windows_package_glob:
+        description: "Glob (relative to repo root) matching build-windows-package.ps1's output."
+        required: false
+        type: string
+        default: "*.zip"
+
+jobs:
+  linux:
+    name: "${{ inputs.app_name }}: Linux binary + .deb"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ inputs.rust_toolchain }}
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-
+
+      - name: Install system dependencies
+        if: inputs.apt_packages != ''
+        run: sudo apt-get update && sudo apt-get install -y ${{ inputs.apt_packages }}
+
+      - name: Build release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release -p "${{ inputs.main_binary }}"
+          for entry in ${{ inputs.extra_binaries }}; do
+            package="${entry%%:*}"
+            bin="${entry##*:}"
+            cargo build --release -p "$package" --bin "$bin"
+          done
+
+      - name: Package raw Linux binary
+        run: |
+          tar -C target/release -czf "${{ inputs.main_binary }}-linux-x86_64.tar.gz" "${{ inputs.main_binary }}"
+
+      - name: Build Debian package
+        run: ./packaging/build-deb.sh --skip-build
+
+      - name: Upload Linux binary + .deb to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            "${{ inputs.main_binary }}-linux-x86_64.tar.gz" \
+            ${{ inputs.deb_glob }} \
+            --clobber
+
+  windows:
+    name: "${{ inputs.app_name }}: Windows binary + package"
+    if: ${{ inputs.build_windows }}
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ inputs.rust_toolchain }}
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release -p "${{ inputs.main_binary }}"
+          for entry in ${{ inputs.extra_binaries }}; do
+            package="${entry%%:*}"
+            bin="${entry##*:}"
+            cargo build --release -p "$package" --bin "$bin"
+          done
+
+      - name: Package raw Windows binary
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "target/release/${{ inputs.main_binary }}.exe" `
+            -DestinationPath "${{ inputs.main_binary }}-windows-x86_64.zip"
+
+      - name: Build Windows package (zip and/or installer)
+        shell: pwsh
+        run: ./packaging/build-windows-package.ps1
+
+      - name: Upload Windows binary + package to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            "${{ inputs.main_binary }}-windows-x86_64.zip" \
+            ${{ inputs.windows_package_glob }} \
+            --clobber
