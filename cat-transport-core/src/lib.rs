@@ -43,6 +43,13 @@
 //!   `CatSession` test double, plus the [`conformance`] module of reusable
 //!   `CatSession` behavior checks that any transport crate's own test suite
 //!   can call unchanged.
+//! - [`completion`] — a portable, single-slot completion primitive (moved
+//!   here from `cat-transport-serial::oneshot` per
+//!   `docs/adr/0006-windows-network-transport.md`) shared by every Windows
+//!   transport backend (`cat-transport-serial`, `cat-transport-tcp`,
+//!   `cat-transport-udp`) that drives a dedicated background `std::thread` +
+//!   `async fn` completion boundary, instead of each crate hand-rolling its
+//!   own copy.
 //!
 //! # `cat-framework` dependency
 //!
@@ -63,6 +70,7 @@
 //! Linux-only dependency (see `Cargo.toml`), so the re-export is
 //! `cfg`-gated to match.
 
+pub mod completion;
 pub mod errors;
 pub mod modem;
 pub mod session;

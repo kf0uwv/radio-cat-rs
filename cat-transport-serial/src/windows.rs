@@ -55,10 +55,10 @@ use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, OPEN_EXISTING,
 };
 
+use cat_transport_core::completion as oneshot;
 use cat_transport_core::{ModemControlLines, Transport, TransportError};
 
 use crate::config::{FlowControl, Parity, SerialConfig};
-use crate::oneshot;
 use crate::timeouts::READ_TIMEOUT;
 use crate::{SerialError, SerialResult};
 

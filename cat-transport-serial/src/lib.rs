@@ -34,10 +34,15 @@
 //! [`Parity`], and [`FlowControl`] (pure data, no platform-specific code)
 //! now live in the ungated [`config`] module instead of `io_uring.rs`, so a
 //! future Windows backend can share them without duplication — same fields,
-//! same `Default` impl, same re-export shape from this root. The private
-//! `oneshot` module is a portable single-slot completion primitive, an
-//! internal implementation detail for a future Windows worker-thread design
-//! (ADR 0004 §1) — not part of this crate's public API. The private `baud`
+//! same `Default` impl, same re-export shape from this root. The Windows
+//! worker-thread design's completion primitive (originally this crate's own
+//! private `oneshot` module) now lives in
+//! `cat_transport_core::completion` instead — moved and made `pub` there per
+//! `docs/adr/0006-windows-network-transport.md` so `cat-transport-tcp`,
+//! `cat-transport-udp`, and `cat-server`'s own Windows backends can reuse the
+//! same primitive instead of each hand-rolling a copy. This crate's
+//! `windows.rs` imports it as `use cat_transport_core::completion as
+//! oneshot;` — no behavior change from the move. The private `baud`
 //! and `timeouts` modules are likewise pure, ungated, platform-neutral
 //! implementation details (the shared baud-rate-validation set and read
 //! timeout, ADR 0004 §5/§3) consulted by both `io_uring.rs` and
@@ -67,7 +72,6 @@ mod baud;
 pub mod config;
 #[cfg(target_os = "linux")]
 pub mod io_uring;
-mod oneshot;
 pub mod session;
 mod timeouts;
 #[cfg(target_os = "windows")]

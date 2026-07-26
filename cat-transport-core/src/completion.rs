@@ -14,43 +14,39 @@
 
 //! A portable, single-slot completion primitive.
 //!
-//! Per `docs/adr/0004-windows-serial-backend.md` §1: a future Windows
-//! `SerialPort` drives blocking `ReadFile`/`WriteFile` on a dedicated
+//! Originally introduced in `cat-transport-serial::oneshot` per
+//! `docs/adr/0004-windows-serial-backend.md` §1, for exactly one purpose: a
+//! Windows `SerialPort` drives blocking `ReadFile`/`WriteFile` on a dedicated
 //! background `std::thread`, with `Transport::write`/`read`'s `async fn`
 //! bodies sending a request over an `std::sync::mpsc` channel and then
-//! `.await`ing one half of this primitive for the result. This module is
-//! **pure `std`** — no OS dependency, no executor, no scheduling logic — it
-//! only lets one `Future` resolve once, safely, when signaled from a
-//! different OS thread, resting entirely on `std::task::Waker`'s documented
-//! contract that `Waker::wake()` is safely callable from any thread. It is
-//! private (`mod oneshot;` in `lib.rs`, not `pub`): an internal
-//! implementation detail of a future Windows worker-thread design, not a
-//! [`crate::config::SerialConfig`]/`Transport`-facing type in this crate's
-//! public API.
+//! `.await`ing one half of this primitive for the result.
+//!
+//! Moved here (`docs/adr/0006-windows-network-transport.md`) and made `pub`
+//! so `cat-transport-tcp`'s, `cat-transport-udp`'s, and `cat-server`'s own
+//! Windows backends can reuse the exact same primitive instead of each
+//! hand-rolling a duplicate copy — the same "dedicated background thread +
+//! completion primitive" shape ADR 0004 established for serial applies
+//! unchanged to TCP/UDP sockets and, with a different channel around it, to
+//! `cat-server`'s worker. `cat-transport-serial` now imports this module
+//! (`use cat_transport_core::completion as oneshot;`) instead of keeping its
+//! own copy — no behavior change, its existing tests pass unchanged.
+//!
+//! This module is **pure `std`** — no OS dependency, no executor, no
+//! scheduling logic — it only lets one `Future` resolve once, safely, when
+//! signaled from a different OS thread, resting entirely on
+//! `std::task::Waker`'s documented contract that `Waker::wake()` is safely
+//! callable from any thread.
 //!
 //! Because it has zero OS dependency of its own, it gets real, executable
-//! unit tests here that run on ordinary Linux CI, even though its only
-//! future consumer is Windows-specific code (ADR 0004's "Consequences"
-//! section).
-//!
-//! `#![allow(dead_code)]`: this task (ADR 0004 dispatch queue Task 6) adds
-//! this primitive standing alone, with no production caller yet — the
-//! Windows worker-thread `SerialPort`/`Transport` implementation that
-//! actually sends requests through a `CompletionTx`/awaits a `CompletionRx`
-//! is Task 7/8, explicitly out of scope here. Everything below is exercised
-//! by this module's own tests (`cfg(test)`, unaffected by this allow), just
-//! not yet by any non-test code, which `dead_code` would otherwise flag as
-//! a hard `-D warnings` clippy failure on a Linux build where the only
-//! consumer (Windows `mod windows`) doesn't exist to compile in yet.
-#![allow(dead_code)]
+//! unit tests here that run on ordinary Linux CI, even though its consumers
+//! are exclusively Windows-specific code.
 
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 /// The error [`CompletionRx::poll`] resolves to when the corresponding
 /// [`CompletionTx`] is dropped without ever calling [`CompletionTx::send`] —
-/// e.g. the Windows worker thread exiting (`SerialPort::drop` dropping the
-/// request sender, per ADR 0004 §1) while a request is still in flight.
+/// e.g. a Windows worker thread exiting while a request is still in flight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Canceled;
 
@@ -207,8 +203,10 @@ mod tests {
     /// A `Waker` that unparks a specific thread — used by
     /// [`block_on_with_timeout`] below, the same "park in a loop, `Waker`
     /// unparks" shape ADR 0004 §1 describes for `ft991a`'s eventual
-    /// Windows `block_on`. Test-only infrastructure: driving a real
-    /// executor is out of scope for this primitive and for this task.
+    /// Windows `block_on`, and the same shape `cat-server`'s own Windows
+    /// `block_on`/`timeout` (ADR 0006) use independently. Test-only
+    /// infrastructure: driving a real executor is out of scope for this
+    /// primitive itself.
     struct ThreadWaker(std::thread::Thread);
 
     impl Wake for ThreadWaker {
