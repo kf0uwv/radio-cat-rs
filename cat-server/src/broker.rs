@@ -270,11 +270,66 @@ where
             }
         };
 
-        match monoio::time::timeout(timeout, call).await {
+        match with_request_timeout(timeout, call).await {
             Ok(result) => result.map_err(DispatchError::Session),
             Err(_elapsed) => Err(DispatchError::Timeout(timeout)),
         }
     }
+}
+
+/// Wrap `fut` with `duration`, resolving to `Err(cat_transport_core::
+/// timeout::Elapsed)` if it hasn't completed in time.
+///
+/// Two bodies, selected per platform (`docs/adr/0006-windows-network-transport.md`):
+/// Linux keeps calling `monoio::time::timeout` exactly as before (no
+/// behavior change); Windows has no `monoio`, so it uses the shared,
+/// portable [`cat_transport_core::timeout::timeout`] combinator instead
+/// (also reused by `cat-diagnostics`, `docs/adr/0007-shared-diagnostics-engine.md`).
+///
+/// **This split is load-bearing, not a style preference -- confirmed by
+/// this crate's own test suite, not by inspection.** An earlier version of
+/// this function called `cat_transport_core::timeout::timeout`
+/// unconditionally on every platform, reasoning that a portable, `Waker`-
+/// contract-correct combinator "is correct under any conforming executor."
+/// That is true in general, but does not hold against `monoio`'s own
+/// `Waker` implementation specifically: `cat_transport_core::timeout`'s
+/// internal deadline timer fires on a plain `std::thread::spawn`ed thread
+/// and calls the captured `Waker` from that foreign OS thread -- and
+/// `monoio`'s thread-per-core executor does not reliably reschedule the
+/// polling task when woken this way (its own tests
+/// `broker::tests::never_answered_request_times_out_instead_of_hanging`/
+/// `worker_recovers_after_a_timeout_and_services_the_next_request` hung
+/// indefinitely under `#[monoio::test]` once this function stopped calling
+/// `monoio::time::timeout` directly on Linux). `Broker::dispatch` is shared,
+/// ungated code, but the *correct* timeout mechanism for it is a property
+/// of which executor is actually driving the calling task, not of
+/// `target_os` alone in the abstract -- on **real** Linux and Windows
+/// deployments the two happen to coincide (the Linux worker always runs
+/// under a real `monoio` runtime; the Windows worker never does), so the
+/// `target_os` cfg-split is the correct proxy for it in practice. The
+/// consequence: `crate::worker_windows`/`crate::tcp_windows`/
+/// `crate::udp_windows` (which use `crate::block_on`, not `monoio`, and are
+/// therefore NOT safe to drive through this function's Linux branch) must
+/// not exercise this codepath on a Linux build -- see their own module docs'
+/// "test scope" notes for the resulting, deliberately narrower test-gating
+/// decision.
+#[cfg(target_os = "linux")]
+async fn with_request_timeout<F: std::future::Future>(
+    duration: Duration,
+    fut: F,
+) -> Result<F::Output, cat_transport_core::timeout::Elapsed> {
+    monoio::time::timeout(duration, fut)
+        .await
+        .map_err(|_elapsed| cat_transport_core::timeout::Elapsed)
+}
+
+/// See the Linux-side doc comment above.
+#[cfg(target_os = "windows")]
+async fn with_request_timeout<F: std::future::Future>(
+    duration: Duration,
+    fut: F,
+) -> Result<F::Output, cat_transport_core::timeout::Elapsed> {
+    cat_transport_core::timeout::timeout(duration, fut).await
 }
 
 /// One unit of work submitted to a [`BrokerWorker`].
@@ -401,7 +456,15 @@ where
     (worker, handle)
 }
 
-#[cfg(test)]
+// Gated `target_os = "linux"` in addition to `test`: every async test below
+// uses `#[monoio::test(driver = "legacy", ...)]`/`monoio::spawn`, and
+// `monoio` is a Linux-only *target-gated* dependency -- not present at all
+// when building for `x86_64-pc-windows-gnu`. `Broker`/`DispatchOutcome`/
+// `DispatchError`/`outcome_to_wire` themselves (this file's non-test code)
+// are genuinely cross-platform and need no gating of their own -- only
+// this test module's choice of test harness is Linux-specific. Mirrors
+// `cat-transport-serial::session`'s identical gate.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use std::future::pending;
 

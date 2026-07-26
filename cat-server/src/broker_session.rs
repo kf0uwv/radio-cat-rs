@@ -89,7 +89,11 @@ impl CatSession for BrokerCatSession {
     }
 }
 
-#[cfg(test)]
+// Gated `target_os = "linux"` in addition to `test`: every test below uses
+// `#[monoio::test(...)]`/`monoio::spawn`, and `monoio` is a Linux-only
+// target-gated dependency -- mirrors `cat-transport-serial::session`'s and
+// `cat-server::broker`'s identical gate (`docs/adr/0006-windows-network-transport.md`).
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use crate::test_fixtures::{FakeCommand, TABLE};

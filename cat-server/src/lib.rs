@@ -48,19 +48,38 @@
 //! generic `CatClient<C, S>` from the outside only, and never names a
 //! concrete radio's command-id type.
 
+mod block_on;
 pub mod broker;
 mod broker_session;
+pub mod dedup;
 pub mod local_channel;
 pub mod registry;
+#[cfg(target_os = "linux")]
 pub mod tcp;
+pub mod tcp_windows;
+#[cfg(target_os = "linux")]
 pub mod udp;
+pub mod udp_windows;
+pub mod worker_windows;
 
 #[cfg(test)]
 mod test_fixtures;
 
-pub use broker::{
-    build, build_with_timeout, Broker, BrokerHandle, BrokerWorker, DispatchError, DispatchOutcome,
-    Job,
-};
+pub use broker::{Broker, DispatchError, DispatchOutcome};
 pub use broker_session::BrokerCatSession;
 pub use registry::{ClientId, ClientRegistry};
+
+// `Job`/`BrokerWorker`/`BrokerHandle`/`build`/`build_with_timeout` are
+// provided by two full implementations -- `broker` (Linux, `local_channel`-
+// based) and `worker_windows` (genuine OS threads, `std::sync::mpsc`-based)
+// -- per `docs/adr/0006-windows-network-transport.md`. Both always compile
+// and are always tested (neither has any actual platform-specific code);
+// only this re-export is `cfg`-gated, so application code names exactly one
+// `cat_server::{Job, BrokerWorker, BrokerHandle, build, build_with_timeout}`
+// regardless of platform. See `worker_windows`'s module doc for the one
+// place its shape isn't letter-for-letter identical to the Linux version
+// (`BrokerWorker::run` is a plain blocking `fn` there, not `async fn`).
+#[cfg(target_os = "linux")]
+pub use broker::{build, build_with_timeout, BrokerHandle, BrokerWorker, Job};
+#[cfg(target_os = "windows")]
+pub use worker_windows::{build, build_with_timeout, BrokerHandle, BrokerWorker, Job};

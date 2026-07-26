@@ -244,7 +244,13 @@ pub fn oneshot<T>() -> (OneshotSender<T>, OneshotReceiver<T>) {
     )
 }
 
-#[cfg(test)]
+// Gated `target_os = "linux"` in addition to `test`: every test below uses
+// `#[monoio::test(...)]`/`monoio::spawn`, and `monoio` is a Linux-only
+// target-gated dependency -- mirrors `cat-server::broker`'s identical gate.
+// `local_channel`'s own production code (this file's non-test items) is
+// genuinely cross-platform (pure `std`) and needs no gating of its own --
+// only its `monoio`-based test harness does.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

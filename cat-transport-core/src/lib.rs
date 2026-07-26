@@ -75,6 +75,7 @@ pub mod errors;
 pub mod modem;
 pub mod session;
 pub mod test_support;
+pub mod timeout;
 pub mod transport;
 
 pub use cat_framework::{ProtocolErrorKind, ResponseDisposition};

@@ -58,7 +58,7 @@
 //! once.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::rc::Rc;
@@ -67,6 +67,7 @@ use cat_transport_udp::{decode_envelope, encode_envelope, ENVELOPE_HEADER_LEN, M
 use monoio::net::udp::UdpSocket;
 
 use crate::broker::BrokerHandle;
+use crate::dedup::DedupCache;
 use crate::registry::{ClientId, ClientRegistry};
 
 /// Total datagram size (header + max payload) allocated for each `recv_from`.
@@ -74,52 +75,6 @@ use crate::registry::{ClientId, ClientRegistry};
 /// (re-exported here), matching `UdpCatSession`'s receive-side sizing
 /// exactly — both sides of the wire must agree on the same cap.
 const MAX_DATAGRAM_SIZE: usize = ENVELOPE_HEADER_LEN + MAX_PAYLOAD_SIZE;
-/// Bounded FIFO capacity of the server-side dedup cache. See the module
-/// docs for the key and why it differs from `UdpCatSession`'s own.
-pub const DEDUP_CACHE_CAPACITY: usize = 256;
-
-/// Server-side deduplication cache: caches the **actual response bytes**
-/// for a `(peer_addr, session_id, request_id)` key, bounded FIFO. See the
-/// module docs for why this differs from `UdpCatSession`'s own
-/// membership-only cache.
-#[derive(Default)]
-pub struct DedupCache {
-    order: VecDeque<(SocketAddr, u64, u64)>,
-    responses: HashMap<(SocketAddr, u64, u64), Vec<u8>>,
-}
-
-impl DedupCache {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// The cached response for this key, if this exact request has already
-    /// been answered.
-    pub fn get(&self, peer: SocketAddr, session_id: u64, request_id: u64) -> Option<&Vec<u8>> {
-        self.responses.get(&(peer, session_id, request_id))
-    }
-
-    /// Record the response for this key, evicting the oldest entry first
-    /// if already at [`DEDUP_CACHE_CAPACITY`].
-    pub fn insert(
-        &mut self,
-        peer: SocketAddr,
-        session_id: u64,
-        request_id: u64,
-        response: Vec<u8>,
-    ) {
-        let key = (peer, session_id, request_id);
-        if !self.responses.contains_key(&key) {
-            if self.order.len() >= DEDUP_CACHE_CAPACITY {
-                if let Some(oldest) = self.order.pop_front() {
-                    self.responses.remove(&oldest);
-                }
-            }
-            self.order.push_back(key);
-        }
-        self.responses.insert(key, response);
-    }
-}
 
 /// Accept/dispatch loop over an already-bound `UdpSocket`. Spawns one task
 /// per received datagram (so a slow in-flight request never stalls reading
@@ -240,6 +195,7 @@ mod tests {
 
     use super::*;
     use crate::broker::build;
+    use crate::dedup::DEDUP_CACHE_CAPACITY;
     use crate::test_fixtures::TABLE;
 
     fn bind_loopback() -> (UdpSocket, SocketAddr) {
