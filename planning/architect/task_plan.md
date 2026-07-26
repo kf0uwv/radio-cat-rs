@@ -444,3 +444,46 @@ entry-point work (replacing `#[monoio::main]`), per ADR 0004 §1 — a future
 planning pass in each of those repositories, gated on Task 8 landing here
 first and, per this repo's own ground rules, on `ts570d`/`ft991a` not being
 touched by this session.
+
+### Task 9 — `cat_rigctl` agent: `BrokerCatSession` moves into `cat-server`; new `cat-rigctl` crate (generic rigctld bridge + server orchestration)
+
+Dispatched directly (not from a prior architect review cycle — recorded
+here retroactively per this repo's planning-with-files requirement).
+Source: both `ft991a` and `ts570d` independently hand-wrote a Hamlib
+rigctld-compatible TCP bridge in their own `server` crates —
+`broker_session.rs` (100% duplicated), `rigctl.rs` (~90% duplicated;
+`ft991a`'s copy carried two real interop bugfixes `ts570d`'s copy lacked),
+and `lib.rs::run()` (~90% duplicated; `ts570d`'s copy carried a real
+error-propagation bugfix `ft991a`'s copy lacked). See ADR 0005 for the full
+design record.
+
+Done:
+- `BrokerCatSession` relocated into `cat-server/src/broker_session.rs`
+  (`pub use`d from `cat-server`'s root, `mod` kept private) — doc comments
+  genericized, unit tests reuse `cat-server::test_fixtures`'s existing
+  `FakeCommand`/`TABLE` fixture instead of a third private copy.
+- New workspace member `cat-rigctl/`: `RigctlRadio` trait (see ADR 0005 for
+  the exact signature), `ServerConfig`, `run<C, S, R, F>(session, table,
+  config, make_radio)` (ported from `ft991a`'s `rigctl.rs`/`run()` shape
+  with `ts570d`'s error-propagation fix applied), plus a private `rigctl`
+  module (`dispatch`/`dump_state`/`LineReader`/`serve`, generic over
+  `R: RigctlRadio`). Unit tests ported to an in-crate `FakeRadio:
+  RigctlRadio`/`FakeMode` fixture (mirroring `cat-server::test_fixtures`'s
+  pattern) — no dependency on either app's `radio` crate. Both the
+  `run_with_no_listeners_configured_returns_an_error` test (from `ft991a`)
+  and the `select_all_over_a_failing_listener_task_propagates_its_error`
+  regression test (from `ts570d`, guarding the error-propagation fix) are
+  ported.
+- `futures = "0.3.30"` added to root `Cargo.toml`'s
+  `[workspace.dependencies]` (new to this repo — `cat-rigctl`'s `run()`
+  needs `futures::future::select_all`, matching both apps' existing
+  `server/Cargo.toml` dependency).
+- `cargo build/test/clippy/fmt --workspace` all clean; `cargo tree -p
+  cat-rigctl` confirmed to contain no radio-specific or unexpected
+  dependencies.
+
+**Not done in this session** (explicitly out of scope, per this task's
+charter): migrating `ft991a`'s/`ts570d`'s own `server` crates onto
+`cat-rigctl` and deleting their local copies — both repos are read-only
+ground truth here. That migration is the next phase, in each app's own
+working copy, by a different agent.

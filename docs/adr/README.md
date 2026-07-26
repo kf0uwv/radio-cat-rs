@@ -10,6 +10,7 @@ never reused.
 | [0002](0002-async-runtime-binding-for-transport-crates.md) | Async runtime binding for cat-transport-core and dependents | Accepted |
 | [0003](0003-modem-control-lines.md) | `ModemControlLines`: a separate, additive capability trait for RTS/DTR/CTS/DSR/DCD | Accepted |
 | [0004](0004-windows-serial-backend.md) | Windows serial backend for `cat-transport-serial` | Accepted |
+| [0005](0005-rigctl-bridge-and-radio-trait-boundary.md) | `cat-rigctl`: a generic rigctld bridge behind a `RigctlRadio` trait | Accepted |
 
 ## Repository status
 

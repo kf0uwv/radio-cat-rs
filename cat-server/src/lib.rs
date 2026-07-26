@@ -49,6 +49,7 @@
 //! concrete radio's command-id type.
 
 pub mod broker;
+mod broker_session;
 pub mod local_channel;
 pub mod registry;
 pub mod tcp;
@@ -61,4 +62,5 @@ pub use broker::{
     build, build_with_timeout, Broker, BrokerHandle, BrokerWorker, DispatchError, DispatchOutcome,
     Job,
 };
+pub use broker_session::BrokerCatSession;
 pub use registry::{ClientId, ClientRegistry};
