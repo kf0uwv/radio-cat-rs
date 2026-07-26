@@ -41,23 +41,45 @@
 //!   typed client. Implemented once per app.
 //! - [`ServerConfig`] — which listeners to bring up.
 //! - [`run`] — brings up the broker plus every listener `config` requests,
-//!   and runs until one fails.
-//! - [`rigctl`] (private) — the rigctld accept loop, command dispatch, and
-//!   `\dump_state` builder, generic over `R: RigctlRadio`. Not part of the
-//!   public API — only `RigctlRadio`/`ServerConfig`/`run` are; a consuming
-//!   app's own wiring layer only ever calls `run`.
+//!   and runs until one fails. Two implementations, `#[cfg]`-selected —
+//!   see "Platform support" below.
+//! - [`protocol`] (private) — the rigctld wire protocol itself (command
+//!   dispatch, `\dump_state`, line buffering), with no I/O of its own,
+//!   shared by both platform backends.
+//! - [`rigctl`] (private, Linux) / [`rigctl_windows`] (private, Windows) —
+//!   the platform-specific accept loop around `protocol`, generic over
+//!   `R: RigctlRadio`. Neither is part of the public API — only
+//!   `RigctlRadio`/`ServerConfig`/`run` are; a consuming app's own wiring
+//!   layer only ever calls `run`.
+//!
+//! # Platform support
+//!
+//! Both `run` implementations bring up the same three possible listeners
+//! (raw TCP, raw UDP, rigctld) from the same [`ServerConfig`], and share
+//! the exact same [`RigctlRadio`]/[`protocol::dispatch`] logic — a
+//! consuming application calls one `cat_rigctl::run(...)` on either
+//! platform, no branching required. Only the concurrency substrate differs
+//! internally: Linux uses `monoio`'s cooperative tasks (`run` is `async
+//! fn`, `#[monoio::main]`-compatible); Windows uses genuine OS threads
+//! (`run` is a plain blocking `fn`, matching
+//! `cat_server::worker_windows::BrokerWorker::run`'s own precedent that
+//! top-level platform bootstrapping is expected to differ — see
+//! `docs/adr/0006-windows-network-transport.md`'s follow-up note for the
+//! full design record of this crate's Windows backend).
 
+#[cfg(target_os = "linux")]
 mod rigctl;
+#[cfg(target_os = "windows")]
+mod rigctl_windows;
 
-use std::cell::RefCell;
+mod protocol;
+
 use std::io;
-use std::rc::Rc;
 
 use async_trait::async_trait;
 use cat_framework::{CommandId, CommandTable};
-use cat_server::{BrokerCatSession, ClientRegistry};
+use cat_server::BrokerCatSession;
 use cat_transport_core::CatSession;
-use monoio::net::{udp::UdpSocket, TcpListener};
 use tracing::{error, info};
 
 /// What the generic rigctld bridge needs from a radio's own typed client
@@ -134,6 +156,7 @@ pub struct ServerConfig {
 /// on resolves with that real result as its first tuple element, and this
 /// function returns it directly — rather than discarding each task's
 /// result via `let _ = ...` and hardcoding `Ok(())` regardless of outcome.
+#[cfg(target_os = "linux")]
 pub async fn run<C, S, R, F>(
     session: S,
     table: &'static CommandTable<C>,
@@ -147,6 +170,12 @@ where
     R: RigctlRadio + 'static,
     F: Fn(BrokerCatSession) -> R + Clone + 'static,
 {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use cat_server::ClientRegistry;
+    use monoio::net::{udp::UdpSocket, TcpListener};
+
     let (worker, handle) = cat_server::build(session, table);
     monoio::spawn(worker.run());
 
@@ -208,7 +237,119 @@ where
     result
 }
 
-#[cfg(test)]
+/// Windows implementation of [`run`] — same signature and behavior as the
+/// Linux one from a caller's point of view (same [`ServerConfig`], same
+/// three possible listeners, same [`RigctlRadio`] dispatch, including full
+/// rigctld/WSJT-X support), but a plain blocking `fn` instead of `async
+/// fn`: genuine OS threads instead of `monoio`'s cooperative tasks, since
+/// `monoio` cannot compile on Windows at all. Mirrors
+/// `cat_server::worker_windows::BrokerWorker::run`'s own precedent that
+/// top-level "how do you start this" bootstrapping is expected to differ
+/// per platform — see `docs/adr/0006-windows-network-transport.md`'s
+/// follow-up note for the full design record.
+///
+/// Supersedes an earlier stopgap where consuming apps (`ft991a`, `ts570d`)
+/// had to hand-roll their own Windows-only fallback that dropped
+/// `--rigctl-port` support entirely, because this crate had no Windows
+/// backend at all. `--rigctl-port` now works identically on both
+/// platforms.
+#[cfg(target_os = "windows")]
+pub fn run<C, S, R, F>(
+    session: S,
+    table: &'static CommandTable<C>,
+    config: ServerConfig,
+    make_radio: F,
+) -> io::Result<()>
+where
+    C: CommandId,
+    S: CatSession + Send + 'static,
+    S::Error: std::error::Error + 'static,
+    R: RigctlRadio + 'static,
+    F: Fn(BrokerCatSession) -> R + Clone + Send + 'static,
+{
+    use std::net::{TcpListener, UdpSocket};
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::thread;
+
+    use cat_server::ClientRegistry;
+
+    let (worker, handle) = cat_server::build(session, table);
+    thread::spawn(move || worker.run());
+
+    let (done_tx, done_rx) = mpsc::channel::<io::Result<()>>();
+    let mut listener_count = 0;
+
+    if let Some(port) = config.raw_tcp_port {
+        let listener = TcpListener::bind(("0.0.0.0", port))?;
+        info!("Raw CAT TCP listener bound on 0.0.0.0:{port}");
+        let handle = handle.clone();
+        let registry = Arc::new(Mutex::new(ClientRegistry::new()));
+        let done_tx = done_tx.clone();
+        listener_count += 1;
+        thread::spawn(move || {
+            let result = cat_server::tcp_windows::serve(listener, handle, registry);
+            if let Err(e) = &result {
+                error!("Raw CAT TCP listener on 0.0.0.0:{port} failed: {e}");
+            }
+            let _ = done_tx.send(result);
+        });
+    }
+
+    if let Some(port) = config.raw_udp_port {
+        let socket = UdpSocket::bind(("0.0.0.0", port))?;
+        info!("Raw CAT UDP listener bound on 0.0.0.0:{port}");
+        let handle = handle.clone();
+        let registry = Arc::new(Mutex::new(ClientRegistry::new()));
+        let done_tx = done_tx.clone();
+        listener_count += 1;
+        thread::spawn(move || {
+            let result = cat_server::udp_windows::serve(socket, handle, registry);
+            if let Err(e) = &result {
+                error!("Raw CAT UDP listener on 0.0.0.0:{port} failed: {e}");
+            }
+            let _ = done_tx.send(result);
+        });
+    }
+
+    if let Some(port) = config.rigctl_port {
+        let listener = TcpListener::bind(("0.0.0.0", port))?;
+        info!("Rigctld-compatible TCP listener bound on 0.0.0.0:{port} (for WSJT-X)");
+        let handle = handle.clone();
+        let make_radio = make_radio.clone();
+        let done_tx = done_tx.clone();
+        listener_count += 1;
+        thread::spawn(move || {
+            let result = rigctl_windows::serve(listener, handle, make_radio);
+            if let Err(e) = &result {
+                error!("Rigctld-compatible TCP listener on 0.0.0.0:{port} failed: {e}");
+            }
+            let _ = done_tx.send(result);
+        });
+    }
+
+    if listener_count == 0 {
+        return Err(io::Error::other(
+            "server mode requires at least one of --raw-tcp-port/--raw-udp-port/--rigctl-port",
+        ));
+    }
+    drop(done_tx);
+
+    // Wait for the first listener thread to end (accept()/bind-time
+    // failure, or never on the happy path), and propagate its result -- the
+    // `std` analog of the Linux path's `futures::future::select_all`.
+    done_rx
+        .recv()
+        .unwrap_or(Err(io::Error::other("all listener threads exited")))
+}
+
+// Gated to Linux: exercises the `async fn run` implementation via
+// `#[monoio::test]`. A Windows-shaped equivalent lives in
+// `rigctl_windows`'s own `#[cfg(all(test, target_os = "windows"))]` tests
+// (it tests the listener/accept-loop plumbing directly rather than through
+// this crate's top-level `run`, since the Windows `run` itself is a thin,
+// low-risk orchestration layer over already-tested pieces -- see that
+// module's doc).
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use cat_framework::{CommandDefinition, CommandForm, CommandOperation};

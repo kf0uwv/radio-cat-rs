@@ -9,16 +9,17 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Generic Hamlib rigctld-compatible TCP bridge (for WSJT-X's \"Hamlib NET rigctl\" rig type) plus network-server orchestration, radio-independent behind the RigctlRadio trait."
 
-# Linux-only, mirroring `cat-server`'s own scope: `cat-server` only depends
-# on `monoio` under `cfg(target_os = "linux")`, but its `src/tcp.rs`/
-# `src/udp.rs` import `monoio::net` unconditionally in source, so any crate
-# built directly on top of it (this one included) fails to compile at all
-# on a target where `monoio` isn't pulled in. This crate's own accept
-# loop/connection handling has the exact same shape, so it is Linux-only
-# for the same reason, not gated out of caution. A consuming app should
-# only depend on this crate from its own binary under
-# `cfg(target_os = "linux")`, matching `ft991a`'s/`ts570d`'s existing
-# `server` crate precedent.
+# Cross-platform since the follow-up recorded in
+# `docs/adr/0006-windows-network-transport.md` (originally Linux-only — the
+# rigctld accept loop was built directly on `monoio::net`/`monoio::spawn`
+# with no Windows counterpart; `cat-server::tcp`/`udp` had the same
+# structural gap and were fixed the same way). `src/rigctl.rs` (Linux,
+# `monoio`-based) and `src/rigctl_windows.rs` (`std` + genuine OS threads,
+# mirroring `cat-server::tcp_windows`) both sit behind the shared,
+# I/O-free `src/protocol.rs`, and `lib.rs::run` is `#[cfg]`-selected the
+# same way. A consuming app depends on this crate unconditionally now — no
+# `cfg(target_os = "linux")` gate needed on the dependency itself, only on
+# whatever `monoio` this crate pulls in stays target-gated below.
 [dependencies]
 # BrokerHandle/ClientId/BrokerCatSession (the CatSession adapter a rigctl
 # connection's radio client runs on top of) + the existing raw TCP/UDP

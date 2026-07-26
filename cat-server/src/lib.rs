@@ -41,6 +41,13 @@
 //!   (re-implemented directly against `monoio::net`, not by depending on
 //!   those crates — see `planning/cat_server/task_plan.md`'s "Server-side
 //!   framing" section for why).
+//! - [`block_on`] — the minimal thread-parking executor `tcp_windows`/
+//!   `udp_windows`/`worker_windows` drive themselves with. Public (not just
+//!   `pub(crate)`) specifically so `cat-rigctl` — a crate built directly on
+//!   top of this one, needing the exact same "drive a handful of async
+//!   calls on a dedicated OS thread" primitive for its own Windows rigctld
+//!   accept loop — can reuse it instead of hand-rolling a second copy. See
+//!   `docs/adr/0006-windows-network-transport.md`'s follow-up note.
 //!
 //! This crate never leaks into a radio's `CatRadio` state machine — there is
 //! no radio state machine in this repository to touch, but the contract is
@@ -48,7 +55,7 @@
 //! generic `CatClient<C, S>` from the outside only, and never names a
 //! concrete radio's command-id type.
 
-mod block_on;
+pub mod block_on;
 pub mod broker;
 mod broker_session;
 pub mod dedup;

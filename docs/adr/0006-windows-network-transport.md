@@ -347,3 +347,49 @@ error naming itself) — `cargo test -p cat-transport-core`: 25 passed (was
 - This ADR resolves [ADR 0002](0002-async-runtime-binding-for-transport-crates.md)'s
   second revisit trigger. `cat-framework`'s Windows story is unaffected (it
   has no async code and never depended on `monoio`).
+
+## Amendment (2026-07-26): `cat-rigctl` closed the same gap
+
+This ADR's original scope explicitly excluded `cat-rigctl` ("`cat-transport-
+tcp`/`-udp`/`cat-server` are unaffected — network sockets are not the
+trigger" did not extend to the newer `cat-rigctl` crate, which did not exist
+when this ADR was first written and was built directly on `monoio::net`/
+`monoio::spawn` with no Windows path). Both `ft991a` and `ts570d` discovered
+this independently while wiring their own Windows server modes against this
+ADR's work: `cat-rigctl` failed to compile at all for `x86_64-pc-windows-
+gnu`, forcing `ts570d`'s `server` crate into a hand-rolled Windows fallback
+that dropped `--rigctl-port` (the WSJT-X/Hamlib bridge) entirely on that
+platform, while `ft991a` kept its whole headless server mode Linux-only
+rather than ship an asymmetric feature set.
+
+`cat-rigctl` now has a genuine Windows backend, following this ADR's own
+pattern exactly: the radio-independent wire protocol (`dispatch`/
+`dump_state`/line buffering) was extracted into a new, I/O-free
+`cat-rigctl::protocol` module shared by both platforms; `cat-rigctl::rigctl`
+(Linux, `monoio`-based, unchanged in behavior) and a new
+`cat-rigctl::rigctl_windows` (`std::net` + genuine OS threads, reusing this
+ADR's `cat_server::block_on` — made `pub` for exactly this reuse — and
+`cat_server::worker_windows::BrokerHandle`) sit on top of it; `cat_rigctl::
+run` is now `#[cfg]`-selected the same way `cat-server`'s `build`/
+`BrokerHandle` already were, with one difference from every other backend
+in this ADR: **`rigctl_windows` is genuinely `#[cfg(target_os =
+"windows")]`-gated**, not left ungated like `tcp_windows`/`udp_windows`,
+because it constructs a `cat_server::BrokerCatSession` — a type hardcoded to
+`cat_server`'s ambient, platform-aliased `BrokerHandle` rather than generic
+over which handle it wraps — so a version built against the explicit,
+genuinely-`Send` `worker_windows::BrokerHandle` cannot also satisfy
+`BrokerCatSession::new` on a Linux build, where the ambient alias resolves
+to the different, `Rc`-based `broker::BrokerHandle` instead. This is a real
+type-level constraint inherited from `cat-server`'s existing design, not a
+new inconsistency introduced here; see `rigctl_windows`'s own module doc for
+the full explanation.
+
+Verified: `cargo check --target x86_64-pc-windows-gnu -p cat-rigctl
+--all-targets` clean (both lib and tests — `rigctl_windows`'s tests, unlike
+`tcp_windows`'s/`udp_windows`'s, only exist under this target at all, so
+there is no Linux-executed test for them, matching `cat-server::
+worker_windows`'s own precedent). Full workspace suite on Linux: 196 passed,
+zero failures (was 191 before this amendment). `ft991a`'s and `ts570d`'s own
+`server` crates can now call `cat_rigctl::run` uniformly on both platforms
+and regain full `--rigctl-port`/WSJT-X support on Windows — that wiring is
+each app's own follow-on, not part of this amendment.
