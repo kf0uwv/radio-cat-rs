@@ -57,4 +57,28 @@ Content and role are otherwise identical to every other agent's
 - Committed locally (see git log for hash — not pushed, per this task's
   explicit instruction not to touch `origin`).
 
-## Status: complete.
+## Post-migration regression fix (2026-07-26)
+
+An independent post-migration review agent (verifying the `ts570d` port
+onto this crate) found that the extraction silently dropped
+`MAX_LINE_LEN` — `ts570d`'s pre-migration `LineReader::read_line` rejected
+a line exceeding 512 bytes with no `\n` (`io::ErrorKind::InvalidData`,
+closing the connection); this crate's ported `LineReader` had no such
+bound at all, so a client that never sends `\n` grows `self.buf` without
+limit and the connection never resolves — an unbounded-memory-growth DoS,
+reproduced live (a raw socket sending 600 bytes with no newline hung
+forever with no error). Fixed: restored `const MAX_LINE_LEN: usize = 512`
+and the length check in `cat-rigctl/src/rigctl.rs`, ported verbatim from
+`ts570d`'s original (pre-migration) fix rather than reinvented, plus its
+regression test `read_line_rejects_a_line_longer_than_the_maximum_without_a_newline`
+(now `cat-rigctl`'s 19th test). Re-verified live against a rebuilt
+`ft991a server` (via the `.cargo/config.toml` local patch both apps use):
+the same 600-byte-no-newline socket now gets closed instantly instead of
+hanging, and normal `rigctl` traffic on the same listener still works
+immediately afterward. `cargo build/test/clippy(-D warnings)/fmt --check`
+all clean across the whole workspace after the fix. This affects both
+`ft991a` and `ts570d` (both share this crate) — their own working copies
+don't need any change, since both already pick up `cat-rigctl` via the
+local path patch; a rebuild is sufficient.
+
+## Status: complete, including the above regression fix.

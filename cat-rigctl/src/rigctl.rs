@@ -259,6 +259,18 @@ fn dump_state<R: RigctlRadio>() -> String {
     s
 }
 
+/// Maximum buffered line length, in bytes, before a client that never
+/// sends `\n` is treated as misbehaving and disconnected. Without this
+/// bound, `LineReader::read_line` would grow `buf` without limit for such
+/// a client — an unbounded-memory-growth DoS. Restored here after this
+/// crate's initial extraction from `ts570d`/`ft991a` silently dropped it
+/// (found by an independent post-migration review, reproduced live: a raw
+/// socket sending 600 bytes with no newline hung the connection forever
+/// with no error, where the pre-extraction code in both apps closed it
+/// with `InvalidData` after 512 bytes) — restored as ts570d's original fix
+/// had it (512 bytes), not reinvented.
+const MAX_LINE_LEN: usize = 512;
+
 /// Buffers partial reads and splits them into `\n`-terminated lines (with
 /// an optional trailing `\r` trimmed) — rigctld's protocol is line-based
 /// text, not `cat-transport-tcp`'s length-prefixed binary framing, so
@@ -276,10 +288,12 @@ impl LineReader {
 
     /// Returns `Ok(Some(line))` (no trailing `\n`/`\r`) for one complete
     /// line, `Ok(None)` on a clean disconnect with no partial line pending,
-    /// or `Err` on any I/O failure. A partial line still in the buffer when
-    /// the peer disconnects is returned once as a final "line" (mirrors
-    /// how a real terminal client's last unterminated command would still
-    /// be worth attempting) rather than silently discarded.
+    /// or `Err` on any I/O failure — including a line that exceeds
+    /// [`MAX_LINE_LEN`] bytes without a `\n` (see [`MAX_LINE_LEN`]'s docs).
+    /// A partial line still in the buffer when the peer disconnects is
+    /// returned once as a final "line" (mirrors how a real terminal
+    /// client's last unterminated command would still be worth attempting)
+    /// rather than silently discarded.
     async fn read_line(&mut self, stream: &mut TcpStream) -> io::Result<Option<String>> {
         loop {
             if let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
@@ -289,6 +303,15 @@ impl LineReader {
                     line.pop();
                 }
                 return Ok(Some(String::from_utf8_lossy(&line).into_owned()));
+            }
+
+            if self.buf.len() > MAX_LINE_LEN {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "rigctl line exceeded maximum length of {MAX_LINE_LEN} bytes without a newline"
+                    ),
+                ));
             }
 
             let chunk = vec![0u8; 4096];
@@ -544,5 +567,39 @@ mod tests {
                 "mode {mode:?} -> {name} did not round-trip"
             );
         }
+    }
+
+    /// Regression guard for a real bug found by an independent post-hoc
+    /// review after this crate's initial extraction from `ts570d`/`ft991a`:
+    /// the extraction silently dropped `MAX_LINE_LEN`, leaving
+    /// `LineReader::read_line` to grow its buffer without limit for a
+    /// client that never sends `\n` — reproduced live as a connection that
+    /// hangs forever with no error, instead of the pre-extraction code's
+    /// clean `InvalidData` disconnect after 512 bytes. Ported from
+    /// ts570d's own original test of the same name (its `server/src/
+    /// rigctl.rs`, pre-migration) rather than rewritten, since that test
+    /// already correctly exercises the exact fix being restored here.
+    #[monoio::test(driver = "legacy")]
+    async fn read_line_rejects_a_line_longer_than_the_maximum_without_a_newline() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind failed");
+        let addr = listener.local_addr().expect("local_addr failed");
+
+        let server_task = monoio::spawn(async move {
+            let (mut stream, _peer_addr) = listener.accept().await.expect("accept failed");
+            let mut reader = LineReader::new();
+            reader.read_line(&mut stream).await
+        });
+
+        let mut client = TcpStream::connect(addr).await.expect("connect failed");
+        // One byte over the cap, with no '\n' anywhere in it.
+        let oversized = vec![b'x'; MAX_LINE_LEN + 1];
+        let (result, _buf) = client.write_all(oversized).await;
+        result.expect("write_all failed");
+
+        let outcome = server_task.await;
+        let err = outcome.expect_err("a line over MAX_LINE_LEN with no newline must be an Err");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        drop(client);
     }
 }
