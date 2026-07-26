@@ -11,6 +11,7 @@ never reused.
 | [0003](0003-modem-control-lines.md) | `ModemControlLines`: a separate, additive capability trait for RTS/DTR/CTS/DSR/DCD | Accepted |
 | [0004](0004-windows-serial-backend.md) | Windows serial backend for `cat-transport-serial` | Accepted |
 | [0005](0005-rigctl-bridge-and-radio-trait-boundary.md) | `cat-rigctl`: a generic rigctld bridge behind a `RigctlRadio` trait | Accepted |
+| [0006](0006-windows-network-transport.md) | Windows network transport (`cat-transport-tcp`/`cat-transport-udp`/`cat-server`), the shared RS-232 pin-test tool, and `NoModemControlLines` | Accepted |
 
 ## Repository status
 
@@ -43,3 +44,13 @@ background thread + hand-rolled completion primitive for `Transport`,
 direct `EscapeCommFunction`/`GetCommModemStatus` calls for
 `ModemControlLines`) alongside the existing, unchanged Linux io_uring path.
 Tasks 6–8 in `planning/architect/task_plan.md` are the dispatch queue for it.
+
+[ADR 0006](0006-windows-network-transport.md) resolves ADR 0002's second,
+independent revisit trigger ("a consuming application needs an async
+runtime other than monoio"): `cat-transport-tcp`, `cat-transport-udp`, and
+`cat-server` each gain a Windows backend (no `windows-sys` needed — TCP/UDP
+sockets are natively cross-platform in `std`), reusing the completion
+primitive moved to `cat_transport_core::completion` for exactly this
+purpose. Also records the shared RS-232 pin-test `[[bin]]` (moved from
+`ts570d` into `cat-transport-serial`) and `cat_transport_core::
+NoModemControlLines` (generalized from `ft991a`'s hand-written adapter).
