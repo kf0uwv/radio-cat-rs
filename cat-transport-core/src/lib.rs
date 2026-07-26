@@ -80,7 +80,7 @@ pub mod transport;
 
 pub use cat_framework::{ProtocolErrorKind, ResponseDisposition};
 pub use errors::TransportError;
-pub use modem::ModemControlLines;
+pub use modem::{ModemControlLines, NoModemControlLines};
 pub use session::CatSession;
 pub use test_support::{conformance, Exchange, ScriptedCatSession};
 pub use transport::Transport;
