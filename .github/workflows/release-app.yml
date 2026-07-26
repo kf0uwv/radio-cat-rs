@@ -187,6 +187,25 @@ jobs:
           for entry in ${{ inputs.extra_binaries }}; do
             package="${entry%%:*}"
             bin="${entry##*:}"
+            # `emulator` is a fixed, cross-repo convention in both consuming
+            # apps (ft991a, ts570d) for a PTY-hosted virtual radio -- it is
+            # unconditionally Unix-only (std::os::unix, serialport::TTYPort)
+            # and has no Windows port planned (see e.g. ft991a/ts570d's own
+            # CLAUDE.md "Windows support" sections). Neither app's own
+            # release.yml can be changed here (they're frozen at their own
+            # release tags), so this job skips it unconditionally by name
+            # rather than requiring every caller to know to omit it from
+            # `extra_binaries` for the Windows leg specifically -- a real
+            # build failure discovered when ft991a's v0.1.0 Windows job
+            # actually tried to compile it (E0433/E0432, no `std::os::unix`
+            # on this target). If a future consuming app ever adds a
+            # genuinely Windows-portable package also named `emulator`,
+            # this would need to become an opt-out input instead; no such
+            # case exists today.
+            if [ "$package" = "emulator" ]; then
+              echo "Skipping emulator on Windows (Unix-only, PTY-hosted -- no Windows port)"
+              continue
+            fi
             cargo build --release -p "$package" --bin "$bin"
           done
 
