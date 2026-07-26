@@ -29,9 +29,26 @@
 //!
 //! This crate depends only on `cat-transport-core` in this workspace, per
 //! the dependency rules in `.claude/agents/cat_transport.md`.
+//!
+//! # Windows backend
+//!
+//! Per `docs/adr/0006-windows-network-transport.md`: [`codec`] holds the
+//! pure, platform-neutral frame encode/decode logic; [`session`] (Linux,
+//! `monoio`-based) and [`windows`] (a dedicated worker thread + the
+//! `cat-transport-core::completion` primitive, needed since `monoio` does
+//! not exist on Windows) each provide their own `TcpCatSession` built on top
+//! of it. Both modules always compile and are always tested (`windows` has
+//! no actual Windows-specific code -- see its own module doc) — only the
+//! `TcpCatSession` re-exported below is `cfg`-gated per platform, so
+//! application code never branches on which one it's using.
 
+pub mod codec;
+#[cfg(target_os = "linux")]
 pub mod session;
+pub mod windows;
 
-pub use session::{
-    read_frame, read_frame_or_eof, write_frame, TcpCatSession, TcpSessionError, MAX_FRAME_SIZE,
-};
+pub use codec::{TcpSessionError, MAX_FRAME_SIZE};
+#[cfg(target_os = "linux")]
+pub use session::{read_frame, read_frame_or_eof, write_frame, TcpCatSession};
+#[cfg(target_os = "windows")]
+pub use windows::TcpCatSession;

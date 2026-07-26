@@ -67,6 +67,15 @@
 //! `cat-transport-serial::SerialCatSession`, which overrides `send` for the
 //! opposite reason -- the real radio never answers set commands at all).
 //!
+//! # Windows backend
+//!
+//! Per `docs/adr/0006-windows-network-transport.md`, the pure encode/decode
+//! logic above (`MAX_FRAME_SIZE`, `TcpSessionError`, the length-prefix
+//! encode/check functions) now lives in the ungated [`crate::codec`] module,
+//! reused unchanged by [`crate::windows`]'s worker-thread-based
+//! `TcpCatSession` for `x86_64-pc-windows-gnu` — this module (`monoio`-based)
+//! compiles only on `target_os = "linux"`.
+//!
 //! # Reusable codec primitives
 //!
 //! [`write_frame`], [`read_frame`], and [`read_frame_or_eof`] are `pub` so a
@@ -82,47 +91,10 @@
 use async_trait::async_trait;
 use monoio::io::{AsyncReadRent, AsyncReadRentExt, AsyncWriteRentExt};
 use monoio::net::TcpStream;
-use thiserror::Error;
 
 use cat_transport_core::{CatSession, ResponseDisposition};
 
-/// Maximum payload length, in bytes, that [`TcpCatSession`] will write or
-/// accept in a single frame.
-///
-/// 64 KiB. Judgment call (not derived from any existing spec): known
-/// TS-570D-class CAT command/response frames are on the order of tens of
-/// bytes (the widest known response type is well under 100 bytes), so 64
-/// KiB leaves roughly three orders of magnitude of headroom for future
-/// radios or coarser batched frames, while still bounding the worst-case
-/// single-frame buffer allocation to a small, fixed amount per connection
-/// (important for a future `cat-server` handling many concurrent client
-/// connections). A frame declaring a larger length is rejected outright,
-/// without attempting to read or allocate for the declared payload.
-pub const MAX_FRAME_SIZE: u32 = 64 * 1024;
-
-/// Errors from [`TcpCatSession`]'s frame I/O.
-#[derive(Debug, Error)]
-pub enum TcpSessionError {
-    /// The underlying TCP connection failed while reading or writing a
-    /// frame -- includes a peer disconnecting mid-frame (surfaces as
-    /// `io::ErrorKind::UnexpectedEof`, since `read_exact`-style framing
-    /// cannot complete when the connection closes before the declared
-    /// number of bytes arrive).
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-
-    /// A frame's declared length prefix exceeded [`MAX_FRAME_SIZE`]. The
-    /// connection's byte stream is left mid-frame (the payload was never
-    /// read) -- callers should treat this session as unusable and drop the
-    /// connection rather than attempting further requests on it.
-    #[error("frame length {len} exceeds max frame size {max} bytes")]
-    FrameTooLarge {
-        /// The length the peer declared.
-        len: u32,
-        /// The configured maximum ([`MAX_FRAME_SIZE`]).
-        max: u32,
-    },
-}
+use crate::codec::{self, TcpSessionError};
 
 /// [`CatSession`] backed by a `monoio::net::TcpStream`, using
 /// length-prefixed framing.
@@ -165,18 +137,7 @@ impl TcpCatSession {
 /// EOF-tolerance concern on the write side, so this needs no counterpart
 /// analogous to [`read_frame_or_eof`].
 pub async fn write_frame(stream: &mut TcpStream, payload: &[u8]) -> Result<(), TcpSessionError> {
-    let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
-    if len > MAX_FRAME_SIZE {
-        return Err(TcpSessionError::FrameTooLarge {
-            len,
-            max: MAX_FRAME_SIZE,
-        });
-    }
-
-    let mut frame = Vec::with_capacity(4 + payload.len());
-    frame.extend_from_slice(&len.to_be_bytes());
-    frame.extend_from_slice(payload);
-
+    let frame = codec::encode_frame(payload)?;
     let (result, _buf) = stream.write_all(frame).await;
     result?;
     Ok(())
@@ -232,18 +193,11 @@ pub async fn read_frame_or_eof(stream: &mut TcpStream) -> Result<Option<Vec<u8>>
     let Some(len_buf) = read_exact_or_eof(stream, 4).await? else {
         return Ok(None);
     };
-    let len = u32::from_be_bytes(
+    let len = codec::decode_len_prefix(
         len_buf
             .try_into()
             .expect("read_exact_or_eof(.., 4) always yields a 4-byte Vec on Some"),
-    );
-
-    if len > MAX_FRAME_SIZE {
-        return Err(TcpSessionError::FrameTooLarge {
-            len,
-            max: MAX_FRAME_SIZE,
-        });
-    }
+    )?;
 
     let (result, payload) = stream.read_exact(vec![0u8; len as usize]).await;
     result?;
@@ -328,6 +282,7 @@ impl CatSession for TcpCatSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::MAX_FRAME_SIZE;
     use cat_transport_core::conformance;
     use std::net::SocketAddr;
 
