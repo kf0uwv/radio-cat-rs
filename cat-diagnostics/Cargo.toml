@@ -1,0 +1,48 @@
+[package]
+name = "cat-diagnostics"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Generic, radio-independent diagnostics/self-test engine: exercises every readable command in a CommandTable<C> via a CatClient<C, S> and returns a structured per-command report."
+
+[dependencies]
+# CommandId / CommandTable<C> / CommandDefinition<C> / CommandOperation.
+cat-framework = { path = "../cat-framework" }
+
+# CatClient<C, S> — the generic, radio-independent client this engine drives.
+# Never a concrete radio's client type, and never a concrete transport type.
+cat-client = { path = "../cat-client" }
+
+# CatSession trait bound, the portable timeout combinator
+# (cat_transport_core::timeout), and this crate's own unit tests' use of
+# ScriptedCatSession/Exchange (the existing fake-transport test double this
+# workspace already has — no second test-double mechanism is invented here).
+cat-transport-core = { path = "../cat-transport-core" }
+
+[dev-dependencies]
+# Only this crate's own test module needs it, to implement a
+# NeverRespondingSession: CatSession test double (mirroring
+# cat-server::broker::tests's identical fake) that this crate's own
+# per-command timeout can be exercised against.
+async-trait = { workspace = true }
+
+# Async runtime (io_uring-based, Linux-only). A REAL (non-dev) dependency
+# on Linux, not merely a test convenience: `run_diagnostics`/
+# `run_diagnostics_with`'s per-command timeout wrap uses
+# `monoio::time::timeout` directly on Linux, exactly the way
+# `cat-server::broker::with_request_timeout` does and for the identical
+# reason (see docs/adr/0006-windows-network-transport.md's §4 finding,
+# reused here): `cat_transport_core::timeout`'s portable, thread-spawning
+# combinator is NOT safe to drive from code being polled by a real `monoio`
+# runtime specifically (its cross-thread `Waker::wake()` call is not
+# reliably observed by monoio's executor) -- and this engine is meant to be
+# called directly from a consuming app's own monoio-based radio task on
+# Linux (`ts570d`'s/`ft991a`'s control-mode UI), not only from a test
+# harness. Target-gated per ADR 0002's Consequences, matching every other
+# monoio-dependent crate in this workspace.
+[target.'cfg(target_os = "linux")'.dependencies]
+monoio = { workspace = true }
