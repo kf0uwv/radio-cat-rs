@@ -9,6 +9,17 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Serial CAT transport: io_uring RS-232 implementation (Linux) and the SerialCatSession read-until-';' framing wrapper."
 
+# `pin-test`: a runnable RS-232 null-modem cable pin tester, transport-level
+# (not radio-specific) -- docs/adr/0006-windows-network-transport.md
+# Deliverable 3. A `[[bin]]`, not a `[[example]]`, so `cargo build --release
+# -p cat-transport-serial --bin pin-test` produces a real installable
+# binary under `target/release/` that `ft991a`'s/`ts570d`'s own packaging
+# scripts can `cp` (and rename, if desired) into a Debian/Windows package,
+# rather than being reachable only via `cargo run --example`.
+[[bin]]
+name = "pin-test"
+path = "src/bin/pin_test.rs"
+
 [dependencies]
 cat-transport-core = { path = "../cat-transport-core" }
 
