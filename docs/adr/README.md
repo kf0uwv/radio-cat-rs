@@ -12,6 +12,7 @@ never reused.
 | [0004](0004-windows-serial-backend.md) | Windows serial backend for `cat-transport-serial` | Accepted |
 | [0005](0005-rigctl-bridge-and-radio-trait-boundary.md) | `cat-rigctl`: a generic rigctld bridge behind a `RigctlRadio` trait | Accepted |
 | [0006](0006-windows-network-transport.md) | Windows network transport (`cat-transport-tcp`/`cat-transport-udp`/`cat-server`), the shared RS-232 pin-test tool, and `NoModemControlLines` | Accepted |
+| [0007](0007-shared-diagnostics-engine.md) | `cat-diagnostics`: a shared, radio-generic diagnostics/self-test engine | Accepted |
 
 ## Repository status
 
