@@ -232,77 +232,21 @@
 //! signatures are unchanged from this crate's internal use -- only
 //! visibility moved.
 
-use std::collections::VecDeque;
-use std::hash::{BuildHasher, Hasher};
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use monoio::net::udp::UdpSocket;
-use thiserror::Error;
 
 use cat_transport_core::{CatSession, ResponseDisposition};
 
-/// Width, in bytes, of the `session_id` field.
-pub const SESSION_ID_LEN: usize = 8;
-/// Width, in bytes, of the `request_id` field.
-pub const REQUEST_ID_LEN: usize = 8;
-/// Total envelope header width in bytes (`session_id` + `request_id`).
-pub const ENVELOPE_HEADER_LEN: usize = SESSION_ID_LEN + REQUEST_ID_LEN;
+use crate::codec::{
+    self, decode_envelope, encode_envelope, RequestIdCache, UdpSessionError,
+    DEFAULT_RESPONSE_TIMEOUT, MAX_DATAGRAM_SIZE,
+};
 
-/// Maximum payload length, in bytes, that [`UdpCatSession`] will send or
-/// accept in a single envelope.
-///
-/// 1024 bytes -- see the module-level docs' wire format section for the
-/// full reasoning (MTU/fragmentation avoidance, not a copy of TCP's 64 KiB
-/// judgment call).
-pub const MAX_PAYLOAD_SIZE: usize = 1024;
-
-/// Total datagram size (header + max payload) this session allocates for
-/// each `recv_from` call.
-const MAX_DATAGRAM_SIZE: usize = ENVELOPE_HEADER_LEN + MAX_PAYLOAD_SIZE;
-
-/// Maximum number of completed `request_id`s the deduplication cache
-/// retains before evicting the oldest (FIFO). See the module-level docs'
-/// "Deduplication cache" section for the reasoning.
-pub const DEDUP_CACHE_CAPACITY: usize = 32;
-
-/// Default `response_timeout` for [`UdpCatSession::bind_to`]. Callers with
-/// different latency/retry expectations should construct with an explicit
-/// duration instead (via [`UdpCatSession::new`] or
-/// [`UdpCatSession::bind_to_with_timeout`]).
-pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Errors from [`UdpCatSession`]'s envelope I/O.
-#[derive(Debug, Error)]
-pub enum UdpSessionError {
-    /// The underlying UDP socket failed to send or receive.
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-
-    /// No response envelope matching the request just sent arrived from
-    /// `peer` within `timeout`. Unlike a TCP disconnect, this is not an OS
-    /// signal -- it is this session's own bounded-wait policy firing
-    /// because UDP provides no other way to detect a peer that has gone
-    /// silent.
-    #[error("no response received from {peer} within {timeout:?}")]
-    Timeout {
-        /// The peer address this session was waiting on a response from.
-        peer: SocketAddr,
-        /// The configured response timeout that elapsed.
-        timeout: Duration,
-    },
-
-    /// A request payload's length exceeded [`MAX_PAYLOAD_SIZE`]. Nothing
-    /// was sent.
-    #[error("payload length {len} exceeds max payload size {max} bytes")]
-    PayloadTooLarge {
-        /// The length of the payload that was rejected.
-        len: usize,
-        /// The configured maximum ([`MAX_PAYLOAD_SIZE`]).
-        max: usize,
-    },
-}
+#[cfg(test)]
+use crate::codec::{DEDUP_CACHE_CAPACITY, ENVELOPE_HEADER_LEN, MAX_PAYLOAD_SIZE};
 
 /// [`CatSession`] backed by a `monoio::net::udp::UdpSocket`, using an
 /// envelope-framed, deduplicated request/response protocol.
@@ -318,7 +262,7 @@ pub struct UdpCatSession {
     peer_addr: SocketAddr,
     session_id: u64,
     next_request_id: u64,
-    dedup_cache: VecDeque<u64>,
+    dedup_cache: RequestIdCache,
     response_timeout: Duration,
 }
 
@@ -331,9 +275,9 @@ impl UdpCatSession {
         Self {
             socket,
             peer_addr,
-            session_id: random_session_id(),
+            session_id: codec::random_session_id(),
             next_request_id: 0,
-            dedup_cache: VecDeque::with_capacity(DEDUP_CACHE_CAPACITY),
+            dedup_cache: RequestIdCache::new(),
             response_timeout,
         }
     }
@@ -380,10 +324,7 @@ impl UdpCatSession {
     /// Record `request_id` as completed in the dedup cache, evicting the
     /// oldest entry first if already at [`DEDUP_CACHE_CAPACITY`].
     fn remember_completed(&mut self, request_id: u64) {
-        if self.dedup_cache.len() >= DEDUP_CACHE_CAPACITY {
-            self.dedup_cache.pop_front();
-        }
-        self.dedup_cache.push_back(request_id);
+        self.dedup_cache.remember_completed(request_id);
     }
 
     /// `true` if `request_id` is one this session has already completed --
@@ -391,78 +332,8 @@ impl UdpCatSession {
     /// recognized duplicate for documentation/testability; either way a
     /// mismatch is discarded (see module docs).
     fn is_known_duplicate(&self, request_id: u64) -> bool {
-        self.dedup_cache.contains(&request_id)
+        self.dedup_cache.is_known_duplicate(request_id)
     }
-}
-
-/// Generate a randomized session id without an external `rand` dependency
-/// (not on this crate's authorized dependency list). `RandomState` seeds a
-/// `SipHash` instance from OS-provided entropy on construction; calling
-/// `finish()` on a freshly built, unwritten hasher yields a value derived
-/// from that random seed. This is not cryptographic-quality randomness and
-/// is not used as one -- it only needs to make collisions between
-/// concurrently-alive sessions on the same host implausible, which a
-/// fresh OS-seeded value comfortably satisfies.
-fn random_session_id() -> u64 {
-    std::collections::hash_map::RandomState::new()
-        .build_hasher()
-        .finish()
-}
-
-/// Encode one envelope: `session_id` (8 bytes BE) + `request_id` (8 bytes
-/// BE) + `payload` verbatim. Rejects a payload longer than
-/// [`MAX_PAYLOAD_SIZE`] before allocating or sending anything.
-///
-/// `pub` so a server-side peer implementing this same envelope format (e.g.
-/// `cat-server`'s UDP listener, which answers requests and so needs to
-/// encode outgoing envelopes too) can import and call this directly instead
-/// of hand-rolling a second copy of the encoder that could drift out of
-/// sync. Signature kept stable deliberately -- a follow-up task consumes it
-/// as-is.
-pub fn encode_envelope(
-    session_id: u64,
-    request_id: u64,
-    payload: &[u8],
-) -> Result<Vec<u8>, UdpSessionError> {
-    if payload.len() > MAX_PAYLOAD_SIZE {
-        return Err(UdpSessionError::PayloadTooLarge {
-            len: payload.len(),
-            max: MAX_PAYLOAD_SIZE,
-        });
-    }
-
-    let mut datagram = Vec::with_capacity(ENVELOPE_HEADER_LEN + payload.len());
-    datagram.extend_from_slice(&session_id.to_be_bytes());
-    datagram.extend_from_slice(&request_id.to_be_bytes());
-    datagram.extend_from_slice(payload);
-    Ok(datagram)
-}
-
-/// Decode one envelope from a received datagram's bytes. Returns `None` if
-/// `datagram` is too short to contain a full header -- treated as noise by
-/// callers, not an error.
-///
-/// `pub` for the same reason as [`encode_envelope`] -- a server-side
-/// listener decoding incoming request envelopes should use this decoder
-/// rather than a separate hand-rolled copy. Signature kept stable
-/// deliberately.
-pub fn decode_envelope(datagram: &[u8]) -> Option<(u64, u64, &[u8])> {
-    if datagram.len() < ENVELOPE_HEADER_LEN {
-        return None;
-    }
-
-    let session_id = u64::from_be_bytes(
-        datagram[0..SESSION_ID_LEN]
-            .try_into()
-            .expect("slice is exactly SESSION_ID_LEN bytes"),
-    );
-    let request_id = u64::from_be_bytes(
-        datagram[SESSION_ID_LEN..ENVELOPE_HEADER_LEN]
-            .try_into()
-            .expect("slice is exactly REQUEST_ID_LEN bytes"),
-    );
-    let payload = &datagram[ENVELOPE_HEADER_LEN..];
-    Some((session_id, request_id, payload))
 }
 
 #[async_trait(?Send)]
