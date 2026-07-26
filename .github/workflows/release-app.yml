@@ -224,7 +224,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+          # Two separate uploads, not one combined invocation: the raw
+          # binary's fixed filename ("<main_binary>-windows-x86_64.zip")
+          # can be matched a second time by windows_package_glob's default
+          # ("*.zip") if a calling app's own packaging script also happens
+          # to produce a same-named or overlapping file in the repo root --
+          # observed for real on ft991a's/ts570d's first actual release
+          # runs, where passing both file sets to one `gh release upload`
+          # call raced against itself on the shared filename and reported
+          # a transient 404, even though the upload itself completed (both
+          # assets ended up present and correctly sized on the release
+          # afterward). Splitting into two calls removes the overlap risk
+          # entirely rather than relying on that race resolving in our
+          # favor again.
           gh release upload "${{ github.ref_name }}" \
             "${{ inputs.main_binary }}-windows-x86_64.zip" \
+            --clobber
+          gh release upload "${{ github.ref_name }}" \
             ${{ inputs.windows_package_glob }} \
             --clobber
