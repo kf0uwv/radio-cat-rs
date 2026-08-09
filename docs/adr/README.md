@@ -14,6 +14,7 @@ never reused.
 | [0006](0006-windows-network-transport.md) | Windows network transport (`cat-transport-tcp`/`cat-transport-udp`/`cat-server`), the shared RS-232 pin-test tool, and `NoModemControlLines` | Accepted |
 | [0007](0007-shared-diagnostics-engine.md) | `cat-diagnostics`: a shared, radio-generic diagnostics/self-test engine | Accepted |
 | [0008](0008-shared-release-workflow.md) | Shared GitHub Actions release automation | Accepted |
+| [0009](0009-civ-engine-for-binary-addressed-protocols.md) | Generalize `cat-framework` over a `CatWireFormat` type parameter, for binary/addressed protocols (Icom CI-V) | Accepted |
 
 ## Repository status
 

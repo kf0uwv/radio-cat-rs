@@ -1,11 +1,19 @@
 //! Generic CAT command table and frame-processing lifecycle.
 //!
-//! This module is radio-independent. It knows how to look up command codes,
-//! classify wire frames as query/set/action operations, perform basic
-//! structural validation, and delegate command semantics to a radio-specific
-//! [`CatRadio`] implementation.
+//! This module is radio-independent, and — since
+//! `docs/adr/0009-civ-engine-for-binary-addressed-protocols.md` — also
+//! wire-protocol-independent: it is generic over a [`crate::wire_format::CatWireFormat`]
+//! implementation (defaulting to [`crate::wire_format::AsciiLineFormat`], the
+//! Kenwood/Yaesu-style ASCII shape this crate always supported). It knows how
+//! to look up command codes, classify wire frames as query/set/action
+//! operations, perform basic structural validation, and delegate command
+//! semantics to a radio-specific [`CatRadio`] implementation.
+
+use std::marker::PhantomData;
 
 use thiserror::Error;
+
+use crate::wire_format::{AsciiLineFormat, CatWireFormat};
 
 /// Marker trait for radio-owned command identifiers.
 pub trait CommandId: Copy + Clone + Eq + core::fmt::Debug + Send + Sync + 'static {}
@@ -13,6 +21,10 @@ pub trait CommandId: Copy + Clone + Eq + core::fmt::Debug + Send + Sync + 'stati
 impl<T> CommandId for T where T: Copy + Clone + Eq + core::fmt::Debug + Send + Sync + 'static {}
 
 /// CAT command operation identified from a wire frame.
+///
+/// Format-agnostic — a pure classification of what a frame *means*
+/// (read/write/act/answer), independent of how that frame is spelled on
+/// the wire. Unchanged by the `CatWireFormat` generalization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandOperation {
     /// Query/read operation.
@@ -26,6 +38,11 @@ pub enum CommandOperation {
 }
 
 /// Structural form accepted for a command operation.
+///
+/// Format-agnostic — `min_len`/`max_len` count bytes of the parameter/data
+/// region after the command code, whatever that region's encoding turns
+/// out to be (ASCII digits or binary BCD). Unchanged by the
+/// `CatWireFormat` generalization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandForm {
     /// Operation represented by this form.
@@ -96,12 +113,19 @@ impl CommandForm {
 }
 
 /// Radio-specific command definition stored in a generic table.
+///
+/// Generic over `F: CatWireFormat` since [`Self::code`]'s shape is
+/// protocol-specific (a 2-character ASCII string for
+/// [`crate::wire_format::AsciiLineFormat`]; expected to be a
+/// `(cmd, subcmd)` byte pair for a future CI-V implementation). Everything
+/// else here — forms, readable/writable — is unchanged from before the
+/// `CatWireFormat` generalization.
 #[derive(Debug, Clone, Copy)]
-pub struct CommandDefinition<C: CommandId> {
+pub struct CommandDefinition<C: CommandId, F: CatWireFormat = AsciiLineFormat> {
     /// Radio-owned identifier.
     pub id: C,
-    /// Wire command code, normally two ASCII characters.
-    pub code: &'static str,
+    /// Wire command code — `F::Code`'s shape depends on the protocol.
+    pub code: F::Code,
     /// Human-readable command name.
     pub name: &'static str,
     /// Human-readable command description.
@@ -126,7 +150,7 @@ pub struct CommandDefinition<C: CommandId> {
     pub writable: bool,
 }
 
-impl<C: CommandId> CommandDefinition<C> {
+impl<C: CommandId, F: CatWireFormat> CommandDefinition<C, F> {
     /// Return true when any form for `operation` accepts `param_len`.
     pub fn supports(&self, operation: CommandOperation, param_len: usize) -> bool {
         let forms = match operation {
@@ -164,43 +188,72 @@ impl<C: CommandId> CommandDefinition<C> {
     }
 }
 
-/// Static command table generic over a radio-defined command identifier.
+/// Static command table generic over a radio-defined command identifier
+/// and, since ADR 0009, a wire protocol.
+///
+/// `F` defaults to [`AsciiLineFormat`], so every existing
+/// `static TABLE: CommandTable<SomeCommandId> = CommandTable::new(...)`
+/// declaration keeps compiling and behaving exactly as before —
+/// `CommandTable` itself never owns a runtime `F` *value* (it stays a
+/// plain `'static` definitions table, constructible in `const` context);
+/// only [`CommandTable::parse`] borrows a caller-supplied `&F` instance,
+/// for the one operation (splitting a raw frame apart) that can depend on
+/// a protocol's own runtime configuration.
 #[derive(Debug)]
-pub struct CommandTable<C: CommandId> {
-    definitions: &'static [CommandDefinition<C>],
+pub struct CommandTable<C: CommandId, F: CatWireFormat = AsciiLineFormat> {
+    definitions: &'static [CommandDefinition<C, F>],
 }
 
-impl<C: CommandId> CommandTable<C> {
+impl<C: CommandId, F: CatWireFormat> CommandTable<C, F> {
     /// Create a table from static command definitions.
-    pub const fn new(definitions: &'static [CommandDefinition<C>]) -> Self {
+    pub const fn new(definitions: &'static [CommandDefinition<C, F>]) -> Self {
         Self { definitions }
     }
 
     /// Return all command definitions.
-    pub fn definitions(&self) -> &'static [CommandDefinition<C>] {
+    pub fn definitions(&self) -> &'static [CommandDefinition<C, F>] {
         self.definitions
     }
 
-    /// Find a command definition by wire code.
-    pub fn find(&self, code: &str) -> Option<&'static CommandDefinition<C>> {
+    /// Find a command definition by its already-known code (as opposed to
+    /// parsing one out of a raw frame — see [`Self::parse`]). Used by
+    /// callers that already hold a code value, e.g. `cat-client`
+    /// validating a command name a caller passed in directly, or
+    /// `ts570d`'s/`ft991a`'s own UI code looking up a command's
+    /// description by name.
+    ///
+    /// Generic over `Q` (rather than fixed to `F::Code`, which for
+    /// `AsciiLineFormat` is `&'static str`) so a caller holding a
+    /// *borrowed*, non-`'static` code — e.g. a `&str` of some shorter
+    /// lifetime — can still look it up: `F::Code: PartialEq<Q>` is
+    /// satisfied by `&'static str: PartialEq<&'a str>` for any `'a`
+    /// (`std`'s blanket impl compares by content, independent of the two
+    /// sides' lifetimes — the same mechanism `AsciiLineFormat::
+    /// find_command` uses). This is a **restoration**, not new behavior:
+    /// this crate's `find` accepted any-lifetime `&str` before the
+    /// `CatWireFormat` generalization; an earlier revision of this method
+    /// narrowed it to `F::Code` exactly and broke real callers (`ts570d`'s
+    /// `emulator/src/tui.rs::lookup_description`) — caught by actually
+    /// compiling `ts570d`/`ft991a` against this change, not by inspection.
+    pub fn find<Q>(&self, code: Q) -> Option<&'static CommandDefinition<C, F>>
+    where
+        F::Code: PartialEq<Q>,
+    {
         self.definitions
             .iter()
             .find(|definition| definition.code == code)
     }
 
-    /// Parse one complete CAT frame into a generic request.
-    pub fn parse<'a>(&'static self, frame: &'a str) -> Result<CommandRequest<'a, C>, ParseError> {
-        let frame = frame
-            .strip_suffix(';')
-            .ok_or(ParseError::MissingTerminator)?;
-        if frame.len() < 2 {
-            return Err(ParseError::InvalidSyntax);
-        }
-
-        let (code, parameters) = frame.split_at(2);
-        let definition = self
-            .find(code)
-            .ok_or_else(|| ParseError::UnknownCommand(code.to_string()))?;
+    /// Parse one complete CAT frame into a generic request, using `format`
+    /// to split the frame apart (protocol-specific) and this table to
+    /// classify the resulting operation (protocol-agnostic — the same
+    /// logic this crate always used).
+    pub fn parse<'a>(
+        &'static self,
+        format: &F,
+        frame: &'a [u8],
+    ) -> Result<CommandRequest<'a, C, F>, ParseError> {
+        let (definition, parameters) = format.find_command(self, frame)?;
 
         let operation = if parameters.is_empty() && definition.supports(CommandOperation::Query, 0)
         {
@@ -210,10 +263,13 @@ impl<C: CommandId> CommandTable<C> {
         } else if definition.supports(CommandOperation::Set, parameters.len()) {
             CommandOperation::Set
         } else if parameters.is_empty() {
-            return Err(ParseError::UnsupportedOperation(code.to_string()));
+            return Err(ParseError::UnsupportedOperation(format!(
+                "{:?}",
+                definition.code
+            )));
         } else {
             return Err(ParseError::InvalidParameterWidth {
-                code: code.to_string(),
+                code: format!("{:?}", definition.code),
                 len: parameters.len(),
             });
         };
@@ -222,39 +278,72 @@ impl<C: CommandId> CommandTable<C> {
             id: definition.id,
             code: definition.code,
             operation,
-            parameters: ParameterValues { raw: parameters },
+            parameters: ParameterValues {
+                raw: parameters,
+                _format: PhantomData,
+            },
         })
     }
 }
 
 /// Parsed generic CAT request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CommandRequest<'a, C: CommandId> {
+pub struct CommandRequest<'a, C: CommandId, F: CatWireFormat = AsciiLineFormat> {
     /// Radio-owned identifier.
     pub id: C,
-    /// Static wire command code.
-    pub code: &'static str,
+    /// The command's wire code.
+    pub code: F::Code,
     /// Parsed operation.
     pub operation: CommandOperation,
     /// Borrowed raw parameter payload.
-    pub parameters: ParameterValues<'a>,
+    pub parameters: ParameterValues<'a, F>,
 }
 
-/// Borrowed parameter payload with convenience accessors.
+/// Borrowed parameter payload.
+///
+/// Holds raw bytes generically (`F::Code`/data encoding varies by
+/// protocol), but see the `impl<'a> ParameterValues<'a, AsciiLineFormat>`
+/// block below: the `AsciiLineFormat` instantiation gets a specialized
+/// inherent `impl` reproducing this crate's original `&str`-based
+/// `raw()`/`unsigned()` API, unchanged in name and behavior — so every
+/// existing `ts570d`/`ft991a` command handler calling
+/// `request.parameters.raw()` keeps compiling and behaving identically.
+/// See `docs/adr/0009-civ-engine-for-binary-addressed-protocols.md`'s
+/// "Verified against real call sites" section for why this shape was
+/// chosen over a single generic `&[u8]`-returning method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ParameterValues<'a> {
-    raw: &'a str,
+pub struct ParameterValues<'a, F: CatWireFormat = AsciiLineFormat> {
+    raw: &'a [u8],
+    _format: PhantomData<F>,
 }
 
-impl<'a> ParameterValues<'a> {
-    /// Return the raw parameter payload after the command code.
-    pub fn raw(&self) -> &'a str {
+impl<'a, F: CatWireFormat> ParameterValues<'a, F> {
+    /// Return the raw parameter/data bytes after the command code, in
+    /// whatever encoding this protocol uses (ASCII digits, binary BCD,
+    /// ...). Available for any format; see the `AsciiLineFormat`
+    /// specialization below for the `&str`-typed convenience existing
+    /// callers use.
+    pub fn raw_bytes(&self) -> &'a [u8] {
         self.raw
+    }
+}
+
+impl<'a> ParameterValues<'a, AsciiLineFormat> {
+    /// Return the raw parameter payload after the command code, as text.
+    ///
+    /// Byte-identical behavior to this crate's pre-ADR-0009 `raw()`: every
+    /// `AsciiLineFormat` frame is ASCII by construction (validated when the
+    /// command code itself was split off — see
+    /// `AsciiLineFormat::find_command`), so this is an invariant, not a
+    /// possible-failure path a caller needs to handle.
+    pub fn raw(&self) -> &'a str {
+        core::str::from_utf8(self.raw)
+            .expect("AsciiLineFormat parameter bytes are always valid UTF-8")
     }
 
     /// Parse the full payload as an unsigned integer.
     pub fn unsigned(&self) -> Result<u64, ParameterAccessError> {
-        self.raw
+        self.raw()
             .parse::<u64>()
             .map_err(|_| ParameterAccessError::InvalidUnsigned)
     }
@@ -269,6 +358,11 @@ pub enum ParameterAccessError {
 }
 
 /// Generic parse errors before radio-specific handling.
+///
+/// Format-agnostic. `MissingTerminator` reads as ASCII-flavored naming but
+/// applies equally to a missing CI-V `FD` byte — kept as-is rather than
+/// renamed, since renaming would be a gratuitous breaking change to
+/// existing match arms for no behavior difference.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ParseError {
     /// Frame did not end in a CAT terminator.
@@ -361,20 +455,35 @@ pub enum ResponseBuildError {
 }
 
 /// Generic response builder over a caller-owned output buffer.
-pub struct ResponseBuilder<'a> {
+///
+/// `new` is available for any `F: CatWireFormat` (construction never
+/// needs to know the protocol's encoding). The actual writing methods —
+/// [`push_wire_value`](Self::push_wire_value), [`finish`](Self::finish),
+/// [`write_complete`](Self::write_complete) — are only defined on the
+/// `AsciiLineFormat` specialization below, byte-identical to this crate's
+/// pre-ADR-0009 `ResponseBuilder`: a future CI-V response builder needs a
+/// structurally different API (it must assemble a full addressed
+/// `FE FE...FD` frame, not "push text then append one terminator byte"),
+/// so forcing one shared method set across both would misrepresent what
+/// each protocol actually needs.
+pub struct ResponseBuilder<'a, F: CatWireFormat = AsciiLineFormat> {
     output: &'a mut Vec<u8>,
     finished: bool,
+    _format: PhantomData<F>,
 }
 
-impl<'a> ResponseBuilder<'a> {
+impl<'a, F: CatWireFormat> ResponseBuilder<'a, F> {
     /// Create a new response builder.
     pub fn new(output: &'a mut Vec<u8>) -> Self {
         Self {
             output,
             finished: false,
+            _format: PhantomData,
         }
     }
+}
 
+impl<'a> ResponseBuilder<'a, AsciiLineFormat> {
     /// Push raw wire text into the response buffer.
     pub fn push_wire_value(&mut self, value: &str) -> Result<(), ResponseBuildError> {
         if self.finished {
@@ -406,16 +515,21 @@ impl<'a> ResponseBuilder<'a> {
 }
 
 /// Generic command catalog available without mutable radio execution.
-pub trait CatCommandCatalog {
+///
+/// Generic over `F: CatWireFormat` (default [`AsciiLineFormat`]) since
+/// `command_table`'s return type is. Existing `impl CatCommandCatalog for
+/// SomeRadio` blocks (no explicit `<F>`) resolve against the default
+/// unchanged.
+pub trait CatCommandCatalog<F: CatWireFormat = AsciiLineFormat> {
     /// Radio-owned command identifier.
     type CommandId: CommandId;
 
     /// Return the static command table.
-    fn command_table(&self) -> &'static CommandTable<Self::CommandId>;
+    fn command_table(&self) -> &'static CommandTable<Self::CommandId, F>;
 }
 
 /// Radio-specific CAT state machine delegated to by the generic framework.
-pub trait CatRadio: CatCommandCatalog {
+pub trait CatRadio<F: CatWireFormat = AsciiLineFormat>: CatCommandCatalog<F> {
     /// Radio-specific event type.
     type Event;
     /// Radio-specific error type.
@@ -424,15 +538,15 @@ pub trait CatRadio: CatCommandCatalog {
     /// Execute one parsed command request.
     fn handle_command(
         &mut self,
-        request: CommandRequest<'_, Self::CommandId>,
-        response: &mut ResponseBuilder<'_>,
+        request: CommandRequest<'_, Self::CommandId, F>,
+        response: &mut ResponseBuilder<'_, F>,
     ) -> Result<CommandOutcome<Self::Event>, Self::Error>;
 
     /// Write a radio-specific protocol error response.
     fn write_protocol_error(
         &mut self,
         _kind: ProtocolErrorKind,
-        response: &mut ResponseBuilder<'_>,
+        response: &mut ResponseBuilder<'_, F>,
     ) -> Result<CommandOutcome<Self::Event>, Self::Error>;
 }
 
@@ -448,14 +562,31 @@ pub enum CatFrameworkError<E> {
 }
 
 /// Generic CAT processor for one radio state machine.
-pub struct CatFramework<R> {
+///
+/// Owns one `format: F` instance, constructed once — see
+/// `docs/adr/0009-civ-engine-for-binary-addressed-protocols.md`. Existing
+/// `CatFramework::new(radio)` call sites keep compiling unchanged (`F`
+/// defaults to [`AsciiLineFormat`], which is [`Default`]).
+pub struct CatFramework<R, F: CatWireFormat = AsciiLineFormat> {
     radio: R,
+    format: F,
 }
 
-impl<R> CatFramework<R> {
-    /// Create a framework around a radio-specific state machine.
+impl<R, F: CatWireFormat + Default> CatFramework<R, F> {
+    /// Create a framework around a radio-specific state machine, using
+    /// `F`'s default format configuration (the only option for
+    /// [`AsciiLineFormat`], which carries none).
     pub fn new(radio: R) -> Self {
-        Self { radio }
+        Self::with_format(radio, F::default())
+    }
+}
+
+impl<R, F: CatWireFormat> CatFramework<R, F> {
+    /// Create a framework around a radio-specific state machine and an
+    /// explicit format instance — e.g. a CI-V format configured with a
+    /// non-default bus address.
+    pub fn with_format(radio: R, format: F) -> Self {
+        Self { radio, format }
     }
 
     /// Access the underlying radio state immutably.
@@ -464,17 +595,29 @@ impl<R> CatFramework<R> {
     }
 }
 
-impl<R> CatFramework<R>
+impl<R, F> CatFramework<R, F>
 where
-    R: CatRadio,
+    R: CatRadio<F>,
+    F: CatWireFormat,
 {
     /// Process one complete CAT frame.
+    ///
+    /// Takes `impl AsRef<[u8]>` rather than a concrete `&[u8]` specifically
+    /// so existing `&str` call sites (`framework.process_frame("FA;", ...)`,
+    /// used throughout `ts570d`'s/`ft991a`'s own test suites) keep
+    /// compiling unchanged — `str` already implements `AsRef<[u8]>` in
+    /// `std`, and a future CI-V caller passes a real `&[u8]` frame through
+    /// the same bound.
     pub fn process_frame(
         &mut self,
-        frame: &str,
+        frame: impl AsRef<[u8]>,
         output: &mut Vec<u8>,
     ) -> Result<CommandOutcome<R::Event>, CatFrameworkError<R::Error>> {
-        match self.radio.command_table().parse(frame) {
+        match self
+            .radio
+            .command_table()
+            .parse(&self.format, frame.as_ref())
+        {
             Ok(request) => {
                 let mut response = ResponseBuilder::new(output);
                 self.radio
@@ -543,28 +686,28 @@ mod tests {
 
     #[test]
     fn parses_query_form() {
-        let request = TABLE.parse("FA;").unwrap();
+        let request = TABLE.parse(&AsciiLineFormat, b"FA;").unwrap();
         assert_eq!(request.operation, CommandOperation::Query);
         assert_eq!(request.parameters.raw(), "");
     }
 
     #[test]
     fn parses_set_form() {
-        let request = TABLE.parse("FA00014230000;").unwrap();
+        let request = TABLE.parse(&AsciiLineFormat, b"FA00014230000;").unwrap();
         assert_eq!(request.operation, CommandOperation::Set);
         assert_eq!(request.parameters.raw(), "00014230000");
     }
 
     #[test]
     fn parses_action_form() {
-        let request = TABLE.parse("PG;").unwrap();
+        let request = TABLE.parse(&AsciiLineFormat, b"PG;").unwrap();
         assert_eq!(request.operation, CommandOperation::Action);
     }
 
     #[test]
     fn rejects_missing_terminator() {
         assert!(matches!(
-            TABLE.parse("FA"),
+            TABLE.parse(&AsciiLineFormat, b"FA"),
             Err(ParseError::MissingTerminator)
         ));
     }
@@ -572,7 +715,7 @@ mod tests {
     #[test]
     fn rejects_unknown_command() {
         assert!(matches!(
-            TABLE.parse("ZZ;"),
+            TABLE.parse(&AsciiLineFormat, b"ZZ;"),
             Err(ParseError::UnknownCommand(code)) if code == "ZZ"
         ));
     }
@@ -580,17 +723,55 @@ mod tests {
     #[test]
     fn rejects_wrong_width() {
         assert!(matches!(
-            TABLE.parse("FA123;"),
-            Err(ParseError::InvalidParameterWidth { code, len }) if code == "FA" && len == 3
+            TABLE.parse(&AsciiLineFormat, b"FA123;"),
+            Err(ParseError::InvalidParameterWidth { code, len }) if code == "\"FA\"" && len == 3
         ));
     }
 
     #[test]
     fn response_builder_preserves_leading_zeroes() {
         let mut out = Vec::new();
-        let mut response = ResponseBuilder::new(&mut out);
+        let mut response = ResponseBuilder::<AsciiLineFormat>::new(&mut out);
         response.push_wire_value("FA00014230000").unwrap();
         response.finish().unwrap();
         assert_eq!(out, b"FA00014230000;");
+    }
+
+    #[test]
+    fn process_frame_accepts_str_literal_unchanged() {
+        // Guards the `impl AsRef<[u8]>` choice on `CatFramework::process_frame`
+        // — every existing `ts570d`/`ft991a` test/call site passes a bare
+        // `&str` literal directly.
+        struct EchoRadio;
+        impl CatCommandCatalog for EchoRadio {
+            type CommandId = TestCommand;
+            fn command_table(&self) -> &'static CommandTable<Self::CommandId> {
+                &TABLE
+            }
+        }
+        impl CatRadio for EchoRadio {
+            type Event = ();
+            type Error = std::convert::Infallible;
+            fn handle_command(
+                &mut self,
+                _request: CommandRequest<'_, Self::CommandId>,
+                response: &mut ResponseBuilder<'_>,
+            ) -> Result<CommandOutcome<Self::Event>, Self::Error> {
+                response.write_complete("FA00014230000;").unwrap();
+                Ok(CommandOutcome::response_written())
+            }
+            fn write_protocol_error(
+                &mut self,
+                _kind: ProtocolErrorKind,
+                _response: &mut ResponseBuilder<'_>,
+            ) -> Result<CommandOutcome<Self::Event>, Self::Error> {
+                Ok(CommandOutcome::no_response())
+            }
+        }
+
+        let mut framework = CatFramework::new(EchoRadio);
+        let mut output = Vec::new();
+        framework.process_frame("FA;", &mut output).unwrap();
+        assert_eq!(output, b"FA00014230000;");
     }
 }

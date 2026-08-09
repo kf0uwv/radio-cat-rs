@@ -13,6 +13,7 @@
 //! implements [`cat::CatRadio`] to receive parsed commands.
 
 pub mod cat;
+pub mod wire_format;
 
 pub use cat::{
     CatCommandCatalog, CatFramework, CatFrameworkError, CatRadio, CommandDefinition, CommandForm,
@@ -20,3 +21,4 @@ pub use cat::{
     ParameterAccessError, ParameterValues, ParseError, ProtocolErrorKind, ResponseBuildError,
     ResponseBuilder, ResponseDisposition,
 };
+pub use wire_format::{AsciiLineFormat, CatWireFormat, FrameScanner};
