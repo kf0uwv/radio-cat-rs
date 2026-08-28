@@ -9,6 +9,7 @@ members = [
     "cat-server",
     "cat-rigctl",
     "cat-diagnostics",
+    "cat-signal",
 ]
 resolver = "2"
 

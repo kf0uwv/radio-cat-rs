@@ -11,3 +11,9 @@ description = "Generic, radio-independent CAT command engine: command table, par
 
 [dependencies]
 thiserror = { workspace = true }
+
+# For `capabilities::RadioCapabilities::signal`. cat-signal is types and one
+# trait with no dependencies beyond async-trait, so this does not drag any
+# I/O, driver or runtime into the engine -- see
+# docs/adr/0010-capability-model-and-normalized-signal-source.md section 3.
+cat-signal = { path = "../cat-signal" }

@@ -45,6 +45,8 @@
 //! `docs/adr/0011-cat-ui-base-widgets-radio-specific-layout.md` draws
 //! between a shared widget and a radio-specific layout.
 
+pub use cat_signal::SignalCapability;
+
 /// An inclusive range of raw values a radio reports for some quantity.
 ///
 /// Deliberately not `std::ops::RangeInclusive`: that type is not `Copy`,
@@ -368,10 +370,6 @@ pub struct MenuCapability {
 /// Negotiated once, at connect. Every field is answerable statically per
 /// model, so publishing this costs no round trip.
 ///
-/// The `signal` field ADR 0010 section 1 lists is **deliberately absent**
-/// until `cat-signal` exists (Task 12). Duplicating `SignalCapability`
-/// here to fill the gap early would leave two definitions to reconcile
-/// later, which is a worse outcome than one honestly missing field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RadioCapabilities {
     /// Human-readable model name, for display and logging.
@@ -393,6 +391,12 @@ pub struct RadioCapabilities {
     pub meters: MeterSet,
     pub memory: Option<MemoryCapability>,
     pub menu: Option<MenuCapability>,
+    /// Where this radio's spectrum can come from, if anywhere.
+    ///
+    /// Re-exported from `cat-signal` rather than redefined here: two
+    /// definitions of the same concept is exactly the drift this workspace
+    /// exists to prevent.
+    pub signal: SignalCapability,
 }
 
 impl RadioCapabilities {
@@ -484,6 +488,7 @@ mod tests {
             item_count: 50,
             writable: true,
         }),
+        signal: SignalCapability::None,
     };
 
     #[test]

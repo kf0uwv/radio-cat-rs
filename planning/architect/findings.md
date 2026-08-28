@@ -281,3 +281,85 @@ assigns `cat-client` to the `cat_framework` agent, not `cat_transport`.
 `.claude/agents/cat_transport.md` never mentions `cat-client` in its scope at
 all. The dispatch queue below follows the roster's established lane
 boundaries rather than building `cat-client` under `cat_transport`.
+
+## Task 13 — capability model gate: **PASS, with one recorded strain** (2026-08-28)
+
+ADR 0010 conceded `RadioCapabilities` "is a guess until three radios are
+actually described by it." Two are now described, as `#[cfg(test)]`
+fixtures in `cat-framework/src/capabilities_fixtures.rs`. Every value is
+read out of the app repos and cited at its point of use; neither app was
+modified.
+
+### No escape hatch was needed
+
+Two of ADR 0010's three forbidden hatches are **structurally impossible**
+here rather than merely avoided: `RadioCapabilities` is `Copy` and
+`const`-constructible, and neither `serde_json::Value` nor `HashMap` is
+either, so adding one would fail to compile. A test builds
+`const RADIOS: [RadioCapabilities; 2]` to keep that true.
+
+The third — matching on `model` — is not structurally preventable, so
+`every_question_is_answered_from_data_not_from_the_model_string` blanks the
+model name and then asks every question a real consumer asks (which handles
+to open, whether to draw a waterfall, how to scale the S-meter, which mode
+buttons to render, whether a width selector is meaningful). It is written
+as a loop over both radios, which it could not be if any answer depended on
+knowing which radio it was.
+
+### What the FT-991A actually stressed
+
+| | TS-570D | FT-991A |
+|---|---|---|
+| Handles | 1 (CAT + Keying shared) | 3 (CAT, Keying, Audio; none shared) |
+| Modes | 8 | 14 |
+| Meters | 4 | 7 |
+| S-meter range | 0-30 | 0-255 |
+| Memory | 0-99, unnamed | 1-117, named |
+| Menu entries | 52 | 152 |
+| Coverage | 500 kHz - 60 MHz | 30 kHz - 470 MHz |
+| Signal | `IfTap` (CN4, 73.05 MHz, inverted) | `None` |
+
+The endpoint model earned its keep in both directions: the TS-570D needed
+`shareable_with` to say one handle does two jobs, and the FT-991A needed it
+*empty* to say three handles do not. A global "shares its port" flag on the
+set would have expressed neither.
+
+Two findings worth keeping:
+
+- **The S-meter ranges differ by 8.5x for the same physical quantity.**
+  This is the concrete fix for the duplication ADR 0011 found, where
+  `smeter_bar` existed twice with each radio's scale hardcoded. Raw 15 is
+  mid-scale on one radio and under 6% on the other.
+- **Both radios put `6` on the wire for their sixth mode** — FSK on the
+  TS-570D, RTTY-LSB on the FT-991A. A shared table of wire codes would have
+  been a table of coincidences. This is why `ModeDescriptor` carries a
+  normalized `ModeId` and a per-radio `label` but no encoding at all.
+
+### The strain: `MenuCapability`
+
+`MenuCapability` is an item count and a writability flag. That answers "is
+there a menu, and how big," which is what a handshake and a status display
+need. It does **not** describe a menu well enough to render one: the
+FT-991A's `EX_MENU_TABLE` is 152 heterogeneous typed entries and the
+TS-570D's 52 are a different shape again.
+
+This is a pass, not a failure, because menu *topology* is radio-specific by
+ADR 0011's own seam and belongs in each app's crate. It is recorded because
+the pressure to widen it is predictable: the first GUI menu screen will
+want `&'static [MenuItemDescriptor]` here, which would pull 152
+FT-991A-shaped entries into the generic library and rebuild the coupling
+this model exists to remove.
+
+**If it is ever genuinely needed, the right shape already exists**:
+`cat-signal`'s `SettingDescriptor` list, published by the radio and
+rendered generically — not a second bespoke menu type. Recorded so the
+next person reaches for that instead.
+
+### Not closed by this task
+
+ADR 0010 asked for **three** radios. The IC-7100 remains undescribed and
+its manual is still outstanding, so the model has been tested against a
+shared-handle HF radio and a multi-handle HF/VHF/UHF one, but not against a
+binary CI-V radio. ADR 0009's `CatWireFormat` work suggests CI-V will
+stress the *wire* layer rather than this one, but that is a prediction, not
+a result.

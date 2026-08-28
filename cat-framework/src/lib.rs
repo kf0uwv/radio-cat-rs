@@ -13,6 +13,11 @@
 //! implements [`cat::CatRadio`] to receive parsed commands.
 
 pub mod capabilities;
+/// Task 13's acceptance gate: the TS-570D and FT-991A described by
+/// [`capabilities`]. Test-only, because this crate ships no
+/// radio-specific knowledge.
+#[cfg(test)]
+mod capabilities_fixtures;
 pub mod cat;
 pub mod wire_format;
 

@@ -1,0 +1,24 @@
+[package]
+name = "cat-signal"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Normalized spectrum frames and a source trait, so an IF tap, a native bandscope and an SDR are interchangeable to a consumer."
+
+# Deliberately minimal: types and one trait. No driver, no FFT, no runtime.
+# A concrete source (cat-signal-rtlsdr) is a separate crate precisely so
+# that consuming a SpectrumFrame never drags in libusb -- see
+# docs/adr/0010-capability-model-and-normalized-signal-source.md section 5.
+[dependencies]
+async-trait = { workspace = true }
+
+[dev-dependencies]
+# Runtime-agnostic test executor. This crate must not bind to monoio --
+# it has no I/O of its own -- and `#[monoio::test]` would make its tests
+# Linux-only for no reason (see planning/release_workflow/findings.md
+# section 7a for what that cost elsewhere).
+futures = { workspace = true }
