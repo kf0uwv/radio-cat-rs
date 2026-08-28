@@ -83,6 +83,7 @@ pub struct ScriptedCatSession {
     script: VecDeque<Exchange>,
     written: Vec<u8>,
     fail_next: Option<TransportError>,
+    unordered: bool,
 }
 
 impl ScriptedCatSession {
@@ -97,6 +98,27 @@ impl ScriptedCatSession {
             script: script.into_iter().collect(),
             written: Vec::new(),
             fail_next: None,
+            unordered: false,
+        }
+    }
+
+    /// Create a session pre-loaded with `script`, matched **by request
+    /// content rather than by position**.
+    ///
+    /// For tests where several clients submit concurrently and nothing
+    /// orders their arrival. The ordered constructor turns such a test into
+    /// a coin flip on thread scheduling: whichever request reaches the
+    /// session first is compared against whichever exchange happens to be
+    /// at the head of the queue.
+    ///
+    /// This is deliberately a separate constructor rather than a relaxation
+    /// of [`with_script`](Self::with_script) -- for a single-client test,
+    /// request *order* is a real property worth asserting, and callers
+    /// should have to say when it is not the property under test.
+    pub fn with_unordered_script<I: IntoIterator<Item = Exchange>>(script: I) -> Self {
+        Self {
+            unordered: true,
+            ..Self::with_script(script)
         }
     }
 
@@ -149,20 +171,38 @@ impl CatSession for ScriptedCatSession {
 
         self.written.extend_from_slice(request);
 
-        let exchange = self.script.pop_front().unwrap_or_else(|| {
-            panic!(
-                "ScriptedCatSession: no exchange scripted for request {:?}",
-                String::from_utf8_lossy(request)
-            )
-        });
+        let exchange = if self.unordered {
+            let at = self
+                .script
+                .iter()
+                .position(|e| e.expected_request == request)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "ScriptedCatSession: no unconsumed exchange matches request {:?}",
+                        String::from_utf8_lossy(request)
+                    )
+                });
+            self.script
+                .remove(at)
+                .expect("position() returned a valid index")
+        } else {
+            let exchange = self.script.pop_front().unwrap_or_else(|| {
+                panic!(
+                    "ScriptedCatSession: no exchange scripted for request {:?}",
+                    String::from_utf8_lossy(request)
+                )
+            });
 
-        assert_eq!(
-            exchange.expected_request,
-            request,
-            "ScriptedCatSession: request mismatch (expected {:?}, got {:?})",
-            String::from_utf8_lossy(&exchange.expected_request),
-            String::from_utf8_lossy(request),
-        );
+            assert_eq!(
+                exchange.expected_request,
+                request,
+                "ScriptedCatSession: request mismatch (expected {:?}, got {:?})",
+                String::from_utf8_lossy(&exchange.expected_request),
+                String::from_utf8_lossy(request),
+            );
+
+            exchange
+        };
 
         response.extend_from_slice(&exchange.response);
 
@@ -231,101 +271,122 @@ pub mod conformance {
 mod tests {
     use super::*;
 
-    #[monoio::test(driver = "legacy")]
-    async fn matches_expected_request_and_returns_response() {
-        let mut session = ScriptedCatSession::with_script([Exchange::new("FA;", "FA00014250000;")]);
+    #[test]
+    fn matches_expected_request_and_returns_response() {
+        futures::executor::block_on(async {
+            let mut session =
+                ScriptedCatSession::with_script([Exchange::new("FA;", "FA00014250000;")]);
 
-        let mut response = Vec::new();
-        let disposition = session.execute(b"FA;", &mut response).await.unwrap();
+            let mut response = Vec::new();
+            let disposition = session.execute(b"FA;", &mut response).await.unwrap();
 
-        assert_eq!(disposition, ResponseDisposition::ResponseWritten);
-        assert_eq!(response, b"FA00014250000;");
-        assert_eq!(session.written(), b"FA;");
-        assert!(session.is_exhausted());
+            assert_eq!(disposition, ResponseDisposition::ResponseWritten);
+            assert_eq!(response, b"FA00014250000;");
+            assert_eq!(session.written(), b"FA;");
+            assert!(session.is_exhausted());
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn empty_scripted_response_yields_no_response() {
-        let mut session = ScriptedCatSession::with_script([Exchange::new("TX;", "")]);
+    #[test]
+    fn empty_scripted_response_yields_no_response() {
+        futures::executor::block_on(async {
+            let mut session = ScriptedCatSession::with_script([Exchange::new("TX;", "")]);
 
-        let mut response = Vec::new();
-        let disposition = session.execute(b"TX;", &mut response).await.unwrap();
+            let mut response = Vec::new();
+            let disposition = session.execute(b"TX;", &mut response).await.unwrap();
 
-        assert_eq!(disposition, ResponseDisposition::NoResponse);
-        assert!(response.is_empty());
+            assert_eq!(disposition, ResponseDisposition::NoResponse);
+            assert!(response.is_empty());
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
+    #[test]
     #[should_panic(expected = "request mismatch")]
-    async fn panics_on_request_mismatch() {
-        let mut session = ScriptedCatSession::with_script([Exchange::new("FA;", "FA00014250000;")]);
-        let mut response = Vec::new();
-        let _ = session.execute(b"FB;", &mut response).await;
+    fn panics_on_request_mismatch() {
+        futures::executor::block_on(async {
+            let mut session =
+                ScriptedCatSession::with_script([Exchange::new("FA;", "FA00014250000;")]);
+            let mut response = Vec::new();
+            let _ = session.execute(b"FB;", &mut response).await;
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
+    #[test]
     #[should_panic(expected = "no exchange scripted")]
-    async fn panics_on_exhausted_script() {
-        let mut session = ScriptedCatSession::new();
-        let mut response = Vec::new();
-        let _ = session.execute(b"FA;", &mut response).await;
+    fn panics_on_exhausted_script() {
+        futures::executor::block_on(async {
+            let mut session = ScriptedCatSession::new();
+            let mut response = Vec::new();
+            let _ = session.execute(b"FA;", &mut response).await;
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn simulates_timeout() {
-        let mut session = ScriptedCatSession::new();
-        session.simulate_timeout();
+    #[test]
+    fn simulates_timeout() {
+        futures::executor::block_on(async {
+            let mut session = ScriptedCatSession::new();
+            session.simulate_timeout();
 
-        let mut response = Vec::new();
-        let result = session.execute(b"FA;", &mut response).await;
+            let mut response = Vec::new();
+            let result = session.execute(b"FA;", &mut response).await;
 
-        assert!(matches!(result, Err(TransportError::ReadTimeout)));
+            assert!(matches!(result, Err(TransportError::ReadTimeout)));
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn simulates_disconnect() {
-        let mut session = ScriptedCatSession::new();
-        session.simulate_disconnect();
+    #[test]
+    fn simulates_disconnect() {
+        futures::executor::block_on(async {
+            let mut session = ScriptedCatSession::new();
+            session.simulate_disconnect();
 
-        let mut response = Vec::new();
-        let result = session.execute(b"FA;", &mut response).await;
+            let mut response = Vec::new();
+            let result = session.execute(b"FA;", &mut response).await;
 
-        assert!(matches!(result, Err(TransportError::Other(_))));
+            assert!(matches!(result, Err(TransportError::Other(_))));
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn simulated_failure_only_affects_next_call() {
-        let mut session = ScriptedCatSession::with_script([Exchange::new("FA;", "FA00014250000;")]);
-        session.simulate_timeout();
+    #[test]
+    fn simulated_failure_only_affects_next_call() {
+        futures::executor::block_on(async {
+            let mut session =
+                ScriptedCatSession::with_script([Exchange::new("FA;", "FA00014250000;")]);
+            session.simulate_timeout();
 
-        let mut response = Vec::new();
-        let first = session.execute(b"FA;", &mut response).await;
-        assert!(first.is_err());
+            let mut response = Vec::new();
+            let first = session.execute(b"FA;", &mut response).await;
+            assert!(first.is_err());
 
-        // The script is untouched by the failed call — the same exchange
-        // is still there for the next attempt.
-        let second = session.execute(b"FA;", &mut response).await.unwrap();
-        assert_eq!(second, ResponseDisposition::ResponseWritten);
+            // The script is untouched by the failed call — the same exchange
+            // is still there for the next attempt.
+            let second = session.execute(b"FA;", &mut response).await.unwrap();
+            assert_eq!(second, ResponseDisposition::ResponseWritten);
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn supports_malformed_response_bytes() {
-        // "Malformed" needs no dedicated API: it is just a scripted
-        // response that fails typed parsing one layer up.
-        let mut session = ScriptedCatSession::with_script([Exchange::new("IF;", "IFxxxxx;")]);
+    #[test]
+    fn supports_malformed_response_bytes() {
+        futures::executor::block_on(async {
+            // "Malformed" needs no dedicated API: it is just a scripted
+            // response that fails typed parsing one layer up.
+            let mut session = ScriptedCatSession::with_script([Exchange::new("IF;", "IFxxxxx;")]);
 
-        let mut response = Vec::new();
-        let disposition = session.execute(b"IF;", &mut response).await.unwrap();
+            let mut response = Vec::new();
+            let disposition = session.execute(b"IF;", &mut response).await.unwrap();
 
-        assert_eq!(disposition, ResponseDisposition::ResponseWritten);
-        assert_eq!(response, b"IFxxxxx;");
+            assert_eq!(disposition, ResponseDisposition::ResponseWritten);
+            assert_eq!(response, b"IFxxxxx;");
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn send_matches_script_via_default_execute() {
-        let mut session = ScriptedCatSession::with_script([Exchange::new("TX;", "")]);
-        session.send(b"TX;").await.unwrap();
-        assert_eq!(session.written(), b"TX;");
+    #[test]
+    fn send_matches_script_via_default_execute() {
+        futures::executor::block_on(async {
+            let mut session = ScriptedCatSession::with_script([Exchange::new("TX;", "")]);
+            session.send(b"TX;").await.unwrap();
+            assert_eq!(session.written(), b"TX;");
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -334,22 +395,28 @@ mod tests {
     // functions unchanged.
     // -----------------------------------------------------------------------
 
-    #[monoio::test(driver = "legacy")]
-    async fn conformance_query_round_trip() {
-        let mut session = ScriptedCatSession::with_script([Exchange::new("ID;", "ID017;")]);
-        conformance::query_round_trip(&mut session, b"ID;", b"ID017;").await;
+    #[test]
+    fn conformance_query_round_trip() {
+        futures::executor::block_on(async {
+            let mut session = ScriptedCatSession::with_script([Exchange::new("ID;", "ID017;")]);
+            conformance::query_round_trip(&mut session, b"ID;", b"ID017;").await;
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn conformance_set_is_fire_and_forget() {
-        let mut session = ScriptedCatSession::with_script([Exchange::new("TX;", "")]);
-        conformance::set_is_fire_and_forget(&mut session, b"TX;").await;
+    #[test]
+    fn conformance_set_is_fire_and_forget() {
+        futures::executor::block_on(async {
+            let mut session = ScriptedCatSession::with_script([Exchange::new("TX;", "")]);
+            conformance::set_is_fire_and_forget(&mut session, b"TX;").await;
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn conformance_surfaces_transport_error() {
-        let mut session = ScriptedCatSession::new();
-        session.simulate_disconnect();
-        conformance::surfaces_transport_error(&mut session, b"FA;").await;
+    #[test]
+    fn conformance_surfaces_transport_error() {
+        futures::executor::block_on(async {
+            let mut session = ScriptedCatSession::new();
+            session.simulate_disconnect();
+            conformance::surfaces_transport_error(&mut session, b"FA;").await;
+        });
     }
 }

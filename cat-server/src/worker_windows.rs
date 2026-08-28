@@ -228,6 +228,15 @@ mod tests {
         build(ScriptedCatSession::with_script(script), &TABLE)
     }
 
+    /// As [`broker_with_script`], but the session matches requests by
+    /// content instead of position -- for the tests that submit from
+    /// several threads at once, where nothing orders arrival.
+    fn broker_with_unordered_script<I: IntoIterator<Item = Exchange>>(
+        script: I,
+    ) -> (BrokerWorker<FakeCommand, ScriptedCatSession>, BrokerHandle) {
+        build(ScriptedCatSession::with_unordered_script(script), &TABLE)
+    }
+
     #[test]
     fn worker_happy_path_round_trip_through_handle() {
         let (worker, handle) = broker_with_script([Exchange::new("FA;", "FA00014250000;")]);
@@ -248,13 +257,22 @@ mod tests {
 
     #[test]
     fn worker_serializes_requests_from_multiple_handles_correctly() {
-        // Two client threads submit concurrently; the scripted session only
-        // accepts requests in a fixed order, so this also proves the
-        // single ordered worker serializes access to the physical session
-        // (a scripted session panics on an out-of-order/mismatched
-        // request) *and* that each caller's response is routed back
-        // correctly, not cross-wired.
-        let (worker, handle) = broker_with_script([
+        // Two client threads submit concurrently. This proves each
+        // caller's response is routed back to that caller and not
+        // cross-wired, and that the single ordered worker serializes
+        // access to the physical session.
+        //
+        // The session matches by request content, NOT by position. An
+        // ordered script here made the test a coin flip on thread
+        // scheduling -- whichever thread reached the worker first was
+        // compared against whichever exchange sat at the head of the
+        // queue -- and it failed ~3 runs in 8 on Windows the first time
+        // these tests were ever executed there (see `radio-cat-rs`
+        // planning/release_workflow/findings.md section 7c). Serializing
+        // access is what the worker guarantees; choosing an arrival order
+        // for two independent client threads is not, and asserting on one
+        // tested the scheduler rather than the code.
+        let (worker, handle) = broker_with_unordered_script([
             Exchange::new("FA;", "FA00014250000;"),
             Exchange::new("IF;", "IF017;"),
         ]);

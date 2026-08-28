@@ -192,8 +192,21 @@ mod tests {
     fn spawn_server(
         script: impl IntoIterator<Item = Exchange>,
     ) -> (SocketAddr, Arc<Mutex<ClientRegistry>>) {
+        spawn_server_with(ScriptedCatSession::with_script(script))
+    }
+
+    /// As [`spawn_server`], but the session matches requests by content
+    /// instead of position -- for tests where several clients submit
+    /// concurrently and nothing orders their arrival at the worker.
+    fn spawn_server_unordered(
+        script: impl IntoIterator<Item = Exchange>,
+    ) -> (SocketAddr, Arc<Mutex<ClientRegistry>>) {
+        spawn_server_with(ScriptedCatSession::with_unordered_script(script))
+    }
+
+    fn spawn_server_with(session: ScriptedCatSession) -> (SocketAddr, Arc<Mutex<ClientRegistry>>) {
         let (listener, addr) = bind_loopback();
-        let (worker, handle) = build(ScriptedCatSession::with_script(script), &TABLE);
+        let (worker, handle) = build(session, &TABLE);
         let registry = Arc::new(Mutex::new(ClientRegistry::new()));
         thread::spawn(move || worker.run());
         let registry_clone = Arc::clone(&registry);
@@ -239,7 +252,14 @@ mod tests {
 
     #[test]
     fn end_to_end_two_concurrent_connections_get_correctly_correlated_responses() {
-        let (addr, registry) = spawn_server([
+        // Unordered script: two independent client connections submit
+        // concurrently, so which request reaches the worker first is a
+        // scheduling detail, not a property of the server. An ordered
+        // script made this a coin flip -- `ScriptedCatSession: request
+        // mismatch (expected "FA;", got "IF;")` on roughly half of runs.
+        // Correlation of each response back to its own connection is what
+        // this test exists to prove, and that is asserted below.
+        let (addr, registry) = spawn_server_unordered([
             Exchange::new("FA;", "FA00014250000;"),
             Exchange::new("IF;", "IF017;"),
         ]);
@@ -247,24 +267,48 @@ mod tests {
         let mut stream_a = TcpStream::connect(addr).expect("connect a failed");
         let mut stream_b = TcpStream::connect(addr).expect("connect b failed");
 
+        // Each thread hands its stream BACK rather than consuming it. If
+        // the streams are moved in and dropped when the threads exit, both
+        // connections close before the `active_count()` assertion below and
+        // it reads 0 -- which it did, on 8 runs out of 8, the first time
+        // these tests were ever executed on Windows (see `radio-cat-rs`
+        // planning/release_workflow/findings.md section 7b). Holding them
+        // open is what makes "two connections are active" a true statement
+        // at the moment it is asserted.
         let task_a = thread::spawn(move || {
             write_raw_frame(&mut stream_a, b"FA;");
-            read_raw_frame(&mut stream_a)
+            let response = read_raw_frame(&mut stream_a);
+            (stream_a, response)
         });
         let task_b = thread::spawn(move || {
             write_raw_frame(&mut stream_b, b"IF;");
-            read_raw_frame(&mut stream_b)
+            let response = read_raw_frame(&mut stream_b);
+            (stream_b, response)
         });
 
-        let response_a = task_a.join().unwrap();
-        let response_b = task_b.join().unwrap();
+        let (stream_a, response_a) = task_a.join().unwrap();
+        let (stream_b, response_b) = task_b.join().unwrap();
 
         assert_eq!(response_a, b"FA00014250000;");
         assert_eq!(response_b, b"IF017;");
-        // Give the registrations a moment to land -- best-effort, not
-        // load-bearing for correctness above.
-        thread::sleep(std::time::Duration::from_millis(20));
-        assert_eq!(registry.lock().unwrap().active_count(), 2);
+
+        // Both responses arrived, so both connections were accepted and
+        // served; registration is ordered before that. Poll rather than
+        // sleep a fixed interval, so this asserts a settled state instead
+        // of racing a magic number.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let active = registry.lock().unwrap().active_count();
+            if active == 2 || std::time::Instant::now() >= deadline {
+                assert_eq!(active, 2);
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // Explicit, so the streams' lifetime above is obviously deliberate
+        // and not an accident a later edit may quietly undo.
+        drop((stream_a, stream_b));
     }
 
     #[test]

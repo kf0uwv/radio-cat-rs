@@ -164,39 +164,47 @@ mod tests {
     use super::*;
     use crate::test_support::{Exchange, ScriptedCatSession};
 
-    #[monoio::test(driver = "legacy")]
-    async fn execute_delegates_to_wrapped_session() {
-        let mut session =
-            NoModemControlLines::new(ScriptedCatSession::with_script([Exchange::new(
-                "FA;",
-                "FA00014250000;",
-            )]));
+    #[test]
+    fn execute_delegates_to_wrapped_session() {
+        futures::executor::block_on(async {
+            let mut session =
+                NoModemControlLines::new(ScriptedCatSession::with_script([Exchange::new(
+                    "FA;",
+                    "FA00014250000;",
+                )]));
 
-        let mut response = Vec::new();
-        let disposition = session.execute(b"FA;", &mut response).await.unwrap();
+            let mut response = Vec::new();
+            let disposition = session.execute(b"FA;", &mut response).await.unwrap();
 
-        assert_eq!(disposition, ResponseDisposition::ResponseWritten);
-        assert_eq!(response, b"FA00014250000;");
+            assert_eq!(disposition, ResponseDisposition::ResponseWritten);
+            assert_eq!(response, b"FA00014250000;");
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn send_delegates_to_wrapped_session() {
-        let mut session =
-            NoModemControlLines::new(ScriptedCatSession::with_script([Exchange::new("TX;", "")]));
+    #[test]
+    fn send_delegates_to_wrapped_session() {
+        futures::executor::block_on(async {
+            let mut session =
+                NoModemControlLines::new(ScriptedCatSession::with_script([Exchange::new(
+                    "TX;", "",
+                )]));
 
-        session.send(b"TX;").await.unwrap();
+            session.send(b"TX;").await.unwrap();
 
-        assert_eq!(session.session.written(), b"TX;");
+            assert_eq!(session.session.written(), b"TX;");
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn flush_rx_delegates_to_wrapped_session() {
-        // ScriptedCatSession's flush_rx is the trait default (a no-op) --
-        // this just proves NoModemControlLines::flush_rx doesn't panic and
-        // genuinely calls through rather than silently doing nothing of
-        // its own.
-        let mut session = NoModemControlLines::new(ScriptedCatSession::new());
-        session.flush_rx();
+    #[test]
+    fn flush_rx_delegates_to_wrapped_session() {
+        futures::executor::block_on(async {
+            // ScriptedCatSession's flush_rx is the trait default (a no-op) --
+            // this just proves NoModemControlLines::flush_rx doesn't panic and
+            // genuinely calls through rather than silently doing nothing of
+            // its own.
+            let mut session = NoModemControlLines::new(ScriptedCatSession::new());
+            session.flush_rx();
+        });
     }
 
     #[test]

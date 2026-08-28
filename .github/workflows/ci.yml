@@ -1,0 +1,104 @@
+name: CI
+
+# This repository had no CI workflow at all until 2026-08-27 -- only
+# `release-app.yml`, the reusable release workflow consumed by the app
+# repos. Every crate here was verified solely by whatever the consuming
+# apps happened to check, which is how the Windows defects recorded in
+# `planning/release_workflow/findings.md` sections 7a-7d survived: the
+# Windows test modules had never been executed anywhere. Adding this
+# workflow is part of ADR 0012's Task 10.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93"
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+  windows-check:
+    name: Windows (MSVC)
+    runs-on: windows-latest
+
+    # Authoritative Windows verification, per ADR 0012.
+    #
+    # `x86_64-pc-windows-msvc` is the host target on `windows-latest`, so no
+    # `--target` flag is needed or wanted -- passing one would force a
+    # non-host build for no benefit. The previous convention across the app
+    # repos was `cargo check --target x86_64-pc-windows-gnu` on an Ubuntu
+    # runner, which type-checked a target nobody ships; ADR 0012 retired it.
+    #
+    # `cargo test` here is the point, not a bonus. ADR 0006 section 4
+    # recorded that the Windows-only test modules stayed unexecuted; they
+    # ran for the first time on 2026-08-27 against real hardware and found
+    # three classes of broken test plus one production bug
+    # (`cat-transport-udp` timing out early -- findings.md section 7d).
+    # This job is what stops that from silently recurring.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93"
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-windows-msvc-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-windows-msvc-
+            ${{ runner.os }}-cargo-
+
+      - name: cargo check (workspace)
+        run: cargo check --workspace
+
+      - name: cargo test (workspace)
+        run: cargo test --workspace

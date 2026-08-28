@@ -134,3 +134,31 @@ Not done, and explicitly not silently dropped:
 
 Await review of ADR 0004 and the Task 6–8 additions to `task_plan.md`. On
 approval, dispatch Task 6 to the `cat_transport` agent.
+
+## 2026-08-27 — ADRs 0010-0013 Accepted; Task 10 executed
+
+User sign-off ("accept and start"). Status flipped to **Accepted** on
+`radio-cat-rs` ADRs 0010 (capability model + normalized signal), 0011 rev 4
+(`cat-ui` for both renderers), 0012 (native MSVC), 0013 (renderer parity),
+and `ts570d` ADR 0008 (GPU `gui` crate). Both ADR indexes updated. The
+`ts570d` and `ft991a` `CLAUDE.md` pending-amendment blocks are now in force
+as direction — with the explicit caveat, written into both, that Rules 1-7
+still describe and govern the current code because none of the migration
+has been written; what acceptance forbids is *new* code entrenching the
+superseded framing.
+
+**Task 10 (`release_workflow`) executed** — see
+`planning/release_workflow/{findings,progress}.md`. Config and docs
+complete; both `windows-check` jobs now run `cargo check` + `cargo test` on
+`windows-latest`. ADR 0012's caveat 1 (GPU crates under `cargo-xwin`)
+closed affirmative by measurement, caveat 2 (Microsoft licence) narrowed to
+developer machines and left for the user, caveat 3 (the local check cannot
+run tests) newly recorded. One stale-scope bug found and fixed: `ft991a`'s
+CI had excluded `server` from Windows verification for a month after the
+upstream gap that justified it had closed.
+
+**Outstanding on Task 10:** no `windows-latest` run has happened — these
+repos are not pushed from here. That run is where ADR 0006 §4's
+never-executed Windows tests finally execute.
+
+**Next:** Task 11 (`cat-framework::capabilities`), unblocked.

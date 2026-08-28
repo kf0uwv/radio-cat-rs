@@ -118,10 +118,27 @@ impl WorkerState {
                     if e.kind() == std::io::ErrorKind::WouldBlock
                         || e.kind() == std::io::ErrorKind::TimedOut =>
                 {
-                    return Err(UdpSessionError::Timeout {
-                        peer: self.peer_addr,
-                        timeout: self.response_timeout,
-                    });
+                    // Deliberately `continue` rather than returning
+                    // `Timeout` here: the check at the top of the loop owns
+                    // the timeout decision, and it is the only one that
+                    // consults our own `deadline`.
+                    //
+                    // Windows measures `SO_RCVTIMEO` in system clock ticks
+                    // (~15.6 ms granularity by default) while `deadline`
+                    // comes from `Instant` (QPC). The socket's timer can
+                    // therefore expire slightly BEFORE the deadline it was
+                    // armed from. Returning here trusted the socket's
+                    // clock over ours and cut the wait short -- observed
+                    // returning at 193.1 ms against a 200 ms timeout on
+                    // Windows 11, the first time this module's tests were
+                    // ever executed on Windows (`radio-cat-rs`
+                    // planning/release_workflow/findings.md section 7d).
+                    //
+                    // Looping re-arms `set_read_timeout` with whatever time
+                    // is genuinely left and cannot spin: `remaining` is
+                    // recomputed from the same fixed `deadline` each pass,
+                    // so it converges to zero and the loop head returns.
+                    continue;
                 }
                 Err(e) => return Err(UdpSessionError::Io(e)),
             };

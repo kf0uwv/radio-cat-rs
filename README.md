@@ -66,8 +66,10 @@ applications via git dependency:
 191 tests passing across the workspace on Linux; the Windows-capable crates
 (`cat-transport-serial`, `cat-transport-tcp`, `cat-transport-udp`,
 `cat-transport-core`, `cat-diagnostics`) are additionally verified via
-`cargo check --target x86_64-pc-windows-gnu` (real cross-compilation
-type-checking); `cat-server`'s Windows backend is verified the same way for
+`cargo check` on a `windows-latest` CI runner targeting
+`x86_64-pc-windows-msvc` (per [ADR 0012](docs/adr/0012-native-msvc-windows-target.md),
+which retired the previous `x86_64-pc-windows-gnu` cross-check); `cat-server`'s
+Windows backend is verified the same way for
 its listener/worker modules specifically (see
 [ADR 0006](docs/adr/0006-windows-network-transport.md) §4 for why those
 modules' *tests* — as opposed to production code — stay Windows-only).
