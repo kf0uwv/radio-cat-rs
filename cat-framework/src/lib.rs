@@ -12,6 +12,7 @@
 //! frequencies, state, or handlers. A radio crate supplies those and
 //! implements [`cat::CatRadio`] to receive parsed commands.
 
+pub mod capabilities;
 pub mod cat;
 pub mod wire_format;
 
