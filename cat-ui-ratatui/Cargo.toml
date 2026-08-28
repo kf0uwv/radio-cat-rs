@@ -1,0 +1,19 @@
+[package]
+name = "cat-ui-ratatui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Terminal widgets for a radio console: coarse waterfall, meter rail, VFO readout, band/mode grids, and a generic settings renderer."
+
+[dependencies]
+cat-ui = { path = "../cat-ui" }
+cat-framework = { path = "../cat-framework" }
+cat-signal = { path = "../cat-signal" }
+ratatui = { workspace = true }
+
+[dev-dependencies]
+futures = { workspace = true }

@@ -149,10 +149,13 @@ cat-server           (depends on: cat-client, a cat-transport-* implementation)
 - Build: `cargo build --workspace` / `cargo build --workspace --release`
 - Test: `cargo test --workspace` / `cargo test -p <crate> test_name`
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings` / `cargo fmt`
-- Windows cross-compile check: `cargo check --target x86_64-pc-windows-gnu -p cat-transport-serial`
-  (requires `rustup target add x86_64-pc-windows-gnu`; type-checks only, no
-  link/run — actual Windows runtime behavior is validated by consumers on
-  real hardware, not in this repo's own test suite)
+- Windows check (local, best-effort): `cargo xwin check --target x86_64-pc-windows-msvc --workspace`
+  (one-time: `cargo install cargo-xwin --locked` + `rustup target add x86_64-pc-windows-msvc`).
+  **`x86_64-pc-windows-msvc` is the only Windows target** — `-gnu` is retired
+  per docs/adr/0012. This cross-compiles and links from Linux but cannot RUN
+  the tests; the authoritative check is the `windows-latest` CI job, which
+  runs `cargo check` AND `cargo test`. Actual runtime behavior against
+  physical Windows hardware is still validated by consumers, not here.
 
 ## Architecture
 

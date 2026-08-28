@@ -32,6 +32,10 @@ cat-server = { path = "../cat-server" }
 # a caller supplies.
 cat-framework = { path = "../cat-framework" }
 
+# For SignalCapability in RadioCapabilities. Types only -- no driver, no
+# FFT, no runtime (ADR 0010 section 3).
+cat-signal = { path = "../cat-signal" }
+
 # CatSession — the physical session trait `run()`'s `session: S` parameter
 # is bounded on, matching `cat-server::build`'s own bound exactly.
 cat-transport-core = { path = "../cat-transport-core" }

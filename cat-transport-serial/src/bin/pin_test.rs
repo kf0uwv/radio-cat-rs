@@ -43,10 +43,9 @@
 //! Example (Linux):   pin-test /dev/ttyUSB0 /dev/ttyUSB1
 //! Example (Windows): pin-test COM3 COM4
 
-use std::time::Duration;
-
 use cat_transport_core::{ModemControlLines, Transport};
 use cat_transport_serial::{FlowControl, Parity, SerialConfig, SerialPort};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Outcome {
@@ -313,26 +312,55 @@ async fn run(port_a: &str, port_b: &str) -> i32 {
     i32::from(failed > 0)
 }
 
-fn parse_args() -> Option<(String, String)> {
+enum ParsedArgs {
+    Ports(String, String),
+    PortsAndLoop(String, String, String),
+}
+
+fn parse_args() -> Option<ParsedArgs> {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 3 {
-        eprintln!("Usage: {} <source-port> <dest-port>", args[0]);
-        eprintln!(
-            "Example: {} /dev/ttyUSB0 /dev/ttyUSB1  (or COM3 COM4 on Windows)",
-            args[0]
-        );
-        return None;
+    match args.len() {
+        3 => Some(ParsedArgs::Ports(args[1].clone(), args[2].clone())),
+        4 => Some(ParsedArgs::PortsAndLoop(
+            args[1].clone(),
+            args[2].clone(),
+            args[3].clone(),
+        )),
+        _ => {
+            eprintln!("Usage: {} <source-port> <dest-port>", args[0]);
+            eprintln!(
+                "Example: {} /dev/ttyUSB0 /dev/ttyUSB1  (or COM3 COM4 on Windows)",
+                args[0]
+            );
+            None
+        }
     }
-    Some((args[1].clone(), args[2].clone()))
 }
 
 #[cfg(target_os = "linux")]
-#[monoio::main]
+#[monoio::main(timer_enabled = true)]
 async fn main() {
-    let Some((port_a, port_b)) = parse_args() else {
-        std::process::exit(1);
-    };
-    std::process::exit(run(&port_a, &port_b).await);
+    match parse_args() {
+        Some(ParsedArgs::Ports(port_a, port_b)) => {
+            std::process::exit(run(&port_a, &port_b).await);
+        }
+        Some(ParsedArgs::PortsAndLoop(port_a, port_b, loop_count_str)) => {
+            let loop_count: u32 = loop_count_str.parse().unwrap();
+            // Repeat count only -- no per-iteration state depends on the
+            // index itself.
+            for _ in 0..loop_count {
+                let e = run(&port_a, &port_b).await;
+                monoio::time::sleep(Duration::from_millis(100)).await;
+                if e != 0 {
+                    std::process::exit(e);
+                }
+            }
+            std::process::exit(0);
+        }
+        None => {
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Minimal thread-parking `block_on`, needed only because `#[monoio::main]`
@@ -368,8 +396,30 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 
 #[cfg(target_os = "windows")]
 fn main() {
-    let Some((port_a, port_b)) = parse_args() else {
-        std::process::exit(1);
-    };
-    std::process::exit(block_on(run(&port_a, &port_b)));
+    // Mirrors the Linux `main` above's three-way `ParsedArgs` dispatch --
+    // this used to destructure a plain 2-tuple, from before `PortsAndLoop`
+    // existed, and was left stale when that variant was added (this
+    // platform's `main` is never exercised by a Linux build, so nothing
+    // caught the mismatch until now). No `monoio::time::sleep` here since
+    // `monoio` doesn't exist on Windows at all -- `std::thread::sleep` is
+    // the direct equivalent for this blocking `main`.
+    match parse_args() {
+        Some(ParsedArgs::Ports(port_a, port_b)) => {
+            std::process::exit(block_on(run(&port_a, &port_b)));
+        }
+        Some(ParsedArgs::PortsAndLoop(port_a, port_b, loop_count_str)) => {
+            let loop_count: u32 = loop_count_str.parse().unwrap();
+            for _ in 0..loop_count {
+                let e = block_on(run(&port_a, &port_b));
+                std::thread::sleep(Duration::from_millis(100));
+                if e != 0 {
+                    std::process::exit(e);
+                }
+            }
+            std::process::exit(0);
+        }
+        None => {
+            std::process::exit(1);
+        }
+    }
 }

@@ -127,13 +127,91 @@ pub(crate) async fn dispatch<R: RigctlRadio>(radio: &mut R, line: &str) -> Strin
 /// below, which stay generic placeholders for every radio (see module
 /// docs).
 fn dump_state<R: RigctlRadio>() -> String {
+    match R::capabilities() {
+        Some(caps) => dump_state_from_capabilities(caps),
+        // No capabilities published: the historical placeholder tail,
+        // byte-for-byte. Existing radios must not change behaviour just
+        // because this function grew a second branch.
+        None => {
+            let (min_hz, max_hz) = R::freq_range_hz();
+            dump_state_text(min_hz, max_hz, "-1 10\n0 0\n", "-1 2400\n0 0\n", 1200, 1200)
+        }
+    }
+}
+
+/// Generate the `\dump_state` reply from a radio's own description.
+///
+/// ADR 0010 §6: "a radio gains rigctl support by describing itself, not by
+/// writing a bridge." Everything here that used to be a hand-written
+/// placeholder — the frequency range, the tuning-step list, the filter
+/// widths, the RIT/XIT limits — now comes from the capability model.
+///
+/// What is deliberately **not** generated: the mode/vfo/antenna bitmasks
+/// stay `-1` (all bits set). Hamlib's per-mode bit assignments are a fixed
+/// external vocabulary that does not map cleanly onto `ModeId`, and being
+/// permissive there is what the existing, field-tested behaviour does.
+/// Narrowing it would be a behaviour change to the compatibility layer,
+/// which is precisely what this task must not do.
+pub(crate) fn dump_state_from_capabilities(
+    caps: &cat_framework::capabilities::RadioCapabilities,
+) -> String {
+    let mut steps = String::new();
+    for step in caps.tuning_steps_hz {
+        steps.push_str(&format!("-1 {step}\n"));
+    }
+    if steps.is_empty() {
+        steps.push_str("-1 10\n");
+    }
+    steps.push_str("0 0\n");
+
+    let mut filters = String::new();
+    if let Some(widths) = caps.filters.widths_hz {
+        for width in widths {
+            filters.push_str(&format!("-1 {width}\n"));
+        }
+    }
+    if filters.is_empty() {
+        // A radio with no CAT-selectable widths still has to say
+        // something here; a conservative, universally-legal SSB bandwidth
+        // is what the placeholder always used.
+        filters.push_str("-1 2400\n");
+    }
+    filters.push_str("0 0\n");
+
+    // Hamlib wants a single magnitude for each. The capability model
+    // carries them as symmetric limits already.
+    let rit = caps.vfos.rit_hz.unwrap_or(0).unsigned_abs();
+    let xit = caps.vfos.xit_hz.unwrap_or(0).unsigned_abs();
+
+    dump_state_text(
+        caps.rx_range.min_hz,
+        caps.rx_range.max_hz,
+        &steps,
+        &filters,
+        rit,
+        xit,
+    )
+}
+
+/// The `\dump_state` reply's fixed shape, with the variable parts injected.
+///
+/// One function so that both the generated and the placeholder paths
+/// produce **structurally identical** replies, differing only in values.
+/// The field count is the thing that must never drift (see below), and it
+/// is now impossible for the two paths to disagree about it.
+fn dump_state_text(
+    min_hz: u64,
+    max_hz: u64,
+    tuning_steps: &str,
+    filters: &str,
+    rit_hz: u32,
+    xit_hz: u32,
+) -> String {
     let mut s = String::new();
     // Protocol marker, rig model (0 = generic/unknown), ITU region (0 =
     // unspecified) — the three fixed header lines every `dump_state` reply
     // starts with.
     s.push_str("0\n0\n0\n");
-
-    let (min_hz, max_hz) = R::freq_range_hz();
 
     // RX range list: one row of `start end modes low_power high_power vfo
     // ant`, terminated by an all-zero sentinel row. `modes`/`vfo`/`ant` use
@@ -146,14 +224,8 @@ fn dump_state<R: RigctlRadio>() -> String {
     s.push_str(&format!(
         "{min_hz} {max_hz} -1 -1 -1 -1 -1\n0 0 0 0 0 0 0\n"
     ));
-    // Tuning steps: `modes step_size`, terminated by an all-zero row. `10`
-    // Hz is a conservative, commonly-supported fine step.
-    s.push_str("-1 10\n0 0\n");
-    // Filters: `modes width`, terminated by an all-zero row. `2400` Hz is a
-    // conservative, universally-legal SSB bandwidth — a placeholder, not a
-    // per-mode table, since this bridge doesn't resolve real filter widths
-    // (module docs).
-    s.push_str("-1 2400\n0 0\n");
+    s.push_str(tuning_steps);
+    s.push_str(filters);
 
     // Fixed capability tail: max RIT/XIT/IF-shift (Hz), announces bitmask,
     // preamp levels list (dB, zero-terminated), attenuator levels list (dB,
@@ -166,7 +238,9 @@ fn dump_state<R: RigctlRadio>() -> String {
     // before returning for protocol version 0, and blocks waiting for the
     // rest if fewer are sent (confirmed against a real WSJT-X/Hamlib
     // client, which timed out here when only four were sent).
-    s.push_str("1200\n0\n1200\n0\n0\n0\n0x0\n0x0\n0x0\n0x0\n0x0\n0x0\n");
+    s.push_str(&format!(
+        "{rit_hz}\n0\n{xit_hz}\n0\n0\n0\n0x0\n0x0\n0x0\n0x0\n0x0\n0x0\n"
+    ));
     s
 }
 
@@ -535,5 +609,629 @@ mod tests {
         s.feed(b"partial");
         assert_eq!(s.take_final_partial_line(), Some("partial".to_string()));
         assert_eq!(s.take_final_partial_line(), None);
+    }
+}
+
+#[cfg(test)]
+mod capability_dump_state_tests {
+    use super::*;
+    use cat_framework::capabilities::*;
+
+    const MODES: &[ModeDescriptor] = &[ModeDescriptor {
+        id: ModeId::Lsb,
+        label: "LSB",
+        kind: ModeKind::Ssb,
+        sideband: Some(Sideband::Lower),
+        default_bandwidth_hz: 2400,
+    }];
+    const METERS: &[MeterDescriptor] = &[MeterDescriptor {
+        kind: MeterKind::S,
+        raw_range: RawRange::new(0, 30),
+        active_on_transmit: false,
+    }];
+    const ENDPOINTS: &[EndpointDescriptor] = &[EndpointDescriptor {
+        role: EndpointRole::Cat,
+        required: true,
+        shareable_with: &[],
+    }];
+
+    static RICH: RadioCapabilities = RadioCapabilities {
+        model: "Rich Radio",
+        endpoints: EndpointSet::new(ENDPOINTS),
+        vfos: VfoCapability {
+            count: 2,
+            split: true,
+            rit_hz: Some(9999),
+            xit_hz: Some(9999),
+        },
+        modes: MODES,
+        tuning_steps_hz: &[10, 100, 1_000],
+        rx_range: FrequencyRange::new(500_000, 60_000_000),
+        filters: FilterCapability {
+            if_shift_hz: Some(1_000),
+            widths_hz: Some(&[500, 2_400]),
+            notch: false,
+        },
+        meters: MeterSet::new(METERS),
+        memory: None,
+        menu: None,
+        signal: SignalSupport::None,
+    };
+
+    static BARE: RadioCapabilities = RadioCapabilities {
+        model: "Bare Radio",
+        endpoints: EndpointSet::new(ENDPOINTS),
+        vfos: VfoCapability {
+            count: 1,
+            split: false,
+            rit_hz: None,
+            xit_hz: None,
+        },
+        modes: MODES,
+        tuning_steps_hz: &[],
+        rx_range: FrequencyRange::new(1_800_000, 30_000_000),
+        filters: FilterCapability {
+            if_shift_hz: None,
+            widths_hz: None,
+            notch: false,
+        },
+        meters: MeterSet::new(METERS),
+        memory: None,
+        menu: None,
+        signal: SignalSupport::None,
+    };
+
+    /// The tail Hamlib counts: everything after the zero-terminated
+    /// tuning-step and filter lists.
+    fn capability_tail(dump: &str) -> Vec<&str> {
+        let lines: Vec<&str> = dump.lines().collect();
+        lines[lines.len() - 12..].to_vec()
+    }
+
+    // -----------------------------------------------------------------
+    // ADR 0005 regression #1: the capability tail's field count.
+    //
+    // A reply short by even one line makes Hamlib's netrigctl_open()
+    // block forever waiting for the rest, and nothing about the symptom
+    // points at the cause. It was found once, against a live client, and
+    // it is exactly the kind of thing a hand-maintained string regrows.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn the_capability_tail_has_exactly_twelve_fields() {
+        for caps in [&RICH, &BARE] {
+            let dump = dump_state_from_capabilities(caps);
+            let tail = capability_tail(&dump);
+            assert_eq!(
+                tail.len(),
+                12,
+                "netrigctl_open() reads exactly 12 capability lines for \
+                 protocol version 0 and blocks if fewer arrive; {} sent {:?}",
+                caps.model,
+                tail
+            );
+            // The last six are the func/level/parm bitmasks, all hex zero.
+            assert_eq!(&tail[6..], &["0x0"; 6]);
+        }
+    }
+
+    #[test]
+    fn generated_and_placeholder_replies_have_identical_structure() {
+        // The two paths may differ in VALUES but never in SHAPE. Before
+        // this refactor there was one hand-written string; now there are
+        // two callers, and a field-count drift between them would
+        // reproduce the original bug in a new way.
+        struct Placeholder;
+        #[async_trait::async_trait(?Send)]
+        impl crate::RigctlRadio for Placeholder {
+            type Mode = ();
+            type Error = ();
+            async fn get_vfo_a_hz(&mut self) -> Result<u64, ()> {
+                Ok(0)
+            }
+            async fn set_vfo_a_hz(&mut self, _hz: u64) -> Result<(), ()> {
+                Ok(())
+            }
+            async fn get_mode(&mut self) -> Result<(), ()> {
+                Ok(())
+            }
+            async fn set_mode(&mut self, _m: ()) -> Result<(), ()> {
+                Ok(())
+            }
+            async fn get_transmitting(&mut self) -> Result<bool, ()> {
+                Ok(false)
+            }
+            async fn transmit(&mut self) -> Result<(), ()> {
+                Ok(())
+            }
+            async fn receive(&mut self) -> Result<(), ()> {
+                Ok(())
+            }
+            fn hamlib_mode_name(_m: ()) -> &'static str {
+                "USB"
+            }
+            fn hamlib_mode_from_name(_n: &str) -> Option<()> {
+                Some(())
+            }
+            fn freq_range_hz() -> (u64, u64) {
+                (500_000, 60_000_000)
+            }
+        }
+
+        let placeholder = dump_state::<Placeholder>();
+        let generated = dump_state_from_capabilities(&BARE);
+
+        assert_eq!(capability_tail(&placeholder).len(), 12);
+        assert_eq!(capability_tail(&generated).len(), 12);
+        // Same header shape, same sentinel rows.
+        assert!(placeholder.starts_with("0\n0\n0\n"));
+        assert!(generated.starts_with("0\n0\n0\n"));
+        assert_eq!(
+            placeholder.matches("0 0 0 0 0 0 0\n").count(),
+            generated.matches("0 0 0 0 0 0 0\n").count()
+        );
+    }
+
+    #[test]
+    fn a_radio_that_publishes_nothing_keeps_its_historical_reply() {
+        // The compatibility layer's first duty. A radio that has not been
+        // migrated must see byte-for-byte what it saw before.
+        struct Unmigrated;
+        #[async_trait::async_trait(?Send)]
+        impl crate::RigctlRadio for Unmigrated {
+            type Mode = ();
+            type Error = ();
+            async fn get_vfo_a_hz(&mut self) -> Result<u64, ()> {
+                Ok(0)
+            }
+            async fn set_vfo_a_hz(&mut self, _hz: u64) -> Result<(), ()> {
+                Ok(())
+            }
+            async fn get_mode(&mut self) -> Result<(), ()> {
+                Ok(())
+            }
+            async fn set_mode(&mut self, _m: ()) -> Result<(), ()> {
+                Ok(())
+            }
+            async fn get_transmitting(&mut self) -> Result<bool, ()> {
+                Ok(false)
+            }
+            async fn transmit(&mut self) -> Result<(), ()> {
+                Ok(())
+            }
+            async fn receive(&mut self) -> Result<(), ()> {
+                Ok(())
+            }
+            fn hamlib_mode_name(_m: ()) -> &'static str {
+                "USB"
+            }
+            fn hamlib_mode_from_name(_n: &str) -> Option<()> {
+                Some(())
+            }
+            fn freq_range_hz() -> (u64, u64) {
+                (500_000, 60_000_000)
+            }
+        }
+
+        assert_eq!(
+            dump_state::<Unmigrated>(),
+            "0\n0\n0\n\
+             500000 60000000 -1 -1 -1 -1 -1\n0 0 0 0 0 0 0\n\
+             500000 60000000 -1 -1 -1 -1 -1\n0 0 0 0 0 0 0\n\
+             -1 10\n0 0\n\
+             -1 2400\n0 0\n\
+             1200\n0\n1200\n0\n0\n0\n0x0\n0x0\n0x0\n0x0\n0x0\n0x0\n"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Generated content.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn the_frequency_range_comes_from_the_radios_own_coverage() {
+        let dump = dump_state_from_capabilities(&BARE);
+        assert!(dump.contains("1800000 30000000 -1 -1 -1 -1 -1\n"));
+        assert!(!dump.contains("500000 60000000"));
+    }
+
+    #[test]
+    fn every_tuning_step_the_radio_supports_is_reported() {
+        let dump = dump_state_from_capabilities(&RICH);
+        for step in ["-1 10\n", "-1 100\n", "-1 1000\n"] {
+            assert!(dump.contains(step), "missing step row {step:?}");
+        }
+    }
+
+    #[test]
+    fn every_selectable_filter_width_is_reported() {
+        let dump = dump_state_from_capabilities(&RICH);
+        assert!(dump.contains("-1 500\n"));
+        assert!(dump.contains("-1 2400\n"));
+    }
+
+    #[test]
+    fn rit_and_xit_limits_come_from_the_radio_not_a_constant() {
+        assert!(dump_state_from_capabilities(&RICH).contains("9999\n0\n9999\n"));
+        // A radio with no RIT reports zero rather than inheriting the old
+        // hardcoded 1200.
+        assert!(dump_state_from_capabilities(&BARE).contains("0\n0\n0\n0\n0\n0\n0x0"));
+    }
+
+    #[test]
+    fn a_radio_with_no_steps_or_widths_still_sends_well_formed_lists() {
+        // Empty lists would desynchronize the reply. BARE has neither, so
+        // this is the case that would break a client if it were mishandled.
+        let dump = dump_state_from_capabilities(&BARE);
+        assert!(
+            dump.contains("-1 10\n0 0\n"),
+            "must fall back to a step row"
+        );
+        assert!(
+            dump.contains("-1 2400\n0 0\n"),
+            "must fall back to a width row"
+        );
+        assert_eq!(capability_tail(&dump).len(), 12);
+    }
+}
+
+#[cfg(test)]
+mod hamlib_interop_regression_tests {
+    use super::*;
+    use futures::executor::block_on;
+
+    /// Records what it was asked to do, so a wire-level command can be
+    /// checked against the value that actually reached the radio.
+    struct Recorder {
+        last_hz: u64,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl crate::RigctlRadio for Recorder {
+        type Mode = ();
+        type Error = ();
+        async fn get_vfo_a_hz(&mut self) -> Result<u64, ()> {
+            Ok(self.last_hz)
+        }
+        async fn set_vfo_a_hz(&mut self, hz: u64) -> Result<(), ()> {
+            self.last_hz = hz;
+            Ok(())
+        }
+        async fn get_mode(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
+        async fn set_mode(&mut self, _m: ()) -> Result<(), ()> {
+            Ok(())
+        }
+        async fn get_transmitting(&mut self) -> Result<bool, ()> {
+            Ok(false)
+        }
+        async fn transmit(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
+        async fn receive(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
+        fn hamlib_mode_name(_m: ()) -> &'static str {
+            "USB"
+        }
+        fn hamlib_mode_from_name(_n: &str) -> Option<()> {
+            Some(())
+        }
+        fn freq_range_hz() -> (u64, u64) {
+            (500_000, 60_000_000)
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // ADR 0005 regression #2: `F` carries a %f-formatted double.
+    //
+    // Hamlib's netrigctl_set_freq() sends freq_t (a C double) as `%f` --
+    // never a bare integer. Parsing it as an integer returned RPRT -1 to
+    // a real `rigctl -m 2` client. WSJT-X setting frequency is the single
+    // most-used path through this bridge, so this is the regression that
+    // matters most.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn set_frequency_accepts_the_float_hamlib_actually_sends() {
+        let mut radio = Recorder { last_hz: 0 };
+        let reply = block_on(dispatch(&mut radio, "F 14074000.000000"));
+        assert_eq!(reply, RPRT_OK);
+        assert_eq!(radio.last_hz, 14_074_000);
+    }
+
+    #[test]
+    fn set_frequency_still_accepts_a_bare_integer() {
+        // Hand-typed `rigctl` sessions and older clients send this form.
+        let mut radio = Recorder { last_hz: 0 };
+        assert_eq!(block_on(dispatch(&mut radio, "F 7100000")), RPRT_OK);
+        assert_eq!(radio.last_hz, 7_100_000);
+    }
+
+    #[test]
+    fn a_fractional_hz_rounds_rather_than_truncating() {
+        let mut radio = Recorder { last_hz: 0 };
+        block_on(dispatch(&mut radio, "F 14074000.700000"));
+        assert_eq!(radio.last_hz, 14_074_001);
+    }
+
+    #[test]
+    fn a_non_numeric_frequency_is_refused_without_touching_the_radio() {
+        let mut radio = Recorder { last_hz: 42 };
+        assert_eq!(block_on(dispatch(&mut radio, "F nonsense")), RPRT_ERR);
+        assert_eq!(block_on(dispatch(&mut radio, "F")), RPRT_ERR);
+        assert_eq!(
+            radio.last_hz, 42,
+            "a rejected command must not mutate state"
+        );
+    }
+}
+
+/// Live interoperability against a real Hamlib client.
+///
+/// Task 17's acceptance bar is "verified against a live Hamlib client", and
+/// nothing short of running one proves it: both of ADR 0005's bugs
+/// (`\dump_state`'s field count, `F`'s `%f` float) passed every unit test
+/// this crate had at the time and still failed against `rigctl`. The unit
+/// tests above encode what we *learned*; these prove it against the thing
+/// that taught us.
+///
+/// The accept loop here is plain `std::net` rather than either platform
+/// backend. That is deliberate: what is under test is the wire protocol —
+/// [`dispatch`] and [`LineSplitter`], which are shared by both backends and
+/// have no I/O of their own — not the accept loop, which has its own
+/// coverage. Using `std::net` keeps this test runnable on any platform
+/// without a runtime.
+///
+/// Skipped, loudly, when `rigctl` is not installed. A test that silently
+/// passes when it did not run is worse than no test.
+#[cfg(test)]
+mod live_hamlib_tests {
+    use super::*;
+    use futures::executor::block_on;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    struct FakeRadio {
+        hz: u64,
+        transmitting: bool,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl crate::RigctlRadio for FakeRadio {
+        type Mode = ();
+        type Error = ();
+        async fn get_vfo_a_hz(&mut self) -> Result<u64, ()> {
+            Ok(self.hz)
+        }
+        async fn set_vfo_a_hz(&mut self, hz: u64) -> Result<(), ()> {
+            self.hz = hz;
+            Ok(())
+        }
+        async fn get_mode(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
+        async fn set_mode(&mut self, _m: ()) -> Result<(), ()> {
+            Ok(())
+        }
+        async fn get_transmitting(&mut self) -> Result<bool, ()> {
+            Ok(self.transmitting)
+        }
+        async fn transmit(&mut self) -> Result<(), ()> {
+            self.transmitting = true;
+            Ok(())
+        }
+        async fn receive(&mut self) -> Result<(), ()> {
+            self.transmitting = false;
+            Ok(())
+        }
+        fn hamlib_mode_name(_m: ()) -> &'static str {
+            "USB"
+        }
+        fn hamlib_mode_from_name(_n: &str) -> Option<()> {
+            Some(())
+        }
+        fn freq_range_hz() -> (u64, u64) {
+            (500_000, 60_000_000)
+        }
+        fn capabilities() -> Option<&'static cat_framework::capabilities::RadioCapabilities> {
+            Some(&CAPS)
+        }
+    }
+
+    use cat_framework::capabilities::*;
+    const MODES: &[ModeDescriptor] = &[ModeDescriptor {
+        id: ModeId::Usb,
+        label: "USB",
+        kind: ModeKind::Ssb,
+        sideband: Some(Sideband::Upper),
+        default_bandwidth_hz: 2400,
+    }];
+    const METERS: &[MeterDescriptor] = &[MeterDescriptor {
+        kind: MeterKind::S,
+        raw_range: RawRange::new(0, 30),
+        active_on_transmit: false,
+    }];
+    const ENDPOINTS: &[EndpointDescriptor] = &[EndpointDescriptor {
+        role: EndpointRole::Cat,
+        required: true,
+        shareable_with: &[],
+    }];
+    static CAPS: RadioCapabilities = RadioCapabilities {
+        model: "Interop Test Radio",
+        endpoints: EndpointSet::new(ENDPOINTS),
+        vfos: VfoCapability {
+            count: 2,
+            split: true,
+            rit_hz: Some(9999),
+            xit_hz: Some(9999),
+        },
+        modes: MODES,
+        tuning_steps_hz: &[10, 100, 1_000],
+        rx_range: FrequencyRange::new(500_000, 60_000_000),
+        filters: FilterCapability {
+            if_shift_hz: Some(1_000),
+            widths_hz: Some(&[500, 2_400]),
+            notch: false,
+        },
+        meters: MeterSet::new(METERS),
+        memory: None,
+        menu: None,
+        signal: SignalSupport::None,
+    };
+
+    /// Whether a real Hamlib client is available to test against.
+    ///
+    /// **Where Hamlib is expected, this does not skip — it fails.**
+    /// `eprintln!` from a passing test is captured by the harness and shown
+    /// to nobody, so a "loud" skip is only loud under `--nocapture`. A
+    /// developer without Hamlib installed should get a skip; a job that
+    /// installed Hamlib on purpose should get a failure if it has gone
+    /// missing, because these are the tests that caught both of ADR 0005's
+    /// bugs after every unit test passed.
+    ///
+    /// The signal is `EXPECT_HAMLIB`, set by the CI job that installs
+    /// `libhamlib-utils`, and deliberately **not** the generic `CI`
+    /// variable. `CI` is set on every runner including Windows, where
+    /// Hamlib is not installed and these tests are legitimately expected to
+    /// skip — an earlier version keyed on `CI` and turned that expected
+    /// skip into a red Windows job. The requirement belongs to the job that
+    /// provisions the dependency, not to the whole idea of being in CI.
+    fn have_rigctl() -> bool {
+        if std::process::Command::new("rigctl")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            return true;
+        }
+        assert!(
+            std::env::var_os("EXPECT_HAMLIB").is_none(),
+            "EXPECT_HAMLIB is set but rigctl is not installed. These are \
+             the live Hamlib interop tests, and both of ADR 0005's bugs \
+             passed every unit test while still failing against a real \
+             client -- so a job that asked for them must not go green \
+             without them. Install libhamlib-utils."
+        );
+        eprintln!(
+            "SKIPPED: rigctl not installed. Install libhamlib-utils to run the \
+             live Hamlib interop tests (they run in Linux CI)."
+        );
+        false
+    }
+
+    /// Serve exactly one connection, then return.
+    fn serve_one() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut writer = stream.try_clone().expect("clone");
+            let mut reader = BufReader::new(stream);
+            let mut radio = FakeRadio {
+                hz: 14_074_000,
+                transmitting: false,
+            };
+            let mut splitter = LineSplitter::new();
+            let mut chunk = String::new();
+            while reader.read_line(&mut chunk).unwrap_or(0) > 0 {
+                splitter.feed(chunk.as_bytes());
+                chunk.clear();
+                while let Some(Ok(line)) = splitter.try_take_line().map(Ok::<_, ()>) {
+                    let reply = block_on(dispatch(&mut radio, &line));
+                    if writer.write_all(reply.as_bytes()).is_err() {
+                        return;
+                    }
+                    let _ = writer.flush();
+                }
+            }
+        });
+        port
+    }
+
+    fn rigctl(port: u16, args: &[&str]) -> String {
+        let out = std::process::Command::new("rigctl")
+            .args(["-m", "2", "-r", &format!("127.0.0.1:{port}")])
+            .args(args)
+            .output()
+            .expect("run rigctl");
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    #[test]
+    fn a_real_hamlib_client_completes_the_capability_handshake() {
+        if !have_rigctl() {
+            return;
+        }
+        // netrigctl_open() reads `\dump_state` before it will answer
+        // anything. If the capability tail is short by a line, this hangs
+        // rather than failing -- which is precisely how ADR 0005's bug
+        // presented. Getting a frequency back at all proves the handshake
+        // completed.
+        let port = serve_one();
+        let out = rigctl(port, &["f"]);
+        assert!(
+            out.contains("14074000"),
+            "Hamlib did not complete the handshake; got {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_real_hamlib_client_sets_frequency_the_way_it_actually_formats_it() {
+        if !have_rigctl() {
+            return;
+        }
+        // This is ADR 0005's second bug end to end. Hamlib formats freq_t
+        // as %f on the wire; we never write that string ourselves here --
+        // Hamlib does, which is the entire point of running it.
+        let port = serve_one();
+        let out = rigctl(port, &["F", "7100000", "f"]);
+        assert!(
+            out.contains("7100000"),
+            "frequency did not round-trip through a real client; got {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_real_hamlib_client_reads_ptt_state() {
+        if !have_rigctl() {
+            return;
+        }
+        let port = serve_one();
+        let out = rigctl(port, &["t"]);
+        assert!(out.contains('0'), "expected PTT off; got {out:?}");
+    }
+
+    #[test]
+    fn the_generated_dump_state_is_what_a_client_receives() {
+        if !have_rigctl() {
+            return;
+        }
+        // Proves the capability-generated tail -- not the placeholder --
+        // is what went over the wire, by asking for a value only the
+        // generated path produces.
+        let port = serve_one();
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        stream.write_all(b"\\dump_state\n").expect("write");
+        stream.flush().unwrap();
+        let mut reply = String::new();
+        let mut reader = BufReader::new(stream);
+        for _ in 0..24 {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            reply.push_str(&line);
+        }
+        assert!(
+            reply.contains("-1 1000\n"),
+            "generated tuning steps missing"
+        );
+        assert!(
+            reply.contains("-1 500\n"),
+            "generated filter widths missing"
+        );
+        assert!(reply.contains("9999\n"), "generated RIT limit missing");
     }
 }

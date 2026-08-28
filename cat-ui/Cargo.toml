@@ -1,0 +1,17 @@
+[package]
+name = "cat-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Renderer-agnostic presentation logic for radio consoles: formatting, meter scaling, band plans, and the spectrum ring buffer."
+
+# No egui, no ratatui, no wgpu -- see docs/adr/0011. This crate is
+# headlessly testable by construction, which none of the existing UI code
+# is, and that is the point of it existing.
+[dependencies]
+cat-framework = { path = "../cat-framework" }
+cat-signal = { path = "../cat-signal" }

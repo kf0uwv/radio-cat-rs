@@ -24,6 +24,10 @@ cat-client = { path = "../cat-client" }
 cat-transport-core = { path = "../cat-transport-core" }
 
 [dev-dependencies]
+# Runtime-agnostic test executor, replacing `#[monoio::test]` so this
+# crate's tests compile and run on Windows too -- see
+# planning/release_workflow/findings.md section 7a.
+futures = { workspace = true }
 # Only this crate's own test module needs it, to implement a
 # NeverRespondingSession: CatSession test double (mirroring
 # cat-server::broker::tests's identical fake) that this crate's own

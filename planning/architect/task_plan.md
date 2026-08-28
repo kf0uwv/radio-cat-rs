@@ -487,3 +487,374 @@ charter): migrating `ft991a`'s/`ts570d`'s own `server` crates onto
 `cat-rigctl` and deleting their local copies — both repos are read-only
 ground truth here. That migration is the next phase, in each app's own
 working copy, by a different agent.
+
+---
+
+## Planning pass 2026-08-27: capability model, normalized signal, `cat-ui`, native MSVC (ADRs 0010–0012)
+
+Governing documents, read in full before dispatching anything below:
+[ADR 0010](../../docs/adr/0010-capability-model-and-normalized-signal-source.md)
+(capability model, multi-endpoint transports, `SpectrumSource`, native
+protocol with rigctl as a compatibility layer),
+[ADR 0011](../../docs/adr/0011-cat-ui-base-widgets-radio-specific-layout.md)
+(`cat-ui` base widgets; layout and features stay radio-specific), and
+[ADR 0012](../../docs/adr/0012-native-msvc-windows-target.md)
+(`x86_64-pc-windows-msvc` as the single Windows target).
+
+**All three ADRs are `Proposed`. This queue does not open until they are
+Accepted.** The `CLAUDE.md` amendments in `ts570d` and `ft991a` are
+correspondingly marked "not yet in force."
+
+**Scope note, carried over unchanged**: `ts570d`, `ft991a` and `ic7100` are
+not touched by any task below — read-only reference only. The app-side
+work (each `server` adopting the native protocol, deleting its
+`rigctl_radio.rs`, and `ts570d`'s new `gui` crate per its own ADR 0008) is
+a follow-on planning pass **in each app's own repository**, gated on this
+queue. Not dropped; not here.
+
+**Verification boundary, changed by ADR 0012**: `x86_64-pc-windows-gnu` is
+retired. From Task 10 onward, a task's Windows "done when" is a green
+`windows-latest` CI job running `cargo check` **and `cargo test`** — not a
+Linux-hosted cross-compile type-check. Prior tasks' `-gnu` criteria in this
+file are historical records of how they *were* verified and must not be
+rewritten.
+
+**Sequencing, settled with the user**: the library work lands first.
+Nothing in the apps starts until this queue's gate (Task 13) has passed.
+
+**Prerequisites owned by the user, not by any agent**: a calibrated
+`trim_hz` value for the TS-570D CN4 tap (measured against a known carrier —
+WWV 10 MHz), needed before Task 15 has a real `IfTapConfig`; and an IC-7100
+manual to close ADR 0010's one remaining unverified bandscope claim.
+
+**Runs in parallel, not in this queue**: the console design process
+(`ts570d/.claude/agents/designer.md`). It has no dependency on any task
+below — mockups are throwaway HTML and the information hierarchy does not
+depend on wire framing. Starting it during this queue is what keeps the
+GUI from waiting on design iterations later.
+
+### Task 10 — `release_workflow` agent: migrate to `x86_64-pc-windows-msvc`, retire `-gnu`
+
+**First, because it changes the "done when" bar for every task after it.**
+
+Per ADR 0012: move the CI `windows-check` job from an Ubuntu runner
+cross-compiling `-gnu` to a `windows-latest` runner, and upgrade it from
+`cargo check` to `cargo check` **plus `cargo test`** across the
+Windows-capable crates (`cat-transport-serial`, `cat-transport-tcp`,
+`cat-transport-udp`, `cat-transport-core`, `cat-diagnostics`, `cat-server`,
+`cat-rigctl`). Remove `-gnu` from `Makefile`, `CLAUDE.md` and `README.md`.
+Add amendment notes — **not edits** — to ADRs 0004, 0006, 0007 and 0008
+pointing at ADR 0012.
+
+Evaluate `cargo-xwin` for a best-effort local Linux check and report both
+ADR 0012 open caveats (whether it handles GPU-adjacent crates; whether its
+Microsoft SDK/CRT downloads are licence-clean for CI). **If either is
+blocking, report it — do not work around it.** No local check at all is an
+acceptable outcome; ADR 0012 says so explicitly.
+
+Done when: `windows-latest` CI is green on `check` + `test`; no `-gnu`
+reference remains outside historical ADR/planning text; the `cargo-xwin`
+findings are written to `planning/release_workflow/findings.md`.
+
+**Expect Windows test failures here, and treat them as the point.** ADR
+0006 §4 records that the Windows test modules have never actually executed.
+This is the first time they run. Any failure is a real, pre-existing bug —
+report it, do not paper over it to make the job green.
+
+### Task 11 — `cat_framework` agent: `cat-framework::capabilities`
+
+New `capabilities` module in `cat-framework`: `RadioCapabilities`,
+`EndpointSet`/`EndpointDescriptor`/`EndpointRole`, `VfoCapability`,
+`ModeDescriptor`, `FilterCapability`, `MeterSet`, `MemoryCapability`,
+`MenuCapability` — exactly the shapes in ADR 0010 §1–2.
+
+Pure data. No wire format, no protocol opinion, no `SpectrumSource`
+dependency (`SignalCapability` is re-exported from `cat-signal` once Task 12
+lands; until then, leave the field out rather than duplicating the type).
+
+Done when: `cargo test -p cat-framework`, `clippy`, `fmt` clean; Task 10's
+Windows job still green.
+
+### Task 12 — `cat_signal` agent: create `cat-signal`
+
+New workspace member. Types and one trait, per ADR 0010 §3–4: `SpectrumFrame`,
+`SpectrumSource`, `SignalCapability`, `IfTapConfig`, `SpectrumSettings`,
+`SettingDescriptor`, `SettingValue`, `SettingGroup`, `Access`, `Unit`.
+
+**Zero dependencies beyond `async-trait`.** No driver, no FFT, no
+`monoio`. `#[async_trait(?Send)]` per ADR 0002's binding.
+
+Two invariants must be enforced by tests, not just documented:
+
+1. `SpectrumFrame::bins` is **always low-frequency-first**. Inversion is
+   corrected inside a source, never by a consumer.
+2. `SignalCapability::AudioDerived` carries `max_bandwidth_hz` so a
+   consumer can refuse to render it as a band panorama.
+
+`NativeScope` is **defined but not implemented** — no radio in the fleet
+exports a bandscope (ADR 0010, Context). Do not write speculative code for
+it.
+
+Ship an in-crate `FakeSpectrumSource` fixture (the `cat-server::test_fixtures`
+pattern) so Tasks 16 and 19 have something to test against.
+
+Done when: `cargo test -p cat-signal`, `clippy`, `fmt` clean; Windows job
+green.
+
+### Task 13 — `cat_framework` agent: describe two radios — **GATE**
+
+**This is the gate. Nothing downstream is dispatched until it passes.**
+
+ADR 0010 concedes `RadioCapabilities` "is a guess until three radios are
+actually described by it." Describe **two** now, as test fixtures inside
+`cat-framework` (the apps are read-only per the ground rules — read them,
+do not modify them):
+
+- **TS-570D** — one endpoint filling `Cat` + `Keying` together;
+  `SignalCapability::IfTap` with `if_center_hz: 73_050_000`, `inverted:
+  true`; no memory-scope; the meter set the radio actually reports.
+- **FT-991A** — the stressing case, and the reason two is the minimum:
+  **three** endpoints (Cat and Keying on separate CP210x virtual COM ports,
+  plus a USB `Audio` codec), per `ft991a` ADR 0002. Its `control.rs` is 5.4×
+  `ts570d`'s, so its menu and filter capability is where the model bends if
+  it is going to.
+
+Done when both fixtures compile and read naturally **without** adding an
+escape hatch — no `Option<serde_json::Value>`, no `extra: HashMap`, no
+`model: &str` that downstream code matches on. Any of those means the model
+failed and Task 11/12 get revised **before** Tasks 16–19 build on it.
+
+Report the outcome to the architect and user explicitly, including anything
+that did not fit cleanly. A grudging fit is a failure, not a pass.
+
+### Task 14 — `architect`: ADR for `cat-signal-rtlsdr`
+
+An ADR, not code. ADR 0010 §5 deferred four things that must be decided
+before implementation: the librtlsdr binding choice; whether the FFT runs on
+a worker thread or in the frame pump; backpressure policy when a consumer
+falls behind; and — per ADR 0012 §4 — the **Windows driver story**, which is
+materially different (WinUSB via Zadig, libusb from a non-pkg-config source,
+different linkage). That last one is a platform port, not a `cfg` detail, and
+is the reason this is an ADR rather than a design note inside Task 15.
+
+Done when: the ADR is written, numbered, added to `docs/adr/README.md`, and
+reviewed by the user.
+
+### Task 15 — `cat_signal` agent: implement `cat-signal-rtlsdr`
+
+The `IfTap` source, per Task 14's ADR: read IQ, window, FFT, magnitude,
+apply `IfTapConfig`, emit `SpectrumFrame`.
+
+`retune(dial_hz)` does what `ts570d/if-panadapter-bridge.py` did with gqrx's
+`LNB_LO`, except **no frequency ever reaches the SDR** — the dongle stays
+parked on the IF and `center_hz` is computed as `dial_hz + trim_hz`. That is
+why the trim is a constant and no ppm correction exists anywhere in this
+crate. Read that script before starting; it is the working spike.
+
+Done when: `cargo test -p cat-signal-rtlsdr` clean; a live capture against
+the TS-570D CN4 tap produces frames whose `center_hz` tracks the dial and
+whose bins are low-frequency-first (i.e. a signal above the dial appears to
+the **right**, proving the inversion correction).
+
+### Task 16 — `cat_server` agent: native protocol
+
+Per ADR 0010 §6. `cat-server` serves the native typed protocol on its own
+port: capability handshake on connect, typed JSON state, typed commands
+validated against the capability set, and separately framed binary
+`SpectrumFrame`s that a client which declines them never pays for.
+
+Versioned in the handshake from the first commit.
+
+Done when: `cargo test -p cat-server` clean, including a test that a client
+declining the spectrum channel receives no frame traffic; Windows job green.
+
+### Task 17 — `cat_rigctl` agent: reimplement `cat-rigctl` over `RadioCapabilities`
+
+**The highest-risk task in this queue. Last, deliberately.**
+
+Rigctl stays a compatibility layer on its own port with unchanged wire
+behaviour. What changes is what it sits on: instead of each app hand-writing
+a `RigctlRadio` impl (`ts570d` 269 lines, `ft991a` 221), `cat-rigctl` is
+implemented **once** against `RadioCapabilities`, and `\dump_state`'s
+capability tail is **generated** rather than hand-maintained.
+
+Done when: the existing conformance behaviour passes unchanged, ADR 0005's
+two interop fixes are present **as regression tests** (`\dump_state`'s
+capability-tail field count; `F`'s `%f`-formatted float parsing), and the
+bridge is verified against a live Hamlib client. **WSJT-X must not regress
+— that is the acceptance bar, not a nice-to-have.**
+
+### Task 18 — `cat_ui` agent: create `cat-ui` (renderer-agnostic)
+
+Per ADR 0011. Presentation logic for radio concepts with **no renderer
+dependency** — no `egui`, no `ratatui`, no `wgpu`: frequency and S-unit
+formatting, meter scaling, band plans, the spectrum ring buffer, and the
+two-rate discipline (spectrum frames push at ~60 fps; CAT state is
+request/response and slow — separate lanes, so no renderer can block a
+waterfall behind a menu read).
+
+Done when: `cargo test -p cat-ui` clean. This crate is headlessly testable
+by construction — meter scaling and frequency formatting get real unit tests
+for the first time in this project.
+
+### Task 19 — `cat_ui` agent: create `cat-ui-egui`
+
+The GPU widget set. **Waterfall first** — it is the long pole, the most
+reusable artifact in the whole plan, and the thing that justifies the
+framework choice: a custom `wgpu` render pass via `egui_wgpu`'s callback,
+owning a scrolling texture, `SpectrumFrame` bins going socket → texture
+upload → shader with no per-pixel CPU work.
+
+Then spectrum plot, analog S-meter, rotary tuning knob, bar meters driven by
+`MeterSet`, VFO readout, band and mode grids, and **one** generic renderer
+for ADR 0010 §4's `SettingDescriptor` lists.
+
+Per ADR 0012 §4, gate `wgpu` backend selection (DX12 vs Vulkan/GL), DPI, and
+window creation with explicit `#[cfg(target_os = "windows")]`.
+
+**The seam rule, and it will be tested early**: a widget here takes
+normalized data and draws it. It never decides whether it should be on
+screen, or where. If a proposed parameter exists to express one radio's
+preference, the widget belongs in that radio's crate instead — reject it
+here.
+
+> **Superseded 2026-08-27** by the amendment at the end of this file.
+> This paragraph originally read that `cat-ui-ratatui` was not in this
+> queue. ADR 0011 revision 4 and ADR 0013 put it in: see **Task 20**.
+
+Done when: `cargo test -p cat-ui-egui` clean; the waterfall renders a
+`FakeSpectrumSource` stream at 60 fps on Linux and on Windows CI.
+
+## Summary / ordering (capability + signal + UI)
+
+```
+Task 10 (release_workflow: MSVC target, -gnu retired)   ← first: changes the bar
+   │
+   ├──▶ Task 11 (cat_framework: capabilities)  ─┐
+   │                                            ├──▶ Task 13 (GATE: describe 2 radios)
+   └──▶ Task 12 (cat_signal: types + trait)  ───┘         │
+                                                          ▼
+                              ┌───────────────────────────┼───────────────────┐
+                              ▼                           ▼                   ▼
+                    Task 14 (ADR: rtlsdr)        Task 16 (native protocol)  Task 18 (cat-ui)
+                              │                           │                   │
+                              ▼                           ▼                   ▼
+                    Task 15 (cat-signal-rtlsdr)  Task 17 (cat-rigctl rewrite) Task 19 (cat-ui-egui)
+```
+
+Tasks 11 and 12 are independent and could be dispatched in either order;
+this repo's one-task-per-dispatch ground rule applies regardless.
+
+**Critical path**: 10 → 11 → 13 → 16 → 19 → (app-side `gui`, next pass).
+Tasks 14/15 (RTL-SDR) and 17 (rigctl) sit off it and can move whenever a
+slot is free.
+
+**Not in this queue, and not dropped**: each app's migration onto the
+native protocol and `cat-ui-egui`; deletion of `ts570d/server/src/rigctl_radio.rs`
+and `ft991a`'s equivalent; `ts570d`'s `gui` crate (its ADR 0008);
+`cat-ui-ratatui` plus the TUI divergence audit; audio streaming for
+`EndpointRole::Audio`/`AudioDerived`; and `NativeScope`, when a radio that
+actually has one enters the fleet.
+
+## Amendment 2026-08-27 — renderer parity (ADR 0013, ADR 0011 rev 4)
+
+User direction: *"we always want the tui and the gui to contain similar
+features, within reason. TUI will not go away. We also want a generic set of
+TUI components as well."*
+
+Recorded as [ADR 0013](../../docs/adr/0013-renderer-parity-tui-and-gui.md)
+(capability parity between renderers; the TUI is permanent) and ADR 0011
+revision 4 (`cat-ui-ratatui` promoted from deferred to in-scope; the TUI
+divergence audit becomes the extraction rather than a gate before it).
+
+Two things above change:
+
+- **Task 19's closing paragraph is superseded** — `cat-ui-ratatui` is now
+  Task 20 below, not a future planning pass.
+- **Task 18 (`cat-ui`) gains a named extraction target list.** It was
+  already the renderer-agnostic crate; it is now the crate that settles most
+  of the divergence audit, so the audit's first cases are called out
+  explicitly rather than left to discovery.
+
+Nothing else in the queue moves. Tasks 10–17 are unaffected.
+
+### Task 18 — addendum: named extraction targets
+
+Extract these first, in this order, because they are the audit's cheap cases
+and they establish the pattern for the rest:
+
+1. **`format_hz()`** — byte-identical in `ts570d/ui/src/layout.rs:29` and
+   `ft991a/ui/src/layout.rs:69`. A straight lift; no decision to make.
+2. **`mini_bar()`** — byte-identical in both (`ts570d` :72, `ft991a` :99).
+   Same.
+3. **`smeter_bar()`** — the first real decision, and the one that proves the
+   seam. Identical glyph vocabulary (`▐ █ ░ ▌`) and structure; `ts570d`
+   takes `u16` over 0–30 with width hardcoded to 20, `ft991a` takes `u8`
+   over 0–255 with `width` a parameter. **The scale is `MeterSet` data, not
+   a widget preference** — one implementation parameterized on the radio's
+   reported meter range serves both. Getting this wrong in either direction
+   (hardcoding a scale, or adding a per-radio taste knob) is the failure
+   mode ADR 0011 names.
+4. **`smeter_label()`** — exists in `ts570d` (:37) only; `ft991a` shows a
+   bar with no S-unit called out. Extract it, and **report** whether the
+   FT-991A's absence was a decision or an omission. Do not silently add it
+   to the FT-991A TUI — that is an app-side change, and under ADR 0013 it
+   needs a row in that app's `docs/renderer-parity.md` either way.
+
+Also in `cat-ui`: meter scaling against `MeterSet` ranges, band plans, the
+spectrum ring buffer, and the two-rate discipline, as already specified.
+
+**Escalate, do not widen.** If a case turns out to be genuinely
+irreconcilable between the two radios, report it — the answer is that it
+belongs in an app's layout, not that the shared widget grows a parameter.
+
+### Task 20 — `cat_ui` agent: create `cat-ui-ratatui`
+
+Per ADR 0011 rev 4 and ADR 0013. The terminal widget set, covering the same
+concept list as `cat-ui-egui`: coarse spectrum and half-block waterfall,
+S-meter bar with S-unit label, meter rail, VFO readout, band and mode grids,
+menu column builders, the connection/error/disconnected panels, and the same
+generic renderer for ADR 0010 §4's `SettingDescriptor` lists.
+
+**The spectrum is the point of this task, not an afterthought.** ADR 0013
+§2(a) permits an exception on *fidelity*, never on *presence*: a terminal
+gets a coarse, low-frame-rate spectrum and waterfall fed by the same
+`SpectrumFrame`s, not a blank panel and not a "use the GUI" message. Build
+it against `cat-signal`'s `FakeSpectrumSource` (Task 12).
+
+Depends on Task 18 only. **Independent of Task 19** — the two renderer
+crates can be dispatched in either order, or by two agents in parallel if
+the one-task-per-dispatch rule is relaxed for them. If a slot forces a
+choice, take this one first: it is lower risk than the wgpu pass and it
+unblocks the app-side TUI migrations.
+
+Done when: `cargo test -p cat-ui-ratatui` clean; the widget set renders a
+`FakeSpectrumSource` stream in a terminal; every concept `cat-ui-egui`
+renders has a counterpart here or a written justification under one of ADR
+0013's three grounds.
+
+### Ordering, amended
+
+```
+Task 18 (cat-ui: renderer-agnostic + audit's cheap cases)
+   ├──▶ Task 19 (cat-ui-egui — waterfall first, GPU)
+   └──▶ Task 20 (cat-ui-ratatui — coarse spectrum first)
+```
+
+Critical path is unchanged: **10 → 11 → 13 → 16 → 19 → app-side `gui`**.
+Task 20 sits off it, but the app-side TUI migrations depend on it, so it
+should not be left to last.
+
+### Amended "not in this queue, and not dropped"
+
+The earlier list stands, with these corrections:
+
+- **`cat-ui-ratatui` is removed from it** — it is Task 20.
+- **The TUI divergence audit is removed from it** — ADR 0011 rev 4 folds it
+  into Tasks 18 and 20 rather than running it as a separate pass.
+- **Added: migrating `ts570d/ui` and `ft991a/ui`** onto `cat-ui` +
+  `cat-ui-ratatui`. App-side, per repo, per this queue's read-only ground
+  rule. Acceptance bar is that the operator sees no change.
+- **Added: each app's `docs/renderer-parity.md`**, the ADR 0013 exception
+  table. Created during the app-side passes, seeded by whatever Tasks 18 and
+  20 report.

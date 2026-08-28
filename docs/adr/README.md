@@ -14,6 +14,13 @@ never reused.
 | [0006](0006-windows-network-transport.md) | Windows network transport (`cat-transport-tcp`/`cat-transport-udp`/`cat-server`), the shared RS-232 pin-test tool, and `NoModemControlLines` | Accepted |
 | [0007](0007-shared-diagnostics-engine.md) | `cat-diagnostics`: a shared, radio-generic diagnostics/self-test engine | Accepted |
 | [0008](0008-shared-release-workflow.md) | Shared GitHub Actions release automation | Accepted |
+| [0009](0009-civ-engine-for-binary-addressed-protocols.md) | Generalize `cat-framework` over a `CatWireFormat` type parameter, for binary/addressed protocols (Icom CI-V) | Accepted |
+| [0010](0010-capability-model-and-normalized-signal-source.md) | A radio capability model, multi-endpoint transports, and a normalized `SpectrumSource`, served by a native protocol with rigctl as a compatibility layer | Accepted |
+| [0011](0011-cat-ui-base-widgets-radio-specific-layout.md) | `cat-ui`: shared base widgets for both renderers; layout and features stay radio-specific | Accepted |
+| [0012](0012-native-msvc-windows-target.md) | `x86_64-pc-windows-msvc` is the single Windows target; drop `-gnu`, gate platform code across lib/TUI/GUI | Accepted |
+| [0013](0013-renderer-parity-tui-and-gui.md) | Renderer parity: the TUI and the GUI expose the same capabilities, and the TUI is permanent | Accepted |
+| [0014](0014-rtlsdr-spectrum-source.md) | `cat-signal-rtlsdr`: worker thread, latest-frame backpressure, and a WinUSB driver story | Accepted |
+| [0015](0015-model-facts-versus-installation-facts.md) | Separate what a radio *model* can do from what an *installation* has wired | Accepted |
 
 ## Repository status
 

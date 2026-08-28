@@ -275,6 +275,30 @@ mod tests {
     use cat_transport_core::test_support::{Exchange, ScriptedCatSession};
     use std::cell::RefCell;
 
+    /// Drive a probe future to completion.
+    ///
+    /// Split per platform for exactly the same reason
+    /// [`with_probe_timeout`] is, and it must stay in step with it: on
+    /// Linux that function calls `monoio::time::timeout`, which panics
+    /// outside a real `monoio` reactor with its timer enabled, so these
+    /// tests need one. On Windows it uses the portable combinator, which
+    /// any executor can drive -- so the tests run there under a plain
+    /// runtime-agnostic `block_on` rather than not running at all.
+    #[cfg(target_os = "linux")]
+    fn block_on_probe<F: Future>(fut: F) -> F::Output {
+        monoio::RuntimeBuilder::<monoio::LegacyDriver>::new()
+            .enable_timer()
+            .build()
+            .expect("monoio runtime build failed")
+            .block_on(fut)
+    }
+
+    /// See the Linux-side doc comment above.
+    #[cfg(not(target_os = "linux"))]
+    fn block_on_probe<F: Future>(fut: F) -> F::Output {
+        futures::executor::block_on(fut)
+    }
+
     // -----------------------------------------------------------------
     // In-crate fake CommandId / CommandTable, mirroring the identical
     // convention already used by cat-client's, cat-server's own test
@@ -367,96 +391,100 @@ mod tests {
         CatClient::new(ScriptedCatSession::with_script(script), &TABLE)
     }
 
-    #[monoio::test(driver = "legacy", timer_enabled = true)]
-    async fn queries_every_readable_command_and_skips_the_rest() {
-        let mut client = client_with_script([
-            Exchange::new("FA;", "FA00014250000;"),
-            Exchange::new("SM0;", "SM0015;"),
-            Exchange::new("IF;", "IF017;"),
-        ]);
+    #[test]
+    fn queries_every_readable_command_and_skips_the_rest() {
+        block_on_probe(async {
+            let mut client = client_with_script([
+                Exchange::new("FA;", "FA00014250000;"),
+                Exchange::new("SM0;", "SM0015;"),
+                Exchange::new("IF;", "IF017;"),
+            ]);
 
-        let report = run_diagnostics(&mut client, &TABLE).await;
+            let report = run_diagnostics(&mut client, &TABLE).await;
 
-        assert_eq!(report.total(), 5);
-        assert_eq!(report.passed(), 3);
-        assert_eq!(report.skipped(), 2);
-        assert_eq!(report.failed(), 0);
+            assert_eq!(report.total(), 5);
+            assert_eq!(report.passed(), 3);
+            assert_eq!(report.skipped(), 2);
+            assert_eq!(report.failed(), 0);
 
-        let fa = &report.outcomes[0];
-        assert_eq!(fa.code, "FA");
-        assert_eq!(fa.request, "FA;");
-        assert_eq!(
-            fa.result,
-            CommandResult::Success {
-                response: "FA00014250000;".to_string()
-            }
-        );
+            let fa = &report.outcomes[0];
+            assert_eq!(fa.code, "FA");
+            assert_eq!(fa.request, "FA;");
+            assert_eq!(
+                fa.result,
+                CommandResult::Success {
+                    response: "FA00014250000;".to_string()
+                }
+            );
 
-        let sm = &report.outcomes[1];
-        assert_eq!(sm.code, "SM");
-        assert_eq!(
-            sm.request, "SM0;",
-            "selector-read probe uses an all-zero selector"
-        );
-        assert_eq!(
-            sm.result,
-            CommandResult::Success {
-                response: "SM0015;".to_string()
-            }
-        );
+            let sm = &report.outcomes[1];
+            assert_eq!(sm.code, "SM");
+            assert_eq!(
+                sm.request, "SM0;",
+                "selector-read probe uses an all-zero selector"
+            );
+            assert_eq!(
+                sm.result,
+                CommandResult::Success {
+                    response: "SM0015;".to_string()
+                }
+            );
 
-        let tx = &report.outcomes[2];
-        assert_eq!(tx.code, "TX");
-        assert!(matches!(tx.result, CommandResult::Skipped { .. }));
-        assert!(tx.request.is_empty());
-        assert_eq!(tx.latency, Duration::ZERO);
+            let tx = &report.outcomes[2];
+            assert_eq!(tx.code, "TX");
+            assert!(matches!(tx.result, CommandResult::Skipped { .. }));
+            assert!(tx.request.is_empty());
+            assert_eq!(tx.latency, Duration::ZERO);
 
-        let so = &report.outcomes[3];
-        assert_eq!(so.code, "SO");
-        assert!(matches!(so.result, CommandResult::Skipped { .. }));
+            let so = &report.outcomes[3];
+            assert_eq!(so.code, "SO");
+            assert!(matches!(so.result, CommandResult::Skipped { .. }));
 
-        let info = &report.outcomes[4];
-        assert_eq!(info.code, "IF");
-        assert_eq!(
-            info.result,
-            CommandResult::Success {
-                response: "IF017;".to_string()
-            }
-        );
+            let info = &report.outcomes[4];
+            assert_eq!(info.code, "IF");
+            assert_eq!(
+                info.result,
+                CommandResult::Success {
+                    response: "IF017;".to_string()
+                }
+            );
+        });
     }
 
-    #[monoio::test(driver = "legacy", timer_enabled = true)]
-    async fn a_session_error_is_recorded_as_failure_not_a_panic() {
-        // A dedicated single-command table: `simulate_disconnect` only
-        // fails the *next* call, and this engine keeps probing every
-        // remaining command regardless of an earlier failure -- a
-        // multi-command table would panic ScriptedCatSession's exhausted-
-        // script check on the second probe. One command is exactly what
-        // this test needs to prove.
-        static ONE_DEFINITION: &[CommandDefinition<FakeCommand>] = &[CommandDefinition {
-            id: FakeCommand::Frequency,
-            code: "FA",
-            name: "Frequency",
-            description: "Test frequency",
-            query_forms: QUERY,
-            set_forms: SET_11,
-            action_forms: NONE,
-            response_forms: NONE,
-            readable: true,
-            writable: true,
-        }];
-        static ONE_TABLE: CommandTable<FakeCommand> = CommandTable::new(ONE_DEFINITION);
+    #[test]
+    fn a_session_error_is_recorded_as_failure_not_a_panic() {
+        block_on_probe(async {
+            // A dedicated single-command table: `simulate_disconnect` only
+            // fails the *next* call, and this engine keeps probing every
+            // remaining command regardless of an earlier failure -- a
+            // multi-command table would panic ScriptedCatSession's exhausted-
+            // script check on the second probe. One command is exactly what
+            // this test needs to prove.
+            static ONE_DEFINITION: &[CommandDefinition<FakeCommand>] = &[CommandDefinition {
+                id: FakeCommand::Frequency,
+                code: "FA",
+                name: "Frequency",
+                description: "Test frequency",
+                query_forms: QUERY,
+                set_forms: SET_11,
+                action_forms: NONE,
+                response_forms: NONE,
+                readable: true,
+                writable: true,
+            }];
+            static ONE_TABLE: CommandTable<FakeCommand> = CommandTable::new(ONE_DEFINITION);
 
-        let mut session = ScriptedCatSession::new();
-        session.simulate_disconnect();
-        let mut client = CatClient::new(session, &ONE_TABLE);
+            let mut session = ScriptedCatSession::new();
+            session.simulate_disconnect();
+            let mut client = CatClient::new(session, &ONE_TABLE);
 
-        let report = run_diagnostics(&mut client, &ONE_TABLE).await;
+            let report = run_diagnostics(&mut client, &ONE_TABLE).await;
 
-        assert_eq!(report.total(), 1);
-        let fa = &report.outcomes[0];
-        assert_eq!(fa.code, "FA");
-        assert!(matches!(fa.result, CommandResult::Failure { .. }));
+            assert_eq!(report.total(), 1);
+            let fa = &report.outcomes[0];
+            assert_eq!(fa.code, "FA");
+            assert!(matches!(fa.result, CommandResult::Failure { .. }));
+        });
     }
 
     /// A `CatSession` whose `execute()` never resolves, to exercise this
@@ -481,49 +509,54 @@ mod tests {
         }
     }
 
-    #[monoio::test(driver = "legacy", timer_enabled = true)]
-    async fn never_answered_command_times_out_instead_of_hanging_the_whole_run() {
-        let mut client = CatClient::new(NeverRespondingSession, &TABLE);
-        let config = DiagnosticConfig {
-            per_command_timeout: Duration::from_millis(50),
-        };
+    #[test]
+    fn never_answered_command_times_out_instead_of_hanging_the_whole_run() {
+        block_on_probe(async {
+            let mut client = CatClient::new(NeverRespondingSession, &TABLE);
+            let config = DiagnosticConfig {
+                per_command_timeout: Duration::from_millis(50),
+            };
 
-        let started = Instant::now();
-        let report = run_diagnostics_with(&mut client, &TABLE, &config, |_| {}).await;
-        let elapsed = started.elapsed();
+            let started = Instant::now();
+            let report = run_diagnostics_with(&mut client, &TABLE, &config, |_| {}).await;
+            let elapsed = started.elapsed();
 
-        // Three probed commands (FA, SM, IF), each individually timing out
-        // -- proving the engine moves on rather than getting stuck on the
-        // first one.
-        let timeouts = report
-            .outcomes
-            .iter()
-            .filter(|o| o.result == CommandResult::Timeout)
-            .count();
-        assert_eq!(timeouts, 3);
-        assert_eq!(report.skipped(), 2);
+            // Three probed commands (FA, SM, IF), each individually timing out
+            // -- proving the engine moves on rather than getting stuck on the
+            // first one.
+            let timeouts = report
+                .outcomes
+                .iter()
+                .filter(|o| o.result == CommandResult::Timeout)
+                .count();
+            assert_eq!(timeouts, 3);
+            assert_eq!(report.skipped(), 2);
 
-        assert!(
-            elapsed < Duration::from_secs(2),
-            "looked like a hang: {elapsed:?}"
-        );
+            assert!(
+                elapsed < Duration::from_secs(2),
+                "looked like a hang: {elapsed:?}"
+            );
+        });
     }
 
-    #[monoio::test(driver = "legacy", timer_enabled = true)]
-    async fn progress_callback_fires_once_per_outcome_in_table_order() {
-        let mut client = client_with_script([
-            Exchange::new("FA;", "FA00014250000;"),
-            Exchange::new("SM0;", "SM0015;"),
-            Exchange::new("IF;", "IF017;"),
-        ]);
+    #[test]
+    fn progress_callback_fires_once_per_outcome_in_table_order() {
+        block_on_probe(async {
+            let mut client = client_with_script([
+                Exchange::new("FA;", "FA00014250000;"),
+                Exchange::new("SM0;", "SM0015;"),
+                Exchange::new("IF;", "IF017;"),
+            ]);
 
-        let seen: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
-        let report = run_diagnostics_with(&mut client, &TABLE, &DiagnosticConfig::default(), |o| {
-            seen.borrow_mut().push(o.code);
-        })
-        .await;
+            let seen: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
+            let report =
+                run_diagnostics_with(&mut client, &TABLE, &DiagnosticConfig::default(), |o| {
+                    seen.borrow_mut().push(o.code);
+                })
+                .await;
 
-        assert_eq!(*seen.borrow(), vec!["FA", "SM", "TX", "SO", "IF"]);
-        assert_eq!(seen.borrow().len(), report.total());
+            assert_eq!(*seen.borrow(), vec!["FA", "SM", "TX", "SO", "IF"]);
+            assert_eq!(seen.borrow().len(), report.total());
+        });
     }
 }

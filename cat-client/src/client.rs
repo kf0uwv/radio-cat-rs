@@ -2,79 +2,112 @@
 //!
 //! [`CatClient`] wraps any [`CatSession`] implementation and provides
 //! high-level `query`/`query_with_param`/`set` methods that validate command
-//! codes against a radio-supplied `&'static CommandTable<C>` before placing
-//! bytes on the wire — genericized from `ts570d`'s `radio/src/client.rs`
-//! (`RadioClient<S: CatSession<Error = TransportError>>`, commit `1585e1e`),
-//! which hardcoded `Ts570dCommandId`/`TS570D_COMMAND_TABLE` and returned the
-//! TS-570D-specific `RadioError`. See
+//! codes against a radio-supplied `&'static CommandTable<C, F>` before
+//! placing bytes on the wire — genericized from `ts570d`'s
+//! `radio/src/client.rs` (`RadioClient<S: CatSession<Error = TransportError>>`,
+//! commit `1585e1e`), which hardcoded `Ts570dCommandId`/`TS570D_COMMAND_TABLE`
+//! and returned the TS-570D-specific `RadioError`. See
 //! `planning/cat_framework/task_plan.md`'s Task 3 section for the full
 //! design proposal.
 //!
-//! # Wire format
+//! Since `docs/adr/0009-civ-engine-for-binary-addressed-protocols.md`, also
+//! generic over a `cat_framework::CatWireFormat` (`F`, defaulting to
+//! `AsciiLineFormat`) — [`CatClient`] owns one `format: F` instance,
+//! constructed once (see [`CatClient::new`]/[`CatClient::with_format`]), so
+//! `query`/`query_with_param`/`set` never take a format value themselves.
+//!
+//! # Wire format (`AsciiLineFormat`)
 //!
 //! - **Query**: `<CMD>;`          e.g. `FA;`
 //! - **Set**:   `<CMD><params>;`  e.g. `FA00014250000;`
 //! - **Response** (query only): `<CMD><data>;` read back from the radio
 
 use cat_framework::{
-    CommandDefinition, CommandId, CommandTable, ProtocolErrorKind, ResponseDisposition,
+    AsciiLineFormat, CatWireFormat, CommandDefinition, CommandId, CommandTable, ProtocolErrorKind,
+    ResponseDisposition,
 };
 use cat_transport_core::CatSession;
 use thiserror::Error;
 
 /// Sends CAT commands over a [`CatSession`] and reads back responses.
 ///
-/// Generic over `C`, the radio-supplied [`CommandId`], and `S`, the
-/// [`CatSession`] implementation. Contains no radio-specific or
-/// transport-specific types — a radio crate supplies `table` at
-/// construction, and any `CatSession` implementation (serial, TCP, UDP, or a
-/// test double) can be wrapped unchanged.
+/// Generic over `C`, the radio-supplied [`CommandId`]; `S`, the
+/// [`CatSession`] implementation; and `F`, the wire protocol (default
+/// [`AsciiLineFormat`]). Contains no radio-specific or transport-specific
+/// types — a radio crate supplies `table` at construction, and any
+/// `CatSession` implementation (serial, TCP, UDP, or a test double) can be
+/// wrapped unchanged.
 ///
 /// All methods validate the command code against `table` before touching
 /// the session.
-pub struct CatClient<C: CommandId, S: CatSession> {
+pub struct CatClient<C: CommandId, S: CatSession, F: CatWireFormat = AsciiLineFormat> {
     pub(crate) session: S,
-    table: &'static CommandTable<C>,
+    table: &'static CommandTable<C, F>,
+    format: F,
 }
 
-impl<C, S> CatClient<C, S>
+impl<C, S, F> CatClient<C, S, F>
 where
     C: CommandId,
     S: CatSession,
     S::Error: std::error::Error + 'static,
+    F: CatWireFormat + Default,
 {
     /// Create a new `CatClient` wrapping `session`, validating commands
-    /// against `table`.
-    pub fn new(session: S, table: &'static CommandTable<C>) -> Self {
-        Self { session, table }
+    /// against `table`, using `F`'s default format configuration (the
+    /// only option for [`AsciiLineFormat`], which carries none). Existing
+    /// `CatClient::new(session, table)` call sites keep compiling and
+    /// behaving unchanged.
+    pub fn new(session: S, table: &'static CommandTable<C, F>) -> Self {
+        Self::with_format(session, table, F::default())
+    }
+}
+
+impl<C, S, F> CatClient<C, S, F>
+where
+    C: CommandId,
+    S: CatSession,
+    S::Error: std::error::Error + 'static,
+    F: CatWireFormat,
+{
+    /// Create a new `CatClient` with an explicit format instance — e.g. a
+    /// CI-V format configured with a non-default bus address.
+    pub fn with_format(session: S, table: &'static CommandTable<C, F>, format: F) -> Self {
+        Self {
+            session,
+            table,
+            format,
+        }
     }
 
     /// Send a query command and return the radio's response string.
-    ///
-    /// Formats the wire bytes as `"<code>;"` and returns the response the
-    /// session reports back for that exchange.
     ///
     /// # Errors
     ///
     /// - [`ClientError::UnknownCommand`] — `code` is not in the command table
     /// - [`ClientError::CommandNotReadable`] — command does not support read
     /// - [`ClientError::Transport`] — I/O error on the underlying session
-    pub async fn query(&mut self, code: &str) -> Result<String, ClientError<S::Error>> {
+    pub async fn query(&mut self, code: F::Code) -> Result<String, ClientError<S::Error>> {
         let meta = self.validate_code(code)?;
         if !meta.is_readable() {
-            return Err(ClientError::CommandNotReadable(code.to_string()));
+            return Err(ClientError::CommandNotReadable(format!("{code:?}")));
         }
 
-        let wire = format!("{};", code);
-        self.execute_query(wire.as_bytes()).await
+        let wire = self.format.encode_request(code, &[]);
+        self.execute_query(&wire).await
     }
 
     /// Send a query command with a parameter prefix and return the radio's
     /// response string.
     ///
-    /// Formats the wire bytes as `"<code><params>;"`. Use this when the
-    /// command requires a selector or sub-address appended directly to the
-    /// command code before the semicolon, e.g. `"SM0;"` or `"RM1;"`.
+    /// Use this when the command requires a selector or sub-address
+    /// appended directly to the command code, e.g. `query_with_param("SM",
+    /// "0")` for `"SM0;"` or `query_with_param("RM", "1")` for `"RM1;"`.
+    /// Takes `impl AsRef<[u8]>` (not a concrete `&str`/`&[u8]`) so every
+    /// existing `&str`/`String` call site in `ts570d`/`ft991a` keeps
+    /// compiling unchanged — `str`/`String` already implement
+    /// `AsRef<[u8]>` in `std`, and a future CI-V caller passes real
+    /// `&[u8]` parameter bytes through the same bound.
     ///
     /// # Errors
     ///
@@ -83,37 +116,42 @@ where
     /// - [`ClientError::Transport`] — I/O error on the underlying session
     pub async fn query_with_param(
         &mut self,
-        code: &str,
-        params: &str,
+        code: F::Code,
+        params: impl AsRef<[u8]>,
     ) -> Result<String, ClientError<S::Error>> {
         let meta = self.validate_code(code)?;
         if !meta.is_readable() {
-            return Err(ClientError::CommandNotReadable(code.to_string()));
+            return Err(ClientError::CommandNotReadable(format!("{code:?}")));
         }
 
-        let wire = format!("{}{};", code, params);
-        self.execute_query(wire.as_bytes()).await
+        let wire = self.format.encode_request(code, params.as_ref());
+        self.execute_query(&wire).await
     }
 
     /// Send a set command with parameters.
     ///
-    /// Formats the wire bytes as `"<code><params>;"` and does not wait for a
-    /// response — delegates to [`CatSession::send`], which real sessions
-    /// implement without blocking on a read.
+    /// Does not wait for a response — delegates to [`CatSession::send`],
+    /// which real sessions implement without blocking on a read. See
+    /// [`Self::query_with_param`]'s doc comment for why `params` is
+    /// `impl AsRef<[u8]>`.
     ///
     /// # Errors
     ///
     /// - [`ClientError::UnknownCommand`] — `code` is not in the command table
     /// - [`ClientError::CommandNotWritable`] — command does not support write
     /// - [`ClientError::Transport`] — I/O error on the underlying session
-    pub async fn set(&mut self, code: &str, params: &str) -> Result<(), ClientError<S::Error>> {
+    pub async fn set(
+        &mut self,
+        code: F::Code,
+        params: impl AsRef<[u8]>,
+    ) -> Result<(), ClientError<S::Error>> {
         let meta = self.validate_code(code)?;
         if !meta.is_writable() {
-            return Err(ClientError::CommandNotWritable(code.to_string()));
+            return Err(ClientError::CommandNotWritable(format!("{code:?}")));
         }
 
-        let wire = format!("{}{};", code, params);
-        self.session.send(wire.as_bytes()).await?;
+        let wire = self.format.encode_request(code, params.as_ref());
+        self.session.send(&wire).await?;
         Ok(())
     }
 
@@ -124,11 +162,11 @@ where
     /// Look up `code` in the command table; return an error if not found.
     fn validate_code(
         &self,
-        code: &str,
-    ) -> Result<&'static CommandDefinition<C>, ClientError<S::Error>> {
+        code: F::Code,
+    ) -> Result<&'static CommandDefinition<C, F>, ClientError<S::Error>> {
         self.table
             .find(code)
-            .ok_or_else(|| ClientError::UnknownCommand(code.to_string()))
+            .ok_or_else(|| ClientError::UnknownCommand(format!("{code:?}")))
     }
 
     /// Execute one query-shaped exchange through the session and decode the
@@ -312,119 +350,139 @@ mod tests {
     // Tests (ported 1:1 from ts570d's radio/src/client.rs test module)
     // -----------------------------------------------------------------
 
-    #[monoio::test(driver = "legacy")]
-    async fn test_query_fa_formats_correctly() {
-        let mut client = client_with_script([Exchange::new("FA;", "FA00014250000;")]);
+    #[test]
+    fn test_query_fa_formats_correctly() {
+        futures::executor::block_on(async {
+            let mut client = client_with_script([Exchange::new("FA;", "FA00014250000;")]);
 
-        let response = client.query("FA").await.unwrap();
+            let response = client.query("FA").await.unwrap();
 
-        assert_eq!(client.session.written(), b"FA;");
-        assert_eq!(response, "FA00014250000;");
+            assert_eq!(client.session.written(), b"FA;");
+            assert_eq!(response, "FA00014250000;");
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn test_set_fa_formats_correctly() {
-        let mut client = client_with_script([Exchange::new("FA00014250000;", "")]);
+    #[test]
+    fn test_set_fa_formats_correctly() {
+        futures::executor::block_on(async {
+            let mut client = client_with_script([Exchange::new("FA00014250000;", "")]);
 
-        client.set("FA", "00014250000").await.unwrap();
+            client.set("FA", "00014250000").await.unwrap();
 
-        assert_eq!(client.session.written(), b"FA00014250000;");
+            assert_eq!(client.session.written(), b"FA00014250000;");
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn test_query_unknown_command_returns_error() {
-        let mut client = client_with_script([]);
+    #[test]
+    fn test_query_unknown_command_returns_error() {
+        futures::executor::block_on(async {
+            let mut client = client_with_script([]);
 
-        let result = client.query("ZZ").await;
+            let result = client.query("ZZ").await;
 
-        assert!(
-            matches!(result, Err(ClientError::UnknownCommand(ref c)) if c == "ZZ"),
-            "expected UnknownCommand(ZZ), got {:?}",
-            result
-        );
+            assert!(
+                matches!(result, Err(ClientError::UnknownCommand(ref c)) if c == "\"ZZ\""),
+                "expected UnknownCommand(\"ZZ\"), got {:?}",
+                result
+            );
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn test_set_read_only_command_returns_error() {
-        // IF is read-only (writable = false)
-        let mut client = client_with_script([]);
+    #[test]
+    fn test_set_read_only_command_returns_error() {
+        futures::executor::block_on(async {
+            // IF is read-only (writable = false)
+            let mut client = client_with_script([]);
 
-        let result = client.set("IF", "").await;
+            let result = client.set("IF", "").await;
 
-        assert!(
-            matches!(result, Err(ClientError::CommandNotWritable(ref c)) if c == "IF"),
-            "expected CommandNotWritable(IF), got {:?}",
-            result
-        );
+            assert!(
+                matches!(result, Err(ClientError::CommandNotWritable(ref c)) if c == "\"IF\""),
+                "expected CommandNotWritable(\"IF\"), got {:?}",
+                result
+            );
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn test_query_write_only_command_returns_error() {
-        // TX is write-only (readable = false)
-        let mut client = client_with_script([]);
+    #[test]
+    fn test_query_write_only_command_returns_error() {
+        futures::executor::block_on(async {
+            // TX is write-only (readable = false)
+            let mut client = client_with_script([]);
 
-        let result = client.query("TX").await;
+            let result = client.query("TX").await;
 
-        assert!(
-            matches!(result, Err(ClientError::CommandNotReadable(ref c)) if c == "TX"),
-            "expected CommandNotReadable(TX), got {:?}",
-            result
-        );
+            assert!(
+                matches!(result, Err(ClientError::CommandNotReadable(ref c)) if c == "\"TX\""),
+                "expected CommandNotReadable(\"TX\"), got {:?}",
+                result
+            );
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn test_set_does_not_read_response() {
-        // set() must call session.send(), never session.execute() with a
-        // read-shaped expectation. Here we only confirm set() succeeds
-        // against a single fire-and-forget exchange.
-        let mut client = client_with_script([Exchange::new("FA00014250000;", "")]);
+    #[test]
+    fn test_set_does_not_read_response() {
+        futures::executor::block_on(async {
+            // set() must call session.send(), never session.execute() with a
+            // read-shaped expectation. Here we only confirm set() succeeds
+            // against a single fire-and-forget exchange.
+            let mut client = client_with_script([Exchange::new("FA00014250000;", "")]);
 
-        client.set("FA", "00014250000").await.unwrap();
+            client.set("FA", "00014250000").await.unwrap();
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn test_query_set_unknown_command_does_not_write() {
-        let mut client = client_with_script([]);
+    #[test]
+    fn test_query_set_unknown_command_does_not_write() {
+        futures::executor::block_on(async {
+            let mut client = client_with_script([]);
 
-        let _ = client.query("ZZ").await;
+            let _ = client.query("ZZ").await;
 
-        assert!(
-            client.session.written().is_empty(),
-            "nothing should be written for unknown command"
-        );
+            assert!(
+                client.session.written().is_empty(),
+                "nothing should be written for unknown command"
+            );
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn test_query_with_param_sm0_formats_correctly() {
-        let mut client = client_with_script([Exchange::new("SM0;", "SM0015;")]);
+    #[test]
+    fn test_query_with_param_sm0_formats_correctly() {
+        futures::executor::block_on(async {
+            let mut client = client_with_script([Exchange::new("SM0;", "SM0015;")]);
 
-        let response = client.query_with_param("SM", "0").await.unwrap();
+            let response = client.query_with_param("SM", "0").await.unwrap();
 
-        assert_eq!(client.session.written(), b"SM0;");
-        assert_eq!(response, "SM0015;");
+            assert_eq!(client.session.written(), b"SM0;");
+            assert_eq!(response, "SM0015;");
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn test_query_with_param_rm1_formats_correctly() {
-        let mut client = client_with_script([Exchange::new("RM1;", "RM10023;")]);
+    #[test]
+    fn test_query_with_param_rm1_formats_correctly() {
+        futures::executor::block_on(async {
+            let mut client = client_with_script([Exchange::new("RM1;", "RM10023;")]);
 
-        let response = client.query_with_param("RM", "1").await.unwrap();
+            let response = client.query_with_param("RM", "1").await.unwrap();
 
-        assert_eq!(client.session.written(), b"RM1;");
-        assert_eq!(response, "RM10023;");
+            assert_eq!(client.session.written(), b"RM1;");
+            assert_eq!(response, "RM10023;");
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn test_query_with_param_unknown_command_returns_error() {
-        let mut client = client_with_script([]);
+    #[test]
+    fn test_query_with_param_unknown_command_returns_error() {
+        futures::executor::block_on(async {
+            let mut client = client_with_script([]);
 
-        let result = client.query_with_param("ZZ", "0").await;
+            let result = client.query_with_param("ZZ", "0").await;
 
-        assert!(
-            matches!(result, Err(ClientError::UnknownCommand(ref c)) if c == "ZZ"),
-            "expected UnknownCommand(ZZ), got {:?}",
-            result
-        );
+            assert!(
+                matches!(result, Err(ClientError::UnknownCommand(ref c)) if c == "\"ZZ\""),
+                "expected UnknownCommand(\"ZZ\"), got {:?}",
+                result
+            );
+        });
     }
 
     // -----------------------------------------------------------------
@@ -434,57 +492,63 @@ mod tests {
     // there either — added here since ClientError is new work).
     // -----------------------------------------------------------------
 
-    #[monoio::test(driver = "legacy")]
-    async fn test_query_protocol_error_is_surfaced() {
-        let mut client = CatClient::new(ProtocolErrorSession::default(), &TABLE);
+    #[test]
+    fn test_query_protocol_error_is_surfaced() {
+        futures::executor::block_on(async {
+            let mut client = CatClient::new(ProtocolErrorSession::default(), &TABLE);
 
-        let result = client.query("FA").await;
+            let result = client.query("FA").await;
 
-        assert!(
-            matches!(
-                result,
-                Err(ClientError::ProtocolError(
-                    ProtocolErrorKind::UnknownCommand
-                ))
-            ),
-            "expected ProtocolError(UnknownCommand), got {:?}",
-            result
-        );
+            assert!(
+                matches!(
+                    result,
+                    Err(ClientError::ProtocolError(
+                        ProtocolErrorKind::UnknownCommand
+                    ))
+                ),
+                "expected ProtocolError(UnknownCommand), got {:?}",
+                result
+            );
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn test_query_transport_error_propagates() {
-        let mut session = ScriptedCatSession::new();
-        session.simulate_disconnect();
-        let mut client = CatClient::new(session, &TABLE);
+    #[test]
+    fn test_query_transport_error_propagates() {
+        futures::executor::block_on(async {
+            let mut session = ScriptedCatSession::new();
+            session.simulate_disconnect();
+            let mut client = CatClient::new(session, &TABLE);
 
-        let result = client.query("FA").await;
+            let result = client.query("FA").await;
 
-        assert!(
-            matches!(
-                result,
-                Err(ClientError::Transport(TransportError::Other(_)))
-            ),
-            "expected Transport(Other(_)), got {:?}",
-            result
-        );
+            assert!(
+                matches!(
+                    result,
+                    Err(ClientError::Transport(TransportError::Other(_)))
+                ),
+                "expected Transport(Other(_)), got {:?}",
+                result
+            );
+        });
     }
 
-    #[monoio::test(driver = "legacy")]
-    async fn test_set_transport_error_propagates() {
-        let mut session = ScriptedCatSession::new();
-        session.simulate_timeout();
-        let mut client = CatClient::new(session, &TABLE);
+    #[test]
+    fn test_set_transport_error_propagates() {
+        futures::executor::block_on(async {
+            let mut session = ScriptedCatSession::new();
+            session.simulate_timeout();
+            let mut client = CatClient::new(session, &TABLE);
 
-        let result = client.set("FA", "00014250000").await;
+            let result = client.set("FA", "00014250000").await;
 
-        assert!(
-            matches!(
-                result,
-                Err(ClientError::Transport(TransportError::ReadTimeout))
-            ),
-            "expected Transport(ReadTimeout), got {:?}",
-            result
-        );
+            assert!(
+                matches!(
+                    result,
+                    Err(ClientError::Transport(TransportError::ReadTimeout))
+                ),
+                "expected Transport(ReadTimeout), got {:?}",
+                result
+            );
+        });
     }
 }

@@ -34,3 +34,7 @@ thiserror = { workspace = true }
 # Consequences and planning/architect/task_plan.md's ground rules.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 monoio = { workspace = true }
+
+# Runtime-agnostic test executor -- see cat-transport-core/Cargo.toml.
+[dev-dependencies]
+futures = { workspace = true }

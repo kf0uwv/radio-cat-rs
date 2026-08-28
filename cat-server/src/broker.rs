@@ -45,7 +45,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use cat_client::{CatClient, ClientError};
-use cat_framework::{CommandId, CommandOperation, CommandTable, ParseError};
+use cat_framework::{
+    AsciiLineFormat, CatWireFormat, CommandId, CommandOperation, CommandTable, ParseError,
+};
 use cat_transport_core::CatSession;
 use thiserror::Error;
 
@@ -81,9 +83,6 @@ pub enum DispatchError<E>
 where
     E: std::error::Error + 'static,
 {
-    /// The request was not valid UTF-8 CAT wire text.
-    #[error("request is not valid UTF-8")]
-    InvalidEncoding,
     /// [`CommandTable::parse`] rejected the request before the physical
     /// session was touched — the malformed-request-rejection gate.
     #[error("malformed request: {0}")]
@@ -128,43 +127,75 @@ where
 /// it. Never shared directly across tasks — see [`BrokerWorker`]/
 /// [`BrokerHandle`] for how multiple clients serialize access through this
 /// without introducing any interior concurrency around the session itself.
-pub struct Broker<C, S>
+pub struct Broker<C, S, F = AsciiLineFormat>
 where
     C: CommandId,
     S: CatSession,
     S::Error: std::error::Error + 'static,
+    F: CatWireFormat,
 {
-    client: CatClient<C, S>,
-    table: &'static CommandTable<C>,
+    client: CatClient<C, S, F>,
+    table: &'static CommandTable<C, F>,
+    format: F,
     request_timeout: Duration,
 }
 
-impl<C, S> Broker<C, S>
+impl<C, S, F> Broker<C, S, F>
 where
     C: CommandId,
     S: CatSession,
     S::Error: std::error::Error + 'static,
+    F: CatWireFormat + Clone,
 {
-    /// Build a broker around `session`, using [`DEFAULT_REQUEST_TIMEOUT`].
-    pub fn new(session: S, table: &'static CommandTable<C>) -> Self {
+    /// Build a broker around `session`, using [`DEFAULT_REQUEST_TIMEOUT`]
+    /// and `F`'s default format configuration.
+    pub fn new(session: S, table: &'static CommandTable<C, F>) -> Self
+    where
+        F: Default,
+    {
         Self::with_timeout(session, table, DEFAULT_REQUEST_TIMEOUT)
     }
 
-    /// Build a broker around `session`, with an explicit `request_timeout`.
+    /// Build a broker around `session`, with an explicit `request_timeout`
+    /// and `F`'s default format configuration.
     pub fn with_timeout(
         session: S,
-        table: &'static CommandTable<C>,
+        table: &'static CommandTable<C, F>,
+        request_timeout: Duration,
+    ) -> Self
+    where
+        F: Default,
+    {
+        Self::with_format_and_timeout(session, table, F::default(), request_timeout)
+    }
+
+    /// Build a broker around `session`, with an explicit format instance
+    /// (e.g. a CI-V format configured with a non-default bus address) and
+    /// request timeout.
+    pub fn with_format_and_timeout(
+        session: S,
+        table: &'static CommandTable<C, F>,
+        format: F,
         request_timeout: Duration,
     ) -> Self {
         Self {
-            client: CatClient::new(session, table),
+            client: CatClient::with_format(session, table, format.clone()),
             table,
+            format,
             request_timeout,
         }
     }
 
     /// Validate and execute one raw wire request against the physical
     /// session.
+    ///
+    /// Operates on raw bytes throughout — no UTF-8 pre-check, since that
+    /// was ASCII-specific and is now the wire format's own concern:
+    /// `CommandTable::parse` delegates to `F::find_command`, and
+    /// `AsciiLineFormat`'s implementation already rejects non-UTF-8 code
+    /// bytes as [`ParseError::InvalidSyntax`] (see its doc comment) — a
+    /// binary CI-V frame is not expected to be UTF-8 at all, so a
+    /// blanket pre-check at this layer would incorrectly reject it.
     ///
     /// Never forwards a request that fails [`CommandTable::parse`] to the
     /// session (malformed-request rejection at the broker boundary).
@@ -174,11 +205,10 @@ where
         &mut self,
         request: &[u8],
     ) -> Result<DispatchOutcome, DispatchError<S::Error>> {
-        let frame = std::str::from_utf8(request).map_err(|_| DispatchError::InvalidEncoding)?;
-        let parsed = self.table.parse(frame)?;
+        let parsed = self.table.parse(&self.format, request)?;
 
         let code = parsed.code;
-        let params = parsed.parameters.raw().to_string();
+        let params = parsed.parameters.raw_bytes().to_vec();
         let operation = parsed.operation;
 
         // `parse`'s structural operation label does not always match the
@@ -236,7 +266,7 @@ where
                     // form -- not expected from a well-formed command
                     // table, but rejected cleanly rather than guessing.
                     return Err(DispatchError::Malformed(ParseError::UnsupportedOperation(
-                        code.to_string(),
+                        format!("{code:?}"),
                     )));
                 }
             }
@@ -245,7 +275,7 @@ where
             // handled defensively rather than with `unreachable!()`.
             CommandOperation::Response => {
                 return Err(DispatchError::Session(ClientError::UnknownCommand(
-                    code.to_string(),
+                    format!("{code:?}"),
                 )));
             }
         };
@@ -723,11 +753,19 @@ mod tests {
 
     #[monoio::test(driver = "legacy", timer_enabled = true)]
     async fn malformed_non_utf8_never_touches_session() {
+        // Non-UTF-8 code bytes are now rejected by `AsciiLineFormat::
+        // find_command` itself (`ParseError::InvalidSyntax`), not by a
+        // broker-level pre-check — see `Broker::dispatch`'s doc comment
+        // (ADR 0009: a binary CI-V frame is not expected to be UTF-8 at
+        // all, so a blanket pre-check at this layer would be wrong for it).
         let mut broker = broker_with_script([]);
 
         let result = broker.dispatch(&[0xFF, 0xFE, b';']).await;
 
-        assert!(matches!(result, Err(DispatchError::InvalidEncoding)));
+        assert!(matches!(
+            result,
+            Err(DispatchError::Malformed(ParseError::InvalidSyntax))
+        ));
     }
 
     #[monoio::test(driver = "legacy", timer_enabled = true)]

@@ -28,3 +28,11 @@ thiserror = { workspace = true }
 # rather than deep inside monoio's io_uring internals.
 [target.'cfg(target_os = "linux")'.dependencies]
 monoio = { workspace = true }
+
+# Test-only executor. These test modules drive pure in-memory logic (no
+# io_uring), so they use a runtime-agnostic `block_on` and therefore run on
+# Windows too -- see docs/adr/0012 and planning/release_workflow/findings.md
+# section 7a. They previously used `#[monoio::test]`, which broke the whole
+# Windows test target because `monoio` is Linux-only.
+[dev-dependencies]
+futures = { workspace = true }

@@ -6,6 +6,14 @@ Date: 2026-07-26
 
 Accepted
 
+
+> **Amended 2026-08-27 by [ADR 0012](0012-native-msvc-windows-target.md).**
+> Every `x86_64-pc-windows-gnu` reference below is a historical record of
+> how this work *was* verified at the time, deliberately left unedited.
+> `-gnu` is retired: `x86_64-pc-windows-msvc` is now the only Windows
+> target, and verification is `cargo check` **and `cargo test`** on a
+> `windows-latest` runner.
+
 ## Context
 
 `ts570d` ships a diagnostics feature (the `[D]` screen its README describes

@@ -1,0 +1,24 @@
+[package]
+name = "cat-ui-egui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "GPU-rendered widgets for a radio console: waterfall, spectrum plot, meters, VFO readout, grids, and a generic settings renderer."
+
+[dependencies]
+cat-ui = { path = "../cat-ui" }
+cat-framework = { path = "../cat-framework" }
+cat-signal = { path = "../cat-signal" }
+
+# `egui` only, not `eframe`. eframe is the application framework -- window
+# creation, the event loop, the wgpu surface -- and per ADR 0011 that
+# belongs to each radio's own `gui` binary, not to a shared widget set.
+# Depending on it here would drag a windowing stack into every consumer.
+egui = { workspace = true }
+
+[dev-dependencies]
+futures = { workspace = true }

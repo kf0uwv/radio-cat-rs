@@ -56,6 +56,11 @@ async-trait = { workspace = true }
 # Error handling
 thiserror = { workspace = true }
 
+# The native protocol (ADR 0010 section 6).
+cat-signal = { path = "../cat-signal" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
 # Async runtime (io_uring-based, Linux-only). A real dependency: the
 # broker's single ordered worker and the server-side TCP/UDP accept/dispatch
 # loops are built directly on monoio::net::{TcpListener, TcpStream,
