@@ -51,7 +51,7 @@ pub use cat_signal::SignalCapability;
 ///
 /// Deliberately not `std::ops::RangeInclusive`: that type is not `Copy`,
 /// which would stop the whole capability tree from being a `const`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RawRange {
     pub min: u16,
     pub max: u16,
@@ -77,7 +77,7 @@ impl RawRange {
 }
 
 /// An inclusive frequency range in Hz.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FrequencyRange {
     pub min_hz: u64,
     pub max_hz: u64,
@@ -102,7 +102,7 @@ impl FrequencyRange {
 /// Resolves `ft991a`'s ADR 0002 deferred USB dual-port question: a radio
 /// stops assuming "the CAT session's own transport is also the
 /// modem-control handle," and the keying handle is supplied independently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum EndpointRole {
     /// Command/response CAT traffic.
@@ -114,7 +114,7 @@ pub enum EndpointRole {
 }
 
 /// One physical handle the radio expects, and what it may be shared with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct EndpointDescriptor {
     pub role: EndpointRole,
     /// Whether the radio is unusable without this endpoint. A missing
@@ -130,7 +130,7 @@ pub struct EndpointDescriptor {
 }
 
 /// Every handle a radio expects, in no particular order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct EndpointSet {
     pub endpoints: &'static [EndpointDescriptor],
 }
@@ -169,7 +169,7 @@ impl EndpointSet {
 // ---------------------------------------------------------------------------
 
 /// VFO count and the offset features layered on top of them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct VfoCapability {
     /// Independently tunable VFOs. Two on both radios in this fleet.
     pub count: u8,
@@ -188,7 +188,7 @@ pub struct VfoCapability {
 /// Broad family a mode belongs to, for grouping and for deciding which
 /// controls are meaningful (an AGC setting means something in SSB and
 /// nothing in FM).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum ModeKind {
     Ssb,
@@ -203,7 +203,7 @@ pub enum ModeKind {
 }
 
 /// Which sideband a mode uses, where that is a meaningful question.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Sideband {
     Lower,
     Upper,
@@ -216,7 +216,7 @@ pub enum Sideband {
 /// radio brings a genuinely new mode is expected and is **not** the
 /// escape hatch ADR 0010's gate forbids — an escape hatch would be a free
 /// string or a `model` field that downstream code matches on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum ModeId {
     Lsb,
@@ -241,7 +241,7 @@ pub enum ModeId {
 }
 
 /// One operating mode the radio supports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct ModeDescriptor {
     pub id: ModeId,
     /// Short label for a mode button or readout, in the form operators
@@ -265,7 +265,7 @@ pub struct ModeDescriptor {
 /// flag because radios genuinely differ in which of these they expose:
 /// offering a width control for a radio that only has IF shift produces a
 /// dead control, which is worse than an absent one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct FilterCapability {
     /// Passband shift range, symmetric around centre, in Hz.
     pub if_shift_hz: Option<i32>,
@@ -280,7 +280,7 @@ pub struct FilterCapability {
 // ---------------------------------------------------------------------------
 
 /// Which physical quantity a meter reports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum MeterKind {
     /// Received signal strength.
@@ -305,7 +305,7 @@ pub enum MeterKind {
 /// S-meter over 0-30 and the FT-991A over 0-255; a consumer that scales
 /// against this range is correct for both with one implementation, and a
 /// consumer that hardcodes either is silently wrong on the other radio.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct MeterDescriptor {
     pub kind: MeterKind,
     pub raw_range: RawRange,
@@ -316,7 +316,7 @@ pub struct MeterDescriptor {
 }
 
 /// Every meter a radio reports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct MeterSet {
     pub meters: &'static [MeterDescriptor],
 }
@@ -340,7 +340,7 @@ impl MeterSet {
 // ---------------------------------------------------------------------------
 
 /// Memory channel storage, where the radio exposes it to CAT.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MemoryCapability {
     /// Inclusive channel-number range, as the radio numbers them.
     pub channels: RawRange,
@@ -353,7 +353,7 @@ pub struct MemoryCapability {
 }
 
 /// The radio's configuration menu, where CAT can reach it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MenuCapability {
     /// How many menu entries exist.
     pub item_count: u16,
@@ -370,7 +370,7 @@ pub struct MenuCapability {
 /// Negotiated once, at connect. Every field is answerable statically per
 /// model, so publishing this costs no round trip.
 ///
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct RadioCapabilities {
     /// Human-readable model name, for display and logging.
     ///

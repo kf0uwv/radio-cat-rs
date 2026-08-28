@@ -17,3 +17,9 @@ thiserror = { workspace = true }
 # I/O, driver or runtime into the engine -- see
 # docs/adr/0010-capability-model-and-normalized-signal-source.md section 3.
 cat-signal = { path = "../cat-signal" }
+
+# Serialization only, so capabilities can cross the native protocol without
+# a parallel set of wire structs. Types carrying `&'static` fields are
+# Serialize-only by necessity -- the server holds them as `const`, and a
+# client receives owned mirrors (see cat-server::native).
+serde = { workspace = true }

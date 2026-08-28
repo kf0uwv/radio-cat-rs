@@ -49,7 +49,7 @@ use async_trait::async_trait;
 ///
 /// No consumer of this type knows about IF inversion, LO tracking, or
 /// crystal trim.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct SpectrumFrame {
     /// Centre of the span in real RF terms — the dial frequency an
     /// operator would read, not an intermediate frequency.
@@ -93,7 +93,7 @@ impl SpectrumFrame {
 }
 
 /// The three TS-570D corrections, as data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct IfTapConfig {
     /// The radio's first IF. 73.05 MHz on the TS-570D.
     pub if_center_hz: u64,
@@ -110,7 +110,7 @@ pub struct IfTapConfig {
 }
 
 /// Where a radio's spectrum can come from, if anywhere.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum SignalCapability {
     /// No spectrum at all. A first-class state, not an error: a TS-570D
@@ -159,7 +159,7 @@ impl SignalCapability {
 
 /// Physical unit a setting is expressed in, so a UI can label it without
 /// parsing the key name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum Unit {
     None,
@@ -188,7 +188,7 @@ impl Unit {
 }
 
 /// Whether a consumer may write a setting back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Access {
     ReadOnly,
     ReadWrite,
@@ -196,7 +196,7 @@ pub enum Access {
 
 /// Coarse grouping, so a generic panel can lay settings out sensibly
 /// without knowing what any of them mean.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum SettingGroup {
     /// Where the signal comes from: device, sample rate, gain.
@@ -209,7 +209,7 @@ pub enum SettingGroup {
 
 /// A setting's current value, its bounds, and enough type information for
 /// a UI to pick a control.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum SettingValue {
     Int {
         value: i64,
@@ -267,7 +267,7 @@ impl SettingValue {
 }
 
 /// One knob a source exposes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct SettingDescriptor {
     /// Stable identifier, used by [`SpectrumSource::apply`]. Never shown
     /// to a user.
@@ -280,7 +280,7 @@ pub struct SettingDescriptor {
 }
 
 /// Everything a source lets a consumer see or change.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct SpectrumSettings {
     pub descriptors: Vec<SettingDescriptor>,
 }

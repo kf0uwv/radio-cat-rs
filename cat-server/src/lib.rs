@@ -60,6 +60,8 @@ pub mod broker;
 mod broker_session;
 pub mod dedup;
 pub mod local_channel;
+/// The native typed protocol (ADR 0010 section 6).
+pub mod native;
 pub mod registry;
 #[cfg(target_os = "linux")]
 pub mod tcp;

@@ -16,6 +16,11 @@ description = "Normalized spectrum frames and a source trait, so an IF tap, a na
 [dependencies]
 async-trait = { workspace = true }
 
+# Serialization only, so these types can cross the native protocol without
+# a parallel set of wire structs. No serde_json here -- this crate has no
+# opinion about the encoding, only that its types can be encoded.
+serde = { workspace = true }
+
 [dev-dependencies]
 # Runtime-agnostic test executor. This crate must not bind to monoio --
 # it has no I/O of its own -- and `#[monoio::test]` would make its tests
