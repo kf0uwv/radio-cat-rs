@@ -13,6 +13,7 @@ members = [
     "cat-signal-rtlsdr",
     "cat-ui",
     "cat-ui-ratatui",
+    "cat-ui-egui",
 ]
 resolver = "2"
 
@@ -51,6 +52,11 @@ serde_json = "1.0"
 # ADR 0011 rev 4's acceptance bar for that migration is that the operator
 # sees no change.
 ratatui = { version = "0.26.3", features = ["crossterm"] }
+
+# Immediate-mode GUI. The widget crate depends on `egui` alone; `eframe`
+# (window + event loop + wgpu surface) belongs to each app's own binary,
+# per ADR 0011's seam.
+egui = "0.29"
 
 # Error handling
 thiserror = "1.0.61"

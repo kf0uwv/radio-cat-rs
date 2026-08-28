@@ -21,6 +21,7 @@
 
 use crate::{BLOCKS, UPPER_HALF};
 use cat_signal::SpectrumFrame;
+use cat_ui::{bin_for_column, intensity, sample_column, Sample};
 use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 
 /// Colour ramp for waterfall intensity, cold to hot.
@@ -81,33 +82,6 @@ impl WaterfallPalette {
     }
 }
 
-/// Where a bin from `frame` lands, in columns, relative to `reference`.
-///
-/// This is the re-projection that keeps a waterfall's frequency axis true
-/// for every row and not merely its newest. It matters because an IF tap is
-/// **dial-centred**: the SDR is parked on the IF and the radio's LO tracks
-/// the dial, so every retune changes a frame's `center_hz` and a row
-/// captured a moment ago describes a different slice of spectrum.
-///
-/// For a source whose centre never moves — a `DirectSdr` with a fixed
-/// tuner — every row shares a centre and this is a no-op. That is why it is
-/// safe to do unconditionally here rather than making it a per-radio policy.
-fn column_offset(frame: &SpectrumFrame, reference: &SpectrumFrame, width: u16) -> i32 {
-    if reference.span_hz == 0 || width == 0 {
-        return 0;
-    }
-    let delta = frame.center_hz as i64 - reference.center_hz as i64;
-    ((delta as f64 / f64::from(reference.span_hz)) * f64::from(width)).round() as i32
-}
-
-/// Normalize a bin's power to 0.0–1.0 against a floor and a reference.
-fn intensity(dbm: f32, floor_dbm: f32, ref_dbm: f32) -> f32 {
-    if (ref_dbm - floor_dbm).abs() < f32::EPSILON {
-        return 0.0;
-    }
-    ((dbm - floor_dbm) / (ref_dbm - floor_dbm)).clamp(0.0, 1.0)
-}
-
 /// Draw one frame as a column-per-cell trace, eight sub-levels per row.
 ///
 /// Bin 0 is the lowest frequency and is drawn leftmost, which is only
@@ -127,7 +101,9 @@ pub fn spectrum_trace(
     }
     let levels = u32::from(area.height) * 8;
     for col in 0..area.width {
-        let bin = bin_for_column(frame.bins.len(), col, area.width);
+        let Some(bin) = bin_for_column(&frame.bins, u32::from(col), u32::from(area.width)) else {
+            continue;
+        };
         let t = intensity(frame.bins[bin], floor_dbm, frame.ref_level_dbm);
         let filled = (t * levels as f32).round() as u32;
         for row in 0..area.height {
@@ -144,17 +120,6 @@ pub fn spectrum_trace(
             }
         }
     }
-}
-
-/// Which bin a column samples. Nearest-bin, not averaged: a terminal has
-/// far fewer columns than bins, and averaging would bury a narrow carrier
-/// that is exactly what an operator is looking for.
-fn bin_for_column(bins: usize, col: u16, width: u16) -> usize {
-    if width <= 1 {
-        return 0;
-    }
-    let f = f64::from(col) / f64::from(width - 1);
-    ((f * (bins - 1) as f64).round() as usize).min(bins - 1)
 }
 
 /// Draw a waterfall, newest row at the top, two history rows per text row.
@@ -194,7 +159,6 @@ pub fn waterfall(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn sample(
     frame: Option<&SpectrumFrame>,
     reference: &SpectrumFrame,
@@ -204,18 +168,20 @@ fn sample(
     palette: WaterfallPalette,
     absent: Color,
 ) -> Color {
+    // A row with no frame at all and a column a row never captured are the
+    // same thing to a viewer: nothing was measured here. Both must be
+    // visibly distinct from a measured silence.
     let Some(frame) = frame else { return absent };
-    if frame.bins.is_empty() {
-        return absent;
+    match sample_column(
+        frame,
+        reference,
+        u32::from(col),
+        u32::from(width),
+        floor_dbm,
+    ) {
+        Sample::NoData => absent,
+        Sample::Signal(t) => palette.at(t),
     }
-    let offset = column_offset(frame, reference, width);
-    let src = i32::from(col) - offset;
-    if src < 0 || src >= i32::from(width) {
-        // This row never saw this frequency.
-        return absent;
-    }
-    let bin = bin_for_column(frame.bins.len(), src as u16, width);
-    palette.at(intensity(frame.bins[bin], floor_dbm, frame.ref_level_dbm))
 }
 
 #[cfg(test)]
@@ -358,36 +324,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Re-projection. An IF tap is dial-centred, so every retune changes a
-    // frame's centre and a row captured a moment ago describes a different
-    // slice of spectrum.
+    // Re-projection is `cat_ui::projection_offset`'s job and is tested
+    // there. What is tested HERE is that this renderer actually honours
+    // it, and draws absence rather than substituting something plausible.
     // -----------------------------------------------------------------
-
-    #[test]
-    fn rows_sharing_a_centre_are_not_shifted() {
-        // The DirectSdr case: a fixed tuner, every row on one axis. The
-        // re-projection must be a no-op, or it would introduce a bug on
-        // sources that never had this problem.
-        let rows = [frame(14_074_000, 128, 256), frame(14_074_000, 128, 256)];
-        assert_eq!(column_offset(&rows[1], &rows[0], 64), 0);
-    }
-
-    #[test]
-    fn a_row_captured_higher_up_the_band_shifts_right() {
-        // Its content sat at higher frequencies, so on the current axis it
-        // belongs further right.
-        let reference = frame(14_074_000, 128, 256);
-        let older = frame(14_074_000 + 24_000, 128, 256);
-        // A quarter of a 96 kHz span, across 64 columns, is 16 columns.
-        assert_eq!(column_offset(&older, &reference, 64), 16);
-    }
-
-    #[test]
-    fn a_row_captured_lower_down_the_band_shifts_left() {
-        let reference = frame(14_074_000, 128, 256);
-        let older = frame(14_074_000 - 24_000, 128, 256);
-        assert_eq!(column_offset(&older, &reference, 64), -16);
-    }
 
     #[test]
     fn columns_a_row_never_captured_are_drawn_as_absence() {
@@ -468,10 +408,5 @@ mod tests {
         let p = WaterfallPalette::ANSI16;
         assert_ne!(p.at(0.0), p.at(0.5));
         assert_ne!(p.at(0.5), p.at(1.0));
-    }
-
-    #[test]
-    fn a_flat_reference_does_not_divide_by_zero() {
-        assert_eq!(intensity(-50.0, -20.0, -20.0), 0.0);
     }
 }

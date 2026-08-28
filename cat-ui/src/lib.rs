@@ -52,9 +52,14 @@ pub mod format;
 pub mod lanes;
 pub mod meter;
 pub mod spectrum;
+/// Bin-to-display mapping, shared by every renderer.
+pub mod spectrum_map;
 
 pub use band::{Band, BandPlan};
 pub use format::{format_hz, format_hz_compact, format_smeter_label};
 pub use lanes::{CatLane, ConsoleState, SpectrumLane};
 pub use meter::MeterReading;
 pub use spectrum::SpectrumHistory;
+pub use spectrum_map::{
+    bin_for_column, column_bins, intensity, projection_offset, sample_column, Sample,
+};

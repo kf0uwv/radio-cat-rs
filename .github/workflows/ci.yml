@@ -58,6 +58,12 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Install GUI build dependencies
+        # `cat-ui-egui` pulls in egui, which needs X11/wayland headers to
+        # COMPILE on Linux even though nothing here opens a window: no CI
+        # runner has a GPU and no test in this workspace renders.
+        run: sudo apt-get install -y libxkbcommon-dev libwayland-dev
+
       - name: Tests
         # EXPECT_HAMLIB turns cat-rigctl's live interop tests from
         # "skip if rigctl is missing" into "fail if rigctl is missing".
