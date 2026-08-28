@@ -1,0 +1,38 @@
+[package]
+name = "cat-signal-rtlsdr"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "An RTL-SDR SpectrumSource: IF-tap corrected spectrum frames from a parked dongle."
+
+[dependencies]
+cat-signal = { path = "../cat-signal" }
+async-trait = { workspace = true }
+rustfft = "6.2"
+
+[dev-dependencies]
+futures = { workspace = true }
+
+[features]
+# OFF by default, deliberately.
+#
+# The DSP pipeline -- window, FFT, magnitude, IfTapConfig correction -- is
+# always compiled and always tested, because it is where the correctness
+# lives and it needs no hardware. The librtlsdr worker is opt-in because
+# building it requires libusb and librtlsdr headers, and making every
+# consumer of this workspace acquire a C toolchain to compile a crate they
+# may not use is a poor trade.
+#
+# The cost is real and named in ADR 0014's amendment: code behind a
+# default-off feature is code CI does not compile, which is precisely how
+# the Windows defects in planning/release_workflow/findings.md survived. The
+# Linux CI job therefore builds `--features device` explicitly.
+default = []
+device = ["dep:rtlsdr"]
+
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+rtlsdr = { version = "0.1", optional = true }

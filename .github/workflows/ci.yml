@@ -57,6 +57,17 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
+      - name: Install librtlsdr (for the optional device layer)
+        run: sudo apt-get install -y librtlsdr-dev
+
+      - name: Build the feature-gated RTL-SDR device layer
+        # Per ADR 0014 section 5: code behind a default-off feature is code
+        # CI does not compile, which is exactly how the Windows defects in
+        # planning/release_workflow/findings.md section 7 survived. This
+        # cannot run -- no runner has a dongle -- but it must at least
+        # build, on every PR.
+        run: cargo check -p cat-signal-rtlsdr --features device
+
   windows-check:
     name: Windows (MSVC)
     runs-on: windows-latest
