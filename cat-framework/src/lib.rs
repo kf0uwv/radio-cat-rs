@@ -19,6 +19,8 @@ pub mod capabilities;
 #[cfg(test)]
 mod capabilities_fixtures;
 pub mod cat;
+/// What one deployment has wired, as against what the model supports.
+pub mod installation;
 pub mod wire_format;
 
 pub use cat::{

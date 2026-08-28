@@ -4,8 +4,8 @@ Date: 2026-08-28
 
 ## Status
 
-**Proposed** — drafted for architect + user review. No code has been
-written. Resolves the four items
+**Accepted** (2026-08-28) — user sign-off. Implemented as `cat-signal-rtlsdr`
+(Task 15); its two caveats are resolved in section 3 and a third recorded there. Resolves the four items
 [ADR 0010](0010-capability-model-and-normalized-signal-source.md) §5
 deferred, and the `cat-signal-rtlsdr` requirement
 [ADR 0012](0012-native-msvc-windows-target.md) §4 named.

@@ -43,7 +43,8 @@
 //! `menu_capability_is_the_thinnest_part_of_the_model`.
 
 use crate::capabilities::*;
-use cat_signal::{IfTapConfig, SignalCapability};
+use crate::installation::{Installation, InstalledSource, Session, SourceState};
+use cat_signal::SignalCapability;
 
 // ---------------------------------------------------------------------------
 // Kenwood TS-570D
@@ -184,23 +185,15 @@ pub const TS570D: RadioCapabilities = RadioCapabilities {
         item_count: 52,
         writable: true,
     }),
-    // NOTE (2026-08-28): this field is where ADR 0015 says this fixture is
-    // wrong. Asserting `IfTap` here claims every TS-570D *has* a tap fitted,
-    // when the truth is that every TS-570D has a CN4 header and whether a
-    // dongle hangs off it is a fact about one bench. `trim_hz: 0` below is
-    // the same mistake in miniature — a per-station measurement standing in
-    // a per-model constant. Left as-is until ADR 0015 is settled, because
-    // changing it piecemeal would be worse than one deliberate split.
-    //
-    // No bandscope. The spectrum comes from an SDR on the CN4 IF tap:
-    // 73.05 MHz first IF, inverted because LO1 is high-side injection
-    // (73.05-103.05 MHz), and one calibrated trim. `trim_hz` is zero here
-    // because it is a per-station measurement, not a property of the model.
-    signal: SignalCapability::IfTap(IfTapConfig {
+    // A MODEL fact: every TS-570D has a CN4 header on its TX-RX unit, at a
+    // 73.05 MHz first IF, mirrored because LO1 is high-side injection
+    // (73.05-103.05 MHz). Whether a dongle hangs off it is not a fact about
+    // the model, and lives in an `Installation` instead -- ADR 0015, which
+    // this fixture's previous shape is what prompted.
+    signal: SignalSupport::IfTapPoint {
         if_center_hz: 73_050_000,
         inverted: true,
-        trim_hz: 0,
-    }),
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -416,11 +409,61 @@ pub const FT991A: RadioCapabilities = RadioCapabilities {
         item_count: 152,
         writable: true,
     }),
-    // No bandscope over CAT. Verified against the FT-991A CAT manual: it
-    // has menu items for its own scope display, but no command that
-    // returns scope DATA (ADR 0010, Context).
-    signal: SignalCapability::None,
+    // No bandscope over CAT and no IF tap point. Verified against the
+    // FT-991A CAT manual: it has menu items for its own scope display, but
+    // no command that returns scope DATA (ADR 0010, Context).
+    signal: SignalSupport::None,
 };
+
+// ---------------------------------------------------------------------------
+// The same radio, two benches
+// ---------------------------------------------------------------------------
+
+/// A TS-570D with nothing optional attached: one serial cable, no dongle,
+/// no soundcard.
+///
+/// The model description above is byte-for-byte the same one the fitted
+/// station uses. That is the whole point of ADR 0015 -- a radio's
+/// description does not change when someone unplugs something.
+pub fn ts570d_bare() -> Installation {
+    Installation::bare(vec![EndpointRole::Cat, EndpointRole::Keying])
+}
+
+/// A TS-570D behind the interface box: CAT serial with DTR keying through
+/// ACC2, an RTL-SDR on the CN4 tap, and RF audio through ACC2 into a USB
+/// sound device.
+///
+/// `trim_hz` is a measurement, not a constant. It belongs to one dongle's
+/// crystal and is calibrated against a known carrier; a different dongle on
+/// the same radio has a different number. That it can live here at all,
+/// rather than as a placeholder zero inside a `const`, is what ADR 0015
+/// bought.
+pub fn ts570d_with_box(trim_hz: i32) -> Installation {
+    let mut install = Installation::bare(vec![
+        EndpointRole::Cat,
+        EndpointRole::Keying,
+        EndpointRole::Audio,
+    ]);
+    if let Some(tap) = Installation::if_tap_from(
+        &TS570D,
+        trim_hz,
+        SourceState::Streaming,
+        "RTL-SDR #0 on CN4",
+    ) {
+        install.sources.push(tap);
+    }
+    install.sources.push(InstalledSource::new(
+        SignalCapability::AudioDerived {
+            max_bandwidth_hz: 3_000,
+        },
+        // Configured, not Streaming: the audio path is wired and the
+        // transport design does not exist yet. This is the state a `bool`
+        // could not express.
+        SourceState::Configured,
+        "Box USB Audio from ACC2",
+    ));
+    install
+}
 
 #[cfg(test)]
 mod tests {
@@ -610,19 +653,123 @@ mod tests {
     }
 
     #[test]
-    fn signal_capability_separates_a_tapped_radio_from_a_bare_one() {
-        // The TS-570D has no bandscope but does have a CN4 IF tap, so it
-        // can drive a panorama. The FT-991A has neither, and reports so.
-        assert!(TS570D.signal.is_present());
-        assert!(TS570D.signal.is_band_panorama());
-        assert!(!FT991A.signal.is_present());
-        assert!(!FT991A.signal.is_band_panorama());
+    fn the_model_says_a_tap_is_possible_not_that_one_is_fitted() {
+        // The distinction ADR 0015 exists for. Every TS-570D has a CN4
+        // header; only some benches have a dongle on it.
+        assert!(TS570D.signal.is_possible());
+        assert!(!FT991A.signal.is_possible());
 
-        let SignalCapability::IfTap(config) = TS570D.signal else {
-            panic!("TS-570D should report an IF tap");
+        let SignalSupport::IfTapPoint {
+            if_center_hz,
+            inverted,
+        } = TS570D.signal
+        else {
+            panic!("the TS-570D has an IF tap point")
         };
-        assert_eq!(config.if_center_hz, 73_050_000);
-        assert!(config.inverted, "LO1 is high-side, so the IF is mirrored");
+        assert_eq!(if_center_hz, 73_050_000);
+        assert!(inverted, "LO1 is high-side, so the IF is mirrored");
+    }
+
+    #[test]
+    fn the_same_model_description_serves_both_benches() {
+        // The property that makes RadioCapabilities a description of a
+        // MODEL: unplugging a dongle must not change it.
+        let bare = Session::new(&TS570D, ts570d_bare());
+        let fitted = Session::new(&TS570D, ts570d_with_box(-1_420));
+        assert_eq!(bare.radio.model, fitted.radio.model);
+        assert_eq!(bare.radio.signal, fitted.radio.signal);
+        assert_ne!(bare.installation, fitted.installation);
+    }
+
+    #[test]
+    fn only_the_fitted_bench_can_draw_a_waterfall() {
+        assert!(!Session::new(&TS570D, ts570d_bare()).has_panorama());
+        assert!(Session::new(&TS570D, ts570d_with_box(-1_420)).has_panorama());
+    }
+
+    #[test]
+    fn a_bare_ts570d_is_an_invitation_not_an_apology() {
+        // The radio COULD take a tap and does not have one. That is the
+        // state the console turns into "configure a source here", rather
+        // than hiding the panel or greying it out.
+        let bare = Session::new(&TS570D, ts570d_bare());
+        assert!(bare.panorama_possible_but_absent());
+
+        // An FT-991A is a different state entirely: no tap is possible, so
+        // there is nothing to invite.
+        let ft = Session::new(&FT991A, Installation::bare(vec![EndpointRole::Cat]));
+        assert!(!ft.panorama_possible_but_absent());
+    }
+
+    #[test]
+    fn a_station_can_run_two_sources_at_once() {
+        // The finding that blocked the audio panels: one enum field could
+        // not say this, and `ConsoleState` derived exactly one lane from
+        // it, so there was no lane for audio at all.
+        let fitted = ts570d_with_box(-1_420);
+        assert_eq!(fitted.sources.len(), 2);
+        assert!(fitted.band_panorama().is_some());
+        assert!(fitted.audio().is_some());
+    }
+
+    #[test]
+    fn audio_is_present_without_being_a_panorama() {
+        let fitted = ts570d_with_box(-1_420);
+        let audio = fitted.audio().unwrap();
+        assert!(!audio.is_band_panorama());
+        // ...and it is not the source a waterfall would pick up.
+        assert_ne!(fitted.band_panorama().unwrap().capability, audio.capability);
+    }
+
+    #[test]
+    fn configured_and_streaming_are_different_states() {
+        // The middle state a bool could not hold. The tap is delivering;
+        // the audio path is wired and silent because its transport design
+        // does not exist yet. A console must tell those apart, or it
+        // reports missing hardware that is sitting right there.
+        let fitted = ts570d_with_box(-1_420);
+        assert!(fitted.band_panorama().unwrap().is_streaming());
+        assert!(!fitted.audio().unwrap().is_streaming());
+        assert_eq!(fitted.audio().unwrap().state, SourceState::Configured);
+    }
+
+    #[test]
+    fn the_trim_is_a_measurement_and_lives_with_the_bench() {
+        // It used to be a placeholder zero inside a const, with a comment
+        // apologising for it. Two dongles on the same radio now differ.
+        let a = ts570d_with_box(-1_420);
+        let b = ts570d_with_box(880);
+        assert_ne!(a.band_panorama(), b.band_panorama());
+
+        let SignalCapability::IfTap(cfg) = a.band_panorama().unwrap().capability else {
+            panic!("expected an IF tap")
+        };
+        assert_eq!(cfg.trim_hz, -1_420);
+        // ...while the two facts that come from the radio are identical.
+        assert_eq!(cfg.if_center_hz, 73_050_000);
+        assert!(cfg.inverted);
+    }
+
+    #[test]
+    fn the_box_adds_an_audio_endpoint_the_bare_radio_does_not_have() {
+        assert!(!ts570d_bare().is_connected(EndpointRole::Audio));
+        assert!(ts570d_with_box(0).is_connected(EndpointRole::Audio));
+        // Both still share one handle for CAT and keying: that is the
+        // radio's RS-232C port, and a fact about the model.
+        for install in [ts570d_bare(), ts570d_with_box(0)] {
+            assert!(install.is_connected(EndpointRole::Cat));
+            assert!(install.is_connected(EndpointRole::Keying));
+        }
+    }
+
+    #[test]
+    fn a_radio_with_no_tap_point_cannot_be_given_one() {
+        // if_tap_from reads the MODEL. An installation cannot invent a tap
+        // on a radio that has no header for it, which is what stops
+        // installation data from quietly becoming a second source of truth
+        // about the radio.
+        assert!(Installation::if_tap_from(&FT991A, -1_420, SourceState::Streaming, "x").is_none());
+        assert!(Installation::if_tap_from(&TS570D, -1_420, SourceState::Streaming, "x").is_some());
     }
 
     #[test]
@@ -639,8 +786,8 @@ mod tests {
             let extra_handles = anonymous.endpoints.handle_count() - 1;
             assert!(extra_handles <= 2);
 
-            // Whether to draw a waterfall.
-            let _ = anonymous.signal.is_band_panorama();
+            // Whether a waterfall is even possible.
+            let _ = anonymous.signal.is_possible();
 
             // How to scale the S-meter.
             let s = anonymous.meters.find(MeterKind::S).unwrap();

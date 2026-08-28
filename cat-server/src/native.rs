@@ -40,6 +40,7 @@
 //! versioning later has to guess what the unversioned peers were.
 
 use cat_framework::capabilities::*;
+use cat_framework::installation::Installation;
 use serde::{Deserialize, Serialize};
 
 /// Wire protocol version, sent in every [`ClientMessage::Hello`] and
@@ -135,7 +136,15 @@ pub struct CapabilitiesWire {
     pub meters: Vec<MeterDescriptorWire>,
     pub memory: Option<MemoryCapability>,
     pub menu: Option<MenuCapability>,
-    pub signal: cat_signal::SignalCapability,
+    /// What the radio *model* can accept as a spectrum source.
+    pub signal: SignalSupport,
+    /// What this bench actually has wired.
+    ///
+    /// The two are separate because they answer different questions and
+    /// change at different times (ADR 0015). A client asking "should I draw
+    /// a waterfall?" reads the installation; a client asking "could this
+    /// radio ever have one?" reads the model.
+    pub installation: Installation,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -214,6 +223,19 @@ impl From<&RadioCapabilities> for CapabilitiesWire {
             memory: c.memory,
             menu: c.menu,
             signal: c.signal,
+            // Filled by the caller: a `RadioCapabilities` alone cannot know
+            // what is plugged into the radio it describes.
+            installation: Installation::default(),
+        }
+    }
+}
+
+impl CapabilitiesWire {
+    /// Publish a model and a bench together.
+    pub fn from_session(session: &cat_framework::installation::Session) -> Self {
+        Self {
+            installation: session.installation.clone(),
+            ..Self::from(session.radio)
         }
     }
 }
@@ -312,14 +334,25 @@ pub enum ErrorCode {
 /// `cat-signal`'s DSP separable from their hardware.
 pub struct NativeSession {
     capabilities: &'static RadioCapabilities,
+    installation: Installation,
     handshaken: bool,
     spectrum: bool,
 }
 
 impl NativeSession {
+    /// A session for a radio with nothing optional attached.
     pub fn new(capabilities: &'static RadioCapabilities) -> Self {
+        Self::with_installation(capabilities, Installation::default())
+    }
+
+    /// A session for a radio on a particular bench.
+    pub fn with_installation(
+        capabilities: &'static RadioCapabilities,
+        installation: Installation,
+    ) -> Self {
         Self {
             capabilities,
+            installation,
             handshaken: false,
             spectrum: false,
         }
@@ -355,7 +388,10 @@ impl NativeSession {
                 self.spectrum = spectrum;
                 ServerMessage::Welcome {
                     version: PROTOCOL_VERSION,
-                    capabilities: Box::new(CapabilitiesWire::from(self.capabilities)),
+                    capabilities: Box::new(CapabilitiesWire {
+                        installation: self.installation.clone(),
+                        ..CapabilitiesWire::from(self.capabilities)
+                    }),
                 }
             }
             _ if !self.handshaken => ServerMessage::Error {
@@ -600,11 +636,12 @@ mod tests {
             scan: true,
         }),
         menu: None,
-        signal: cat_signal::SignalCapability::IfTap(cat_signal::IfTapConfig {
+        // A MODEL fact: the radio has a CN4 tap point. Whether a dongle is
+        // on it belongs to an `Installation` (ADR 0015).
+        signal: SignalSupport::IfTapPoint {
             if_center_hz: 73_050_000,
             inverted: true,
-            trim_hz: 0,
-        }),
+        },
     };
 
     static NO_EXTRAS: RadioCapabilities = RadioCapabilities {
@@ -627,7 +664,7 @@ mod tests {
         meters: MeterSet::new(METERS),
         memory: None,
         menu: None,
-        signal: cat_signal::SignalCapability::None,
+        signal: SignalSupport::None,
     };
 
     fn handshaken(spectrum: bool) -> NativeSession {
@@ -1006,6 +1043,60 @@ mod tests {
         assert!(decode_spectrum_payload(&payload[..20]).is_none());
         assert!(decode_spectrum_payload(&payload[..30]).is_none());
         assert!(decode_spectrum_payload(&payload).is_some());
+    }
+
+    #[test]
+    fn the_handshake_publishes_the_model_and_the_bench_separately() {
+        // ADR 0015 over the wire. A client asking "should I draw a
+        // waterfall?" reads the installation; one asking "could this radio
+        // ever have one?" reads the model. Collapsing them would put a
+        // per-bench fact into a per-model constant again.
+        use cat_framework::installation::{InstalledSource, SourceState};
+
+        let installed = Installation::bare(vec![EndpointRole::Cat, EndpointRole::Keying])
+            .with_source(InstalledSource::new(
+                cat_signal::SignalCapability::IfTap(cat_signal::IfTapConfig {
+                    if_center_hz: 73_050_000,
+                    inverted: true,
+                    trim_hz: -1_420,
+                }),
+                SourceState::Streaming,
+                "RTL-SDR #0",
+            ));
+
+        let mut session = NativeSession::with_installation(&RADIO, installed);
+        let reply = session.handle(ClientMessage::Hello {
+            version: PROTOCOL_VERSION,
+            spectrum: true,
+        });
+        let ServerMessage::Welcome { capabilities, .. } = reply else {
+            panic!("expected Welcome")
+        };
+
+        // The model says a tap is possible...
+        assert!(capabilities.signal.is_possible());
+        // ...and the bench says one is fitted, with a measured trim that
+        // could never have lived in the const.
+        let source = capabilities.installation.band_panorama().unwrap();
+        let cat_signal::SignalCapability::IfTap(cfg) = source.capability else {
+            panic!("expected an IF tap")
+        };
+        assert_eq!(cfg.trim_hz, -1_420);
+    }
+
+    #[test]
+    fn a_bare_bench_publishes_the_same_model_with_no_sources() {
+        let mut session = NativeSession::new(&RADIO);
+        let reply = session.handle(ClientMessage::Hello {
+            version: PROTOCOL_VERSION,
+            spectrum: true,
+        });
+        let ServerMessage::Welcome { capabilities, .. } = reply else {
+            panic!("expected Welcome")
+        };
+        // Unplugging the dongle does not change the radio's description.
+        assert!(capabilities.signal.is_possible());
+        assert!(capabilities.installation.band_panorama().is_none());
     }
 
     #[test]

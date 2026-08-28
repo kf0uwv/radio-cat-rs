@@ -655,7 +655,7 @@ mod capability_dump_state_tests {
         meters: MeterSet::new(METERS),
         memory: None,
         menu: None,
-        signal: cat_signal::SignalCapability::None,
+        signal: SignalSupport::None,
     };
 
     static BARE: RadioCapabilities = RadioCapabilities {
@@ -678,7 +678,7 @@ mod capability_dump_state_tests {
         meters: MeterSet::new(METERS),
         memory: None,
         menu: None,
-        signal: cat_signal::SignalCapability::None,
+        signal: SignalSupport::None,
     };
 
     /// The tail Hamlib counts: everything after the zero-terminated
@@ -1078,7 +1078,7 @@ mod live_hamlib_tests {
         meters: MeterSet::new(METERS),
         memory: None,
         menu: None,
-        signal: cat_signal::SignalCapability::None,
+        signal: SignalSupport::None,
     };
 
     /// Whether a real Hamlib client is available to test against.

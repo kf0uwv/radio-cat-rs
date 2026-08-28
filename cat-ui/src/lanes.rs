@@ -24,7 +24,8 @@
 //! wait on one from the other.
 
 use crate::spectrum::SpectrumHistory;
-use cat_framework::capabilities::{MeterKind, RadioCapabilities};
+use cat_framework::capabilities::MeterKind;
+use cat_framework::installation::{Installation, Session, SourceState};
 use cat_signal::SpectrumFrame;
 
 /// Slow lane: whatever the radio last told us, and how stale it is.
@@ -91,21 +92,56 @@ impl CatLane {
     }
 }
 
+/// What a source lane can be. Three states, not two.
+///
+/// The middle one is why this is not a `bool`. A path can be wired and
+/// configured while nothing arrives — which is the state of an audio
+/// endpoint whose transport design has not been written. Collapsing it into
+/// "absent" makes a console report missing hardware that is sitting right
+/// there, plugged in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneState {
+    /// Nothing is attached, and a console should say so as a first-class
+    /// state rather than an error.
+    Absent,
+    /// Attached and configured; no data arriving yet.
+    Configured,
+    /// Delivering.
+    Streaming,
+}
+
+impl LaneState {
+    fn from(state: Option<SourceState>) -> Self {
+        match state {
+            None => LaneState::Absent,
+            Some(SourceState::Configured) => LaneState::Configured,
+            Some(SourceState::Streaming) => LaneState::Streaming,
+        }
+    }
+
+    /// Whether there is anything to draw right now.
+    pub fn has_data(&self) -> bool {
+        *self == LaneState::Streaming
+    }
+
+    /// Whether the hardware exists, whether or not it is delivering.
+    pub fn is_present(&self) -> bool {
+        *self != LaneState::Absent
+    }
+}
+
 /// Fast lane: spectrum history and nothing that can block.
 #[derive(Debug, Clone)]
 pub struct SpectrumLane {
     pub history: SpectrumHistory,
-    /// `false` when the radio reports no spectrum source. A first-class
-    /// state, not an error: a TS-570D with nothing on CN4 is a working
-    /// radio, and the console should stay recognisably itself.
-    pub available: bool,
+    pub state: LaneState,
 }
 
 impl SpectrumLane {
-    pub fn new(capacity: usize, available: bool) -> Self {
+    pub fn new(capacity: usize, state: LaneState) -> Self {
         Self {
             history: SpectrumHistory::new(capacity),
-            available,
+            state,
         }
     }
 
@@ -114,23 +150,41 @@ impl SpectrumLane {
     }
 }
 
-/// Both lanes, with no path from one to the other.
+/// Every lane, with no path from one to the other.
 #[derive(Debug, Clone)]
 pub struct ConsoleState {
     pub cat: CatLane,
+    /// The band panorama. Drawn as a waterfall.
     pub spectrum: SpectrumLane,
+    /// Audio-derived spectrum. **Never** a band panorama — it is audio
+    /// bandwidth only, and a console that fed it to a waterfall would
+    /// stretch a few kHz across a whole band and look authoritative doing
+    /// it. A separate lane is what makes that mistake require effort.
+    pub audio: SpectrumLane,
 }
 
 impl ConsoleState {
-    /// Build state sized and configured for a particular radio.
+    /// Build state for one radio on one bench.
     ///
-    /// A radio with no spectrum source gets a lane marked unavailable
-    /// rather than no lane at all, so a layout can reserve its space
-    /// instead of reflowing when a tap is plugged in.
-    pub fn for_radio(capabilities: &RadioCapabilities, history_capacity: usize) -> Self {
+    /// Takes a [`Session`] rather than a `RadioCapabilities`, because
+    /// whether a source is attached is a fact about the bench (ADR 0015).
+    /// A lane always exists, even when nothing is connected, so a layout
+    /// can reserve its space instead of reflowing when a tap is plugged in.
+    pub fn for_session(session: &Session, history_capacity: usize) -> Self {
+        Self::for_installation(&session.installation, history_capacity)
+    }
+
+    pub fn for_installation(installation: &Installation, history_capacity: usize) -> Self {
         Self {
             cat: CatLane::default(),
-            spectrum: SpectrumLane::new(history_capacity, capabilities.signal.is_band_panorama()),
+            spectrum: SpectrumLane::new(
+                history_capacity,
+                LaneState::from(installation.band_panorama().map(|s| s.state)),
+            ),
+            audio: SpectrumLane::new(
+                history_capacity,
+                LaneState::from(installation.audio().map(|s| s.state)),
+            ),
         }
     }
 }
@@ -139,6 +193,7 @@ impl ConsoleState {
 mod tests {
     use super::*;
     use cat_framework::capabilities::*;
+    use cat_framework::installation::{Installation, InstalledSource, Session, SourceState};
 
     const MODES: &[ModeDescriptor] = &[ModeDescriptor {
         id: ModeId::Lsb,
@@ -158,7 +213,7 @@ mod tests {
         shareable_with: &[],
     }];
 
-    fn radio(signal: cat_signal::SignalCapability) -> RadioCapabilities {
+    fn radio() -> RadioCapabilities {
         RadioCapabilities {
             model: "Test",
             endpoints: EndpointSet::new(ENDPOINTS),
@@ -179,8 +234,33 @@ mod tests {
             meters: MeterSet::new(METERS),
             memory: None,
             menu: None,
-            signal,
+            signal: SignalSupport::IfTapPoint {
+                if_center_hz: 73_050_000,
+                inverted: true,
+            },
         }
+    }
+
+    fn tap(state: SourceState) -> InstalledSource {
+        InstalledSource::new(
+            cat_signal::SignalCapability::IfTap(cat_signal::IfTapConfig {
+                if_center_hz: 73_050_000,
+                inverted: true,
+                trim_hz: -1_420,
+            }),
+            state,
+            "RTL-SDR",
+        )
+    }
+
+    fn audio_source(state: SourceState) -> InstalledSource {
+        InstalledSource::new(
+            cat_signal::SignalCapability::AudioDerived {
+                max_bandwidth_hz: 3_000,
+            },
+            state,
+            "USB codec",
+        )
     }
 
     fn frame(sequence: u64) -> SpectrumFrame {
@@ -196,51 +276,84 @@ mod tests {
     #[test]
     fn a_cold_console_reports_unknown_rather_than_zero() {
         // Showing 0.000.000 MHz before anything has been read is a lie.
-        let state = ConsoleState::for_radio(&radio(cat_signal::SignalCapability::None), 8);
+        let state = ConsoleState::for_installation(&Installation::default(), 8);
         assert!(state.cat.is_cold());
         assert_eq!(state.cat.vfo_a_hz, None);
         assert_eq!(state.cat.mode, None);
     }
 
     #[test]
-    fn a_radio_without_a_tap_still_gets_a_lane_marked_unavailable() {
+    fn a_bench_without_a_tap_still_gets_a_lane() {
         // So a layout can reserve the waterfall's space rather than
-        // reflowing when a tap is connected. ADR 0008 calls capability
-        // absence a first-class design state.
-        let state = ConsoleState::for_radio(&radio(cat_signal::SignalCapability::None), 8);
-        assert!(!state.spectrum.available);
+        // reflowing when a tap is plugged in. Absence is a design state.
+        let state = ConsoleState::for_installation(&Installation::default(), 8);
+        assert_eq!(state.spectrum.state, LaneState::Absent);
         assert!(state.spectrum.history.is_empty());
     }
 
     #[test]
-    fn a_tapped_radio_reports_its_spectrum_lane_as_available() {
-        let tapped = radio(cat_signal::SignalCapability::IfTap(
-            cat_signal::IfTapConfig {
-                if_center_hz: 73_050_000,
-                inverted: true,
-                trim_hz: 0,
-            },
-        ));
-        let state = ConsoleState::for_radio(&tapped, 8);
-        assert!(state.spectrum.available);
+    fn a_fitted_bench_reports_its_panorama_as_streaming() {
+        let install = Installation::default().with_source(tap(SourceState::Streaming));
+        let state = ConsoleState::for_installation(&install, 8);
+        assert_eq!(state.spectrum.state, LaneState::Streaming);
+        assert!(state.spectrum.state.has_data());
     }
 
     #[test]
-    fn an_audio_only_source_is_not_offered_as_a_waterfall() {
-        // AudioDerived is present but cannot drive a band panorama. A lane
-        // that said otherwise would produce a waterfall of AF bandwidth
-        // stretched across a band -- confidently wrong.
-        let audio = radio(cat_signal::SignalCapability::AudioDerived {
-            max_bandwidth_hz: 4_000,
-        });
-        assert!(!ConsoleState::for_radio(&audio, 8).spectrum.available);
+    fn configured_is_neither_absent_nor_streaming() {
+        // The state a bool could not hold, and the one this station's
+        // audio path is actually in: wired, and silent because its
+        // transport design does not exist.
+        let install = Installation::default().with_source(audio_source(SourceState::Configured));
+        let state = ConsoleState::for_installation(&install, 8);
+        assert_eq!(state.audio.state, LaneState::Configured);
+        assert!(state.audio.state.is_present(), "the hardware is there");
+        assert!(!state.audio.state.has_data(), "nothing is arriving");
+    }
+
+    #[test]
+    fn a_station_with_both_sources_gets_both_lanes() {
+        // One enum field could not express this, and ConsoleState derived
+        // exactly one lane from it -- so audio had nowhere to go at all.
+        let install = Installation::default()
+            .with_source(tap(SourceState::Streaming))
+            .with_source(audio_source(SourceState::Configured));
+        let state = ConsoleState::for_installation(&install, 8);
+        assert_eq!(state.spectrum.state, LaneState::Streaming);
+        assert_eq!(state.audio.state, LaneState::Configured);
+    }
+
+    #[test]
+    fn an_audio_source_never_lands_in_the_panorama_lane() {
+        // AudioDerived is a few kHz. Feeding it to a waterfall would
+        // stretch it across a whole band and look authoritative doing it.
+        let install = Installation::default().with_source(audio_source(SourceState::Streaming));
+        let state = ConsoleState::for_installation(&install, 8);
+        assert_eq!(state.spectrum.state, LaneState::Absent);
+        assert_eq!(state.audio.state, LaneState::Streaming);
+    }
+
+    #[test]
+    fn a_session_carries_the_model_and_the_bench_together() {
+        let radio: &'static RadioCapabilities = Box::leak(Box::new(radio()));
+        let session = Session::new(
+            radio,
+            Installation::default().with_source(tap(SourceState::Streaming)),
+        );
+        assert!(session.has_panorama());
+        assert!(!session.panorama_possible_but_absent());
+
+        let bare = Session::new(radio, Installation::default());
+        assert!(!bare.has_panorama());
+        // The radio COULD take one. That is an invitation, not an error.
+        assert!(bare.panorama_possible_but_absent());
     }
 
     #[test]
     fn spectrum_frames_do_not_touch_the_cat_lane() {
         // The two-rate discipline, asserted: 1000 frames arriving must
         // leave slow-lane state exactly as it was.
-        let mut state = ConsoleState::for_radio(&radio(cat_signal::SignalCapability::None), 4);
+        let mut state = ConsoleState::for_installation(&Installation::default(), 4);
         state.cat.vfo_a_hz = Some(14_074_000);
         state.cat.begin_command();
 

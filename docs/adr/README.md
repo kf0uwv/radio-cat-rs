@@ -19,8 +19,8 @@ never reused.
 | [0011](0011-cat-ui-base-widgets-radio-specific-layout.md) | `cat-ui`: shared base widgets for both renderers; layout and features stay radio-specific | Accepted |
 | [0012](0012-native-msvc-windows-target.md) | `x86_64-pc-windows-msvc` is the single Windows target; drop `-gnu`, gate platform code across lib/TUI/GUI | Accepted |
 | [0013](0013-renderer-parity-tui-and-gui.md) | Renderer parity: the TUI and the GUI expose the same capabilities, and the TUI is permanent | Accepted |
-| [0014](0014-rtlsdr-spectrum-source.md) | `cat-signal-rtlsdr`: worker thread, latest-frame backpressure, and a WinUSB driver story | **Proposed** |
-| [0015](0015-model-facts-versus-installation-facts.md) | Separate what a radio *model* can do from what an *installation* has wired | **Proposed** |
+| [0014](0014-rtlsdr-spectrum-source.md) | `cat-signal-rtlsdr`: worker thread, latest-frame backpressure, and a WinUSB driver story | Accepted |
+| [0015](0015-model-facts-versus-installation-facts.md) | Separate what a radio *model* can do from what an *installation* has wired | Accepted |
 
 ## Repository status
 

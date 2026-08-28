@@ -34,6 +34,20 @@
 //! [`ModeId`] and a radio's own encoding is the radio crate's job, and it
 //! already has the command table to do it with.
 //!
+//! # Model facts only
+//!
+//! Everything here is answerable statically per model, which is what lets a
+//! radio crate declare its capabilities as a `const` and the session
+//! handshake cost no round trip. That claim used to be *nearly* true: this
+//! type once carried a `SignalCapability` asserting a TS-570D **had** an IF
+//! tap fitted, when the truth is it has a CN4 header and whether a dongle
+//! hangs off it is a fact about one bench.
+//!
+//! ADR 0015 split the two. What this radio model can do lives here; what
+//! this deployment has wired lives in [`crate::installation`]. The rule for
+//! arguments at the boundary: **if two units of the same model can disagree
+//! about it, it is installation data.**
+//!
 //! # Why the descriptors carry ranges rather than values
 //!
 //! A capability says what the radio *can* report, not what it *is*
@@ -45,7 +59,40 @@
 //! `docs/adr/0011-cat-ui-base-widgets-radio-specific-layout.md` draws
 //! between a shared widget and a radio-specific layout.
 
-pub use cat_signal::SignalCapability;
+/// What a radio model can *accept* as a spectrum source.
+///
+/// This is a fact about circuitry, not about a bench. Every TS-570D has a
+/// CN4 header at 73.05 MHz with an inverted IF, whether or not a dongle is
+/// plugged into it — see `docs/adr/0015-model-facts-versus-installation-facts.md`.
+/// What is actually *connected* lives in [`crate::installation::Installation`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub enum SignalSupport {
+    /// No way to get spectrum out of this radio at all.
+    None,
+    /// The radio has its own bandscope, reachable over CAT.
+    ///
+    /// Defined and not implemented: no radio in this fleet exports one.
+    NativeScope { max_span_hz: u32, bins: u16 },
+    /// The radio exposes an IF tap point.
+    ///
+    /// Both fields are properties of the mixing arrangement and true of
+    /// every unit ever built: the TS-570D's first IF is 73.05 MHz, and its
+    /// spectrum is mirrored because LO1 is high-side injection. The
+    /// per-station calibration that goes with a tap — `trim_hz`, one
+    /// dongle's crystal error — is installation data and is not here.
+    IfTapPoint { if_center_hz: u64, inverted: bool },
+}
+
+impl SignalSupport {
+    /// Whether a spectrum source could ever be attached to this radio.
+    ///
+    /// Says nothing about whether one *is*. A console asking "should I draw
+    /// a waterfall?" wants the installation, not this.
+    pub fn is_possible(&self) -> bool {
+        !matches!(self, SignalSupport::None)
+    }
+}
 
 /// An inclusive range of raw values a radio reports for some quantity.
 ///
@@ -391,12 +438,12 @@ pub struct RadioCapabilities {
     pub meters: MeterSet,
     pub memory: Option<MemoryCapability>,
     pub menu: Option<MenuCapability>,
-    /// Where this radio's spectrum can come from, if anywhere.
+    /// What kind of spectrum source this radio can *accept*.
     ///
-    /// Re-exported from `cat-signal` rather than redefined here: two
-    /// definitions of the same concept is exactly the drift this workspace
-    /// exists to prevent.
-    pub signal: SignalCapability,
+    /// Not what is connected. A TS-570D reports `IfTapPoint` on every
+    /// bench, because the CN4 header is part of the radio; whether an SDR
+    /// hangs off it is [`crate::installation::Installation`]'s business.
+    pub signal: SignalSupport,
 }
 
 impl RadioCapabilities {
@@ -488,7 +535,7 @@ mod tests {
             item_count: 50,
             writable: true,
         }),
-        signal: SignalCapability::None,
+        signal: SignalSupport::None,
     };
 
     #[test]

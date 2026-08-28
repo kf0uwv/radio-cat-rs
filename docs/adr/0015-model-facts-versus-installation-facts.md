@@ -4,8 +4,8 @@ Date: 2026-08-28
 
 ## Status
 
-**Proposed** — drafted for architect + user review. No code has been
-written. Amends [ADR 0010](0010-capability-model-and-normalized-signal-source.md)
+**Accepted** (2026-08-28) — user sign-off. Implemented in the same pass;
+see the commit that carries this change. Amends [ADR 0010](0010-capability-model-and-normalized-signal-source.md)
 §1 and §3, whose claim that "every field is answerable statically per
 model" is true of most of `RadioCapabilities` and false of two of its
 fields.
