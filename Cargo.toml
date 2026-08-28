@@ -11,6 +11,7 @@ members = [
     "cat-diagnostics",
     "cat-signal",
     "cat-signal-rtlsdr",
+    "cat-ui",
 ]
 resolver = "2"
 

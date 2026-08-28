@@ -46,7 +46,11 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+        # libhamlib-utils supplies `rigctl`, which cat-rigctl's live
+        # interop tests drive as a real client. Without it those tests are
+        # skipped, so the job asserts its presence rather than passing
+        # quietly -- see `have_rigctl` in cat-rigctl/src/protocol.rs.
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libhamlib-utils
 
       - name: Check formatting
         run: cargo fmt --all -- --check

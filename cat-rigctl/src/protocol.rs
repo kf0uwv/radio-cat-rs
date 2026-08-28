@@ -1081,11 +1081,32 @@ mod live_hamlib_tests {
         signal: cat_signal::SignalCapability::None,
     };
 
+    /// Whether a real Hamlib client is available to test against.
+    ///
+    /// **On CI this does not skip — it fails.** `eprintln!` from a passing
+    /// test is captured by the harness and shown to nobody, so a "loud"
+    /// skip is only loud when someone runs with `--nocapture`. On a
+    /// developer machine without Hamlib that is an acceptable trade; in CI
+    /// it would mean this crate's most important tests quietly stopped
+    /// running the day the runner image changed, which is precisely the
+    /// failure mode ADR 0012 was written about.
     fn have_rigctl() -> bool {
-        std::process::Command::new("rigctl")
+        if std::process::Command::new("rigctl")
             .arg("--version")
             .output()
             .is_ok()
+        {
+            return true;
+        }
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "rigctl is not installed, but CI is set. These are the live \
+             Hamlib interop tests -- both of ADR 0005's bugs passed every \
+             unit test and still failed against a real client, so CI must \
+             not go green without them. Install libhamlib-utils."
+        );
+        eprintln!("SKIPPED: rigctl not installed; install libhamlib-utils to run this");
+        false
     }
 
     /// Serve exactly one connection, then return.
