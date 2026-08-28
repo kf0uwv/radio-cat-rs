@@ -43,6 +43,8 @@
 //! calibration a user must be able to set, it exists for no other source
 //! type, and it must never reach a UI as a hand-written special case.
 
+pub use audio::{AudioScopeFrame, AudioSpectrumFrame};
+
 use async_trait::async_trait;
 
 /// One spectrum update, already corrected.
@@ -337,6 +339,8 @@ pub trait SpectrumSource {
     fn retune(&mut self, dial_hz: u64);
 }
 
+/// Audio-domain frames, kept structurally distinct from band spectrum.
+pub mod audio;
 pub mod fake;
 
 #[cfg(test)]
