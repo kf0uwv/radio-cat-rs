@@ -162,3 +162,82 @@ repos are not pushed from here. That run is where ADR 0006 §4's
 never-executed Windows tests finally execute.
 
 **Next:** Task 11 (`cat-framework::capabilities`), unblocked.
+
+## 2026-08-28 — Tasks 12-18 complete; queue stops at the widget sets
+
+All library work in the planning pass is done and pushed to
+`feat/msvc-windows-target-adr-0012` (PR #1). `ts570d` and `ft991a` PRs are
+merged.
+
+| Task | Outcome |
+|---|---|
+| 12 `cat-signal` | Types + trait + `FakeSpectrumSource`. Low-frequency-first invariant asserted, not documented. |
+| 13 **GATE** | **PASS**, one strain recorded (`MenuCapability`). See `findings.md`. |
+| 14 ADR 0014 | RTL-SDR source: worker thread, newest-wins backpressure, WinUSB story. |
+| 15 `cat-signal-rtlsdr` | DSP fully tested; device layer behind a default-off feature, built by CI. |
+| 16 native protocol | Handshake, capability-validated commands, binary spectrum frames. |
+| 17 `cat-rigctl` | `\dump_state` generated from capabilities; **verified against live Hamlib 4.6.5**. |
+| 18 `cat-ui` | Renderer-agnostic. Seam drawn one notch sharper than planned — see below. |
+
+**Verification:** Linux 336 passed / 0 failed; Windows 11 MSVC 262 / 0, on
+real hardware (`radiombf`) as well as CI.
+
+### Decisions taken during implementation, for review
+
+1. **`cat-ui` does not contain `mini_bar`/`smeter_bar`.** The extraction
+   list named them, but they return a `String` of block characters — a
+   terminal rendering, not renderer-agnostic logic. What is shared is the
+   *fraction*; the glyphs belong in `cat-ui-ratatui` (Task 20) and the
+   rectangle in `cat-ui-egui` (Task 19). Including them would have made the
+   renderer-agnostic crate a terminal crate the GPU renderer worked around.
+
+2. **`cat-signal-rtlsdr`'s device layer is behind a default-off feature.**
+   Building it needs libusb and librtlsdr headers. The cost — code CI does
+   not compile — is named in ADR 0014 §5 and mitigated by a CI step that
+   builds `--features device` explicitly.
+
+3. **ADR 0014 was corrected during implementation.** It was drafted against
+   an `rtlsdr_read_async`-shaped API; the `rtlsdr` crate exposes a single
+   device with blocking `read_sync`. Found by compiling, not by reading.
+   The worker-thread reasoning is unaffected.
+
+4. **`RigctlRadio::capabilities()` defaults to `None`.** An unmigrated
+   radio keeps its historical `\dump_state` reply byte-for-byte, pinned by
+   a test. The compatibility layer must not change under radios that did
+   not ask for anything.
+
+### Corrections to earlier claims in this planning pass
+
+- Task 17's commit message states "Linux 322 passed". The actual figure was
+  **298**. The tests and the verification were real; the number in that
+  message was not.
+- Task 17's live-Hamlib tests were described as skipping "loudly" when
+  `rigctl` is absent. `eprintln!` from a passing test is captured by the
+  harness, so on Windows they passed silently without running — the exact
+  thing that commit called worse than no test. Fixed in Task 18's commit:
+  the skip is a hard failure when `CI` is set, and the Linux job installs
+  `libhamlib-utils`.
+
+### Where this stops, and why
+
+**Tasks 19 (`cat-ui-egui`) and 20 (`cat-ui-ratatui`) are not started.**
+Both are widget sets, and a widget set is a design artifact as much as a
+code one: what a meter rail looks like, how a band grid is arranged, what
+the absent-capability state shows. `ts570d/.claude/agents/designer.md`
+exists to answer those, and its brief runs in parallel precisely so this
+moment does not become a blocked one.
+
+The library work they build on is finished and verified, so the design
+track is now the critical path.
+
+### Still outstanding, and user-owned
+
+- **A live capture against the CN4 tap.** ADR 0010's orientation claim is
+  asserted in software against a synthetic tone; only real hardware proves
+  the physical tap is wired as assumed.
+- **A calibrated `trim_hz`** measured against WWV.
+- **An IC-7100 manual.** ADR 0010 asked for three radios described; two
+  are. Nothing has been tested against a binary CI-V radio.
+- **App-side migration** (`ts570d`/`ft991a` onto the native protocol and
+  `cat-ui`, deleting both `rigctl_radio.rs`), which is its own per-repo
+  pass and was read-only to this queue throughout.
