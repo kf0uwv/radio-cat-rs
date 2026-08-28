@@ -184,6 +184,14 @@ pub const TS570D: RadioCapabilities = RadioCapabilities {
         item_count: 52,
         writable: true,
     }),
+    // NOTE (2026-08-28): this field is where ADR 0015 says this fixture is
+    // wrong. Asserting `IfTap` here claims every TS-570D *has* a tap fitted,
+    // when the truth is that every TS-570D has a CN4 header and whether a
+    // dongle hangs off it is a fact about one bench. `trim_hz: 0` below is
+    // the same mistake in miniature — a per-station measurement standing in
+    // a per-model constant. Left as-is until ADR 0015 is settled, because
+    // changing it piecemeal would be worse than one deliberate split.
+    //
     // No bandscope. The spectrum comes from an SDR on the CN4 IF tap:
     // 73.05 MHz first IF, inverted because LO1 is high-side injection
     // (73.05-103.05 MHz), and one calibrated trim. `trim_hz` is zero here
