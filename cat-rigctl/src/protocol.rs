@@ -1083,13 +1083,21 @@ mod live_hamlib_tests {
 
     /// Whether a real Hamlib client is available to test against.
     ///
-    /// **On CI this does not skip — it fails.** `eprintln!` from a passing
-    /// test is captured by the harness and shown to nobody, so a "loud"
-    /// skip is only loud when someone runs with `--nocapture`. On a
-    /// developer machine without Hamlib that is an acceptable trade; in CI
-    /// it would mean this crate's most important tests quietly stopped
-    /// running the day the runner image changed, which is precisely the
-    /// failure mode ADR 0012 was written about.
+    /// **Where Hamlib is expected, this does not skip — it fails.**
+    /// `eprintln!` from a passing test is captured by the harness and shown
+    /// to nobody, so a "loud" skip is only loud under `--nocapture`. A
+    /// developer without Hamlib installed should get a skip; a job that
+    /// installed Hamlib on purpose should get a failure if it has gone
+    /// missing, because these are the tests that caught both of ADR 0005's
+    /// bugs after every unit test passed.
+    ///
+    /// The signal is `EXPECT_HAMLIB`, set by the CI job that installs
+    /// `libhamlib-utils`, and deliberately **not** the generic `CI`
+    /// variable. `CI` is set on every runner including Windows, where
+    /// Hamlib is not installed and these tests are legitimately expected to
+    /// skip — an earlier version keyed on `CI` and turned that expected
+    /// skip into a red Windows job. The requirement belongs to the job that
+    /// provisions the dependency, not to the whole idea of being in CI.
     fn have_rigctl() -> bool {
         if std::process::Command::new("rigctl")
             .arg("--version")
@@ -1099,13 +1107,17 @@ mod live_hamlib_tests {
             return true;
         }
         assert!(
-            std::env::var_os("CI").is_none(),
-            "rigctl is not installed, but CI is set. These are the live \
-             Hamlib interop tests -- both of ADR 0005's bugs passed every \
-             unit test and still failed against a real client, so CI must \
-             not go green without them. Install libhamlib-utils."
+            std::env::var_os("EXPECT_HAMLIB").is_none(),
+            "EXPECT_HAMLIB is set but rigctl is not installed. These are \
+             the live Hamlib interop tests, and both of ADR 0005's bugs \
+             passed every unit test while still failing against a real \
+             client -- so a job that asked for them must not go green \
+             without them. Install libhamlib-utils."
         );
-        eprintln!("SKIPPED: rigctl not installed; install libhamlib-utils to run this");
+        eprintln!(
+            "SKIPPED: rigctl not installed. Install libhamlib-utils to run the \
+             live Hamlib interop tests (they run in Linux CI)."
+        );
         false
     }
 
@@ -1150,7 +1162,6 @@ mod live_hamlib_tests {
     #[test]
     fn a_real_hamlib_client_completes_the_capability_handshake() {
         if !have_rigctl() {
-            eprintln!("SKIPPED: rigctl not installed; install libhamlib-utils to run this");
             return;
         }
         // netrigctl_open() reads `\dump_state` before it will answer
@@ -1169,7 +1180,6 @@ mod live_hamlib_tests {
     #[test]
     fn a_real_hamlib_client_sets_frequency_the_way_it_actually_formats_it() {
         if !have_rigctl() {
-            eprintln!("SKIPPED: rigctl not installed; install libhamlib-utils to run this");
             return;
         }
         // This is ADR 0005's second bug end to end. Hamlib formats freq_t
@@ -1186,7 +1196,6 @@ mod live_hamlib_tests {
     #[test]
     fn a_real_hamlib_client_reads_ptt_state() {
         if !have_rigctl() {
-            eprintln!("SKIPPED: rigctl not installed; install libhamlib-utils to run this");
             return;
         }
         let port = serve_one();
@@ -1197,7 +1206,6 @@ mod live_hamlib_tests {
     #[test]
     fn the_generated_dump_state_is_what_a_client_receives() {
         if !have_rigctl() {
-            eprintln!("SKIPPED: rigctl not installed; install libhamlib-utils to run this");
             return;
         }
         // Proves the capability-generated tail -- not the placeholder --

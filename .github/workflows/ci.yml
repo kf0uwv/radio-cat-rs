@@ -59,6 +59,14 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Tests
+        # EXPECT_HAMLIB turns cat-rigctl's live interop tests from
+        # "skip if rigctl is missing" into "fail if rigctl is missing".
+        # This job installs libhamlib-utils above, so their absence here
+        # would mean the runner image changed under us -- not a reason to
+        # go green. Deliberately scoped to this job: the Windows job does
+        # not install Hamlib and those tests skip there by design.
+        env:
+          EXPECT_HAMLIB: "1"
         run: cargo test --workspace
 
       - name: Install librtlsdr (for the optional device layer)
