@@ -126,6 +126,23 @@ pub trait RigctlRadio {
     fn hamlib_mode_from_name(name: &str) -> Option<Self::Mode>;
     /// `(min_hz, max_hz)` for `\dump_state`'s RX/TX frequency range rows.
     fn freq_range_hz() -> (u64, u64);
+
+    /// This radio's capabilities, if it publishes them.
+    ///
+    /// When present, `\dump_state`'s capability tail is **generated** from
+    /// this instead of being hand-maintained (ADR 0010 §6). That matters
+    /// because the hand-maintained version is exactly where ADR 0005's
+    /// field-count bug came from: a reply that is short by one line makes
+    /// Hamlib's `netrigctl_open()` block forever, and nothing about the
+    /// symptom points at the cause.
+    ///
+    /// Defaults to `None` so existing implementations keep working
+    /// unchanged, with the placeholder tail they have always sent. A radio
+    /// gains real rigctl capability reporting by describing itself, not by
+    /// editing this crate.
+    fn capabilities() -> Option<&'static cat_framework::capabilities::RadioCapabilities> {
+        None
+    }
 }
 
 /// Which network listeners to bring up. Every field is optional — a `None`
