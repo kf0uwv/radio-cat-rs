@@ -79,8 +79,18 @@ pub enum AudioOrigin {
     /// What the operator is actually hearing.
     RadioOutput,
     /// Demodulated from an IF tap, ahead of everything the radio does to
-    /// its audio. Independent of the radio's filter, and in principle
-    /// tunable within the tap's span rather than following the dial.
+    /// its audio.
+    ///
+    /// It follows the dial exactly as the radio's own audio does — the tap
+    /// is dial-centred, so demodulating its centre gives the frequency the
+    /// operator is tuned to. It is therefore a second *rendering of the
+    /// same signal*, not a second receiver, and a console needs only a
+    /// selector rather than an independent tuning control.
+    ///
+    /// What differs is character, and that is the reason to offer it: no
+    /// IF filter, so an operator can hear what sits just outside the
+    /// passband; and no AGC, so a strong neighbouring signal does not pump
+    /// the one being listened to.
     TapDemodulated,
 }
 

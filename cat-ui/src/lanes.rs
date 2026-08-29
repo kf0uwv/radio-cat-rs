@@ -25,7 +25,7 @@
 
 use crate::spectrum::SpectrumHistory;
 use cat_framework::capabilities::MeterKind;
-use cat_framework::installation::{Installation, Session, SourceState};
+use cat_framework::installation::{AudioOrigin, Installation, Session, SourceState};
 use cat_signal::SpectrumFrame;
 
 /// Which control a command targets.
@@ -287,17 +287,119 @@ impl SpectrumLane {
     }
 }
 
+/// One audio source as a console offers it.
+///
+/// Owned rather than borrowed so console state does not hold a reference
+/// into the installation for its lifetime.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioChoice {
+    pub label: String,
+    pub origin: Option<AudioOrigin>,
+    pub state: LaneState,
+    pub max_bandwidth_hz: u32,
+}
+
+impl AudioChoice {
+    /// Whether the radio's own filter passband is a truthful overlay on
+    /// this source's spectrum.
+    ///
+    /// The question an AF FFT has to answer before drawing one. Only audio
+    /// that actually passed through the radio's filter may carry it; on
+    /// tap-demodulated audio the same overlay would be a fabrication.
+    pub fn shows_radio_dsp(&self) -> bool {
+        self.origin == Some(AudioOrigin::RadioOutput)
+    }
+}
+
+/// The audio lane, with a selector.
+///
+/// A station can offer more than one audio path — a codec fed from the
+/// radio, and audio demodulated from an IF tap. Both follow the dial, so
+/// they are two renderings of the same signal rather than two receivers,
+/// and choosing between them is a selector rather than a tuning control.
+///
+/// The **selection lives here, not in a renderer**. Both a GPU console and
+/// a terminal one need it, identically, and two renderers each keeping
+/// their own idea of the selected source is precisely the drift ADR 0013
+/// forbids — an operator would switch source in one and find the other
+/// unchanged.
+#[derive(Debug, Clone, Default)]
+pub struct AudioLane {
+    choices: Vec<AudioChoice>,
+    selected: usize,
+}
+
+impl AudioLane {
+    pub fn new(choices: Vec<AudioChoice>) -> Self {
+        // Default to the radio's own audio: it is what the operator hears,
+        // and the only one whose FFT may carry the filter overlay.
+        let selected = choices
+            .iter()
+            .position(AudioChoice::shows_radio_dsp)
+            .unwrap_or(0);
+        Self { choices, selected }
+    }
+
+    pub fn choices(&self) -> &[AudioChoice] {
+        &self.choices
+    }
+
+    pub fn selected(&self) -> Option<&AudioChoice> {
+        self.choices.get(self.selected)
+    }
+
+    pub fn selected_index(&self) -> usize {
+        self.selected
+    }
+
+    /// Select by index. Returns `false` for an out-of-range index, leaving
+    /// the current selection alone rather than falling back to something
+    /// the operator did not ask for.
+    pub fn select(&mut self, index: usize) -> bool {
+        if index >= self.choices.len() {
+            return false;
+        }
+        self.selected = index;
+        true
+    }
+
+    /// Move to the next source, wrapping. What a single key or button does.
+    pub fn cycle(&mut self) {
+        if !self.choices.is_empty() {
+            self.selected = (self.selected + 1) % self.choices.len();
+        }
+    }
+
+    /// The state of the selected source, or `Absent` when there is none.
+    pub fn state(&self) -> LaneState {
+        self.selected().map_or(LaneState::Absent, |c| c.state)
+    }
+
+    /// Whether an operator has a choice worth presenting.
+    pub fn has_choice(&self) -> bool {
+        self.choices.len() > 1
+    }
+
+    /// Whether the current selection may carry the radio's filter overlay.
+    pub fn shows_radio_dsp(&self) -> bool {
+        self.selected().is_some_and(AudioChoice::shows_radio_dsp)
+    }
+}
+
 /// Every lane, with no path from one to the other.
 #[derive(Debug, Clone)]
 pub struct ConsoleState {
     pub cat: CatLane,
     /// The band panorama. Drawn as a waterfall.
     pub spectrum: SpectrumLane,
-    /// Audio-derived spectrum. **Never** a band panorama — it is audio
-    /// bandwidth only, and a console that fed it to a waterfall would
-    /// stretch a few kHz across a whole band and look authoritative doing
-    /// it. A separate lane is what makes that mistake require effort.
-    pub audio: SpectrumLane,
+    /// Audio-derived sources and which one is selected.
+    ///
+    /// **Never** a band panorama — audio bandwidth only, and a console that
+    /// fed it to a waterfall would stretch a few kHz across a whole band
+    /// and look authoritative doing it. A separate lane, with its own
+    /// frame types in `cat-signal`, is what makes that mistake require
+    /// effort rather than merely discipline.
+    pub audio: AudioLane,
 }
 
 impl ConsoleState {
@@ -318,20 +420,21 @@ impl ConsoleState {
                 history_capacity,
                 LaneState::from(installation.band_panorama().map(|s| s.state)),
             ),
-            // The radio's own audio if there is one, otherwise whatever
-            // audio there is. A station can have several -- an ACC2 codec
-            // and audio demodulated from the IF tap -- and they are not
-            // interchangeable, so a console with one AF panel defaults to
-            // the one that matches the speaker and lets the operator
-            // change it. Which source is selected is layout's business.
-            audio: SpectrumLane::new(
-                history_capacity,
-                LaneState::from(
-                    installation
-                        .radio_audio()
-                        .or_else(|| installation.audio_sources().next())
-                        .map(|s| s.state),
-                ),
+            audio: AudioLane::new(
+                installation
+                    .audio_sources()
+                    .map(|s| AudioChoice {
+                        label: s.label.clone(),
+                        origin: s.audio_origin,
+                        state: LaneState::from(Some(s.state)),
+                        max_bandwidth_hz: match s.capability {
+                            cat_signal::SignalCapability::AudioDerived { max_bandwidth_hz } => {
+                                max_bandwidth_hz
+                            }
+                            _ => 0,
+                        },
+                    })
+                    .collect(),
             ),
         }
     }
@@ -454,9 +557,9 @@ mod tests {
         // transport design does not exist.
         let install = Installation::default().with_source(audio_source(SourceState::Configured));
         let state = ConsoleState::for_installation(&install, 8);
-        assert_eq!(state.audio.state, LaneState::Configured);
-        assert!(state.audio.state.is_present(), "the hardware is there");
-        assert!(!state.audio.state.has_data(), "nothing is arriving");
+        assert_eq!(state.audio.state(), LaneState::Configured);
+        assert!(state.audio.state().is_present(), "the hardware is there");
+        assert!(!state.audio.state().has_data(), "nothing is arriving");
     }
 
     #[test]
@@ -468,7 +571,7 @@ mod tests {
             .with_source(audio_source(SourceState::Configured));
         let state = ConsoleState::for_installation(&install, 8);
         assert_eq!(state.spectrum.state, LaneState::Streaming);
-        assert_eq!(state.audio.state, LaneState::Configured);
+        assert_eq!(state.audio.state(), LaneState::Configured);
     }
 
     #[test]
@@ -478,7 +581,7 @@ mod tests {
         let install = Installation::default().with_source(audio_source(SourceState::Streaming));
         let state = ConsoleState::for_installation(&install, 8);
         assert_eq!(state.spectrum.state, LaneState::Absent);
-        assert_eq!(state.audio.state, LaneState::Streaming);
+        assert_eq!(state.audio.state(), LaneState::Streaming);
     }
 
     #[test]
@@ -656,7 +759,7 @@ mod audio_source_tests {
     use super::*;
     use cat_framework::installation::{AudioOrigin, Installation, InstalledSource, SourceState};
 
-    fn audio(origin: AudioOrigin, state: SourceState, bw: u32) -> InstalledSource {
+    fn source(origin: AudioOrigin, state: SourceState, bw: u32) -> InstalledSource {
         InstalledSource::new(
             cat_signal::SignalCapability::AudioDerived {
                 max_bandwidth_hz: bw,
@@ -670,45 +773,113 @@ mod audio_source_tests {
         .from_origin(origin)
     }
 
-    #[test]
-    fn the_audio_lane_defaults_to_the_radios_own_output() {
-        // With two paths available, a console with one AF panel should show
-        // what the operator is hearing, not the tap-demodulated one -- and
-        // it is the only one whose FFT may carry the radio's filter
-        // passband as an overlay.
-        let install = Installation::default()
-            .with_source(audio(
+    /// The station in question: an ACC2 codec and audio demodulated from
+    /// the RTL-SDR already on the tap.
+    fn both_paths() -> Installation {
+        Installation::default()
+            .with_source(source(
                 AudioOrigin::TapDemodulated,
                 SourceState::Streaming,
                 12_000,
             ))
-            .with_source(audio(
+            .with_source(source(
                 AudioOrigin::RadioOutput,
                 SourceState::Configured,
                 3_000,
-            ));
-        let state = ConsoleState::for_installation(&install, 8);
-        // The ACC2 path is Configured, the tapped one Streaming. Picking
-        // the first source in the list would have reported Streaming.
-        assert_eq!(state.audio.state, LaneState::Configured);
+            ))
     }
 
     #[test]
-    fn a_station_with_only_tapped_audio_still_gets_a_lane() {
-        // Falling back matters: a bench with no ACC2 wiring but an SDR on
-        // the tap has audio, and a console that showed none would be wrong.
-        let install = Installation::default().with_source(audio(
+    fn both_paths_are_offered_as_choices() {
+        let state = ConsoleState::for_installation(&both_paths(), 8);
+        assert_eq!(state.audio.choices().len(), 2);
+        assert!(state.audio.has_choice());
+    }
+
+    #[test]
+    fn the_default_selection_is_what_the_operator_hears() {
+        // Not the first in the list. The tapped path is listed first and is
+        // Streaming while the ACC2 path is only Configured -- so a console
+        // that took the first, or the livest, would pick the wrong one.
+        let state = ConsoleState::for_installation(&both_paths(), 8);
+        assert_eq!(state.audio.selected().unwrap().label, "ACC2 codec");
+        assert_eq!(state.audio.state(), LaneState::Configured);
+    }
+
+    #[test]
+    fn the_selector_changes_which_source_is_shown() {
+        let mut state = ConsoleState::for_installation(&both_paths(), 8);
+        state.audio.cycle();
+        assert_eq!(state.audio.selected().unwrap().label, "SDR demodulated");
+        assert_eq!(state.audio.state(), LaneState::Streaming);
+        state.audio.cycle();
+        assert_eq!(state.audio.selected().unwrap().label, "ACC2 codec");
+    }
+
+    #[test]
+    fn the_filter_overlay_follows_the_selection() {
+        // The consequence that makes AudioOrigin structural rather than
+        // decorative. The mockups draw the radio's IF passband on the AF
+        // FFT; on tap-demodulated audio that overlay would be invented,
+        // because that signal never passed through the filter.
+        let mut state = ConsoleState::for_installation(&both_paths(), 8);
+        assert!(state.audio.shows_radio_dsp(), "ACC2 audio may carry it");
+        state.audio.cycle();
+        assert!(
+            !state.audio.shows_radio_dsp(),
+            "tap-demodulated audio may not"
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_selection_leaves_the_current_one_alone() {
+        // Falling back to index 0 would silently switch the operator to a
+        // source they did not ask for -- and on this station that also
+        // changes whether the passband overlay is truthful.
+        let mut state = ConsoleState::for_installation(&both_paths(), 8);
+        let before = state.audio.selected_index();
+        assert!(!state.audio.select(99));
+        assert_eq!(state.audio.selected_index(), before);
+    }
+
+    #[test]
+    fn the_wider_demodulated_path_reports_its_own_bandwidth() {
+        // The tapped path is not constrained by the radio's SSB filter, so
+        // an AF display must scale its axis to the selected source rather
+        // than assuming 3 kHz.
+        let mut state = ConsoleState::for_installation(&both_paths(), 8);
+        assert_eq!(state.audio.selected().unwrap().max_bandwidth_hz, 3_000);
+        state.audio.cycle();
+        assert_eq!(state.audio.selected().unwrap().max_bandwidth_hz, 12_000);
+    }
+
+    #[test]
+    fn a_station_with_only_tapped_audio_selects_it() {
+        // A bench with no ACC2 wiring still has audio, and a console that
+        // showed none would be wrong.
+        let install = Installation::default().with_source(source(
             AudioOrigin::TapDemodulated,
             SourceState::Streaming,
             12_000,
         ));
         let state = ConsoleState::for_installation(&install, 8);
-        assert_eq!(state.audio.state, LaneState::Streaming);
+        assert_eq!(state.audio.state(), LaneState::Streaming);
+        assert!(!state.audio.has_choice(), "nothing to choose between");
+        assert!(!state.audio.shows_radio_dsp());
     }
 
     #[test]
     fn no_audio_at_all_is_still_a_lane() {
         let state = ConsoleState::for_installation(&Installation::default(), 8);
-        assert_eq!(state.audio.state, LaneState::Absent);
+        assert_eq!(state.audio.state(), LaneState::Absent);
+        assert!(state.audio.selected().is_none());
+        assert!(!state.audio.has_choice());
+    }
+
+    #[test]
+    fn cycling_an_empty_lane_does_not_panic() {
+        let mut state = ConsoleState::for_installation(&Installation::default(), 8);
+        state.audio.cycle();
+        assert_eq!(state.audio.state(), LaneState::Absent);
     }
 }
