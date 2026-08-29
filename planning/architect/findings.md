@@ -363,3 +363,58 @@ shared-handle HF radio and a multi-handle HF/VHF/UHF one, but not against a
 binary CI-V radio. ADR 0009's `CatWireFormat` work suggests CI-V will
 stress the *wire* layer rather than this one, but that is a prediction, not
 a result.
+
+## TUI divergence audit (2026-08-28) — **no silent bugfix drift**
+
+ADR 0011 rev 4 made this audit a condition of `cat-ui-ratatui`, on the
+grounds that each of the 1142 changed lines between `ts570d/ui/src/layout.rs`
+and `ft991a/ui/src/layout.rs` is "either a bugfix one app has and the other
+lacks, or a genuine radio-specific difference," and that telling them apart
+is the real work.
+
+Done function by function. **Every divergence is legitimate.** The failure
+mode the audit existed to catch — a fix living in one app and silently
+absent from the other — does not appear in these files.
+
+### Shared functions
+
+| Function | Divergence | Verdict |
+|---|---|---|
+| `draw_disconnected` | none: 47 lines byte-identical | **pure duplication** |
+| `draw_errors` | the concrete display type only | **duplication blocked by a type** |
+| `draw_header` | the title string only | **duplication with a parameter** |
+| `build_menu_column` | key type `&'static str` vs `char` | **duplication blocked by a type** |
+| `format_hz`, `mini_bar` | none | already extracted (Task 18) |
+| `smeter_bar` | 0-30 vs 0-255 scale | radio data; solved by `MeterReading` |
+| `draw_diag_warning_panel` | one line of copy about a keyer memory | genuine radio difference |
+| `split_areas` | status pane 7 rows vs 4 | genuine layout difference |
+| `draw_control_panel` | 37% shared; FT-991A menu topology | genuine, and ADR 0011 leaves it in the app |
+
+The four marked **duplication** are now `cat-ui-ratatui::session`. None
+needed a behaviour change to extract; three were blocked only by a concrete
+type or a literal.
+
+### Functions unique to one app
+
+Ten only in `ts570d`, six only in `ft991a`. Most are genuinely
+radio-specific (`agc_label`, `nr_label`, `bc_label` for TS-570D DSP;
+`draw_profile_list`, `draw_ex_sub_group_menu`, `rts_label` for FT-991A).
+
+Two findings among them:
+
+- **`smeter_label` exists only in `ts570d`.** The FT-991A TUI shows an
+  S-meter bar with **no S-unit called out at all** — an operator reads a bar
+  and no number. This is a *feature gap*, not a bugfix gap, and closing it
+  is an app-side change needing a `docs/renderer-parity.md` row either way
+  (ADR 0013). `cat_ui::format_smeter_label` makes it a one-line fix
+  whenever it is wanted.
+- **`draw_diag_warning_panel` is `pub` in one app and private in the
+  other.** Harmless, and worth noticing as the kind of drift that
+  accumulates unremarked.
+
+### What this means for the migration
+
+The audit was the risk. It is discharged: migrating `ts570d/ui` and
+`ft991a/ui` onto the shared widgets is now a mechanical substitution with a
+clear acceptance bar — the operator sees no change — rather than a
+reconciliation of two divergent behaviours.
