@@ -628,6 +628,7 @@ mod capability_dump_state_tests {
         kind: MeterKind::S,
         raw_range: RawRange::new(0, 30),
         active_on_transmit: false,
+        s_units: None,
     }];
     const ENDPOINTS: &[EndpointDescriptor] = &[EndpointDescriptor {
         role: EndpointRole::Cat,
@@ -1052,6 +1053,7 @@ mod live_hamlib_tests {
         kind: MeterKind::S,
         raw_range: RawRange::new(0, 30),
         active_on_transmit: false,
+        s_units: None,
     }];
     const ENDPOINTS: &[EndpointDescriptor] = &[EndpointDescriptor {
         role: EndpointRole::Cat,

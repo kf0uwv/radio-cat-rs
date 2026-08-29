@@ -360,6 +360,64 @@ pub struct MeterDescriptor {
     /// rest). A UI can use this to decide what to show without knowing
     /// what each meter means.
     pub active_on_transmit: bool,
+    /// Where this meter's S-unit boundaries fall, when the radio publishes
+    /// them. `None` for a meter that has no S-units at all — every meter
+    /// but `S` — and for an `S` meter whose table is not known.
+    pub s_units: Option<SUnitScale>,
+}
+
+/// The labels [`SUnitScale`] assigns, in order.
+pub const S_UNIT_LABELS: [&str; 13] = [
+    "S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S9+10", "S9+20", "S9+30",
+];
+
+/// Where each S-unit boundary falls on a radio's raw meter scale.
+///
+/// **S-meter law is radio data, not a display preference.** Where S9 sits
+/// and how the units below it space out is a property of the meter
+/// circuit, and it is not linear on real radios. The TS-570D's own table
+/// gives S0 three raw counts and every other unit two, which no clean
+/// formula reproduces — substituting one changes the reading at 8 of its
+/// 31 raw values.
+///
+/// So this sits on [`MeterDescriptor`] beside [`RawRange`], for the same
+/// reason `RawRange` does: a widget that has to be *told* the scale is a
+/// widget that can be told the wrong one. Both travel with the reading.
+///
+/// `thresholds` is the **inclusive upper bound** of each label in
+/// [`S_UNIT_LABELS`], ascending. It is a fixed 13 rather than a slice so
+/// that a scale is `Copy`, is `const`-constructible, crosses the native
+/// protocol without an owned mirror, and cannot be built with a length
+/// that does not match the labels. A reading above the last threshold
+/// takes the last label, so the top entry is conventionally `u16::MAX`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SUnitScale {
+    thresholds: [u16; S_UNIT_LABELS.len()],
+}
+
+impl SUnitScale {
+    /// A scale from explicit upper bounds, one per label in
+    /// [`S_UNIT_LABELS`].
+    pub const fn new(thresholds: [u16; S_UNIT_LABELS.len()]) -> Self {
+        Self { thresholds }
+    }
+
+    /// The Kenwood TS-570D's table, as its TUI has always drawn it.
+    ///
+    /// Preserved exactly rather than approximated: this is what its
+    /// operators have been reading, and ADR 0011 rev 4 sets "the operator
+    /// sees no change" as the bar for migrating onto shared widgets.
+    pub const TS570D: Self = Self::new([2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 24, 28, u16::MAX]);
+
+    /// The label for a raw reading.
+    pub fn label(&self, raw: u16) -> &'static str {
+        for (i, bound) in self.thresholds.iter().enumerate() {
+            if raw <= *bound {
+                return S_UNIT_LABELS[i];
+            }
+        }
+        S_UNIT_LABELS[S_UNIT_LABELS.len() - 1]
+    }
 }
 
 /// Every meter a radio reports.
@@ -492,11 +550,13 @@ mod tests {
             kind: MeterKind::S,
             raw_range: RawRange::new(0, 30),
             active_on_transmit: false,
+            s_units: None,
         },
         MeterDescriptor {
             kind: MeterKind::Swr,
             raw_range: RawRange::new(0, 255),
             active_on_transmit: true,
+            s_units: None,
         },
     ];
 

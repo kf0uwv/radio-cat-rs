@@ -21,6 +21,13 @@
 
 use cat_framework::capabilities::RawRange;
 
+// `SUnitScale` moved to `cat_framework::capabilities`, beside the `RawRange`
+// it belongs next to -- a meter's S-unit law is radio data, not a display
+// choice, and a widget that must be *told* the scale can be told the wrong
+// one. Re-exported so callers reaching for it through this module still
+// find it.
+pub use cat_framework::capabilities::{SUnitScale, S_UNIT_LABELS};
+
 /// A frequency as an operator reads it: `14.074.000 MHz`.
 ///
 /// Byte-for-byte the output both apps already produce, so migrating a TUI
@@ -40,56 +47,6 @@ pub fn format_hz_compact(hz: u64) -> String {
     let khz = (hz % 1_000_000) / 1_000;
     let hz_rem = hz % 1_000;
     format!("{}.{:03}.{:03}", mhz, khz, hz_rem)
-}
-
-/// Where each S-unit boundary falls on a radio's raw meter scale.
-///
-/// **S-meter law is radio data, not a display preference.** Where S9 sits
-/// and how the units below it space out is a property of the meter circuit,
-/// and it is not linear on real radios. The TS-570D's own table gives S0
-/// three raw counts and every other unit two, which no clean formula
-/// reproduces — substituting one changes the reading at 7 of its 31 raw
-/// values.
-///
-/// So a radio that knows its own law supplies it, exactly as it already
-/// supplies [`RawRange`] rather than letting a widget assume 0-255.
-///
-/// `thresholds` is the **inclusive upper bound** of each label in
-/// `LABELS`, ascending. A reading above the last threshold takes the last
-/// label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SUnitScale {
-    thresholds: &'static [u16],
-}
-
-/// The labels [`SUnitScale`] assigns, in order.
-pub const S_UNIT_LABELS: [&str; 13] = [
-    "S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S9+10", "S9+20", "S9+30",
-];
-
-impl SUnitScale {
-    /// A scale from explicit upper bounds, one per label in
-    /// [`S_UNIT_LABELS`].
-    pub const fn new(thresholds: &'static [u16]) -> Self {
-        Self { thresholds }
-    }
-
-    /// The Kenwood TS-570D's table, as its TUI has always drawn it.
-    ///
-    /// Preserved exactly rather than approximated: this is what its
-    /// operators have been reading, and ADR 0011 rev 4 sets "the operator
-    /// sees no change" as the bar for migrating onto shared widgets.
-    pub const TS570D: Self = Self::new(&[2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 24, 28, u16::MAX]);
-
-    /// The label for a raw reading.
-    pub fn label(&self, raw: u16) -> &'static str {
-        for (i, bound) in self.thresholds.iter().enumerate() {
-            if raw <= *bound {
-                return S_UNIT_LABELS[i.min(S_UNIT_LABELS.len() - 1)];
-            }
-        }
-        S_UNIT_LABELS[S_UNIT_LABELS.len() - 1]
-    }
 }
 
 /// An S-unit label for a raw meter reading, scaled against the radio's own
@@ -298,12 +255,27 @@ mod s_unit_scale_tests {
     }
 
     #[test]
-    fn a_scale_shorter_than_the_label_list_still_terminates() {
-        // A radio need not describe every unit. Running off the end must
-        // peg, not index out of bounds.
-        let coarse = SUnitScale::new(&[10, 20]);
+    fn a_scale_has_exactly_one_threshold_per_label() {
+        // This used to be a runtime concern -- a short slice indexing off
+        // the end of the label list. A fixed-size array makes the whole
+        // class unrepresentable, and this is the assertion that the two
+        // lengths are actually tied together rather than coincidentally
+        // equal.
+        let scale = SUnitScale::new([0; S_UNIT_LABELS.len()]);
+        assert_eq!(scale.label(0), S_UNIT_LABELS[0]);
+        // Above every threshold, so it pegs at the last label rather than
+        // running past the end.
+        assert_eq!(scale.label(1), *S_UNIT_LABELS.last().unwrap());
+    }
+
+    #[test]
+    fn a_coarse_scale_can_still_skip_units_it_does_not_use() {
+        // Losing the short-slice form must not lose the capability: a
+        // radio that does not resolve every unit repeats a threshold and
+        // the units in between simply never appear.
+        let coarse = SUnitScale::new([10, 10, 10, 10, 10, 10, 10, 10, 10, 20, 20, 20, u16::MAX]);
         assert_eq!(coarse.label(5), "S0");
-        assert_eq!(coarse.label(15), "S1");
+        assert_eq!(coarse.label(15), "S9");
         assert_eq!(coarse.label(999), "S9+30");
     }
 
