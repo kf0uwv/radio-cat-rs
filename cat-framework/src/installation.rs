@@ -32,9 +32,15 @@
 //!
 //! [`Installation::sources`] is a list, not a field, because a real station
 //! runs more than one at once. The station this was written for has an
-//! RTL-SDR on a 73.05 MHz IF tap **and** a USB sound device fed from ACC2:
-//! a band panorama and an audio-derived source, live together. A single
-//! enum could not say so, and the console design hit exactly that wall.
+//! RTL-SDR on a 73.05 MHz IF tap **and** a USB sound device fed from ACC2.
+//!
+//! And a source is not a device: that one RTL-SDR provides **two** sources
+//! by itself — a band panorama from the IQ, and audio demodulated out of
+//! the same IQ — so the station runs three in total, two of them audio.
+//! Which is why [`Installation::audio_sources`] is plural and why
+//! [`AudioOrigin`] exists: the two audio paths are not interchangeable, and
+//! a renderer that treated them as such would draw the radio's filter
+//! passband over audio that never passed through it.
 
 use crate::capabilities::{EndpointRole, RadioCapabilities, SignalSupport};
 use cat_signal::{IfTapConfig, SignalCapability};
@@ -55,7 +61,35 @@ pub enum SourceState {
     Streaming,
 }
 
+/// Where an audio source's signal comes from.
+///
+/// Not decoration, and not a label: it decides what a renderer may
+/// honestly draw on top of the audio.
+///
+/// An AF FFT of the radio's own output can carry the radio's IF filter
+/// passband as an overlay, because that audio genuinely passed through it.
+/// The same overlay on audio demodulated from an IF tap would be a
+/// fabrication — that signal never went near the radio's filter, AGC or
+/// DSP. A console with one audio panel and two possible sources must know
+/// which it is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum AudioOrigin {
+    /// The radio's own receive chain — post-IF-filter, post-AGC, post-DSP.
+    /// What the operator is actually hearing.
+    RadioOutput,
+    /// Demodulated from an IF tap, ahead of everything the radio does to
+    /// its audio. Independent of the radio's filter, and in principle
+    /// tunable within the tap's span rather than following the dial.
+    TapDemodulated,
+}
+
 /// One signal source present on this station.
+///
+/// A source is not a device. One RTL-SDR on an IF tap provides **two** of
+/// these: a band panorama from the IQ, and audio demodulated out of the
+/// same IQ. They have different capabilities, can be in different states,
+/// and a console treats them separately.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InstalledSource {
     /// The resolved capability, as a consumer sees it.
@@ -63,6 +97,8 @@ pub struct InstalledSource {
     pub state: SourceState,
     /// Human-readable, for a settings panel: "RTL-SDR #0 on CN4".
     pub label: String,
+    /// Set for audio sources; `None` for a panorama.
+    pub audio_origin: Option<AudioOrigin>,
 }
 
 impl InstalledSource {
@@ -71,7 +107,22 @@ impl InstalledSource {
             capability,
             state,
             label: label.into(),
+            audio_origin: None,
         }
+    }
+
+    /// Note where this audio came from.
+    pub fn from_origin(mut self, origin: AudioOrigin) -> Self {
+        self.audio_origin = Some(origin);
+        self
+    }
+
+    /// Whether the radio's own filter passband is a truthful overlay on
+    /// this source.
+    ///
+    /// The question a console's AF FFT has to ask before drawing one.
+    pub fn reflects_radio_dsp(&self) -> bool {
+        self.audio_origin == Some(AudioOrigin::RadioOutput)
     }
 
     /// Whether this source can legitimately drive a band panorama.
@@ -121,11 +172,31 @@ impl Installation {
         self.sources.iter().find(|s| s.is_band_panorama())
     }
 
-    /// The first audio-derived source, if any.
-    pub fn audio(&self) -> Option<&InstalledSource> {
+    /// Every audio-derived source.
+    ///
+    /// Plural, because a station can genuinely have more than one and this
+    /// one does: a USB codec fed from ACC2, and audio demodulated from the
+    /// RTL-SDR already sitting on the IF tap. Returning only the first
+    /// would silently pick one for the operator, and the two do not sound
+    /// or behave alike — one is post-DSP and one is not.
+    pub fn audio_sources(&self) -> impl Iterator<Item = &InstalledSource> {
         self.sources
             .iter()
-            .find(|s| matches!(s.capability, SignalCapability::AudioDerived { .. }))
+            .filter(|s| matches!(s.capability, SignalCapability::AudioDerived { .. }))
+    }
+
+    /// The audio source that reflects what the operator is hearing, if any.
+    ///
+    /// A console with a single AF panel and no explicit selection should
+    /// default to this: it is the one whose FFT can carry the radio's
+    /// filter passband, and the one that matches the speaker.
+    pub fn radio_audio(&self) -> Option<&InstalledSource> {
+        self.audio_sources().find(|s| s.reflects_radio_dsp())
+    }
+
+    /// Whether the operator has a choice to make.
+    pub fn has_multiple_audio_sources(&self) -> bool {
+        self.audio_sources().count() > 1
     }
 
     /// Build an `IfTap` source from what the *model* provides and what this

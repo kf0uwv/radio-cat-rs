@@ -318,9 +318,20 @@ impl ConsoleState {
                 history_capacity,
                 LaneState::from(installation.band_panorama().map(|s| s.state)),
             ),
+            // The radio's own audio if there is one, otherwise whatever
+            // audio there is. A station can have several -- an ACC2 codec
+            // and audio demodulated from the IF tap -- and they are not
+            // interchangeable, so a console with one AF panel defaults to
+            // the one that matches the speaker and lets the operator
+            // change it. Which source is selected is layout's business.
             audio: SpectrumLane::new(
                 history_capacity,
-                LaneState::from(installation.audio().map(|s| s.state)),
+                LaneState::from(
+                    installation
+                        .radio_audio()
+                        .or_else(|| installation.audio_sources().next())
+                        .map(|s| s.state),
+                ),
             ),
         }
     }
@@ -637,5 +648,67 @@ mod tests {
         assert_eq!(lane.meters.len(), 1);
         assert_eq!(lane.meter(MeterKind::S), Some(99));
         assert_eq!(lane.meter(MeterKind::Swr), None);
+    }
+}
+
+#[cfg(test)]
+mod audio_source_tests {
+    use super::*;
+    use cat_framework::installation::{AudioOrigin, Installation, InstalledSource, SourceState};
+
+    fn audio(origin: AudioOrigin, state: SourceState, bw: u32) -> InstalledSource {
+        InstalledSource::new(
+            cat_signal::SignalCapability::AudioDerived {
+                max_bandwidth_hz: bw,
+            },
+            state,
+            match origin {
+                AudioOrigin::RadioOutput => "ACC2 codec",
+                _ => "SDR demodulated",
+            },
+        )
+        .from_origin(origin)
+    }
+
+    #[test]
+    fn the_audio_lane_defaults_to_the_radios_own_output() {
+        // With two paths available, a console with one AF panel should show
+        // what the operator is hearing, not the tap-demodulated one -- and
+        // it is the only one whose FFT may carry the radio's filter
+        // passband as an overlay.
+        let install = Installation::default()
+            .with_source(audio(
+                AudioOrigin::TapDemodulated,
+                SourceState::Streaming,
+                12_000,
+            ))
+            .with_source(audio(
+                AudioOrigin::RadioOutput,
+                SourceState::Configured,
+                3_000,
+            ));
+        let state = ConsoleState::for_installation(&install, 8);
+        // The ACC2 path is Configured, the tapped one Streaming. Picking
+        // the first source in the list would have reported Streaming.
+        assert_eq!(state.audio.state, LaneState::Configured);
+    }
+
+    #[test]
+    fn a_station_with_only_tapped_audio_still_gets_a_lane() {
+        // Falling back matters: a bench with no ACC2 wiring but an SDR on
+        // the tap has audio, and a console that showed none would be wrong.
+        let install = Installation::default().with_source(audio(
+            AudioOrigin::TapDemodulated,
+            SourceState::Streaming,
+            12_000,
+        ));
+        let state = ConsoleState::for_installation(&install, 8);
+        assert_eq!(state.audio.state, LaneState::Streaming);
+    }
+
+    #[test]
+    fn no_audio_at_all_is_still_a_lane() {
+        let state = ConsoleState::for_installation(&Installation::default(), 8);
+        assert_eq!(state.audio.state, LaneState::Absent);
     }
 }
