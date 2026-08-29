@@ -42,6 +42,56 @@ pub fn format_hz_compact(hz: u64) -> String {
     format!("{}.{:03}.{:03}", mhz, khz, hz_rem)
 }
 
+/// Where each S-unit boundary falls on a radio's raw meter scale.
+///
+/// **S-meter law is radio data, not a display preference.** Where S9 sits
+/// and how the units below it space out is a property of the meter circuit,
+/// and it is not linear on real radios. The TS-570D's own table gives S0
+/// three raw counts and every other unit two, which no clean formula
+/// reproduces — substituting one changes the reading at 7 of its 31 raw
+/// values.
+///
+/// So a radio that knows its own law supplies it, exactly as it already
+/// supplies [`RawRange`] rather than letting a widget assume 0-255.
+///
+/// `thresholds` is the **inclusive upper bound** of each label in
+/// `LABELS`, ascending. A reading above the last threshold takes the last
+/// label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SUnitScale {
+    thresholds: &'static [u16],
+}
+
+/// The labels [`SUnitScale`] assigns, in order.
+pub const S_UNIT_LABELS: [&str; 13] = [
+    "S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S9+10", "S9+20", "S9+30",
+];
+
+impl SUnitScale {
+    /// A scale from explicit upper bounds, one per label in
+    /// [`S_UNIT_LABELS`].
+    pub const fn new(thresholds: &'static [u16]) -> Self {
+        Self { thresholds }
+    }
+
+    /// The Kenwood TS-570D's table, as its TUI has always drawn it.
+    ///
+    /// Preserved exactly rather than approximated: this is what its
+    /// operators have been reading, and ADR 0011 rev 4 sets "the operator
+    /// sees no change" as the bar for migrating onto shared widgets.
+    pub const TS570D: Self = Self::new(&[2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 24, 28, u16::MAX]);
+
+    /// The label for a raw reading.
+    pub fn label(&self, raw: u16) -> &'static str {
+        for (i, bound) in self.thresholds.iter().enumerate() {
+            if raw <= *bound {
+                return S_UNIT_LABELS[i.min(S_UNIT_LABELS.len() - 1)];
+            }
+        }
+        S_UNIT_LABELS[S_UNIT_LABELS.len() - 1]
+    }
+}
+
 /// An S-unit label for a raw meter reading, scaled against the radio's own
 /// range.
 ///
@@ -82,6 +132,18 @@ pub fn format_smeter_label(raw: u16, range: RawRange) -> &'static str {
         8 => "S8",
         _ => "S9",
     }
+}
+
+/// The fallback used when a radio has not supplied its own table.
+///
+/// Places S9 at two thirds of full scale and spaces the units below it
+/// evenly. Reasonable, and **not** a substitute for a radio's real law: a
+/// radio that knows its own should pass an [`SUnitScale`]. This exists so
+/// that a radio which has never shown S-units at all — the FT-991A's TUI
+/// shows a bar with no number — gets something correct-ish rather than
+/// nothing.
+pub fn format_smeter_label_default(raw: u16, range: RawRange) -> &'static str {
+    format_smeter_label(raw, range)
 }
 
 #[cfg(test)]
@@ -167,5 +229,92 @@ mod tests {
     #[test]
     fn a_degenerate_range_does_not_panic() {
         assert_eq!(format_smeter_label(5, RawRange::new(5, 5)), "S0");
+    }
+}
+
+#[cfg(test)]
+mod s_unit_scale_tests {
+    use super::*;
+
+    /// The TS-570D TUI's table, transcribed from `ui/src/layout.rs` as it
+    /// stood before the migration. This is the reference an operator has
+    /// actually been reading.
+    fn ts570d_as_shipped(raw: u16) -> &'static str {
+        match raw {
+            0..=2 => "S0",
+            3..=4 => "S1",
+            5..=6 => "S2",
+            7..=8 => "S3",
+            9..=10 => "S4",
+            11..=12 => "S5",
+            13..=14 => "S6",
+            15..=16 => "S7",
+            17..=18 => "S8",
+            19..=20 => "S9",
+            21..=24 => "S9+10",
+            25..=28 => "S9+20",
+            _ => "S9+30",
+        }
+    }
+
+    #[test]
+    fn the_ts570d_scale_reproduces_its_shipped_table_exactly() {
+        // ADR 0011 rev 4's acceptance bar for migrating an app onto shared
+        // widgets is that the operator sees no change. This is that bar,
+        // as a test, across every raw value the meter can report.
+        for raw in 0..=40u16 {
+            assert_eq!(
+                SUnitScale::TS570D.label(raw),
+                ts570d_as_shipped(raw),
+                "raw {raw} would have changed on screen"
+            );
+        }
+    }
+
+    #[test]
+    fn the_generic_formula_does_not_reproduce_it_and_that_is_the_point() {
+        // EIGHT of thirty-one raw values differ, and the count itself has
+        // a lesson in it. A scratch model of this comparison written in
+        // Python reported seven -- it missed raw 10, because Python's
+        // round() breaks ties to even and Rust's f32::round breaks them
+        // away from zero, and 4.5 is exactly such a tie.
+        //
+        // So the model of the code disagreed with the code about how many
+        // ways the code disagreed with the radio. That is why this test
+        // compares the real implementations rather than a description of
+        // them, and why SUnitScale exists at all: an S-meter's law is a
+        // property of its circuit, and a formula that fits one radio is
+        // not evidence about another.
+        let range = RawRange::new(0, 30);
+        let differing: Vec<u16> = (0..=30u16)
+            .filter(|r| format_smeter_label(*r, range) != ts570d_as_shipped(*r))
+            .collect();
+        assert_eq!(differing, vec![2, 4, 6, 8, 10, 24, 27, 28]);
+    }
+
+    #[test]
+    fn a_reading_past_the_last_threshold_pegs_rather_than_wrapping() {
+        assert_eq!(SUnitScale::TS570D.label(u16::MAX), "S9+30");
+    }
+
+    #[test]
+    fn a_scale_shorter_than_the_label_list_still_terminates() {
+        // A radio need not describe every unit. Running off the end must
+        // peg, not index out of bounds.
+        let coarse = SUnitScale::new(&[10, 20]);
+        assert_eq!(coarse.label(5), "S0");
+        assert_eq!(coarse.label(15), "S1");
+        assert_eq!(coarse.label(999), "S9+30");
+    }
+
+    #[test]
+    fn the_default_still_serves_a_radio_with_no_table() {
+        // The FT-991A's TUI shows an S-meter bar with no S-unit at all.
+        // Something correct-ish beats nothing, and it needs no per-radio
+        // calibration to adopt.
+        let range = RawRange::new(0, 255);
+        assert_eq!(format_smeter_label_default(0, range), "S0");
+        assert_eq!(format_smeter_label_default(170, range), "S9");
+        assert_eq!(format_smeter_label_default(255, range), "S9+30");
     }
 }

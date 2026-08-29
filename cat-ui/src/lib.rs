@@ -56,7 +56,10 @@ pub mod spectrum;
 pub mod spectrum_map;
 
 pub use band::{Band, BandPlan};
-pub use format::{format_hz, format_hz_compact, format_smeter_label};
+pub use format::{
+    format_hz, format_hz_compact, format_smeter_label, format_smeter_label_default, SUnitScale,
+    S_UNIT_LABELS,
+};
 pub use lanes::{
     AudioChoice, AudioLane, CatLane, ConsoleState, Control, LaneState, Outcome, Pending,
     SpectrumLane,
