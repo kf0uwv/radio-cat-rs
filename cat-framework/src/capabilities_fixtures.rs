@@ -43,7 +43,7 @@
 //! `menu_capability_is_the_thinnest_part_of_the_model`.
 
 use crate::capabilities::*;
-use crate::installation::{Installation, InstalledSource, Session, SourceState};
+use crate::installation::{AudioOrigin, Installation, InstalledSource, Session, SourceState};
 use cat_signal::SignalCapability;
 
 // ---------------------------------------------------------------------------
@@ -433,6 +433,12 @@ pub fn ts570d_bare() -> Installation {
 /// ACC2, an RTL-SDR on the CN4 tap, and RF audio through ACC2 into a USB
 /// sound device.
 ///
+/// **Three sources from two devices.** The RTL-SDR provides both the band
+/// panorama and a second audio path, demodulated from the same IQ. That
+/// second path never passes through the radio's IF filter, AGC or DSP, so
+/// it is not interchangeable with the ACC2 audio even though both are
+/// `AudioDerived` — see [`AudioOrigin`].
+///
 /// `trim_hz` is a measurement, not a constant. It belongs to one dongle's
 /// crystal and is calibrated against a known carrier; a different dongle on
 /// the same radio has a different number. That it can live here at all,
@@ -452,16 +458,33 @@ pub fn ts570d_with_box(trim_hz: i32) -> Installation {
     ) {
         install.sources.push(tap);
     }
-    install.sources.push(InstalledSource::new(
-        SignalCapability::AudioDerived {
-            max_bandwidth_hz: 3_000,
-        },
-        // Configured, not Streaming: the audio path is wired and the
-        // transport design does not exist yet. This is the state a `bool`
-        // could not express.
-        SourceState::Configured,
-        "Box USB Audio from ACC2",
-    ));
+    install.sources.push(
+        InstalledSource::new(
+            SignalCapability::AudioDerived {
+                max_bandwidth_hz: 3_000,
+            },
+            // Configured, not Streaming: the audio path is wired and the
+            // transport design does not exist yet. This is the state a
+            // `bool` could not express.
+            SourceState::Configured,
+            "Box USB Audio from ACC2",
+        )
+        // Post-filter, post-AGC, post-DSP: what the operator hears.
+        .from_origin(AudioOrigin::RadioOutput),
+    );
+    install.sources.push(
+        InstalledSource::new(
+            // Wider than the ACC2 path, because it is not limited by the
+            // radio's SSB filter -- it is whatever we choose to demodulate
+            // out of the tap's IQ.
+            SignalCapability::AudioDerived {
+                max_bandwidth_hz: 12_000,
+            },
+            SourceState::Configured,
+            "RTL-SDR demodulated from CN4",
+        )
+        .from_origin(AudioOrigin::TapDemodulated),
+    );
     install
 }
 
@@ -702,23 +725,79 @@ mod tests {
     }
 
     #[test]
-    fn a_station_can_run_two_sources_at_once() {
+    fn a_station_runs_several_sources_at_once() {
         // The finding that blocked the audio panels: one enum field could
         // not say this, and `ConsoleState` derived exactly one lane from
         // it, so there was no lane for audio at all.
         let fitted = ts570d_with_box(-1_420);
-        assert_eq!(fitted.sources.len(), 2);
+        assert_eq!(fitted.sources.len(), 3);
         assert!(fitted.band_panorama().is_some());
-        assert!(fitted.audio().is_some());
+        assert_eq!(fitted.audio_sources().count(), 2);
     }
 
     #[test]
-    fn audio_is_present_without_being_a_panorama() {
-        let fitted = ts570d_with_box(-1_420);
-        let audio = fitted.audio().unwrap();
-        assert!(!audio.is_band_panorama());
-        // ...and it is not the source a waterfall would pick up.
-        assert_ne!(fitted.band_panorama().unwrap().capability, audio.capability);
+    fn one_device_can_be_two_sources() {
+        // A source is not a device. The RTL-SDR provides the panorama AND
+        // a demodulated audio path out of the same IQ.
+        let fitted = ts570d_with_box(0);
+        let from_sdr: Vec<&InstalledSource> = fitted
+            .sources
+            .iter()
+            .filter(|s| s.label.contains("CN4"))
+            .collect();
+        assert_eq!(from_sdr.len(), 2);
+        assert!(from_sdr.iter().any(|s| s.is_band_panorama()));
+        assert!(from_sdr.iter().any(|s| !s.is_band_panorama()));
+    }
+
+    #[test]
+    fn the_two_audio_paths_are_not_interchangeable() {
+        // Both are AudioDerived and neither can drive a panorama -- but a
+        // console must not treat them as the same thing. Only one of them
+        // went through the radio's filter, AGC and DSP.
+        let fitted = ts570d_with_box(0);
+        assert!(fitted.has_multiple_audio_sources());
+
+        let radio_audio = fitted.radio_audio().expect("the ACC2 path");
+        assert!(radio_audio.reflects_radio_dsp());
+        assert!(radio_audio.label.contains("ACC2"));
+
+        let tapped = fitted
+            .audio_sources()
+            .find(|s| !s.reflects_radio_dsp())
+            .expect("the demodulated path");
+        assert!(!tapped.reflects_radio_dsp());
+        // Wider, because the radio's SSB filter never constrained it.
+        assert!(matches!(
+            (radio_audio.capability, tapped.capability),
+            (
+                SignalCapability::AudioDerived { max_bandwidth_hz: a },
+                SignalCapability::AudioDerived { max_bandwidth_hz: b }
+            ) if b > a
+        ));
+    }
+
+    #[test]
+    fn only_the_radios_own_audio_may_carry_its_filter_passband() {
+        // The concrete consequence, and why AudioOrigin is not a label.
+        // Drawing the radio's IF passband over tap-demodulated audio would
+        // be a fabrication -- that signal never passed through it.
+        let fitted = ts570d_with_box(0);
+        let overlayable = fitted
+            .audio_sources()
+            .filter(|s| s.reflects_radio_dsp())
+            .count();
+        assert_eq!(overlayable, 1, "exactly one source may carry the overlay");
+    }
+
+    #[test]
+    fn neither_audio_path_can_drive_a_panorama() {
+        let fitted = ts570d_with_box(0);
+        for source in fitted.audio_sources() {
+            assert!(!source.is_band_panorama(), "{} is audio only", source.label);
+        }
+        // ...and the panorama is still found, past both of them.
+        assert!(fitted.band_panorama().unwrap().is_band_panorama());
     }
 
     #[test]
@@ -729,8 +808,10 @@ mod tests {
         // reports missing hardware that is sitting right there.
         let fitted = ts570d_with_box(-1_420);
         assert!(fitted.band_panorama().unwrap().is_streaming());
-        assert!(!fitted.audio().unwrap().is_streaming());
-        assert_eq!(fitted.audio().unwrap().state, SourceState::Configured);
+        for audio in fitted.audio_sources() {
+            assert!(!audio.is_streaming());
+            assert_eq!(audio.state, SourceState::Configured);
+        }
     }
 
     #[test]
