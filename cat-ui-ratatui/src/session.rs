@@ -25,6 +25,14 @@
 //! - `draw_header` — identical but for the title string.
 //! - `build_menu_column` — identical but for the key type (`&str` vs `char`).
 //!
+//! A second pass, made while actually migrating `ts570d` onto these
+//! widgets, found that the extraction had been slightly too eager in three
+//! places — it dropped `draw_disconnected`'s `[Q] Quit` footer, fixed the
+//! header's alignment to left where one app centres, and made an empty
+//! error list draw nothing where one app's fixed-height slot needs it to
+//! say so. All three are restored as parameters. Reading the two apps side
+//! by side is not the same as running the result; both are worth doing.
+//!
 //! Everything else that differs, differs legitimately: `split_areas`
 //! allocates 7 status rows against 4 because the two radios have different
 //! amounts to show, `draw_control_panel` is 5.4× richer on the FT-991A
@@ -34,7 +42,7 @@
 
 use ratatui::{
     buffer::Buffer,
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
@@ -56,7 +64,20 @@ pub enum LinkState {
 /// and during an outage a patient "connecting…" hides that something
 /// broke. Both apps already drew this distinction identically, which is
 /// why it is here rather than in either of them.
-pub fn link_panel(state: LinkState, errors: &[String], title: &str, area: Rect, buf: &mut Buffer) {
+///
+/// `footer` is set off by a blank line and closes the panel. Both apps end
+/// it with `[Q] Quit`, and this panel replaces the control panel outright
+/// — so it is the only place the one key that still works is written down.
+/// The first extraction dropped that line; migrating `ts570d` is what
+/// surfaced it.
+pub fn link_panel(
+    state: LinkState,
+    errors: &[String],
+    title: &str,
+    footer: Option<Span<'static>>,
+    area: Rect,
+    buf: &mut Buffer,
+) {
     let lines: Vec<Line> = match state {
         LinkState::Connecting => vec![
             Line::from(Span::styled(
@@ -91,6 +112,12 @@ pub fn link_panel(state: LinkState, errors: &[String], title: &str, area: Rect, 
         }
     };
 
+    let mut lines = lines;
+    if let Some(footer) = footer {
+        lines.push(Line::from(""));
+        lines.push(Line::from(footer));
+    }
+
     Paragraph::new(lines)
         .block(
             Block::default()
@@ -101,20 +128,50 @@ pub fn link_panel(state: LinkState, errors: &[String], title: &str, area: Rect, 
         .render(area, buf);
 }
 
-/// A bounded list of recent errors.
+/// How an error panel presents itself.
 ///
-/// `None` renders nothing at all rather than an empty bordered box: a
-/// console with no errors should not devote a panel to saying so.
-pub fn error_panel(errors: &[String], title: &str, area: Rect, buf: &mut Buffer) {
-    if errors.is_empty() {
-        return;
-    }
-    let lines: Vec<Line> = errors
-        .iter()
-        .rev()
-        .take(3)
-        .map(|e| Line::from(Span::styled(e.as_str(), Style::default().fg(Color::Yellow))))
-        .collect();
+/// The empty case is the interesting one, and it has two right answers
+/// depending on the layout around it — see [`ErrorPanelStyles::quiet`].
+#[derive(Debug, Clone, Copy)]
+pub struct ErrorPanelStyles {
+    /// Style for each error line.
+    pub error: Style,
+    /// What to draw when there are no errors.
+    ///
+    /// `None` draws nothing at all — correct for a panel whose space is
+    /// reclaimed when it is empty. `Some` draws the text instead, which is
+    /// what a panel in a **fixed** slot needs: `ts570d` reserves three rows
+    /// for errors unconditionally, and drawing nothing there leaves a
+    /// bordered empty box that reads as a broken panel rather than a quiet
+    /// one.
+    pub quiet: Option<(&'static str, Style)>,
+}
+
+/// A bounded list of recent errors, most recent first.
+///
+/// Bounded at three because the panel is a fixed-height slot in both
+/// consoles: an unbounded list would overflow it, and the *oldest* three
+/// are the least useful ones to keep — which is why this reverses first.
+pub fn error_panel(
+    errors: &[String],
+    title: &str,
+    styles: ErrorPanelStyles,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let lines: Vec<Line> = if errors.is_empty() {
+        match styles.quiet {
+            None => return,
+            Some((text, style)) => vec![Line::from(Span::styled(text, style))],
+        }
+    } else {
+        errors
+            .iter()
+            .rev()
+            .take(3)
+            .map(|e| Line::from(Span::styled(e.as_str(), styles.error)))
+            .collect()
+    };
     Paragraph::new(lines)
         .block(
             Block::default()
@@ -127,21 +184,27 @@ pub fn error_panel(errors: &[String], title: &str, area: Rect, buf: &mut Buffer)
 
 /// The title bar.
 ///
-/// Takes the title rather than hardcoding it — the only thing that
-/// differed between the two apps' copies.
-pub fn header(title: &str, area: Rect, buf: &mut Buffer, style: Style) {
+/// Takes the title and its alignment rather than hardcoding either. The
+/// title was the only thing that differed between the two apps' copies;
+/// alignment is here because the first extraction fixed it to left and
+/// `ts570d` centres.
+pub fn header(title: &str, alignment: Alignment, area: Rect, buf: &mut Buffer, style: Style) {
     Paragraph::new(Line::from(Span::styled(title.to_string(), style)))
+        .alignment(alignment)
         .block(Block::default().borders(Borders::ALL))
         .render(area, buf);
 }
 
 /// A two-column key/description list, as used by menu and help panels.
 ///
-/// Generic over the key's display type, which is the whole reason the two
-/// apps could not share it: `ts570d` keys menus by `&'static str` and
-/// `ft991a` by `char`. Neither is wrong, and neither needed changing.
-pub fn menu_column<K: std::fmt::Display>(
-    items: &[(K, &str)],
+/// Generic over both cell types, which is the whole reason the two apps
+/// could not share it: `ts570d` keys menus by `&'static str` and `ft991a`
+/// by `char`, and `ts570d` needs a second copy for menus whose labels are
+/// built at runtime and so are `String`. Neither is wrong, and none of
+/// them needed changing — three concrete copies collapse into one
+/// signature.
+pub fn menu_column<K: std::fmt::Display, T: std::fmt::Display>(
+    items: &[(K, T)],
     key_style: Style,
     text_style: Style,
 ) -> Vec<Line<'static>> {
@@ -150,7 +213,7 @@ pub fn menu_column<K: std::fmt::Display>(
         .map(|(key, text)| {
             Line::from(vec![
                 Span::styled(format!("[{key}] "), key_style),
-                Span::styled((*text).to_string(), text_style),
+                Span::styled(text.to_string(), text_style),
             ])
         })
         .collect()
@@ -174,7 +237,7 @@ mod tests {
     fn connecting_does_not_look_like_a_failure() {
         // On first start, a red CONNECTION LOST is alarming and wrong.
         let out = render(60, 6, |a, b| {
-            link_panel(LinkState::Connecting, &[], "Radio Status", a, b)
+            link_panel(LinkState::Connecting, &[], "Radio Status", None, a, b)
         });
         assert!(out.contains("Connecting"));
         assert!(!out.contains("LOST"));
@@ -183,7 +246,7 @@ mod tests {
     #[test]
     fn a_lost_link_says_so_and_says_what_to_do() {
         let out = render(70, 10, |a, b| {
-            link_panel(LinkState::Lost, &[], "Radio Status", a, b)
+            link_panel(LinkState::Lost, &[], "Radio Status", None, a, b)
         });
         assert!(out.contains("CONNECTION LOST"));
         assert!(out.contains("Reconnect"));
@@ -198,24 +261,86 @@ mod tests {
         // reads them. The recovery text is the part that must survive.
         let errors: Vec<String> = (0..200).map(|i| format!("error {i}")).collect();
         let out = render(70, 20, |a, b| {
-            link_panel(LinkState::Lost, &errors, "Radio Status", a, b)
+            link_panel(LinkState::Lost, &errors, "Radio Status", None, a, b)
         });
         assert!(out.contains("Reconnect"));
         assert!(out.contains("error 0"));
         assert!(!out.contains("error 9"), "the list must be bounded");
     }
 
+    const QUIET: ErrorPanelStyles = ErrorPanelStyles {
+        error: Style::new(),
+        quiet: None,
+    };
+
+    #[test]
+    fn the_disconnected_panel_still_names_the_one_key_that_works() {
+        // This panel replaces the control panel outright, so if it does not
+        // say how to quit, nothing on screen does. The first extraction
+        // dropped the line that both apps had.
+        let quit = Span::raw("[Q] Quit");
+        for state in [LinkState::Connecting, LinkState::Lost] {
+            let out = render(70, 14, |a, b| {
+                link_panel(state, &[], "Radio Status", Some(quit.clone()), a, b)
+            });
+            assert!(out.contains("[Q] Quit"), "{state:?} lost the footer");
+        }
+    }
+
+    #[test]
+    fn a_flood_of_errors_cannot_push_the_footer_off_screen_either() {
+        let errors: Vec<String> = (0..200).map(|i| format!("error {i}")).collect();
+        let out = render(70, 20, |a, b| {
+            link_panel(
+                LinkState::Lost,
+                &errors,
+                "Radio Status",
+                Some(Span::raw("[Q] Quit")),
+                a,
+                b,
+            )
+        });
+        assert!(out.contains("[Q] Quit"));
+    }
+
+    #[test]
+    fn a_centred_header_is_actually_centred() {
+        let out = render(41, 3, |a, b| {
+            header("TITLE", Alignment::Center, a, b, Style::default())
+        });
+        let row = out.lines().nth(1).unwrap();
+        let left = row.find("TITLE").unwrap();
+        let right = row.len() - (left + "TITLE".len());
+        assert!(
+            left.abs_diff(right) <= 1,
+            "not centred: {left} left, {right} right"
+        );
+    }
+
     #[test]
     fn no_errors_means_no_panel_at_all() {
         // Not an empty bordered box announcing that nothing is wrong.
-        let out = render(40, 5, |a, b| error_panel(&[], "Errors", a, b));
+        let out = render(40, 5, |a, b| error_panel(&[], "Errors", QUIET, a, b));
         assert!(out.trim().is_empty());
+    }
+
+    #[test]
+    fn a_panel_in_a_fixed_slot_can_say_it_is_quiet_instead() {
+        // ts570d reserves the rows whether or not anything went wrong, so
+        // drawing nothing there leaves a bordered void that reads as a
+        // broken panel rather than a healthy one.
+        let styles = ErrorPanelStyles {
+            error: Style::new(),
+            quiet: Some(("No errors", Style::new())),
+        };
+        let out = render(40, 5, |a, b| error_panel(&[], "Errors", styles, a, b));
+        assert!(out.contains("No errors"), "got {out:?}");
     }
 
     #[test]
     fn the_error_panel_shows_the_most_recent_first() {
         let errors: Vec<String> = (0..10).map(|i| format!("e{i}")).collect();
-        let out = render(40, 5, |a, b| error_panel(&errors, "Errors", a, b));
+        let out = render(40, 5, |a, b| error_panel(&errors, "Errors", QUIET, a, b));
         assert!(out.contains("e9"), "newest must be visible");
         assert!(!out.contains("e0"), "oldest is dropped, not the newest");
     }
@@ -224,7 +349,13 @@ mod tests {
     fn the_header_takes_its_title_rather_than_hardcoding_one() {
         // The only thing that differed between the two apps' copies.
         let out = render(40, 3, |a, b| {
-            header("TS-570D RADIO CONTROL", a, b, Style::default())
+            header(
+                "TS-570D RADIO CONTROL",
+                Alignment::Left,
+                a,
+                b,
+                Style::default(),
+            )
         });
         assert!(out.contains("TS-570D"));
     }
@@ -238,6 +369,15 @@ mod tests {
             Style::default(),
             Style::default(),
         );
+        // ...and with labels built at runtime, which is a third concrete
+        // copy `ts570d` was carrying for no reason but the text type.
+        let owned = menu_column(
+            &[(1u8, format!("memory {}", 14))],
+            Style::default(),
+            Style::default(),
+        );
+        let text: String = owned[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "[1] memory 14");
         let by_char = menu_column(
             &[('a', "band"), ('b', "mode")],
             Style::default(),

@@ -14,7 +14,7 @@
 
 //! Meter bars and the meter rail.
 
-use cat_ui::MeterReading;
+use cat_ui::{MeterReading, SUnitScale};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -49,25 +49,80 @@ pub fn meter_bar(reading: MeterReading, area: Rect, buf: &mut Buffer, fill: Colo
     if area.width == 0 || area.height == 0 {
         return;
     }
-    // Eight sub-levels per cell, so a 20-cell bar resolves 160 steps —
-    // finer than either radio's meter actually reports.
-    let total = u32::from(area.width) * 8;
-    let filled = (reading.fraction() * total as f32).round() as u32;
-    for col in 0..area.width {
+    let (drawn, trough) = bar_halves(reading.fraction(), area.width);
+    for (col, ch) in drawn.chars().chain(trough.chars()).enumerate() {
+        let colour = if col < drawn.chars().count() {
+            fill
+        } else {
+            empty
+        };
+        buf.get_mut(area.x + col as u16, area.y)
+            .set_char(ch)
+            .set_fg(colour);
+    }
+}
+
+/// The two halves of a bar: the drawn part, then the trough.
+///
+/// One computation, two renderers. `meter_bar` writes these into a buffer
+/// cell by cell; [`bar_spans`] hands them to a caller composing a `Line`.
+/// Splitting the *characters* out from the *drawing* is what stops those
+/// two from drifting apart, which is the whole failure mode ADR 0011
+/// exists to prevent — and the reason a second bar helper is a shared
+/// function rather than a copy in the app that needed it.
+///
+/// Every drawn cell precedes every trough cell: the fill level falls
+/// monotonically across columns, so the drawn part is always a prefix.
+/// That is what lets the result be two spans rather than `width` of them.
+///
+/// Eight sub-levels per cell, so a 20-cell bar resolves 160 steps — finer
+/// than either radio's meter actually reports.
+fn bar_halves(fraction: f32, width: u16) -> (String, String) {
+    let total = u32::from(width) * 8;
+    let filled = (fraction.clamp(0.0, 1.0) * total as f32).round() as u32;
+    let mut drawn = String::new();
+    let mut trough = String::new();
+    for col in 0..width {
         let base = u32::from(col) * 8;
         let level = filled.saturating_sub(base).min(8) as usize;
-        let cell = buf.get_mut(area.x + col, area.y);
-        if level == 8 {
-            cell.set_char('█').set_fg(fill);
-        } else if level > 0 {
+        if level == 0 {
+            trough.push('░');
+        } else {
             // A partial cell is drawn with a LEFT-anchored block so the bar
             // grows smoothly; `BLOCKS` is vertical, so use the horizontal
             // equivalent for the fractional cell.
-            cell.set_char(horizontal_block(level)).set_fg(fill);
-        } else {
-            cell.set_char('░').set_fg(empty);
+            drawn.push(horizontal_block(level));
         }
     }
+    (drawn, trough)
+}
+
+/// A bar as two styled spans, for a caller composing a `Line`.
+///
+/// [`meter_bar`] draws into a buffer, which is the right shape for a
+/// widget that owns a `Rect` and the wrong shape for a console that builds
+/// its status rows as spans — `ts570d` writes `AF:[████░░░░░░]` inline
+/// beside four other readouts, and had been round-tripping a `String`
+/// through a character filter to recover the two halves it needed. That is
+/// an impedance mismatch, not a missing feature: the same bar, wanted in a
+/// different composition model.
+///
+/// Takes a bare fraction because not every bar is a meter — a gain
+/// setting is 0.0-1.0 with no `RawRange` behind it. Use [`meter_spans`]
+/// when there is a reading, so the scale travels with the number.
+pub fn bar_spans(fraction: f32, width: u16, fill: Style, empty: Style) -> Vec<Span<'static>> {
+    let (drawn, trough) = bar_halves(fraction, width);
+    vec![Span::styled(drawn, fill), Span::styled(trough, empty)]
+}
+
+/// [`bar_spans`] for a meter, so the reading's own range does the scaling.
+pub fn meter_spans(
+    reading: MeterReading,
+    width: u16,
+    fill: Style,
+    empty: Style,
+) -> Vec<Span<'static>> {
+    bar_spans(reading.fraction(), width, fill, empty)
 }
 
 fn horizontal_block(level: usize) -> char {
@@ -85,20 +140,43 @@ fn horizontal_block(level: usize) -> char {
 
 /// A one-line S-meter readout: `S8   17/30`.
 ///
-/// The S-unit label comes from [`cat_ui::format_smeter_label`], which scales
-/// against the radio's own range. Showing the raw value beside it is
-/// deliberate — it is what makes a miscalibrated meter diagnosable rather
-/// than merely wrong.
-pub fn smeter_line(reading: Option<MeterReading>, label_style: Style, dim: Style) -> Line<'static> {
+/// `scale` is the radio's own S-unit table. Pass `Some` when the radio
+/// publishes one — where its S-unit boundaries fall is a property of the
+/// meter circuit, not a display preference, and substituting a formula
+/// changes what the operator reads (8 of 31 raw values, on a TS-570D).
+/// `None` falls back to [`cat_ui::format_smeter_label`], which interpolates
+/// against the raw range: right for a radio that has not published a table,
+/// and better than showing no S-unit at all.
+///
+/// Showing the raw value beside the label is deliberate — it is what makes
+/// a miscalibrated meter diagnosable rather than merely wrong.
+pub fn smeter_line(
+    reading: Option<MeterReading>,
+    scale: Option<SUnitScale>,
+    label_style: Style,
+    dim: Style,
+) -> Line<'static> {
     match reading {
         None => Line::from(vec![
             Span::styled("—", dim),
             Span::styled("  no reading yet", dim),
         ]),
         Some(r) => Line::from(vec![
-            Span::styled(cat_ui::format_smeter_label(r.raw, r.range), label_style),
+            Span::styled(smeter_label(r, scale), label_style),
             Span::styled(format!("  {}/{}", r.raw, r.range.max), dim),
         ]),
+    }
+}
+
+/// The S-unit label for a reading, from the radio's table if it has one.
+///
+/// Public because a console composing its own status row needs the same
+/// answer `smeter_line` gives, and reaching for `format_smeter_label`
+/// directly is how an app quietly loses its radio's table.
+pub fn smeter_label(reading: MeterReading, scale: Option<SUnitScale>) -> &'static str {
+    match scale {
+        Some(s) => s.label(reading.raw),
+        None => cat_ui::format_smeter_label(reading.raw, reading.range),
     }
 }
 
@@ -272,10 +350,81 @@ mod tests {
         assert_eq!(filled(&b, 8), 8);
     }
 
+    fn text_of(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn a_bar_drawn_into_a_buffer_and_one_built_as_spans_are_the_same_bar() {
+        // The whole reason `bar_halves` exists. If these two ever disagree,
+        // the same meter reads differently in two panels of one console.
+        let r = MeterReading::new(MeterKind::S, 17, RawRange::new(0, 30));
+        let area = Rect::new(0, 0, 20, 1);
+        let mut b = Buffer::empty(area);
+        meter_bar(r, area, &mut b, Color::Green, Color::DarkGray);
+        let drawn: String = (0..20).map(|x| b.get(x, 0).symbol()).collect();
+
+        let spans = meter_spans(r, 20, Style::new(), Style::new());
+        let composed: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(drawn, composed);
+    }
+
+    #[test]
+    fn a_bar_is_always_two_spans_because_the_fill_is_a_prefix() {
+        // A partial cell belongs to the drawn half, so there is never a
+        // trough cell before a drawn one -- which is what lets a caller
+        // splice a bar into a `Line` without knowing its width.
+        for raw in 0..=30u16 {
+            let spans = bar_spans(raw as f32 / 30.0, 20, Style::new(), Style::new());
+            assert_eq!(spans.len(), 2);
+            let (drawn, trough) = (&spans[0].content, &spans[1].content);
+            assert!(!drawn.contains('░'), "raw {raw}: trough char in the fill");
+            assert!(
+                trough.chars().all(|c| c == '░'),
+                "raw {raw}: fill char in the trough"
+            );
+            assert_eq!(
+                drawn.chars().count() + trough.chars().count(),
+                20,
+                "raw {raw}: bar must always be exactly as wide as asked"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bar_span_clamps_rather_than_overflowing_its_width() {
+        // `bar_spans` takes a bare f32, so unlike `meter_spans` nothing
+        // upstream has already clamped it.
+        for f in [-1.0, 0.0, 1.0, 2.0, f32::NAN] {
+            let spans = bar_spans(f, 10, Style::new(), Style::new());
+            let width: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+            assert_eq!(width, 10, "fraction {f} produced a {width}-cell bar");
+        }
+    }
+
+    #[test]
+    fn a_radios_own_s_unit_table_beats_the_generic_formula() {
+        // Raw 24 is where the TS-570D's table and the interpolated formula
+        // part company; a console that passes `None` silently loses its
+        // radio's calibration.
+        let r = MeterReading::new(MeterKind::S, 24, RawRange::new(0, 30));
+        let with = smeter_label(r, Some(SUnitScale::TS570D));
+        let without = smeter_label(r, None);
+        assert_eq!(with, "S9+10");
+        assert_ne!(with, without, "the table must actually be consulted");
+        assert!(text_of(&smeter_line(
+            Some(r),
+            Some(SUnitScale::TS570D),
+            Style::new(),
+            Style::new()
+        ))
+        .starts_with("S9+10"));
+    }
+
     #[test]
     fn an_unread_smeter_says_so_rather_than_showing_s0() {
         let dim = Style::default();
-        let line = smeter_line(None, dim, dim);
+        let line = smeter_line(None, None, dim, dim);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains('—'));
         assert!(!text.contains("S0"), "unknown must not render as a reading");
@@ -286,6 +435,7 @@ mod tests {
         let dim = Style::default();
         let line = smeter_line(
             Some(MeterReading::new(MeterKind::S, 20, RawRange::new(0, 30))),
+            None,
             dim,
             dim,
         );
