@@ -14,7 +14,7 @@
 
 //! Meter bars and the meter rail.
 
-use cat_ui::{MeterReading, SUnitScale};
+use cat_ui::MeterReading;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -140,43 +140,22 @@ fn horizontal_block(level: usize) -> char {
 
 /// A one-line S-meter readout: `S8   17/30`.
 ///
-/// `scale` is the radio's own S-unit table. Pass `Some` when the radio
-/// publishes one — where its S-unit boundaries fall is a property of the
-/// meter circuit, not a display preference, and substituting a formula
-/// changes what the operator reads (8 of 31 raw values, on a TS-570D).
-/// `None` falls back to [`cat_ui::format_smeter_label`], which interpolates
-/// against the raw range: right for a radio that has not published a table,
-/// and better than showing no S-unit at all.
+/// The S-unit comes from [`MeterReading::s_unit`], so the radio's own
+/// table is used whenever it published one — this widget is never told a
+/// scale and so can never be told the wrong one.
 ///
 /// Showing the raw value beside the label is deliberate — it is what makes
 /// a miscalibrated meter diagnosable rather than merely wrong.
-pub fn smeter_line(
-    reading: Option<MeterReading>,
-    scale: Option<SUnitScale>,
-    label_style: Style,
-    dim: Style,
-) -> Line<'static> {
+pub fn smeter_line(reading: Option<MeterReading>, label_style: Style, dim: Style) -> Line<'static> {
     match reading {
         None => Line::from(vec![
             Span::styled("—", dim),
             Span::styled("  no reading yet", dim),
         ]),
         Some(r) => Line::from(vec![
-            Span::styled(smeter_label(r, scale), label_style),
+            Span::styled(r.s_unit(), label_style),
             Span::styled(format!("  {}/{}", r.raw, r.range.max), dim),
         ]),
-    }
-}
-
-/// The S-unit label for a reading, from the radio's table if it has one.
-///
-/// Public because a console composing its own status row needs the same
-/// answer `smeter_line` gives, and reaching for `format_smeter_label`
-/// directly is how an app quietly loses its radio's table.
-pub fn smeter_label(reading: MeterReading, scale: Option<SUnitScale>) -> &'static str {
-    match scale {
-        Some(s) => s.label(reading.raw),
-        None => cat_ui::format_smeter_label(reading.raw, reading.range),
     }
 }
 
@@ -407,24 +386,26 @@ mod tests {
         // Raw 24 is where the TS-570D's table and the interpolated formula
         // part company; a console that passes `None` silently loses its
         // radio's calibration.
-        let r = MeterReading::new(MeterKind::S, 24, RawRange::new(0, 30));
-        let with = smeter_label(r, Some(SUnitScale::TS570D));
-        let without = smeter_label(r, None);
-        assert_eq!(with, "S9+10");
-        assert_ne!(with, without, "the table must actually be consulted");
-        assert!(text_of(&smeter_line(
-            Some(r),
-            Some(SUnitScale::TS570D),
-            Style::new(),
-            Style::new()
-        ))
-        .starts_with("S9+10"));
+        let bare = MeterReading::new(MeterKind::S, 24, RawRange::new(0, 30));
+        let with_table = bare.with_s_units(cat_ui::SUnitScale::TS570D);
+        assert_eq!(with_table.s_unit(), "S9+10");
+        assert_ne!(
+            with_table.s_unit(),
+            bare.s_unit(),
+            "the table must actually be consulted"
+        );
+        // And the widget picks it up without being told, which is the
+        // whole reason the table hangs off the reading.
+        assert!(
+            text_of(&smeter_line(Some(with_table), Style::new(), Style::new()))
+                .starts_with("S9+10")
+        );
     }
 
     #[test]
     fn an_unread_smeter_says_so_rather_than_showing_s0() {
         let dim = Style::default();
-        let line = smeter_line(None, None, dim, dim);
+        let line = smeter_line(None, dim, dim);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains('—'));
         assert!(!text.contains("S0"), "unknown must not render as a reading");
@@ -435,7 +416,6 @@ mod tests {
         let dim = Style::default();
         let line = smeter_line(
             Some(MeterReading::new(MeterKind::S, 20, RawRange::new(0, 30))),
-            None,
             dim,
             dim,
         );

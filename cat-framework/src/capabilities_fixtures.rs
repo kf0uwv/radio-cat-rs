@@ -131,21 +131,28 @@ const TS570D_METERS: &[MeterDescriptor] = &[
         kind: MeterKind::S,
         raw_range: RawRange::new(0, 30),
         active_on_transmit: false,
+        // The table its TUI has always drawn, preserved exactly. S0 gets
+        // three raw counts and every other unit two, which is what no
+        // clean formula reproduces.
+        s_units: Some(SUnitScale::TS570D),
     },
     MeterDescriptor {
         kind: MeterKind::Po,
         raw_range: RawRange::new(0, 30),
         active_on_transmit: true,
+        s_units: None,
     },
     MeterDescriptor {
         kind: MeterKind::Swr,
         raw_range: RawRange::new(0, 30),
         active_on_transmit: true,
+        s_units: None,
     },
     MeterDescriptor {
         kind: MeterKind::Alc,
         raw_range: RawRange::new(0, 30),
         active_on_transmit: true,
+        s_units: None,
     },
 ];
 
@@ -339,36 +346,43 @@ const FT991A_METERS: &[MeterDescriptor] = &[
         kind: MeterKind::S,
         raw_range: RawRange::new(0, 255),
         active_on_transmit: false,
+        s_units: None,
     },
     MeterDescriptor {
         kind: MeterKind::Po,
         raw_range: RawRange::new(0, 255),
         active_on_transmit: true,
+        s_units: None,
     },
     MeterDescriptor {
         kind: MeterKind::Swr,
         raw_range: RawRange::new(0, 255),
         active_on_transmit: true,
+        s_units: None,
     },
     MeterDescriptor {
         kind: MeterKind::Alc,
         raw_range: RawRange::new(0, 255),
         active_on_transmit: true,
+        s_units: None,
     },
     MeterDescriptor {
         kind: MeterKind::Id,
         raw_range: RawRange::new(0, 255),
         active_on_transmit: true,
+        s_units: None,
     },
     MeterDescriptor {
         kind: MeterKind::Vdd,
         raw_range: RawRange::new(0, 255),
         active_on_transmit: true,
+        s_units: None,
     },
     MeterDescriptor {
         kind: MeterKind::Comp,
         raw_range: RawRange::new(0, 255),
         active_on_transmit: true,
+        s_units: None,
     },
 ];
 

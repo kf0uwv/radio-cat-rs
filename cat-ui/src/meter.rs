@@ -14,7 +14,7 @@
 
 //! Meter readings, scaled against the radio's own range.
 
-use cat_framework::capabilities::{MeterDescriptor, MeterKind, MeterSet, RawRange};
+use cat_framework::capabilities::{MeterDescriptor, MeterKind, MeterSet, RawRange, SUnitScale};
 
 /// A raw meter reading paired with the range it means something in.
 ///
@@ -28,11 +28,36 @@ pub struct MeterReading {
     pub kind: MeterKind,
     pub raw: u16,
     pub range: RawRange,
+    /// The radio's own S-unit table, when it publishes one.
+    ///
+    /// Travels with the reading for exactly the reason `range` does. A
+    /// renderer handed a bare table alongside a bare value can be handed
+    /// the wrong one; a renderer handed a `MeterReading` cannot.
+    pub s_units: Option<SUnitScale>,
 }
 
 impl MeterReading {
+    /// A reading with no S-unit table.
+    ///
+    /// Fine for any meter but `S`, and for an `S` meter whose radio has
+    /// not published one — the label then interpolates against `range`.
+    /// Prefer [`MeterReading::from_meters`], which picks the table up from
+    /// the radio automatically.
     pub fn new(kind: MeterKind, raw: u16, range: RawRange) -> Self {
-        Self { kind, raw, range }
+        Self {
+            kind,
+            raw,
+            range,
+            s_units: None,
+        }
+    }
+
+    /// The same reading, with an S-unit table attached.
+    pub fn with_s_units(self, s_units: SUnitScale) -> Self {
+        Self {
+            s_units: Some(s_units),
+            ..self
+        }
     }
 
     /// Build a reading from a radio's own meter set, or `None` if the
@@ -43,11 +68,16 @@ impl MeterReading {
     pub fn from_meters(meters: &MeterSet, kind: MeterKind, raw: u16) -> Option<Self> {
         meters
             .find(kind)
-            .map(|descriptor| Self::new(kind, raw, descriptor.raw_range))
+            .map(|descriptor| Self::from_descriptor(descriptor, raw))
     }
 
     pub fn from_descriptor(descriptor: &MeterDescriptor, raw: u16) -> Self {
-        Self::new(descriptor.kind, raw, descriptor.raw_range)
+        Self {
+            kind: descriptor.kind,
+            raw,
+            range: descriptor.raw_range,
+            s_units: descriptor.s_units,
+        }
     }
 
     /// Where this reading sits in its range, 0.0-1.0, clamped.
@@ -62,6 +92,18 @@ impl MeterReading {
     /// The reading as a percentage, for a numeric readout.
     pub fn percent(&self) -> u8 {
         (self.fraction() * 100.0).round() as u8
+    }
+
+    /// This reading's S-unit label.
+    ///
+    /// Uses the radio's own table when it published one, and otherwise
+    /// interpolates against `range` — which is right for a radio that has
+    /// not, and better than showing no S-unit at all.
+    pub fn s_unit(&self) -> &'static str {
+        match self.s_units {
+            Some(scale) => scale.label(self.raw),
+            None => crate::format::format_smeter_label(self.raw, self.range),
+        }
     }
 
     /// `true` when the reading is at the very top of its scale.
@@ -84,11 +126,13 @@ mod tests {
             kind: MeterKind::S,
             raw_range: RawRange::new(0, 30),
             active_on_transmit: false,
+            s_units: None,
         },
         MeterDescriptor {
             kind: MeterKind::Swr,
             raw_range: RawRange::new(0, 255),
             active_on_transmit: true,
+            s_units: None,
         },
     ];
 
@@ -102,6 +146,28 @@ mod tests {
         // drawing both gets each right without knowing either radio.
         assert_eq!(ts.kind, ft.kind);
         assert_eq!(ts.raw, ft.raw);
+    }
+
+    #[test]
+    fn a_reading_built_from_a_set_brings_the_radios_s_unit_table_with_it() {
+        // The bug this shape prevents: a console that resolves the range
+        // from capabilities but the S-unit table from a constant it
+        // happened to import, and so reads a different meter than the one
+        // it is scaled against.
+        const TABLED: &[MeterDescriptor] = &[MeterDescriptor {
+            kind: MeterKind::S,
+            raw_range: RawRange::new(0, 30),
+            active_on_transmit: false,
+            s_units: Some(SUnitScale::TS570D),
+        }];
+        let meters = MeterSet::new(TABLED);
+        let r = MeterReading::from_meters(&meters, MeterKind::S, 24).unwrap();
+        assert_eq!(r.s_unit(), "S9+10");
+
+        // The same raw value, from a radio that published no table, falls
+        // back to interpolation rather than borrowing another radio's law.
+        let untabled = MeterReading::new(MeterKind::S, 24, RawRange::new(0, 30));
+        assert_ne!(untabled.s_unit(), r.s_unit());
     }
 
     #[test]

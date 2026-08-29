@@ -48,9 +48,7 @@ pub mod settings;
 pub mod spectrum;
 pub mod vfo;
 
-pub use meter::{
-    bar_spans, meter_bar, meter_rail, meter_spans, smeter_label, smeter_line, MeterStyles,
-};
+pub use meter::{bar_spans, meter_bar, meter_rail, meter_spans, smeter_line, MeterStyles};
 pub use panel::{grid, GridItem, GridStyles};
 pub use session::{error_panel, header, link_panel, menu_column, ErrorPanelStyles, LinkState};
 pub use settings::settings_rows;

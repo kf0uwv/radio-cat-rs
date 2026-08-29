@@ -175,6 +175,11 @@ pub struct MeterDescriptorWire {
     pub kind: MeterKind,
     pub raw_range: RawRange,
     pub active_on_transmit: bool,
+    /// Carried across the wire, unlike the other `&'static` fields here,
+    /// because [`SUnitScale`] is a fixed-size array rather than a slice —
+    /// it needs no owned mirror. A remote console reads the same S-units
+    /// as a local one, which is the point.
+    pub s_units: Option<SUnitScale>,
 }
 
 impl From<&RadioCapabilities> for CapabilitiesWire {
@@ -218,6 +223,7 @@ impl From<&RadioCapabilities> for CapabilitiesWire {
                     kind: m.kind,
                     raw_range: m.raw_range,
                     active_on_transmit: m.active_on_transmit,
+                    s_units: m.s_units,
                 })
                 .collect(),
             memory: c.memory,
@@ -604,6 +610,7 @@ mod tests {
         kind: MeterKind::S,
         raw_range: RawRange::new(0, 30),
         active_on_transmit: false,
+        s_units: None,
     }];
     const ENDPOINTS: &[EndpointDescriptor] = &[EndpointDescriptor {
         role: EndpointRole::Cat,
@@ -726,6 +733,27 @@ mod tests {
     // -----------------------------------------------------------------
     // Handshake.
     // -----------------------------------------------------------------
+
+    #[test]
+    fn a_radios_s_unit_table_survives_the_crossing() {
+        // Every other `&'static` field here needs an owned mirror to
+        // deserialize. A fixed-size `SUnitScale` does not, which is the
+        // reason it is an array -- a remote console reads the same S-units
+        // as a local one instead of silently falling back to a formula.
+        let scale = SUnitScale::TS570D;
+        let wire = MeterDescriptorWire {
+            kind: MeterKind::S,
+            raw_range: RawRange::new(0, 30),
+            active_on_transmit: false,
+            s_units: Some(scale),
+        };
+        let json = serde_json::to_string(&wire).unwrap();
+        let back: MeterDescriptorWire = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, wire);
+        // And still labels raw 24 the way the radio does, not the way a
+        // generic formula would.
+        assert_eq!(back.s_units.unwrap().label(24), "S9+10");
+    }
 
     #[test]
     fn the_handshake_publishes_capabilities_without_asking_the_radio() {
