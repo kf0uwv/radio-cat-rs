@@ -1,0 +1,18 @@
+[package]
+name = "cat-native"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The native typed session protocol: wire types, framing, server session and client"
+
+[dependencies]
+# The capability model the handshake publishes. This is the only radio-
+# adjacent dependency, and it carries no I/O of its own.
+cat-framework = { path = "../cat-framework" }
+cat-signal = { path = "../cat-signal" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]

@@ -39,6 +39,10 @@
 //! [`PROTOCOL_VERSION`] is in the handshake. A protocol that adds
 //! versioning later has to guess what the unversioned peers were.
 
+pub mod client;
+
+pub use client::{Client, ClientError, Connection, Event};
+
 use cat_framework::capabilities::*;
 use cat_framework::installation::Installation;
 use serde::{Deserialize, Serialize};

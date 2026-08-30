@@ -6,6 +6,7 @@ members = [
     "cat-transport-tcp",
     "cat-transport-udp",
     "cat-client",
+    "cat-native",
     "cat-server",
     "cat-rigctl",
     "cat-diagnostics",

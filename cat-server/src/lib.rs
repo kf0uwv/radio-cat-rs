@@ -61,7 +61,12 @@ mod broker_session;
 pub mod dedup;
 pub mod local_channel;
 /// The native typed protocol (ADR 0010 section 6).
-pub mod native;
+// The native protocol moved to its own crate so a *client* can use it
+// without dragging a server in. `cat-server` pulls monoio and every
+// transport; a GUI speaking this protocol needs none of that, and ADR 0008
+// says so explicitly. Re-exported so `cat_server::native::…` still
+// resolves.
+pub use cat_native as native;
 pub mod registry;
 #[cfg(target_os = "linux")]
 pub mod tcp;
