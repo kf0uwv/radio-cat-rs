@@ -28,11 +28,28 @@
 //! when compiling tests. Shipping them would break the very property that
 //! makes `cat-framework` generic.
 //!
-//! # Where the values come from
+//! # Where the values come from, and what they are now for
 //!
-//! Every number here is read out of the two app repos rather than
-//! remembered, and cited in a comment at the point of use. `ts570d` and
-//! `ft991a` are read-only to this task.
+//! Every number here was read out of the two app repos and cited at the
+//! point of use. **Both repos now declare their own capabilities in their
+//! own `radio::capabilities` module**, tested against the code that
+//! describes the same fact, and those declarations -- not this file -- are
+//! authoritative.
+//!
+//! This file is kept because it is still the gate it was built to be: it
+//! is the only place two radios are described *inside this crate*, which
+//! is what proves the model needs no escape hatch. It cannot import the
+//! app repos to check itself against them -- a generic engine depending on
+//! two specific radios would invert the whole arrangement.
+//!
+//! So it is a copy, and copies drift. This one did: migrating `ft991a` onto
+//! its own declaration found the EX menu recorded as 152 items when the
+//! table has 151 (numbered 1-153, gaps at 27 and 87), and a filter-width
+//! list that matched no column of `SH_BANDWIDTH_TABLE` at all -- it read
+//! like a plausible SSB list assembled by hand. Both are corrected below.
+//!
+//! Treat what follows as an exercise in the model's *shape*. For a fact
+//! about a radio, read that radio's own crate.
 //!
 //! # The verdict
 //!
@@ -405,8 +422,16 @@ pub const FT991A: RadioCapabilities = RadioCapabilities {
         if_shift_hz: Some(1_000),
         // `SH_BANDWIDTH_TABLE`/`filter_bandwidth_hz` in
         // `ft991a/radio/src/ft991a_radio.rs`.
+        // The union across every mode. `SH`'s wire format carries no mode
+        // parameter, so which of `SH_BANDWIDTH_TABLE`'s six columns a `P2`
+        // index means depends on the radio's current mode -- a flat list
+        // cannot express that, and the union is the only entry that is at
+        // least true. See `ft991a/radio/src/capabilities.rs`, which
+        // computes this from the table in a test.
         widths_hz: Some(&[
-            200, 400, 500, 800, 1_200, 1_500, 1_800, 2_400, 2_900, 3_000, 3_200,
+            50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 800, 850, 1_100, 1_200, 1_350,
+            1_400, 1_500, 1_650, 1_700, 1_800, 1_950, 2_000, 2_100, 2_200, 2_300, 2_400, 2_500,
+            2_600, 2_700, 2_800, 2_900, 3_000, 3_200,
         ]),
         notch: true,
     },
@@ -419,8 +444,11 @@ pub const FT991A: RadioCapabilities = RadioCapabilities {
         scan: true,
     }),
     menu: Some(MenuCapability {
-        // `EX_MENU_TABLE` has 152 entries.
-        item_count: 152,
+        // `EX_MENU_TABLE` has 151 entries, numbered 1-153 with gaps at 27
+        // and 87. `item_count` is the count, not the highest number that
+        // addresses one -- which is the `MenuCapability` strain named
+        // below, in its sharpest form.
+        item_count: 151,
         writable: true,
     }),
     // No bandscope over CAT and no IF tap point. Verified against the
@@ -673,7 +701,14 @@ mod tests {
         assert!(TS570D.filters.if_shift_hz.is_some());
         assert!(TS570D.filters.widths_hz.is_none());
         assert!(FT991A.filters.if_shift_hz.is_some());
-        assert_eq!(FT991A.filters.widths_hz.unwrap().len(), 11);
+        let widths = FT991A.filters.widths_hz.unwrap();
+        assert_eq!(widths.len(), 34);
+        // The list is ascending and deduplicated, because it is a union
+        // across six mode-dependent columns rather than one column read
+        // off the manual. A consumer offering it as a menu depends on
+        // that; the previous, hand-assembled list did not have it by
+        // construction, only by luck.
+        assert!(widths.windows(2).all(|w| w[0] < w[1]));
     }
 
     #[test]
@@ -908,7 +943,7 @@ mod tests {
         // the protocol handshake and a menu-count display need.
         //
         // It is NOT enough to RENDER a menu. The FT-991A's EX_MENU_TABLE
-        // has 152 entries, each with its own value type, range and label;
+        // has 151 entries, each with its own value type, range and label;
         // the TS-570D's 52 are a different shape again. Neither is
         // expressible here, and deliberately so: menu topology is
         // radio-specific and ADR 0011 leaves it in each app's own crate.
@@ -916,14 +951,19 @@ mod tests {
         // The reason to write this down rather than quietly widen the
         // type: the temptation, the first time a GUI wants a menu screen,
         // will be to add a `&'static [MenuItemDescriptor]` here. That
-        // would pull 152 FT-991A-shaped entries into the generic library
+        // would pull 151 FT-991A-shaped entries into the generic library
         // and re-create exactly the coupling this model exists to remove.
         // If it is ever needed, the right shape is the same one
         // `cat-signal` already uses for spectrum settings -- a list of
         // typed `SettingDescriptor`s the radio publishes -- not a new
         // bespoke menu type.
         assert_eq!(TS570D.menu.unwrap().item_count, 52);
-        assert_eq!(FT991A.menu.unwrap().item_count, 152);
+        assert_eq!(FT991A.menu.unwrap().item_count, 151);
         assert!(FT991A.menu.unwrap().item_count > TS570D.menu.unwrap().item_count * 2);
+        // And the sharpest form of the strain: on one of these radios the
+        // count is not the addressing range. The FT-991A's items are
+        // numbered 1-153 with two gaps, so `item_count` alone cannot tell
+        // a consumer which numbers are valid -- while on the TS-570D, a
+        // dense `[u16; 52]`, it can. One field, two meanings.
     }
 }
