@@ -43,8 +43,26 @@ pub mod client;
 
 pub use client::{Client, ClientError, Connection, Event};
 
+// The vocabulary this protocol's own types are written in.
+//
+// `CapabilitiesWire` embeds `ModeId`, `MeterKind`, `RawRange` and friends
+// rather than parallel copies, deliberately: one vocabulary for a fact
+// whether it came off a socket or out of a `const`. The consequence is
+// that a client cannot read what it receives without naming those types --
+// so they are re-exported here. A client crate that makes a caller add a
+// second dependency to understand its own return values is badly factored,
+// and `ts570d` ADR 0008 forbids the GUI from taking that dependency
+// directly at all.
+pub use cat_framework::capabilities::{
+    EndpointRole, FrequencyRange, MemoryCapability, MenuCapability, MeterKind, ModeId, ModeKind,
+    RawRange, SUnitScale, Sideband, SignalSupport, VfoCapability, S_UNIT_LABELS,
+};
+pub use cat_framework::installation::{
+    AudioOrigin, Installation, InstalledSource, Session, SourceState,
+};
+pub use cat_signal::{SignalCapability, SpectrumFrame};
+
 use cat_framework::capabilities::*;
-use cat_framework::installation::Installation;
 use serde::{Deserialize, Serialize};
 
 /// Wire protocol version, sent in every [`ClientMessage::Hello`] and
