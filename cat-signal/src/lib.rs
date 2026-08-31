@@ -342,6 +342,7 @@ pub trait SpectrumSource {
 /// Audio-domain frames, kept structurally distinct from band spectrum.
 pub mod audio;
 pub mod fake;
+pub mod synthetic;
 
 #[cfg(test)]
 mod tests {

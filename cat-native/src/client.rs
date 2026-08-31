@@ -187,6 +187,18 @@ impl Connection {
         self.request(&ClientMessage::Command(command))
     }
 
+    /// Ask what the radio is doing.
+    ///
+    /// One round trip for everything a console displays. Asking field by
+    /// field would let a readout show a frequency from one moment beside a
+    /// mode from another, describing a radio that never existed.
+    pub fn read_state(&mut self) -> Result<crate::RadioState> {
+        match self.command(Command::ReadState)? {
+            ServerMessage::State(state) => Ok(*state),
+            other => Err(ClientError::Unexpected(other)),
+        }
+    }
+
     /// Round-trip a ping. Useful as a liveness check that changes nothing.
     pub fn ping(&mut self) -> Result<()> {
         match self.request(&ClientMessage::Ping)? {
@@ -464,6 +476,18 @@ impl Client {
     /// Take the next event, if one is waiting. Never blocks.
     pub fn try_event(&self) -> Option<Event> {
         self.events.try_recv().ok()
+    }
+
+    /// Ask for the radio's state; the answer arrives as an [`Event`].
+    ///
+    /// Deliberately not a blocking `read_state` like [`Connection`]'s. A
+    /// frame loop that waited for a reply would drop frames whenever the
+    /// link hiccuped, and the whole reason this type exists is that a draw
+    /// loop must never block on a socket.
+    pub fn request_state(&self) -> bool {
+        self.commands
+            .send(ClientMessage::Command(Command::ReadState))
+            .is_ok()
     }
 
     /// The newest spectrum frame, if one has arrived since the last call.
