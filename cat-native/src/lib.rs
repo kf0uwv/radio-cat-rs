@@ -40,8 +40,10 @@
 //! versioning later has to guess what the unversioned peers were.
 
 pub mod client;
+pub mod server;
 
 pub use client::{Client, ClientError, Connection, Event};
+pub use server::{serve, serve_at, RadioHost};
 
 // The vocabulary this protocol's own types are written in.
 //
@@ -302,6 +304,58 @@ pub enum Command {
     Retune {
         hz: u64,
     },
+    /// Report everything the console displays, in one round trip.
+    ///
+    /// One command rather than a field-per-command set. A console needs
+    /// the dial, the mode and the meters *together* — showing a frequency
+    /// from one moment beside a mode from another is how a readout ends up
+    /// describing a radio that never existed.
+    ReadState,
+}
+
+/// One meter's current reading.
+///
+/// The raw value travels with the kind, and the *range* stays in
+/// [`CapabilitiesWire`] where it was published once at handshake. Sending
+/// the range with every sample would be repeating a constant sixty times a
+/// second; sending the raw value without a way to reach its range would be
+/// the bug `MeterReading` exists to prevent. The pairing happens at the
+/// console, from data it already has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeterSample {
+    pub kind: MeterKind,
+    pub raw: u16,
+}
+
+/// What the radio is doing right now.
+///
+/// Every field is `Option` except the ones every radio has. A radio with
+/// no memory reports `memory_channel: None`, and a console must not be
+/// able to tell that apart from "channel 0" — which is a real channel on a
+/// TS-570D.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RadioState {
+    pub vfo_a_hz: u64,
+    pub vfo_b_hz: u64,
+    pub mode: ModeId,
+    pub split: bool,
+    /// `true` when the radio is transmitting, by any cause — including a
+    /// front-panel PTT this session knows nothing about.
+    pub transmitting: bool,
+    pub memory_channel: Option<u16>,
+    pub if_shift_hz: Option<i32>,
+    pub filter_width_hz: Option<u32>,
+    /// Every meter the radio currently reports. A meter that is inert —
+    /// an SWR meter during receive — may be absent or read zero; which of
+    /// those it does is the radio's business, not the protocol's.
+    pub meters: Vec<MeterSample>,
+}
+
+impl RadioState {
+    /// The reading for one meter, if the radio reported it.
+    pub fn meter(&self, kind: MeterKind) -> Option<u16> {
+        self.meters.iter().find(|m| m.kind == kind).map(|m| m.raw)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -326,6 +380,10 @@ pub enum ServerMessage {
     },
     Ack,
     Pong,
+    /// The answer to [`Command::ReadState`].
+    State(Box<RadioState>),
+    /// The answer to [`Command::ReadMeter`].
+    Meter(MeterSample),
     Error {
         code: ErrorCode,
         message: String,
@@ -365,6 +423,18 @@ pub struct NativeSession {
     installation: Installation,
     handshaken: bool,
     spectrum: bool,
+    /// The most recent state the host published.
+    ///
+    /// A cache, not a source. This session does not own a radio and must
+    /// not learn how to talk to one — staying I/O-free is what makes the
+    /// whole protocol testable without a socket, on every platform. The
+    /// host polls at whatever rate it polls and pushes the answer in with
+    /// [`NativeSession::publish_state`].
+    ///
+    /// `None` means nothing has been published yet, which is a real state
+    /// rather than an error: a server that has just started has not heard
+    /// from its radio either.
+    state: Option<RadioState>,
 }
 
 impl NativeSession {
@@ -383,7 +453,22 @@ impl NativeSession {
             installation,
             handshaken: false,
             spectrum: false,
+            state: None,
         }
+    }
+
+    /// Publish what the radio is currently doing.
+    ///
+    /// Called by the host at whatever rate it polls. Cheap and idempotent:
+    /// publishing the same state twice is not an event, and a host that
+    /// polls faster than any client asks costs nothing but the clone.
+    pub fn publish_state(&mut self, state: RadioState) {
+        self.state = Some(state);
+    }
+
+    /// The last published state, if any.
+    pub fn published_state(&self) -> Option<&RadioState> {
+        self.state.as_ref()
     }
 
     /// Whether this client asked for spectrum frames.
@@ -428,8 +513,34 @@ impl NativeSession {
             },
             ClientMessage::Ping => ServerMessage::Pong,
             ClientMessage::Command(command) => match self.validate(&command) {
-                Ok(()) => ServerMessage::Ack,
                 Err(e) => e,
+                // A read is answered here rather than acknowledged. An
+                // `Ack` to a question is not an answer, and that was this
+                // protocol's shape until a console tried to use it and
+                // found it could send and could not see.
+                Ok(()) => match &command {
+                    Command::ReadState => match &self.state {
+                        Some(state) => ServerMessage::State(Box::new(state.clone())),
+                        None => ServerMessage::Error {
+                            code: ErrorCode::NotReady,
+                            message: "the server has not heard from the radio yet".to_string(),
+                        },
+                    },
+                    Command::ReadMeter { kind } => {
+                        match self.state.as_ref().and_then(|s| s.meter(*kind)) {
+                            Some(raw) => ServerMessage::Meter(MeterSample { kind: *kind, raw }),
+                            // The radio has this meter -- `validate`
+                            // checked -- but is not reporting it now. A TX
+                            // meter during receive is the ordinary case,
+                            // and it is not an error.
+                            None => ServerMessage::Error {
+                                code: ErrorCode::NotReady,
+                                message: format!("no current reading for the {kind:?} meter"),
+                            },
+                        }
+                    }
+                    _ => ServerMessage::Ack,
+                },
             },
         }
     }
@@ -520,6 +631,8 @@ impl NativeSession {
                 }
                 Ok(())
             }
+            // Every radio has a state. Nothing to validate against.
+            Command::ReadState => Ok(()),
         }
     }
 
@@ -983,14 +1096,75 @@ mod tests {
     }
 
     #[test]
-    fn reading_a_meter_the_radio_does_not_have_is_refused() {
+    fn a_published_meter_reading_comes_back_as_a_reading() {
         let mut session = handshaken(false);
+        session.publish_state(RadioState {
+            vfo_a_hz: 14_074_000,
+            vfo_b_hz: 7_074_000,
+            mode: ModeId::Usb,
+            split: false,
+            transmitting: false,
+            memory_channel: None,
+            if_shift_hz: None,
+            filter_width_hz: None,
+            meters: vec![MeterSample {
+                kind: MeterKind::S,
+                raw: 24,
+            }],
+        });
         assert_eq!(
             session.handle(ClientMessage::Command(Command::ReadMeter {
                 kind: MeterKind::S
             })),
-            ServerMessage::Ack
+            ServerMessage::Meter(MeterSample {
+                kind: MeterKind::S,
+                raw: 24
+            })
         );
+        // And the state itself comes back whole, so a console never shows
+        // a frequency from one moment beside a mode from another.
+        match session.handle(ClientMessage::Command(Command::ReadState)) {
+            ServerMessage::State(state) => {
+                assert_eq!(state.vfo_a_hz, 14_074_000);
+                assert_eq!(state.mode, ModeId::Usb);
+                assert_eq!(state.meter(MeterKind::S), Some(24));
+            }
+            other => panic!("expected state, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reading_state_before_saying_hello_is_still_refused() {
+        // The handshake gate has to keep working now that reads have real
+        // answers -- an unauthenticated peer must not be able to ask what
+        // the radio is doing.
+        let mut session = NativeSession::new(&RADIO);
+        assert!(matches!(
+            session.handle(ClientMessage::Command(Command::ReadState)),
+            ServerMessage::Error {
+                code: ErrorCode::NotReady,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reading_a_meter_the_radio_does_not_have_is_refused() {
+        let mut session = handshaken(false);
+        // A meter the radio *has*, with nothing published yet, is not
+        // ready -- distinct from one it does not have at all. This
+        // assertion used to read `ServerMessage::Ack`, which is what the
+        // protocol answered before it had a read side: a confirmation that
+        // the question was well-formed, and no answer to it.
+        assert!(matches!(
+            session.handle(ClientMessage::Command(Command::ReadMeter {
+                kind: MeterKind::S
+            })),
+            ServerMessage::Error {
+                code: ErrorCode::NotReady,
+                ..
+            }
+        ));
         assert!(matches!(
             session.handle(ClientMessage::Command(Command::ReadMeter {
                 kind: MeterKind::Comp
