@@ -226,8 +226,61 @@ impl Band {
     }
 
     pub fn with(mut self, emitter: Emitter) -> Self {
-        self.emitters.push(emitter);
+        self.push(emitter);
         self
+    }
+
+    /// Add an emitter, keeping the band ordered by frequency.
+    ///
+    /// The ordering is what makes density affordable. `render` walks only
+    /// the emitters near its window, so a band can hold thousands without
+    /// every frame evaluating all of them — and it needs to hold
+    /// thousands, because a 48 kHz window over an empty band is a fixture
+    /// that teaches a console nothing.
+    pub fn push(&mut self, emitter: Emitter) {
+        let at = self
+            .emitters
+            .partition_point(|e| e.frequency_hz <= emitter.frequency_hz);
+        self.emitters.insert(at, emitter);
+    }
+
+    /// Scatter `count` emitters across `low_hz..high_hz`, appending to
+    /// whatever is already here.
+    ///
+    /// Separate from [`Band::populated`] so a caller can build a band out
+    /// of several ranges — which is what a real radio sees. Signals are
+    /// not spread evenly over 60 MHz; they are crowded into the bands
+    /// people transmit in, and a fixture that ignores that puts a console
+    /// in front of empty spectrum most of the time.
+    pub fn populate_range(&mut self, low_hz: u64, high_hz: u64, count: usize, seed: u64) {
+        let mut state = seed.wrapping_add(GOLDEN) ^ low_hz;
+        let span = high_hz.saturating_sub(low_hz).max(1);
+        for i in 0..count {
+            state = mix(state ^ (i as u64).wrapping_mul(0x2545_F491_4F6C_DD1D));
+            let frequency_hz = low_hz + state % span;
+            let emission = match mix(state ^ 0xA5A5) % 10 {
+                0..=3 => Emission::Cw,
+                4..=6 => Emission::Digital,
+                7 | 8 => Emission::Ssb,
+                _ => Emission::Am,
+            };
+            let level_dbm = self.floor_dbm + 12.0 + (mix(state ^ 0x1234) % 45) as f32;
+            self.push(Emitter::new(frequency_hz, emission, level_dbm));
+        }
+    }
+
+    /// The emitters that can contribute to a window, as a slice.
+    ///
+    /// `margin_hz` has to cover the widest emission, or a wide signal just
+    /// outside the window would have its shoulder clipped off at the edge
+    /// — a visible, wrong, hard-to-explain artifact.
+    fn near(&self, low_hz: f64, high_hz: f64) -> &[Emitter] {
+        let margin = 30_000.0;
+        let lo = (low_hz - margin).max(0.0) as u64;
+        let hi = (high_hz + margin).max(0.0) as u64;
+        let start = self.emitters.partition_point(|e| e.frequency_hz < lo);
+        let end = self.emitters.partition_point(|e| e.frequency_hz <= hi);
+        &self.emitters[start..end]
     }
 
     pub fn emitters(&self) -> &[Emitter] {
@@ -274,6 +327,10 @@ impl Band {
         let bins = bins.max(1);
         let low = center_hz as f64 - f64::from(span_hz) / 2.0;
         let bin_width = f64::from(span_hz) / bins as f64;
+        // Only the emitters that can reach this window. Without this a
+        // realistically dense band would evaluate every emitter for every
+        // bin, thirty times a second.
+        let nearby = self.near(low, low + f64::from(span_hz));
 
         (0..bins)
             .map(|i| {
@@ -283,7 +340,7 @@ impl Band {
                 // whether it is updating at all.
                 let wobble = noise_at(self.seed, i as u64, (t * 12.0) as u64);
                 let mut power = self.floor_dbm + wobble * 2.5;
-                for emitter in &self.emitters {
+                for emitter in nearby {
                     let contribution = emitter.power_at(hz, t, bin_width);
                     if contribution > power {
                         power = contribution;
@@ -524,6 +581,62 @@ mod tests {
         // And within a slot it stops before the end, the way a real cycle
         // leaves room for decoding.
         assert!(peak_at(14.0) < FLOOR + 20.0, "transmitted past the slot");
+    }
+
+    #[test]
+    fn a_dense_band_still_shows_a_signal_wherever_you_look() {
+        // The failure this indexing exists to make affordable. A band
+        // sparse enough to render cheaply is a band whose windows are
+        // usually empty, and a console pointed at empty spectrum cannot be
+        // tested for anything a console is for.
+        let mut band = Band::empty(FLOOR, 5);
+        band.populate_range(14_000_000, 14_350_000, 300, 5);
+        let mut populated_windows = 0;
+        let mut windows = 0;
+        for centre in (14_020_000..14_330_000).step_by(40_000) {
+            windows += 1;
+            let bins = band.render(centre, 48_000, 256, 0.05);
+            let peak = bins.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            if peak > FLOOR + 15.0 {
+                populated_windows += 1;
+            }
+        }
+        assert!(
+            populated_windows * 4 >= windows * 3,
+            "only {populated_windows} of {windows} windows had a signal in them"
+        );
+    }
+
+    #[test]
+    fn a_wide_signal_just_outside_the_window_still_shows_its_shoulder() {
+        // The margin in `near`. Clipping a signal at the window edge is a
+        // visible artifact that looks like a renderer bug.
+        let band = Band::empty(FLOOR, 1).with(Emitter::new(14_090_000, Emission::Noise, -70.0));
+        // A window whose upper edge is 6 kHz below that emitter's centre.
+        let bins = band.render(14_060_000, 48_000, 256, 0.05);
+        let top = bins[bins.len() - 1];
+        assert!(
+            top > FLOOR + 3.0,
+            "a 20 kHz-wide signal 6 kHz outside the window contributed nothing ({top} dBm)"
+        );
+    }
+
+    #[test]
+    fn emitters_stay_ordered_however_they_are_added() {
+        // `near` binary-searches, so out-of-order emitters would be
+        // silently invisible rather than obviously wrong.
+        let band = Band::empty(FLOOR, 1)
+            .with(Emitter::new(21_000_000, Emission::Cw, -60.0))
+            .with(Emitter::new(7_000_000, Emission::Cw, -60.0))
+            .with(Emitter::new(14_000_000, Emission::Cw, -60.0));
+        let f: Vec<u64> = band.emitters().iter().map(|e| e.frequency_hz).collect();
+        assert_eq!(f, vec![7_000_000, 14_000_000, 21_000_000]);
+        // And each is findable from its own window.
+        for hz in f {
+            let bins = band.render(hz, 48_000, 128, 0.05);
+            let peak = bins.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            assert!(peak > FLOOR + 15.0, "{hz} went missing after sorting");
+        }
     }
 
     #[test]
