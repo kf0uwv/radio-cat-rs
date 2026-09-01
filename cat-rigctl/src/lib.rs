@@ -72,6 +72,7 @@ mod rigctl;
 #[cfg(target_os = "windows")]
 mod rigctl_windows;
 
+pub mod native_bridge;
 mod protocol;
 
 use std::io;
@@ -150,6 +151,15 @@ pub trait RigctlRadio {
 /// only the pieces it needs (typically just `rigctl_port`, for WSJT-X).
 #[derive(Debug, Clone, Default)]
 pub struct ServerConfig {
+    /// The typed console protocol (ADR 0010 §6), for a GUI or a TUI.
+    pub native_port: Option<u16>,
+    /// What to tell consoles this radio is.
+    ///
+    /// Separate from the port because a port without capabilities would be
+    /// a listener that could not complete a handshake, and a caller that
+    /// set one and forgot the other should get a server that does not
+    /// listen rather than one that refuses every client.
+    pub native_capabilities: Option<&'static cat_framework::capabilities::RadioCapabilities>,
     /// `cat-server`'s raw length-prefixed TCP protocol.
     pub raw_tcp_port: Option<u16>,
     /// `cat-server`'s raw enveloped UDP protocol.
@@ -187,6 +197,39 @@ where
     R: RigctlRadio + 'static,
     F: Fn(BrokerCatSession) -> R + Clone + 'static,
 {
+    run_with_native(session, table, config, make_radio, |_| {
+        native_bridge::NoNative
+    })
+    .await
+}
+
+/// [`run`], also serving the typed console protocol.
+///
+/// `make_native` builds the thing that reads and drives the radio for
+/// consoles, from its own broker session. It is a second seam rather than
+/// a reuse of `make_radio` because the two want different shapes: rigctl
+/// asks for one field at a time, a console asks for all of them at once
+/// and expects meters with them.
+///
+/// Serving consoles needs no `native_port`; without one this is exactly
+/// [`run`] plus an idle task.
+#[cfg(target_os = "linux")]
+pub async fn run_with_native<C, S, R, F, N, G>(
+    session: S,
+    table: &'static CommandTable<C>,
+    config: ServerConfig,
+    make_radio: F,
+    make_native: G,
+) -> io::Result<()>
+where
+    C: CommandId,
+    S: CatSession + 'static,
+    S::Error: std::error::Error + 'static,
+    R: RigctlRadio + 'static,
+    F: Fn(BrokerCatSession) -> R + Clone + 'static,
+    N: native_bridge::NativeRadio + 'static,
+    G: FnOnce(BrokerCatSession) -> N + 'static,
+{
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -195,6 +238,11 @@ where
 
     let (worker, handle) = cat_server::build(session, table);
     monoio::spawn(worker.run());
+
+    let native_shared = config
+        .native_capabilities
+        .filter(|_| config.native_port.is_some())
+        .map(native_bridge::NativeShared::new);
 
     let mut tasks = Vec::new();
 
@@ -238,6 +286,36 @@ where
             }
             result
         }));
+    }
+
+    // Consoles. The listener is blocking and lives on its own threads --
+    // `cat_native::serve` is `std::net` by design, because the GUI that
+    // consumes it has no runtime either. What stays in here is the pump:
+    // the only thing that touches the radio, inside the runtime that owns
+    // it.
+    if let Some(shared) = native_shared.clone() {
+        let port = config.native_port.expect("shared implies a port");
+        let listener = std::net::TcpListener::bind(("0.0.0.0", port))?;
+        info!("Console protocol listener bound on 0.0.0.0:{port}");
+        std::thread::spawn(move || {
+            if let Err(e) = cat_native::serve(listener, shared) {
+                error!("Console protocol listener on 0.0.0.0:{port} failed: {e}");
+            }
+        });
+    }
+    if let Some(shared) = native_shared {
+        // A high, fixed id: the pump is one long-lived client, not one per
+        // connection, and it must not collide with the rigctl listener's
+        // sequence which starts at zero and counts up.
+        let radio = make_native(BrokerCatSession::new(
+            handle.clone(),
+            cat_server::ClientId::from_raw(u64::MAX),
+        ));
+        monoio::spawn(native_bridge::pump(
+            shared,
+            radio,
+            std::time::Duration::from_millis(200),
+        ));
     }
 
     if tasks.is_empty() {
@@ -284,6 +362,35 @@ where
     R: RigctlRadio + 'static,
     F: Fn(BrokerCatSession) -> R + Clone + Send + 'static,
 {
+    run_with_native(session, table, config, make_radio, |_| {
+        native_bridge::NoNative
+    })
+}
+
+/// [`run`], also serving the typed console protocol. See the Linux
+/// version's doc comment.
+///
+/// The pump runs on its own thread here rather than as a runtime task,
+/// driven by `cat_server::block_on` — the same shape the rest of this
+/// crate's Windows path uses, and the reason `NativeRadio` is `?Send`
+/// async rather than requiring a full executor.
+#[cfg(target_os = "windows")]
+pub fn run_with_native<C, S, R, F, N, G>(
+    session: S,
+    table: &'static CommandTable<C>,
+    config: ServerConfig,
+    make_radio: F,
+    make_native: G,
+) -> io::Result<()>
+where
+    C: CommandId,
+    S: CatSession + Send + 'static,
+    S::Error: std::error::Error + 'static,
+    R: RigctlRadio + 'static,
+    F: Fn(BrokerCatSession) -> R + Clone + Send + 'static,
+    N: native_bridge::NativeRadio + 'static,
+    G: FnOnce(BrokerCatSession) -> N + Send + 'static,
+{
     use std::net::{TcpListener, UdpSocket};
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
@@ -292,6 +399,36 @@ where
 
     let (worker, handle) = cat_server::build(session, table);
     thread::spawn(move || worker.run());
+
+    let native_shared = config
+        .native_capabilities
+        .filter(|_| config.native_port.is_some())
+        .map(native_bridge::NativeShared::new);
+
+    if let Some(shared) = native_shared.clone() {
+        let port = config.native_port.expect("shared implies a port");
+        let listener = TcpListener::bind(("0.0.0.0", port))?;
+        info!("Console protocol listener bound on 0.0.0.0:{port}");
+        thread::spawn(move || {
+            if let Err(e) = cat_native::serve(listener, shared) {
+                error!("Console protocol listener on 0.0.0.0:{port} failed: {e}");
+            }
+        });
+    }
+    if let Some(shared) = native_shared {
+        let handle = handle.clone();
+        thread::spawn(move || {
+            let radio = make_native(BrokerCatSession::new(
+                handle,
+                cat_server::ClientId::from_raw(u64::MAX),
+            ));
+            cat_server::block_on::block_on(native_bridge::pump(
+                shared,
+                radio,
+                std::time::Duration::from_millis(200),
+            ));
+        });
+    }
 
     let (done_tx, done_rx) = mpsc::channel::<io::Result<()>>();
     let mut listener_count = 0;
