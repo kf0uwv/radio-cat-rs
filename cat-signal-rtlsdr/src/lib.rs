@@ -44,6 +44,7 @@
 //! [`IqSource`] for the seam that lets a test drive it.
 
 pub mod dsp;
+pub mod rtl_tcp;
 
 #[cfg(feature = "device")]
 pub mod device;
@@ -61,6 +62,8 @@ use rustfft::num_complex::Complex32;
 /// from a worker thread fed by librtlsdr; a test implementation replays a
 /// synthetic tone. Both go through exactly the same corrections, which is
 /// the point — a fixture that bypassed the pipeline would test nothing.
+pub use rtl_tcp::{RtlTcpError, RtlTcpSource};
+
 pub trait IqSource {
     type Error;
 
