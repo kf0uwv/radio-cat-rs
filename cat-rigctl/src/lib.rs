@@ -422,7 +422,7 @@ where
                 handle,
                 cat_server::ClientId::from_raw(u64::MAX),
             ));
-            cat_server::block_on(native_bridge::pump(
+            cat_server::block_on::block_on(native_bridge::pump(
                 shared,
                 radio,
                 std::time::Duration::from_millis(200),
