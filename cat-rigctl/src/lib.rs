@@ -420,7 +420,7 @@ where
     // and has no opinion about where a spectrum comes from.
     let native_shared = native.filter(|_| config.native_port.is_some());
 
-    if let Some(shared) = native_shared {
+    if let Some(shared) = native_shared.clone() {
         let handle = handle.clone();
         thread::spawn(move || {
             let radio = make_native(BrokerCatSession::new(
