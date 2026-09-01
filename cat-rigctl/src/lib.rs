@@ -243,6 +243,7 @@ where
     // source is the app's business. `cat-rigctl` orchestrates listeners
     // and has no opinion about where a spectrum comes from.
     let native_shared = native.filter(|_| config.native_port.is_some());
+    let serving_consoles = native_shared.is_some();
 
     let mut tasks = Vec::new();
 
@@ -319,8 +320,15 @@ where
     }
 
     if tasks.is_empty() {
+        // The console listener is a thread, not a task, so it never
+        // appears in `tasks`. A server bound only to `--console-port` is a
+        // perfectly ordinary server -- a GUI and nothing else -- and used
+        // to be rejected here as if nothing had been asked for.
+        if serving_consoles {
+            std::future::pending::<()>().await;
+        }
         return Err(io::Error::other(
-            "server mode requires at least one of --raw-tcp-port/--raw-udp-port/--rigctl-port",
+            "server mode requires at least one of --raw-tcp-port/--raw-udp-port/--rigctl-port/--console-port",
         ));
     }
 
@@ -413,16 +421,6 @@ where
     let native_shared = native.filter(|_| config.native_port.is_some());
 
     if let Some(shared) = native_shared.clone() {
-        let port = config.native_port.expect("shared implies a port");
-        let listener = TcpListener::bind(("0.0.0.0", port))?;
-        info!("Console protocol listener bound on 0.0.0.0:{port}");
-        thread::spawn(move || {
-            if let Err(e) = cat_native::serve(listener, shared) {
-                error!("Console protocol listener on 0.0.0.0:{port} failed: {e}");
-            }
-        });
-    }
-    if let Some(shared) = native_shared {
         let handle = handle.clone();
         thread::spawn(move || {
             let radio = make_native(BrokerCatSession::new(
@@ -439,6 +437,21 @@ where
 
     let (done_tx, done_rx) = mpsc::channel::<io::Result<()>>();
     let mut listener_count = 0;
+
+    if let Some(shared) = native_shared.clone() {
+        let port = config.native_port.expect("shared implies a port");
+        let listener = TcpListener::bind(("0.0.0.0", port))?;
+        info!("Console protocol listener bound on 0.0.0.0:{port}");
+        let done_tx = done_tx.clone();
+        listener_count += 1;
+        thread::spawn(move || {
+            let result = cat_native::serve(listener, shared);
+            if let Err(e) = &result {
+                error!("Console protocol listener on 0.0.0.0:{port} failed: {e}");
+            }
+            let _ = done_tx.send(result);
+        });
+    }
 
     if let Some(port) = config.raw_tcp_port {
         let listener = TcpListener::bind(("0.0.0.0", port))?;
