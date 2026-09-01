@@ -151,7 +151,15 @@ impl IqSource for RtlTcpSource {
         }
         let mut buf = vec![0u8; wanted * 2];
         while bytes.len() < wanted * 2 {
-            let n = self.stream.read(&mut buf)?;
+            // Only as much as is still missing. Sizing this to the whole
+            // request lets a short read followed by a full one overshoot,
+            // and `read` then returns MORE samples than asked for -- which
+            // the pipeline silently truncates, so the excess is not an
+            // error, it is a slow permanent sample loss. Whether it
+            // happens at all depends on how the peer chunks its writes,
+            // which is why it passed locally and failed in CI.
+            let needed = wanted * 2 - bytes.len();
+            let n = self.stream.read(&mut buf[..needed])?;
             if n == 0 {
                 return Err(RtlTcpError::Closed);
             }
@@ -253,6 +261,40 @@ mod tests {
                 assert!(sample.re > 0.0, "I and Q swapped: {sample:?}");
                 assert!(sample.im < 0.0, "I and Q swapped: {sample:?}");
             }
+        }
+    }
+
+    #[test]
+    fn read_returns_exactly_what_was_asked_for_however_the_peer_chunks_it() {
+        // A short read followed by a full one used to overshoot, because
+        // the buffer was sized to the whole request rather than to what
+        // was still missing. The pipeline truncates the excess, so the
+        // symptom is not an error -- it is samples quietly going missing.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut greeting = [0u8; 12];
+            greeting[..4].copy_from_slice(b"RTL0");
+            if stream.write_all(&greeting).is_err() {
+                return;
+            }
+            // Deliberately awkward: three bytes, a pause, then plenty.
+            loop {
+                if stream.write_all(&[10, 20, 30]).is_err() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                if stream.write_all(&[40; 64]).is_err() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+        let mut source = RtlTcpSource::connect(("127.0.0.1", port)).unwrap();
+        for _ in 0..12 {
+            assert_eq!(source.read(4).unwrap().len(), 4);
+            assert_eq!(source.read(7).unwrap().len(), 7);
         }
     }
 
