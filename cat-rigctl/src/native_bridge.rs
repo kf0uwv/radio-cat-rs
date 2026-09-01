@@ -183,13 +183,22 @@ impl RadioHost for NativeShared {
 /// than lagging a whole poll behind.
 pub async fn pump<N: NativeRadio>(shared: Arc<NativeShared>, mut radio: N, interval: Duration) {
     loop {
-        for (command, reply) in shared.take_queued() {
-            let result = radio.apply(&command).await;
+        // Apply everything, then refresh, then answer. The order matters:
+        // answering first lets a console's next read arrive before the
+        // refresh, so it sees the state from before its own command and
+        // the display appears not to have taken it. Refreshing first means
+        // that by the time `apply` returns, a read is already correct.
+        let queued = shared.take_queued();
+        let mut results = Vec::with_capacity(queued.len());
+        for (command, reply) in queued {
+            results.push((reply, radio.apply(&command).await));
+        }
+        shared.publish_state(radio.state().await);
+        for (reply, result) in results {
             // A console that has hung up leaves nobody to tell; that is
             // not an error worth logging on every disconnect.
             let _ = reply.send(result);
         }
-        shared.publish_state(radio.state().await);
         // Two platforms, two correct answers. On Linux the pump is a task
         // inside the broker's runtime and must yield to it; on Windows it
         // owns a thread, and sleeping that thread is exactly right. A

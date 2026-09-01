@@ -444,12 +444,22 @@ impl Band {
             }
         }
 
-        // Noise floor, and the scaling that keeps the sum inside 8 bits.
-        let peak = i_acc
-            .iter()
-            .chain(q_acc.iter())
-            .fold(1.0f32, |m, v| m.max(v.abs()));
-        let scale = 100.0 / peak;
+        // A FIXED scale, not the block's own peak.
+        //
+        // Normalising each block to its loudest sample destroys the one
+        // thing a level is for: an empty window gets amplified until its
+        // noise floor fills the display, and a window with a strong signal
+        // gets pushed down until everything looks the same. The result is a
+        // spectrum where 2040 of 2048 bins read as signal — which is what
+        // happened, and which looks like a broken renderer rather than a
+        // broken fixture.
+        //
+        // With a fixed scale a quiet band renders quiet, and an
+        // overdriven one clips, which is what a real dongle does. The
+        // constant maps the loudest emitter this band can hold to roughly
+        // half of full scale, leaving room for several to sum.
+        const SCALE: f32 = 2.0;
+        let scale = SCALE;
         for n in 0..samples {
             let noise_i = noise_at(self.seed, n as u64, (t * 1000.0) as u64) * 3.0;
             let noise_q = noise_at(self.seed ^ 0x5EED, n as u64, (t * 1000.0) as u64) * 3.0;
@@ -728,6 +738,45 @@ mod tests {
             let peak = bins.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             assert!(peak > FLOOR + 15.0, "{hz} went missing after sorting");
         }
+    }
+
+    #[test]
+    fn a_quiet_window_renders_quiet_and_a_busy_one_does_not_render_the_same() {
+        // Per-block normalisation destroyed this: an empty window was
+        // amplified until its noise floor filled the display, so 2040 of
+        // 2048 bins read as signal and every window looked identical.
+        let loud = Band::empty(FLOOR, 1).with(Emitter::new(14_074_000, Emission::Cw, -40.0));
+        let quiet = Band::empty(FLOOR, 1);
+
+        let level = |band: &Band| {
+            let iq = band.iq_bytes(14_074_000, 96_000, 512, 0.05, false);
+            // Mean absolute deviation from the 127 midpoint: how hard the
+            // dongle is being driven.
+            iq.iter()
+                .map(|b| (f32::from(*b) - 127.5).abs())
+                .sum::<f32>()
+                / iq.len() as f32
+        };
+        let loud_level = level(&loud);
+        let quiet_level = level(&quiet);
+        assert!(
+            loud_level > quiet_level * 3.0,
+            "a carrier drove the dongle no harder than an empty band \
+             ({loud_level:.1} vs {quiet_level:.1})"
+        );
+    }
+
+    #[test]
+    fn iq_is_centred_on_the_dongles_midpoint() {
+        // Unsigned 8-bit with a 127 offset. A fixture centred anywhere
+        // else puts a large DC spike at the middle of every spectrum.
+        let band = Band::populated(14_000_000, 14_350_000, 20, FLOOR, 4);
+        let iq = band.iq_bytes(14_074_000, 96_000, 4096, 0.05, false);
+        let mean = iq.iter().map(|b| f64::from(*b)).sum::<f64>() / iq.len() as f64;
+        assert!(
+            (mean - 127.5).abs() < 6.0,
+            "IQ mean is {mean:.1}, expected about 127.5"
+        );
     }
 
     #[test]
