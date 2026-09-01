@@ -374,6 +374,97 @@ impl Band {
 /// adjacent — or identical — bands.
 const GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
 
+impl Band {
+    /// Synthesize IQ for a window, in `rtl_tcp` wire format.
+    ///
+    /// # Why bytes, and why this format
+    ///
+    /// Unsigned 8-bit interleaved I/Q with a 127 offset is what an RTL-SDR
+    /// puts on the wire and what `rtl_tcp` carries. Producing exactly that
+    /// means a virtual tap and a real dongle are interchangeable to
+    /// everything downstream — the same client, the same DSP, the same
+    /// corrections. A fixture that handed over finished spectrum instead
+    /// would skip the FFT, the windowing and the inversion correction, and
+    /// those are where the errors live.
+    ///
+    /// # `inverted`
+    ///
+    /// A TS-570D's first IF is fed by high-side LO injection, so the
+    /// tapped spectrum is **mirrored** about the IF centre. Passing
+    /// `inverted: true` mirrors it here, exactly as the hardware does, so
+    /// that the pipeline's un-mirroring is actually exercised rather than
+    /// cancelled out by a fixture that never mirrored anything. A test that
+    /// generates un-mirrored IQ and then checks the un-mirroring is a test
+    /// of nothing.
+    ///
+    /// `center_hz` is the RF frequency the window is centred on — the
+    /// dial, not the IF. The caller owns the IF arithmetic.
+    pub fn iq_bytes(
+        &self,
+        center_hz: u64,
+        sample_rate_hz: u32,
+        samples: usize,
+        t: f64,
+        inverted: bool,
+    ) -> Vec<u8> {
+        let mut out = vec![127u8; samples * 2];
+        if sample_rate_hz == 0 || samples == 0 {
+            return out;
+        }
+        let rate = f64::from(sample_rate_hz);
+        let low = center_hz as f64 - rate / 2.0;
+        let high = center_hz as f64 + rate / 2.0;
+
+        // Accumulate in f32 and scale once at the end, so a crowded window
+        // does not clip every sample into a square wave.
+        let mut i_acc = vec![0.0f32; samples];
+        let mut q_acc = vec![0.0f32; samples];
+
+        for emitter in self.near(low, high) {
+            let envelope = emitter.envelope(t);
+            if envelope <= 0.0 {
+                continue;
+            }
+            // Where this emitter sits relative to the window centre, and
+            // mirrored if the tap is.
+            let mut offset = emitter.frequency_hz as f64 - center_hz as f64;
+            if inverted {
+                offset = -offset;
+            }
+            // Amplitude from level, referenced to the floor.
+            let amplitude = 10f32.powf((emitter.level_dbm - self.floor_dbm) / 40.0) * envelope;
+            let radians_per_sample = std::f64::consts::TAU * offset / rate;
+            // A per-emitter phase, so they do not all start aligned and
+            // sum into one implausible spike at t=0.
+            let phase0 = (mix(emitter.seed) % 6283) as f64 / 1000.0;
+            for (n, (i, q)) in i_acc.iter_mut().zip(q_acc.iter_mut()).enumerate() {
+                let phase = phase0 + radians_per_sample * n as f64;
+                *i += amplitude * phase.cos() as f32;
+                *q += amplitude * phase.sin() as f32;
+            }
+        }
+
+        // Noise floor, and the scaling that keeps the sum inside 8 bits.
+        let peak = i_acc
+            .iter()
+            .chain(q_acc.iter())
+            .fold(1.0f32, |m, v| m.max(v.abs()));
+        let scale = 100.0 / peak;
+        for n in 0..samples {
+            let noise_i = noise_at(self.seed, n as u64, (t * 1000.0) as u64) * 3.0;
+            let noise_q = noise_at(self.seed ^ 0x5EED, n as u64, (t * 1000.0) as u64) * 3.0;
+            out[n * 2] = to_u8(i_acc[n] * scale + noise_i);
+            out[n * 2 + 1] = to_u8(q_acc[n] * scale + noise_q);
+        }
+        out
+    }
+}
+
+/// Centre a sample on 127 and clamp into a byte, the way the dongle does.
+fn to_u8(v: f32) -> u8 {
+    (v + 127.5).clamp(0.0, 255.0) as u8
+}
+
 /// A bell curve, peaking at 1.0 when `offset` is zero.
 fn gaussian(offset: f64, width_hz: f64) -> f32 {
     if width_hz <= 0.0 {
