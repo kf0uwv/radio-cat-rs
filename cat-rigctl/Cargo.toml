@@ -32,6 +32,10 @@ cat-server = { path = "../cat-server" }
 # a caller supplies.
 cat-framework = { path = "../cat-framework" }
 
+# The console protocol this server also serves. `cat-native` is types, a
+# session and two blocking socket helpers -- no runtime, no transports.
+cat-native = { path = "../cat-native" }
+
 # For SignalCapability in RadioCapabilities. Types only -- no driver, no
 # FFT, no runtime (ADR 0010 section 3).
 cat-signal = { path = "../cat-signal" }
