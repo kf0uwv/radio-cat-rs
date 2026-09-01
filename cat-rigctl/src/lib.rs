@@ -153,13 +153,6 @@ pub trait RigctlRadio {
 pub struct ServerConfig {
     /// The typed console protocol (ADR 0010 §6), for a GUI or a TUI.
     pub native_port: Option<u16>,
-    /// What to tell consoles this radio is.
-    ///
-    /// Separate from the port because a port without capabilities would be
-    /// a listener that could not complete a handshake, and a caller that
-    /// set one and forgot the other should get a server that does not
-    /// listen rather than one that refuses every client.
-    pub native_capabilities: Option<&'static cat_framework::capabilities::RadioCapabilities>,
     /// `cat-server`'s raw length-prefixed TCP protocol.
     pub raw_tcp_port: Option<u16>,
     /// `cat-server`'s raw enveloped UDP protocol.
@@ -197,9 +190,14 @@ where
     R: RigctlRadio + 'static,
     F: Fn(BrokerCatSession) -> R + Clone + 'static,
 {
-    run_with_native(session, table, config, make_radio, |_| {
-        native_bridge::NoNative
-    })
+    run_with_native(
+        session,
+        table,
+        config,
+        make_radio,
+        |_| native_bridge::NoNative,
+        None,
+    )
     .await
 }
 
@@ -220,6 +218,7 @@ pub async fn run_with_native<C, S, R, F, N, G>(
     config: ServerConfig,
     make_radio: F,
     make_native: G,
+    native: Option<std::sync::Arc<native_bridge::NativeShared>>,
 ) -> io::Result<()>
 where
     C: CommandId,
@@ -239,10 +238,11 @@ where
     let (worker, handle) = cat_server::build(session, table);
     monoio::spawn(worker.run());
 
-    let native_shared = config
-        .native_capabilities
-        .filter(|_| config.native_port.is_some())
-        .map(native_bridge::NativeShared::new);
+    // The caller owns this, not us: a radio with a spectrum source has to
+    // publish frames into the same cache the listener reads from, and that
+    // source is the app's business. `cat-rigctl` orchestrates listeners
+    // and has no opinion about where a spectrum comes from.
+    let native_shared = native.filter(|_| config.native_port.is_some());
 
     let mut tasks = Vec::new();
 
@@ -362,9 +362,14 @@ where
     R: RigctlRadio + 'static,
     F: Fn(BrokerCatSession) -> R + Clone + Send + 'static,
 {
-    run_with_native(session, table, config, make_radio, |_| {
-        native_bridge::NoNative
-    })
+    run_with_native(
+        session,
+        table,
+        config,
+        make_radio,
+        |_| native_bridge::NoNative,
+        None,
+    )
 }
 
 /// [`run`], also serving the typed console protocol. See the Linux
@@ -381,6 +386,7 @@ pub fn run_with_native<C, S, R, F, N, G>(
     config: ServerConfig,
     make_radio: F,
     make_native: G,
+    native: Option<std::sync::Arc<native_bridge::NativeShared>>,
 ) -> io::Result<()>
 where
     C: CommandId,
@@ -400,10 +406,11 @@ where
     let (worker, handle) = cat_server::build(session, table);
     thread::spawn(move || worker.run());
 
-    let native_shared = config
-        .native_capabilities
-        .filter(|_| config.native_port.is_some())
-        .map(native_bridge::NativeShared::new);
+    // The caller owns this, not us: a radio with a spectrum source has to
+    // publish frames into the same cache the listener reads from, and that
+    // source is the app's business. `cat-rigctl` orchestrates listeners
+    // and has no opinion about where a spectrum comes from.
+    let native_shared = native.filter(|_| config.native_port.is_some());
 
     if let Some(shared) = native_shared.clone() {
         let port = config.native_port.expect("shared implies a port");
