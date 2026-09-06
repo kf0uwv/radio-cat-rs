@@ -54,10 +54,25 @@
 //! property of the source, and a shared widget that assumed either would be
 //! silently wrong on the other.
 
+pub mod af;
+// The console itself. Lifted out of `ts570d/gui` once a second radio
+// needed one: its 1442 lines had exactly one radio-specific mention, and
+// duplicating that per radio would have guaranteed three consoles that
+// drifted apart.
+pub mod app;
+pub mod devices;
 pub mod meter;
+pub mod readout;
 pub mod settings;
+pub mod theme;
+pub mod tuning;
+// The seam for a widget a radio brought with it. Most of a console is the
+// shared vocabulary; this is the way out for a feature that is genuinely
+// one rig's.
 pub mod waterfall;
+pub mod widgets;
 
+pub use af::{af_fft, af_fft_styled, af_scope, af_scope_styled, AfStyle};
 pub use meter::{meter_bar, smeter_text};
 pub use settings::settings_grid;
 pub use waterfall::{Palette, WaterfallImage};

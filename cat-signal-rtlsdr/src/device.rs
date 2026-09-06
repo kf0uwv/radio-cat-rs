@@ -11,7 +11,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
 //! The librtlsdr worker thread. Behind the `device` feature.
 //!
 //! Per `docs/adr/0014-rtlsdr-spectrum-source.md` §2: `rtlsdr_read_async`
@@ -28,9 +27,24 @@
 //! drop samples at the driver level, where nobody can see it.
 
 use crate::IqSource;
+use cat_signal::{DeviceInfo, DeviceKind, DeviceList};
 use rustfft::num_complex::Complex32;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+
+fn check_sample_rate(hz: u32) -> Result<(), DeviceError> {
+    if crate::is_valid_sample_rate(hz) {
+        return Ok(());
+    }
+    Err(DeviceError::Configure(format!(
+        "sample rate {hz} Hz is not one an RTL2832U can be set to; \
+         it accepts {}-{} Hz and {}-{} Hz and nothing between or below",
+        crate::SAMPLE_RATE_BANDS[0].0,
+        crate::SAMPLE_RATE_BANDS[0].1,
+        crate::SAMPLE_RATE_BANDS[1].0,
+        crate::SAMPLE_RATE_BANDS[1].1,
+    )))
+}
 
 /// What can go wrong talking to a dongle.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +104,17 @@ impl RtlSdrDevice {
     /// The frequency set here is the **only** one ever written to the
     /// device. Nothing in `retune` touches it — see the crate header.
     pub fn open(index: u32, if_center_hz: u64, sample_rate_hz: u32) -> Result<Self, DeviceError> {
+        // Checked here rather than left to the driver, which answers an
+        // out-of-range rate with `errno -22` and the word "Unknown".
+        //
+        // This is not a nicety. `ts570d`'s emulator served its IF output at
+        // 96 kHz for months and every test passed, because `rtl_tcp` is a
+        // socket and a socket will carry any rate you like. The first time
+        // a real dongle was asked for 96 kHz it refused, and the emulator
+        // turned out to have been emulating a device that cannot exist.
+        // A named error at the boundary is what turns that into a sentence
+        // instead of a number.
+        check_sample_rate(sample_rate_hz)?;
         let slot = Arc::new(Slot {
             buffer: Mutex::new(None),
             ready: Condvar::new(),
@@ -160,20 +185,21 @@ impl RtlSdrDevice {
                 // exists: called from a monoio task it would wedge the
                 // executor that is also driving the CAT session, so a
                 // spectrum source would stall the radio it annotates.
-                loop {
-                    match device.read_sync(READ_CHUNK_BYTES) {
-                        Ok(bytes) => {
-                            let samples = to_complex(&bytes);
-                            let mut held = worker_slot.buffer.lock().expect("slot poisoned");
-                            if held.is_some() {
-                                // Newest wins; count what the consumer missed.
-                                worker_slot.dropped.fetch_add(1, Ordering::Relaxed);
-                            }
-                            *held = Some(samples);
-                            worker_slot.ready.notify_one();
-                        }
-                        Err(_) => break,
+                //
+                // A read error ends the loop and is not carried out of it:
+                // the end is signalled by `running` going false and
+                // `ready` waking every waiter, which is what a consumer
+                // already watches. Threading the error through would need
+                // somewhere to put it that outlives this thread.
+                while let Ok(bytes) = device.read_sync(READ_CHUNK_BYTES) {
+                    let samples = to_complex(&bytes);
+                    let mut held = worker_slot.buffer.lock().expect("slot poisoned");
+                    if held.is_some() {
+                        // Newest wins; count what the consumer missed.
+                        worker_slot.dropped.fetch_add(1, Ordering::Relaxed);
                     }
+                    *held = Some(samples);
+                    worker_slot.ready.notify_one();
                 }
 
                 worker_slot.running.store(false, Ordering::Release);
@@ -241,5 +267,140 @@ impl IqSource for RtlSdrDevice {
 
     fn frames_dropped(&self) -> u64 {
         self.slot.dropped.load(Ordering::Relaxed)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Enumeration
+// ---------------------------------------------------------------------------
+
+/// The SDRs plugged into this machine.
+///
+/// Returns `cat_signal::DeviceList` so a console can render SDRs and sound
+/// cards through one picker without linking a driver for either — see that
+/// type's module doc.
+///
+/// [`DeviceInfo::spec`](cat_signal::DeviceInfo::spec) is `rtl:<index>`,
+/// which is exactly what an endpoint argument takes. An RTL-SDR has no
+/// filesystem name on any platform — libusb claims it, so neither the tty
+/// nor the sound layer ever sees it — and librtlsdr addresses it by index.
+/// That is why the scheme exists and why the same string is correct on
+/// Linux and Windows alike.
+///
+/// **No default is ever marked.** librtlsdr has no notion of one, and
+/// inventing "index 0 is the default" would be a claim the driver does not
+/// make — on a two-dongle station the wrong one is a plausible pick.
+pub fn devices() -> DeviceList {
+    let count = rtlsdr::get_device_count();
+    if count <= 0 {
+        // Not an error: zero dongles is a successful answer to the
+        // question, and it means "plug one in" rather than "this build
+        // cannot look".
+        return DeviceList::found(DeviceKind::Sdr, Vec::new());
+    }
+
+    let devices = (0..count)
+        .map(|index| {
+            let name = rtlsdr::get_device_name(index);
+            // The USB strings carry the serial, which is the only way to
+            // tell two identical dongles apart. Best-effort: a device that
+            // will not answer still belongs in the list, because it is
+            // still plugged in and still openable by index.
+            let detail = rtlsdr::get_device_usb_strings(index)
+                .ok()
+                .map(|s| format!("{} {} serial {}", s.manufacturer, s.product, s.serial))
+                .filter(|d| !d.trim().is_empty());
+
+            DeviceInfo {
+                kind: DeviceKind::Sdr,
+                spec: format!("rtl:{index}"),
+                label: if name.is_empty() {
+                    format!("RTL-SDR #{index}")
+                } else {
+                    name
+                },
+                detail,
+                is_default: false,
+            }
+        })
+        .collect();
+
+    DeviceList::found(DeviceKind::Sdr, devices)
+}
+
+#[cfg(test)]
+mod enumeration_tests {
+    use super::*;
+
+    #[test]
+    fn enumerating_with_no_hardware_is_an_answer_and_not_a_failure() {
+        // This runs on a machine with no dongle, which is the case worth
+        // pinning: "none plugged in" must not surface as "cannot look",
+        // because the two send an operator to different places.
+        let list = devices();
+        assert_eq!(list.kind, DeviceKind::Sdr);
+        assert!(
+            list.is_available(),
+            "enumeration itself must succeed even with nothing attached: {:?}",
+            list.error
+        );
+    }
+
+    #[test]
+    fn every_listed_device_carries_a_spec_the_command_line_would_take() {
+        // Picking is a shortcut for typing; a spec a flag would reject
+        // would make the picker a second, incompatible naming scheme.
+        for d in devices().devices {
+            assert!(d.spec.starts_with("rtl:"), "{:?}", d.spec);
+            assert!(
+                d.spec.trim_start_matches("rtl:").parse::<u32>().is_ok(),
+                "an SDR is addressed by index: {:?}",
+                d.spec
+            );
+            assert!(
+                !d.label.is_empty(),
+                "a device with no label cannot be picked"
+            );
+        }
+    }
+
+    #[test]
+    fn no_sdr_is_claimed_to_be_the_default() {
+        // librtlsdr has no notion of one. Marking index 0 would be a claim
+        // the driver does not make, and on a two-dongle station it would be
+        // a plausible-looking wrong pick.
+        assert!(devices().devices.iter().all(|d| !d.is_default));
+    }
+}
+
+#[cfg(test)]
+mod sample_rate_tests {
+    use super::*;
+
+    #[test]
+    fn the_rate_the_emulator_served_for_months_is_not_a_real_one() {
+        // The bug this check exists for. 96 kHz went unquestioned because
+        // `rtl_tcp` is a socket and a socket carries any rate; the hardware
+        // it was pretending to be cannot be set below 225 kHz.
+        assert!(!crate::is_valid_sample_rate(96_000));
+        let err = check_sample_rate(96_000).unwrap_err();
+        let text = format!("{err}");
+        assert!(text.contains("96000"), "{text}");
+        assert!(
+            text.contains("225001"),
+            "and says what it would accept: {text}"
+        );
+    }
+
+    #[test]
+    fn both_bands_are_accepted_and_the_gap_between_them_is_not() {
+        for hz in [225_001, 240_000, 300_000, 900_001, 2_048_000, 3_200_000] {
+            assert!(crate::is_valid_sample_rate(hz), "{hz} is a real rate");
+        }
+        // The divider gap. A rate in here looks plausible and is refused by
+        // the silicon.
+        for hz in [0, 48_000, 225_000, 300_001, 600_000, 900_000, 3_200_001] {
+            assert!(!crate::is_valid_sample_rate(hz), "{hz} is not settable");
+        }
     }
 }

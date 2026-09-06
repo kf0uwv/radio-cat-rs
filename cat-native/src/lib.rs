@@ -41,8 +41,9 @@
 
 pub mod client;
 pub mod server;
+pub mod testing;
 
-pub use client::{Client, ClientError, Connection, Event};
+pub use client::{Client, ClientError, CommandSink, Connection, Event, Streams};
 pub use server::{serve, serve_at, RadioHost};
 
 // The vocabulary this protocol's own types are written in.
@@ -87,6 +88,15 @@ pub enum FrameKind {
     Control = 1,
     /// A binary spectrum frame.
     Spectrum = 2,
+    /// A binary audio frame: a scope trace and an AF spectrum, from the
+    /// same samples.
+    ///
+    /// A separate kind from `Spectrum` because the two are not
+    /// interchangeable and must never be drawn on the same axis. A band
+    /// panorama spans tens of kilohertz around a dial; this spans a few
+    /// kilohertz from zero. `cat-signal` enforces that with two types, and
+    /// so does this.
+    Audio = 3,
 }
 
 impl FrameKind {
@@ -94,6 +104,7 @@ impl FrameKind {
         match v {
             1 => Some(FrameKind::Control),
             2 => Some(FrameKind::Spectrum),
+            3 => Some(FrameKind::Audio),
             _ => None,
         }
     }
@@ -162,6 +173,33 @@ pub struct CapabilitiesWire {
     pub menu: Option<MenuCapability>,
     /// What the radio *model* can accept as a spectrum source.
     pub signal: SignalSupport,
+    /// How this radio's console should be arranged.
+    ///
+    /// Authored by the server, because the server is what knows the rig.
+    /// A capability set says what a radio *can do*; this says what to make
+    /// of that on screen — and the two are not the same judgement. A
+    /// TS-570D with an SDR on its IF tap wants a waterfall dominating the
+    /// display; an FT-991A has no spectrum at all and 151 menu items, and
+    /// wants that space given to what it does have.
+    ///
+    /// `None` means the server has no opinion, and a console falls back to
+    /// its own default arrangement. That is the honest reading of silence:
+    /// an older server has not declined a layout, it has never been asked.
+    #[serde(default)]
+    pub layout: Option<cat_layout::LayoutSpec>,
+    /// What this radio's console should look like.
+    ///
+    /// The other half of the layout, and the radio's for the same reason.
+    /// An operator sitting in front of a TS-570D is looking at an amber
+    /// LCD on a charcoal panel; an FT-991A is a colour TFT, blue and
+    /// white. A console that matches its rig is one whose readout can be
+    /// found without translating between two visual languages.
+    ///
+    /// The palette only. Structure, type scale and spacing stay the design
+    /// system's, so a radio cannot restyle a component into something
+    /// another radio's operator would not recognise.
+    #[serde(default)]
+    pub theme: Option<cat_layout::Theme>,
     /// What this bench actually has wired.
     ///
     /// The two are separate because they answer different questions and
@@ -255,6 +293,12 @@ impl From<&RadioCapabilities> for CapabilitiesWire {
             signal: c.signal,
             // Filled by the caller: a `RadioCapabilities` alone cannot know
             // what is plugged into the radio it describes.
+            // No layout from a bare capability set: the arrangement is
+            // the *server's* to author, and a `RadioCapabilities` is the
+            // model's declaration of itself. A server that wants one sets
+            // it after converting.
+            layout: None,
+            theme: None,
             installation: Installation::default(),
         }
     }
@@ -303,6 +347,29 @@ pub enum Command {
     /// Move the dial, and with it any IF-tap spectrum source.
     Retune {
         hz: u64,
+    },
+    /// What signal hardware the *radio's host* can see.
+    ///
+    /// The command exists because a console is not usually on the same
+    /// machine as the radio, and its own sound cards are not the radio's.
+    /// A picker that enumerated locally would let an operator on a laptop
+    /// select their laptop microphone as the radio's receive audio -- it
+    /// would look entirely correct and be wrong.
+    ///
+    /// Distinct from [`crate::CapabilitiesWire::installation`], which says
+    /// what is *already wired and streaming*. This says what *could* be
+    /// attached. A console needs both: one to draw the panels it has, one
+    /// to offer the panels it could have.
+    ReadDevices,
+    /// Attach one of the devices [`Command::ReadDevices`] offered.
+    ///
+    /// `spec` is passed back verbatim from a [`cat_signal::DeviceInfo`],
+    /// never composed by the client: sound-card and SDR specs are a host's
+    /// own namespace, and a client that built one would be guessing about
+    /// a machine it cannot see.
+    AttachDevice {
+        kind: cat_signal::DeviceKind,
+        spec: String,
     },
     /// Report everything the console displays, in one round trip.
     ///
@@ -366,6 +433,15 @@ pub enum ClientMessage {
         /// Whether to send this client spectrum frames at all.
         #[serde(default)]
         spectrum: bool,
+        /// Whether to send this client audio frames at all.
+        ///
+        /// `#[serde(default)]`, so a client built before audio existed
+        /// asks for none and is sent none. The two streams are opted into
+        /// separately because they cost differently and a console may
+        /// well want one without the other -- a waterfall with no AF
+        /// panels is an ordinary way to run.
+        #[serde(default)]
+        audio: bool,
     },
     Command(Command),
     Ping,
@@ -384,6 +460,20 @@ pub enum ServerMessage {
     State(Box<RadioState>),
     /// The answer to [`Command::ReadMeter`].
     Meter(MeterSample),
+    /// The answer to [`Command::ReadDevices`].
+    ///
+    /// One list per kind, each carrying its own three-way outcome: found
+    /// some, found none, or could not ask. Flattening those into one list
+    /// would lose the distinction the whole type exists for.
+    ///
+    /// A struct variant, not a newtype around the `Vec`. `ServerMessage`
+    /// is internally tagged, and serde cannot tag a newtype variant whose
+    /// contents serialize as a sequence -- it fails at *serialization*,
+    /// so the symptom is the server dropping the connection rather than
+    /// anything naming the real problem.
+    Devices {
+        lists: Vec<cat_signal::DeviceList>,
+    },
     Error {
         code: ErrorCode,
         message: String,
@@ -423,6 +513,7 @@ pub struct NativeSession {
     installation: Installation,
     handshaken: bool,
     spectrum: bool,
+    audio: bool,
     /// The most recent state the host published.
     ///
     /// A cache, not a source. This session does not own a radio and must
@@ -435,6 +526,19 @@ pub struct NativeSession {
     /// rather than an error: a server that has just started has not heard
     /// from its radio either.
     state: Option<RadioState>,
+    /// The arrangement this radio's server published, if it published one.
+    layout: Option<cat_layout::LayoutSpec>,
+    /// The palette this radio's server published, if it published one.
+    theme: Option<cat_layout::Theme>,
+    /// What the host last said its machine can see, if it offers the
+    /// question at all.
+    ///
+    /// `None` is not "no devices" -- it is "this server does not offer
+    /// device selection", which is what a host that never calls
+    /// [`NativeSession::publish_devices`] is saying. The distinction
+    /// matters to a console: one means "plug something in", the other
+    /// means "ask this server's operator, it cannot help you from here".
+    devices: Option<Vec<cat_signal::DeviceList>>,
 }
 
 impl NativeSession {
@@ -453,8 +557,26 @@ impl NativeSession {
             installation,
             handshaken: false,
             spectrum: false,
+            audio: false,
             state: None,
+            devices: None,
+            layout: None,
+            theme: None,
         }
+    }
+
+    /// Publish the arrangement this radio's console should use.
+    ///
+    /// Set once per session, before the handshake, because that is when a
+    /// console is told what the radio is and the layout is part of that
+    /// answer.
+    pub fn set_layout(&mut self, layout: Option<cat_layout::LayoutSpec>) {
+        self.layout = layout;
+    }
+
+    /// Publish the palette this radio's console should use.
+    pub fn set_theme(&mut self, theme: Option<cat_layout::Theme>) {
+        self.theme = theme;
     }
 
     /// Publish what the radio is currently doing.
@@ -471,6 +593,20 @@ impl NativeSession {
         self.state.as_ref()
     }
 
+    /// Publish what signal hardware this machine can see.
+    ///
+    /// A host that never calls this is declining the question, and clients
+    /// are told so rather than being handed an empty list -- see
+    /// [`Command::ReadDevices`].
+    pub fn publish_devices(&mut self, devices: Vec<cat_signal::DeviceList>) {
+        self.devices = Some(devices);
+    }
+
+    /// The last published device list, if the host offers one.
+    pub fn published_devices(&self) -> Option<&[cat_signal::DeviceList]> {
+        self.devices.as_deref()
+    }
+
     /// Whether this client asked for spectrum frames.
     ///
     /// The one question the frame pump asks. `false` until a successful
@@ -480,6 +616,16 @@ impl NativeSession {
         self.handshaken && self.spectrum
     }
 
+    /// Whether this client asked for audio frames.
+    ///
+    /// Separate from [`NativeSession::wants_spectrum`] and not implied by
+    /// it: the two streams are opted into independently, and a console
+    /// running a waterfall with no AF panels should not be sent audio it
+    /// will throw away.
+    pub fn wants_audio(&self) -> bool {
+        self.audio
+    }
+
     pub fn is_handshaken(&self) -> bool {
         self.handshaken
     }
@@ -487,7 +633,11 @@ impl NativeSession {
     /// Handle one decoded client message.
     pub fn handle(&mut self, message: ClientMessage) -> ServerMessage {
         match message {
-            ClientMessage::Hello { version, spectrum } => {
+            ClientMessage::Hello {
+                version,
+                spectrum,
+                audio,
+            } => {
                 if version != PROTOCOL_VERSION {
                     return ServerMessage::Error {
                         code: ErrorCode::VersionMismatch,
@@ -499,9 +649,12 @@ impl NativeSession {
                 self.handshaken = true;
                 // A client only gets frames if it both handshook AND asked.
                 self.spectrum = spectrum;
+                self.audio = audio;
                 ServerMessage::Welcome {
                     version: PROTOCOL_VERSION,
                     capabilities: Box::new(CapabilitiesWire {
+                        layout: self.layout.clone(),
+                        theme: self.theme,
                         installation: self.installation.clone(),
                         ..CapabilitiesWire::from(self.capabilities)
                     }),
@@ -539,6 +692,19 @@ impl NativeSession {
                             },
                         }
                     }
+                    Command::ReadDevices => match &self.devices {
+                        Some(devices) => ServerMessage::Devices {
+                            lists: devices.clone(),
+                        },
+                        // `Unsupported`, not an empty list. An empty list
+                        // would be a claim about this machine's hardware
+                        // that a server declining the question has not
+                        // made and cannot support.
+                        None => ServerMessage::Error {
+                            code: ErrorCode::Unsupported,
+                            message: "this server does not offer device selection".to_string(),
+                        },
+                    },
                     _ => ServerMessage::Ack,
                 },
             },
@@ -633,6 +799,10 @@ impl NativeSession {
             }
             // Every radio has a state. Nothing to validate against.
             Command::ReadState => Ok(()),
+            // Nothing in the capability set describes a host's sound
+            // cards -- capabilities describe the radio *model*, and these
+            // are facts about one machine. The host answers, or declines.
+            Command::ReadDevices | Command::AttachDevice { .. } => Ok(()),
         }
     }
 
@@ -713,6 +883,71 @@ pub fn decode_spectrum_payload(payload: &[u8]) -> Option<cat_signal::SpectrumFra
         ref_level_dbm,
         bins,
         sequence,
+    })
+}
+
+/// Encode an audio frame: scope and spectrum together, one payload.
+///
+/// One payload rather than two frame kinds, because the two halves come
+/// from the same samples and share a sequence number. Splitting them would
+/// let a console draw a trace from one block beside a spectrum from
+/// another — exactly what `AudioFrame` exists to make impossible.
+pub fn encode_audio_payload(frame: &cat_signal::AudioFrame) -> Vec<u8> {
+    let scope = &frame.scope;
+    let spectrum = &frame.spectrum;
+    let mut out = Vec::with_capacity(28 + scope.samples.len() * 4 + spectrum.bins.len() * 4);
+    out.extend_from_slice(&scope.sequence.to_be_bytes());
+    out.extend_from_slice(&scope.sample_rate_hz.to_be_bytes());
+    out.extend_from_slice(&spectrum.start_hz.to_be_bytes());
+    out.extend_from_slice(&spectrum.span_hz.to_be_bytes());
+    out.extend_from_slice(&(scope.samples.len() as u32).to_be_bytes());
+    out.extend_from_slice(&(spectrum.bins.len() as u32).to_be_bytes());
+    for sample in &scope.samples {
+        out.extend_from_slice(&sample.to_be_bytes());
+    }
+    for bin in &spectrum.bins {
+        out.extend_from_slice(&bin.to_be_bytes());
+    }
+    out
+}
+
+/// Decode what [`encode_audio_payload`] wrote.
+///
+/// `None` for anything that does not fit, rather than a partial frame: a
+/// scope drawn from half a payload is a waveform the radio never produced.
+pub fn decode_audio_payload(payload: &[u8]) -> Option<cat_signal::AudioFrame> {
+    if payload.len() < 28 {
+        return None;
+    }
+    let sequence = u64::from_be_bytes(payload[0..8].try_into().ok()?);
+    let sample_rate_hz = u32::from_be_bytes(payload[8..12].try_into().ok()?);
+    let start_hz = u32::from_be_bytes(payload[12..16].try_into().ok()?);
+    let span_hz = u32::from_be_bytes(payload[16..20].try_into().ok()?);
+    let samples = u32::from_be_bytes(payload[20..24].try_into().ok()?) as usize;
+    let bins = u32::from_be_bytes(payload[24..28].try_into().ok()?) as usize;
+    if payload.len() < 28 + samples * 4 + bins * 4 {
+        return None;
+    }
+    let floats = |from: usize, count: usize| -> Vec<f32> {
+        payload[from..from + count * 4]
+            .chunks_exact(4)
+            .map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    };
+    Some(cat_signal::AudioFrame {
+        scope: cat_signal::AudioScopeFrame {
+            sample_rate_hz,
+            samples: floats(28, samples),
+            sequence,
+        },
+        spectrum: cat_signal::AudioSpectrumFrame {
+            start_hz,
+            span_hz,
+            bins: floats(28 + samples * 4, bins),
+            // The shared number, deliberately: both halves came from the
+            // same block, and a console checks one against the other.
+            sequence,
+        },
     })
 }
 
@@ -810,10 +1045,15 @@ mod tests {
     };
 
     fn handshaken(spectrum: bool) -> NativeSession {
+        handshaken_with(spectrum, false)
+    }
+
+    fn handshaken_with(spectrum: bool, audio: bool) -> NativeSession {
         let mut session = NativeSession::new(&RADIO);
         session.handle(ClientMessage::Hello {
             version: PROTOCOL_VERSION,
             spectrum,
+            audio,
         });
         session
     }
@@ -896,6 +1136,7 @@ mod tests {
         let reply = session.handle(ClientMessage::Hello {
             version: PROTOCOL_VERSION,
             spectrum: false,
+            audio: false,
         });
 
         let ServerMessage::Welcome {
@@ -922,6 +1163,7 @@ mod tests {
         let reply = session.handle(ClientMessage::Hello {
             version: PROTOCOL_VERSION + 1,
             spectrum: true,
+            audio: false,
         });
         assert!(matches!(
             reply,
@@ -1029,6 +1271,7 @@ mod tests {
         session.handle(ClientMessage::Hello {
             version: PROTOCOL_VERSION,
             spectrum: false,
+            audio: false,
         });
 
         for command in [
@@ -1292,6 +1535,7 @@ mod tests {
         let reply = session.handle(ClientMessage::Hello {
             version: PROTOCOL_VERSION,
             spectrum: true,
+            audio: false,
         });
         let ServerMessage::Welcome { capabilities, .. } = reply else {
             panic!("expected Welcome")
@@ -1314,6 +1558,7 @@ mod tests {
         let reply = session.handle(ClientMessage::Hello {
             version: PROTOCOL_VERSION,
             spectrum: true,
+            audio: false,
         });
         let ServerMessage::Welcome { capabilities, .. } = reply else {
             panic!("expected Welcome")

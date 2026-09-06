@@ -159,6 +159,15 @@ where
     // Helpers
     // -------------------------------------------------------------------
 
+    /// Change the wire format's configuration.
+    ///
+    /// For an addressed protocol: the same client, pointed at a different
+    /// radio on the same bus. An ASCII format carries no configuration and
+    /// has nothing to change, which is why this is not on every session.
+    pub fn set_format(&mut self, format: F) {
+        self.format = format;
+    }
+
     /// Look up `code` in the command table; return an error if not found.
     fn validate_code(
         &self,
@@ -172,13 +181,60 @@ where
     /// Execute one query-shaped exchange through the session and decode the
     /// response bytes into a `String` matching the wire text the radio sent.
     async fn execute_query(&mut self, wire: &[u8]) -> Result<String, ClientError<S::Error>> {
+        let response = self.execute_query_bytes(wire).await?;
+        Ok(String::from_utf8_lossy(&response).into_owned())
+    }
+
+    /// Send a query and return the radio's response **bytes**.
+    ///
+    /// The path a binary protocol needs. `query` above turns the response
+    /// into a `String` through `from_utf8_lossy`, which is exactly right
+    /// for an ASCII protocol and destroys a CI-V frame: `0x88` is not
+    /// valid UTF-8 and comes back as U+FFFD, so a radio's address and half
+    /// its BCD data would arrive as replacement characters.
+    pub async fn query_bytes(&mut self, code: F::Code) -> Result<Vec<u8>, ClientError<S::Error>> {
+        let definition = self.validate_code(code)?;
+        if !definition.is_readable() {
+            return Err(ClientError::CommandNotReadable(definition.name.to_string()));
+        }
+        let wire = self.format.encode_request(code, &[]);
+        self.execute_query_bytes(&wire).await
+    }
+
+    /// The same, with parameter bytes — a selector read.
+    pub async fn query_with_bytes(
+        &mut self,
+        code: F::Code,
+        params: &[u8],
+    ) -> Result<Vec<u8>, ClientError<S::Error>> {
+        let definition = self.validate_code(code)?;
+        if !definition.is_readable() {
+            return Err(ClientError::CommandNotReadable(definition.name.to_string()));
+        }
+        let wire = self.format.encode_request(code, params);
+        self.execute_query_bytes(&wire).await
+    }
+
+    /// Send a write built from raw bytes.
+    pub async fn set_bytes(
+        &mut self,
+        code: F::Code,
+        params: &[u8],
+    ) -> Result<Vec<u8>, ClientError<S::Error>> {
+        let definition = self.validate_code(code)?;
+        if !definition.is_writable() {
+            return Err(ClientError::CommandNotWritable(definition.name.to_string()));
+        }
+        let wire = self.format.encode_request(code, params);
+        self.execute_query_bytes(&wire).await
+    }
+
+    async fn execute_query_bytes(&mut self, wire: &[u8]) -> Result<Vec<u8>, ClientError<S::Error>> {
         let mut response = Vec::new();
         let disposition = self.session.execute(wire, &mut response).await?;
         match disposition {
             ResponseDisposition::ProtocolError(kind) => Err(ClientError::ProtocolError(kind)),
-            ResponseDisposition::ResponseWritten | ResponseDisposition::NoResponse => {
-                Ok(String::from_utf8_lossy(&response).into_owned())
-            }
+            ResponseDisposition::ResponseWritten | ResponseDisposition::NoResponse => Ok(response),
         }
     }
 }

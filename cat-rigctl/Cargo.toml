@@ -39,6 +39,8 @@ cat-native = { path = "../cat-native" }
 # For SignalCapability in RadioCapabilities. Types only -- no driver, no
 # FFT, no runtime (ADR 0010 section 3).
 cat-signal = { path = "../cat-signal" }
+# The console arrangement an application authors for its radio.
+cat-layout = { path = "../cat-layout" }
 
 # CatSession — the physical session trait `run()`'s `session: S` parameter
 # is bounded on, matching `cat-server::build`'s own bound exactly.

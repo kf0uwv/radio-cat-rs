@@ -481,6 +481,33 @@ impl<'a, F: CatWireFormat> ResponseBuilder<'a, F> {
             _format: PhantomData,
         }
     }
+
+    /// Append raw bytes.
+    ///
+    /// The byte-oriented path, for a protocol whose frames are not text.
+    /// The ASCII helpers below build a frame *piece by piece* because an
+    /// ASCII frame is a concatenation; a binary protocol's frame is a
+    /// structure, so its radio builds the whole thing with its format's
+    /// own encoder and hands it over here in one go.
+    pub fn push_bytes(&mut self, bytes: &[u8]) -> Result<(), ResponseBuildError> {
+        if self.finished {
+            return Err(ResponseBuildError::AlreadyFinished);
+        }
+        self.output.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// Append a complete frame and mark the response done.
+    pub fn write_frame(&mut self, frame: &[u8]) -> Result<(), ResponseBuildError> {
+        self.push_bytes(frame)?;
+        self.finished = true;
+        Ok(())
+    }
+
+    /// Whether a response has already been finished.
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
 }
 
 impl<'a> ResponseBuilder<'a, AsciiLineFormat> {
@@ -592,6 +619,18 @@ impl<R, F: CatWireFormat> CatFramework<R, F> {
     /// Access the underlying radio state immutably.
     pub fn radio(&self) -> &R {
         &self.radio
+    }
+
+    /// Access it mutably.
+    ///
+    /// For a host that has to move the radio from outside the command
+    /// stream: an emulator whose S-meter follows the band it is
+    /// transmitting, a test that puts a radio into a state no sequence of
+    /// commands reaches quickly. What a radio exposes through this is the
+    /// radio's own business — `Ts570dRadio` offers `set_smeter` and not
+    /// its whole state, for exactly that reason.
+    pub fn radio_mut(&mut self) -> &mut R {
+        &mut self.radio
     }
 }
 

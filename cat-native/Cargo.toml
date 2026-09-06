@@ -12,6 +12,11 @@ description = "The native typed session protocol: wire types, framing, server se
 # adjacent dependency, and it carries no I/O of its own.
 cat-framework = { path = "../cat-framework" }
 cat-signal = { path = "../cat-signal" }
+# How a radio's console is arranged. Published beside the capability set
+# because it answers the other half of the same question: capabilities say
+# what a rig can do, a layout says how its console should be laid out to
+# suit that.
+cat-layout = { path = "../cat-layout" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

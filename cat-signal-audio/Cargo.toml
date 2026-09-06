@@ -1,0 +1,62 @@
+[package]
+name = "cat-signal-audio"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "An audio-domain signal source: a radio's receive audio from a socket or a local sound card, as AF scope and FFT frames, plus a transmit path."
+
+# Plain `std::net` + `std::thread`, exactly like cat-transport-rfc2217.
+# Nothing here is target-gated, there is no monoio and no tokio, and no
+# task is ever woken from another OS thread -- see ADR 0017 section 5.
+# `cpal` (the `device` feature, below) does not change that: its callback
+# thread touches one mutex and one condvar and registers no waker.
+[dependencies]
+cat-signal = { path = "../cat-signal" }
+async-trait = { workspace = true }
+rustfft = "6.2"
+thiserror = { workspace = true }
+
+[features]
+# OFF by default, deliberately -- the same trade `cat-signal-rtlsdr` makes
+# for librtlsdr (ADR 0014 section 5), for the same reason.
+#
+# Everything that decides what a console *draws* -- the PCM codec, the DSP
+# pipeline, the ring buffer that turns a capture callback into the `Read`
+# the reader thread already takes, the spec grammar and the enumeration
+# vocabulary -- is always compiled and always tested, because that is where
+# the correctness lives and none of it needs hardware. Only the `cpal`
+# capture is opt-in, because building it needs a platform sound library
+# (ALSA headers on Linux), and making every consumer of a `SpectrumFrame`
+# acquire one for a sound card they may not own is a poor trade.
+#
+# The cost is real and named in ADR 0017's amendment: code behind a
+# default-off feature is code CI does not compile, which is exactly how the
+# Windows defects in planning/release_workflow/findings.md survived. The
+# mitigations are that (a) the Linux CI job builds `--features device`
+# explicitly, as it already does for `cat-signal-rtlsdr`, and (b) the seam
+# is deliberately thin: the ring, the spec grammar, the enumeration types
+# and the format-negotiation arithmetic are all outside the gate and all
+# tested in the default build, so what the gate hides is `cpal` calls
+# rather than logic.
+default = []
+device = ["dep:cpal"]
+
+[dependencies.cpal]
+version = "0.16"
+optional = true
+# cpal 0.16 has no default features on any platform we build for (jack,
+# asio and oboe are all opt-in), so this pulls the platform's own sound
+# library and nothing else. Pinned to 0.16 rather than 0.18 because 0.17
+# raised its MSRV to 1.77 and 0.18 to 1.85, and this workspace's
+# `rust-version` is 1.75 -- an MSRV that is only true when a feature is off
+# is not an MSRV.
+default-features = false
+
+[dev-dependencies]
+# Runtime-agnostic test executor: this crate binds to no runtime, and
+# `#[monoio::test]` would make its tests Linux-only for no reason.
+futures = { workspace = true }

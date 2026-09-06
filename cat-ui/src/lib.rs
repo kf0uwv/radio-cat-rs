@@ -47,13 +47,27 @@
 //! waterfall behind a menu read — the failure that makes a console feel
 //! broken while every individual part of it is working.
 
+pub mod af;
 pub mod band;
+/// The console's structure, derived from what the radio says it is.
+///
+/// `workspace`, `quick` and `command` were written for the GUI and moved
+/// here unchanged the moment the TUI needed the same answers. That is the
+/// point of ADR 0013's parity rule: two renderers that each derived their
+/// own tab list from the same capability document would agree until one of
+/// them was edited.
+pub mod command;
+pub mod demo;
+pub mod display;
 pub mod format;
 pub mod lanes;
 pub mod meter;
+pub mod quick;
+pub mod retune;
 pub mod spectrum;
 /// Bin-to-display mapping, shared by every renderer.
 pub mod spectrum_map;
+pub mod workspace;
 
 pub use band::{Band, BandPlan};
 pub use format::{

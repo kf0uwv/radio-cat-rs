@@ -69,10 +69,30 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// Outcome of one successfully-dispatched request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatchOutcome {
-    /// A query executed; the physical radio's response text.
-    Response(String),
+    /// A query executed; the physical radio's response **bytes**.
+    ///
+    /// Bytes, not text. A broker is protocol-agnostic and must not
+    /// stringify what passes through it: `from_utf8_lossy` is harmless on
+    /// an ASCII protocol and destroys a CI-V frame, where `0x88` is a
+    /// radio's address and comes back as U+FFFD. The ASCII radios' tests
+    /// read this as text through [`DispatchOutcome::text`].
+    Response(Vec<u8>),
     /// A set/action executed; the radio produced no response (fire-and-forget).
     NoResponse,
+}
+
+impl DispatchOutcome {
+    /// The response as text, for an ASCII protocol.
+    ///
+    /// Lossy by construction, which is correct for the protocols that
+    /// have one and is why it is a separate method rather than the
+    /// representation.
+    pub fn text(&self) -> Option<String> {
+        match self {
+            DispatchOutcome::Response(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
+            DispatchOutcome::NoResponse => None,
+        }
+    }
 }
 
 /// Everything that can go wrong dispatching one request, at any layer:
@@ -117,7 +137,7 @@ where
     E: std::error::Error + 'static,
 {
     match result {
-        Ok(DispatchOutcome::Response(text)) => text.into_bytes(),
+        Ok(DispatchOutcome::Response(bytes)) => bytes,
         Ok(DispatchOutcome::NoResponse) => Vec::new(),
         Err(err) => format!("ERR {}", err).into_bytes(),
     }
@@ -289,7 +309,7 @@ where
                 // (both produce `"<code>;"`), so no separate code path is
                 // needed for a parameterless query.
                 client
-                    .query_with_param(code, &params)
+                    .query_with_bytes(code, &params)
                     .await
                     .map(DispatchOutcome::Response)
             } else {
@@ -386,21 +406,23 @@ pub struct Job {
 /// Callers spawn `worker.run()` as one task (e.g. via `monoio::spawn`) and
 /// distribute [`BrokerHandle`] clones to every client-facing task that
 /// needs to submit work.
-pub struct BrokerWorker<C, S>
+pub struct BrokerWorker<C, S, F = AsciiLineFormat>
 where
     C: CommandId,
     S: CatSession,
     S::Error: std::error::Error + 'static,
+    F: CatWireFormat,
 {
-    broker: Broker<C, S>,
+    broker: Broker<C, S, F>,
     receiver: Receiver<Job>,
 }
 
-impl<C, S> BrokerWorker<C, S>
+impl<C, S, F> BrokerWorker<C, S, F>
 where
     C: CommandId,
     S: CatSession,
     S::Error: std::error::Error + 'static,
+    F: CatWireFormat + Clone,
 {
     /// Run until every [`BrokerHandle`] (and clone) has been dropped and the
     /// job queue is drained.
@@ -453,25 +475,27 @@ impl BrokerHandle {
 
 /// Build a [`BrokerWorker`]/[`BrokerHandle`] pair around `session`, using
 /// [`DEFAULT_REQUEST_TIMEOUT`].
-pub fn build<C, S>(
+pub fn build<C, S, F>(
     session: S,
-    table: &'static CommandTable<C>,
-) -> (BrokerWorker<C, S>, BrokerHandle)
+    table: &'static CommandTable<C, F>,
+) -> (BrokerWorker<C, S, F>, BrokerHandle)
 where
     C: CommandId,
     S: CatSession,
     S::Error: std::error::Error + 'static,
+    F: CatWireFormat + Default + Clone,
 {
     build_with_timeout(session, table, DEFAULT_REQUEST_TIMEOUT)
 }
 
 /// Like [`build`], with an explicit per-request timeout.
-pub fn build_with_timeout<C, S>(
+pub fn build_with_timeout<C, S, F>(
     session: S,
-    table: &'static CommandTable<C>,
+    table: &'static CommandTable<C, F>,
     request_timeout: Duration,
-) -> (BrokerWorker<C, S>, BrokerHandle)
+) -> (BrokerWorker<C, S, F>, BrokerHandle)
 where
+    F: CatWireFormat + Default + Clone,
     C: CommandId,
     S: CatSession,
     S::Error: std::error::Error + 'static,
@@ -656,7 +680,7 @@ mod tests {
 
         assert_eq!(
             outcome,
-            DispatchOutcome::Response("FA00014250000;".to_string())
+            DispatchOutcome::Response(b"FA00014250000;".to_vec())
         );
     }
 
@@ -666,7 +690,7 @@ mod tests {
 
         let outcome = broker.dispatch(b"SM0;").await.unwrap();
 
-        assert_eq!(outcome, DispatchOutcome::Response("SM0015;".to_string()));
+        assert_eq!(outcome, DispatchOutcome::Response(b"SM0015;".to_vec()));
     }
 
     #[monoio::test(driver = "legacy", timer_enabled = true)]
@@ -679,7 +703,7 @@ mod tests {
 
         let outcome = broker.dispatch(b"MD0;").await.unwrap();
 
-        assert_eq!(outcome, DispatchOutcome::Response("MD02;".to_string()));
+        assert_eq!(outcome, DispatchOutcome::Response(b"MD02;".to_vec()));
     }
 
     #[monoio::test(driver = "legacy", timer_enabled = true)]
@@ -779,10 +803,7 @@ mod tests {
         assert!(matches!(malformed, Err(DispatchError::Malformed(_))));
 
         let happy = broker.dispatch(b"FA;").await.unwrap();
-        assert_eq!(
-            happy,
-            DispatchOutcome::Response("FA00014250000;".to_string())
-        );
+        assert_eq!(happy, DispatchOutcome::Response(b"FA00014250000;".to_vec()));
     }
 
     // -------------------------------------------------------------------
@@ -824,7 +845,7 @@ mod tests {
         let outcome = recovered.dispatch(b"FA;").await.unwrap();
         assert_eq!(
             outcome,
-            DispatchOutcome::Response("FA00014250000;".to_string())
+            DispatchOutcome::Response(b"FA00014250000;".to_vec())
         );
     }
 
@@ -850,7 +871,7 @@ mod tests {
     #[test]
     fn outcome_to_wire_response_is_the_response_text() {
         let result: Result<DispatchOutcome, DispatchError<TransportError>> =
-            Ok(DispatchOutcome::Response("FA00014250000;".to_string()));
+            Ok(DispatchOutcome::Response(b"FA00014250000;".to_vec()));
         assert_eq!(outcome_to_wire(result), b"FA00014250000;".to_vec());
     }
 

@@ -208,3 +208,87 @@ the day the trim calibration silently stops meaning anything.
   be closed by a real capture against the CN4 tap: a signal above the dial
   must appear to the right. No fake source can verify that, and no CI job
   can either.
+
+
+## Amendment, 2026-09-02 — the sample rate the fixture could not have had
+
+The `device` path was first run against real hardware today, an RTL-SDR
+Blog V4. It refused to open:
+
+```
+Invalid sample rate: 96000 Hz
+could not configure RTL-SDR: sample rate: errno -22
+```
+
+An RTL2832U's clock divider gives it two settable bands, **225001-300000 Hz**
+and **900001-3200000 Hz**, with nothing between or below them. 96 kHz is
+not a rate any such device can be set to.
+
+`ts570d`'s emulator had been serving its IF output at 96 kHz since the tap
+was written, and its console had been asking for it. Every test on both
+sides passed, because `rtl_tcp` is a socket and a socket carries whatever
+rate it is told. **The fixture was impersonating a device that cannot be
+built**, and the tests agreed with it — which is the failure mode a fixture
+exists to prevent, not one it is allowed to have.
+
+Three changes follow.
+
+1. `SAMPLE_RATE_BANDS` and `is_valid_sample_rate` are published from this
+   crate's root, **not from behind the `device` feature**. The bands are a
+   property of the silicon, not of librtlsdr, and the code that most needs
+   them is code with no dongle attached: a fixture can only avoid
+   impersonating an impossible device if it can ask what is possible
+   without linking a driver.
+2. `RtlSdrDevice::open` validates before configuring, so an out-of-range
+   rate is a sentence naming the bands rather than `errno -22` and the word
+   "Unknown".
+3. Both `ts570d`'s tap and its console moved to **240 kHz**, the bottom of
+   the lower band and the nearest achievable thing to the original intent.
+   `emulator/src/tap.rs` gained a test asserting the rate it serves is one
+   a real dongle could produce.
+
+This is the second time §5's warning has been paid out. The first was a
+`while_let_loop` that clippy had never seen, because `--features device` had
+never been run here. Both were found within an hour of the same feature
+being compiled for the first time, which is the argument for CI building it
+rather than a note saying it should.
+
+## Amendment, 2026-09-02 (second) — the driver's decisions belong to the driver
+
+Following the sample-rate finding above, a consuming application was found
+to be carrying every RTL-SDR decision there is: which rate to run at, how
+many bins to take, how a local dongle is named, and how to assemble a
+device or a socket into a corrected source. None of that is a fact about
+any radio, and an application that holds it is an application that can get
+it wrong — which is precisely how 96 kHz survived.
+
+`cat_signal_rtlsdr::open(spec, tap, config)` now owns all of it and returns
+one `IfSource` whichever endpoint the spec named. An application supplies
+the single thing only it can know: **the intermediate frequency its radio's
+IF output sits on, and what that IF needs corrected** — an `IfTapConfig`,
+which is a radio fact through and through.
+
+`ts570d`'s whole contribution is now one constant:
+
+```rust
+const IF_TAP: IfTapConfig = IfTapConfig {
+    if_center_hz: 73_050_000,   // a TS-570D's first IF
+    inverted: true,             // LO1 is high-side, so the tap is mirrored
+    trim_hz: 0,                 // per-station, measured against a carrier
+};
+```
+
+Three consequences worth naming:
+
+- The spec grammar (`rtl:<index>`) moved here too, matching what
+  `cat-signal-audio` already does for `audio:<name>`. Each source crate owns
+  the way its own devices are named, so a console does not accumulate one
+  parser per hardware family.
+- `IfSourceConfig::DEFAULT_SAMPLE_RATE_HZ` is public as a `const`, so a
+  *fixture* can serve the rate a real dongle would run at without
+  constructing anything. `ts570d`'s emulator asserts equality with it, so
+  the tap and the hardware it impersonates cannot drift apart again.
+- `open` validates the rate **before** touching the endpoint, so an
+  impossible rate is refused identically whether the target is a dongle or
+  a socket. That is the case the original bug needed: over `rtl_tcp`
+  nothing would ever have objected.

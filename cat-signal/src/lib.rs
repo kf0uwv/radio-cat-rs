@@ -43,7 +43,10 @@
 //! calibration a user must be able to set, it exists for no other source
 //! type, and it must never reach a UI as a hand-written special case.
 
-pub use audio::{AudioScopeFrame, AudioSpectrumFrame};
+pub use audio::{AudioFrame, AudioScopeFrame, AudioSpectrumFrame};
+/// What is plugged into this machine, in terms a console can offer.
+pub mod device;
+pub use device::{DeviceDirectory, DeviceInfo, DeviceKind, DeviceList};
 
 use async_trait::async_trait;
 

@@ -190,13 +190,36 @@ impl WaterfallImage {
     /// scrollback instead of only above the seam. A console can call it on
     /// dial change and use [`push`](Self::push) the rest of the time.
     pub fn rebuild(&mut self, frames: &[SpectrumFrame]) {
-        self.pixels.fill(0);
-        self.rows_filled = 0;
-        self.head = 0;
         let Some(reference) = frames.first().cloned() else {
+            self.pixels.fill(0);
+            self.rows_filled = 0;
+            self.head = 0;
             self.reference = None;
             return;
         };
+        self.rebuild_onto(frames, &reference)
+    }
+
+    /// The same, projected onto an axis the caller chose.
+    ///
+    /// The axis does not have to be any frame's own. A console animating a
+    /// retune passes a *view* — a centre and span partway between where it
+    /// was and where it is going — and gets the whole history redrawn from
+    /// that vantage point. Doing that every frame is what turns a retune
+    /// from a jump cut into a camera move, and it is why this path exists
+    /// separately from [`push`](Self::push)'s cheap scroll.
+    ///
+    /// Only `center_hz`, `span_hz` and `ref_level_dbm` of `view` are read;
+    /// its bins are not, so a caller can pass an empty frame as an axis.
+    pub fn rebuild_onto(&mut self, frames: &[SpectrumFrame], view: &SpectrumFrame) {
+        self.pixels.fill(0);
+        self.rows_filled = 0;
+        self.head = 0;
+        if frames.is_empty() {
+            self.reference = None;
+            return;
+        }
+        let reference = view.clone();
         let rows = (frames.len() as u32).min(self.height);
         for (row, frame) in frames.iter().take(rows as usize).enumerate() {
             for col in 0..self.width {

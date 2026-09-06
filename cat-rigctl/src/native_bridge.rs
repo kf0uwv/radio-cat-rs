@@ -78,12 +78,36 @@ impl NativeRadio for NoNative {
 
 type Pending = (Command, SyncSender<Result<(), String>>);
 
+/// How a host is asked what it has wired. See [`NativeShared::set_installation`].
+pub type InstallationFn = Arc<dyn Fn() -> cat_framework::installation::Installation + Send + Sync>;
+
 /// What the poller publishes and the listener threads read.
 pub struct NativeShared {
     capabilities: &'static RadioCapabilities,
     state: Mutex<Option<RadioState>>,
     spectrum: Mutex<Option<SpectrumFrame>>,
+    /// The newest audio frame, on the same newest-wins terms as spectrum.
+    audio: Mutex<Option<cat_signal::AudioFrame>>,
     queue: Mutex<VecDeque<Pending>>,
+    /// What this machine can see, if the application offered a directory.
+    ///
+    /// `None` declines the question, and a client is told exactly that.
+    /// This bridge deliberately does not know how to enumerate anything:
+    /// sound cards and SDRs are the application's business, and a server
+    /// wired for CAT only should not grow a cpal dependency to say "no".
+    devices: Option<Arc<dyn cat_signal::DeviceDirectory>>,
+    /// The arrangement this radio's console should use, if the
+    /// application authored one.
+    layout: Mutex<Option<cat_layout::LayoutSpec>>,
+    /// The palette this radio's console should use.
+    theme: Mutex<Option<cat_layout::Theme>>,
+    /// How to ask the application what this bench has wired.
+    ///
+    /// A closure, not a value, because it changes underneath: a console
+    /// can attach a source at runtime, and a stored answer would then tell
+    /// the *next* console what was there when the server started. Called
+    /// once per connection, at handshake.
+    installation: Mutex<Option<InstallationFn>>,
 }
 
 impl NativeShared {
@@ -92,7 +116,34 @@ impl NativeShared {
             capabilities,
             state: Mutex::new(None),
             spectrum: Mutex::new(None),
+            audio: Mutex::new(None),
             queue: Mutex::new(VecDeque::new()),
+            devices: None,
+            installation: Mutex::new(None),
+            layout: Mutex::new(None),
+            theme: Mutex::new(None),
+        })
+    }
+
+    /// The same, for a server that can tell clients what its machine has.
+    ///
+    /// A console is not usually on the radio's machine, so its own sound
+    /// cards are not the radio's. This is how the far end gets a truthful
+    /// answer instead of a picker full of the operator's laptop.
+    pub fn with_devices(
+        capabilities: &'static RadioCapabilities,
+        devices: Arc<dyn cat_signal::DeviceDirectory>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            capabilities,
+            state: Mutex::new(None),
+            spectrum: Mutex::new(None),
+            audio: Mutex::new(None),
+            queue: Mutex::new(VecDeque::new()),
+            devices: Some(devices),
+            installation: Mutex::new(None),
+            layout: Mutex::new(None),
+            theme: Mutex::new(None),
         })
     }
 
@@ -103,6 +154,47 @@ impl NativeShared {
     /// monoio runtime would stall every other client while the FFT ran.
     pub fn publish_spectrum(&self, frame: SpectrumFrame) {
         if let Ok(mut slot) = self.spectrum.lock() {
+            *slot = Some(frame);
+        }
+    }
+
+    /// Publish the arrangement this radio's console should use.
+    ///
+    /// Set by the wiring layer from what the radio's own crate authored.
+    /// A server that sets nothing leaves consoles to their own default,
+    /// which is what an older server means by saying nothing.
+    pub fn set_layout(&self, layout: cat_layout::LayoutSpec) {
+        if let Ok(mut slot) = self.layout.lock() {
+            *slot = Some(layout);
+        }
+    }
+
+    /// Publish the palette this radio's console should use.
+    pub fn set_theme(&self, theme: cat_layout::Theme) {
+        if let Ok(mut slot) = self.theme.lock() {
+            *slot = Some(theme);
+        }
+    }
+
+    /// Say how to find out what this bench has wired.
+    ///
+    /// Asked afresh for every connection, so a console that connects after
+    /// somebody attached a source is told about it. One already connected
+    /// learns from the frames themselves — the handshake happens once.
+    pub fn set_installation(&self, installation: InstallationFn) {
+        if let Ok(mut slot) = self.installation.lock() {
+            *slot = Some(installation);
+        }
+    }
+
+    /// Publish an audio frame. Newest wins.
+    ///
+    /// Called from whatever thread owns the sound card, for the same
+    /// reason as `publish_spectrum`: capturing audio is blocking I/O and
+    /// the FFT is real work, and doing either inside the broker's runtime
+    /// would stall every client for the duration.
+    pub fn publish_audio(&self, frame: cat_signal::AudioFrame) {
+        if let Ok(mut slot) = self.audio.lock() {
             *slot = Some(frame);
         }
     }
@@ -158,7 +250,22 @@ impl RadioHost for NativeShared {
             })
     }
 
+    fn devices(&self) -> Option<Vec<cat_signal::DeviceList>> {
+        self.devices.as_ref().map(|d| d.list())
+    }
+
     fn apply(&self, command: &Command) -> Result<(), String> {
+        // Handled here, not queued. The queue goes to the radio over CAT,
+        // and a sound card is not something a Kenwood command set has an
+        // opinion about — an attach sent down it would wait out the
+        // timeout and then report that the radio did not answer, which is
+        // true and entirely beside the point.
+        if let Command::AttachDevice { kind, spec } = command {
+            return match &self.devices {
+                Some(directory) => directory.attach(*kind, spec),
+                None => Err("this server does not offer device selection".to_string()),
+            };
+        }
         let (tx, rx) = sync_channel(1);
         self.queue
             .lock()
@@ -172,6 +279,26 @@ impl RadioHost for NativeShared {
 
     fn spectrum(&self) -> Option<SpectrumFrame> {
         self.spectrum.lock().ok().and_then(|s| s.clone())
+    }
+
+    fn layout(&self) -> Option<cat_layout::LayoutSpec> {
+        self.layout.lock().ok().and_then(|l| l.clone())
+    }
+
+    fn theme(&self) -> Option<cat_layout::Theme> {
+        self.theme.lock().ok().and_then(|t| *t)
+    }
+
+    fn installation(&self) -> cat_framework::installation::Installation {
+        self.installation
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(|f| f()))
+            .unwrap_or_default()
+    }
+
+    fn audio(&self) -> Option<cat_signal::AudioFrame> {
+        self.audio.lock().ok().and_then(|a| a.clone())
     }
 }
 

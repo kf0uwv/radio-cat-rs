@@ -60,6 +60,37 @@ applications via git dependency:
   failure/timeout/skipped, latency, raw request/response text). Not a port
   of any single radio's diagnostics screen — see
   [ADR 0007](docs/adr/0007-shared-diagnostics-engine.md) for the exact API.
+- **`cat-transport-rfc2217`** — serial over TCP with real modem-control
+  line signalling, for a radio on the other end of a terminal server.
+- **`cat-rigctl`** — the Hamlib/rigctld bridge, so WSJT-X and everything
+  else that speaks rigctl works against any radio here. Generic over
+  `CatWireFormat` and driven by `RadioCapabilities`; a radio supplies only
+  a thin `RigctlRadio` impl, which exists because Hamlib mode naming is
+  irreducibly per-radio (the IC-7100 has a `DV` Hamlib cannot name).
+- **`cat-native`** — the typed console protocol: `CapabilitiesWire`,
+  `RadioState`, `FrameKind` (control / spectrum / audio), `Streams`. Served
+  alongside rigctl, not instead of it. Its `testing` module offers a stub
+  host so a console can be exercised with no radio and no emulator.
+- **`cat-layout`** — a console's arrangement and palette as plain data:
+  `PanelKind`, `Node`, `Size`, `LayoutSpec`, `Theme`. **This is the crate
+  that makes one console serve many radios.** Each radio's server authors
+  its own layout and publishes it in the handshake; the consoles render
+  what they are given and never name a radio. `PanelKind::Custom(String)`
+  is the escape hatch for a widget the shared vocabulary lacks.
+- **`cat-signal`** — a normalized `SpectrumSource`, framing and correction,
+  so a waterfall does not care where its samples came from.
+  **`cat-signal-rtlsdr`** and **`cat-signal-audio`** are the two capture
+  backends (an SDR dongle, or a sound card).
+- **`cat-ui`** — what a console shows, independent of any renderer:
+  `RadioDisplay`, the AF scope/FFT model, the click-to-tune `Retune`
+  animation, and the functions that derive tabs, quick controls and the
+  command grammar from a radio's capabilities.
+- **`cat-ui-ratatui`** / **`cat-ui-egui`** — the two consoles themselves,
+  terminal and GPU, shared by every radio. Both render a server-published
+  `LayoutSpec` + `Theme` and derive their bands, modes and meters from the
+  capability document — neither hardcodes a band list. `cat-ui-egui`
+  exposes a `Widgets` painter registry so a radio can draw a
+  `PanelKind::Custom` panel itself.
 - **`cat-rigctl`** — a generic Hamlib `rigctld`-compatible bridge behind a
   `RigctlRadio` trait.
 

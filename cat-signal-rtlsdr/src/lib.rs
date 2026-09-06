@@ -44,6 +44,8 @@
 //! [`IqSource`] for the seam that lets a test drive it.
 
 pub mod dsp;
+/// Opening an IF source, whatever it turns out to be.
+pub mod open;
 pub mod rtl_tcp;
 
 #[cfg(feature = "device")]
@@ -53,8 +55,34 @@ use cat_signal::{
     Access, IfTapConfig, SettingDescriptor, SettingGroup, SettingValue, SignalCapability,
     SpectrumFrame, SpectrumSettings, SpectrumSource, Unit,
 };
+pub use open::{
+    device_spec, open, IfEndpoint, IfSource, IfSourceConfig, OpenError, DEVICE_SPEC_PREFIX,
+};
+
 use dsp::SpectrumPipeline;
 use rustfft::num_complex::Complex32;
+
+/// The sample rates an RTL2832U can actually be set to.
+///
+/// Two disjoint bands, and nothing between or below them. The gap comes
+/// from the silicon's clock divider, so it is the same on every platform
+/// and for every fork of librtlsdr.
+///
+/// **Deliberately not behind the `device` feature.** This is a fact about
+/// the hardware, not about the driver, and the thing that most needs it is
+/// something with no dongle attached at all: `ts570d`'s emulator served its
+/// IF output at 96 kHz for months, which no RTL2832U can produce, and every
+/// test passed because `rtl_tcp` is a socket and a socket carries any rate.
+/// A fixture can only avoid impersonating an impossible device if it can
+/// ask what is possible without linking the driver.
+pub const SAMPLE_RATE_BANDS: [(u32, u32); 2] = [(225_001, 300_000), (900_001, 3_200_000)];
+
+/// Whether `hz` is a rate the hardware can be set to.
+pub fn is_valid_sample_rate(hz: u32) -> bool {
+    SAMPLE_RATE_BANDS
+        .iter()
+        .any(|(low, high)| hz >= *low && hz <= *high)
+}
 
 /// Anything that can hand over a block of IQ samples.
 ///

@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use cat_framework::capabilities::*;
 use cat_native::{
-    Command, Connection, ErrorCode, MeterSample, RadioHost, RadioState, ServerMessage,
+    Command, Connection, ErrorCode, MeterSample, RadioHost, RadioState, ServerMessage, Streams,
 };
 use cat_signal::SpectrumFrame;
 
@@ -185,7 +185,7 @@ fn serve(host: Arc<Dummy>) -> u16 {
 fn a_console_can_finally_see_what_the_radio_is_doing() {
     let host = Dummy::new();
     let port = serve(Arc::clone(&host));
-    let mut conn = Connection::connect(("127.0.0.1", port), false).expect("connect");
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect");
 
     let state = conn.read_state().expect("read state");
     assert_eq!(state.vfo_a_hz, 14_074_000);
@@ -200,7 +200,7 @@ fn a_command_changes_what_the_next_read_reports() {
     // is what makes a dummy radio testable rather than merely reachable.
     let host = Dummy::new();
     let port = serve(Arc::clone(&host));
-    let mut conn = Connection::connect(("127.0.0.1", port), false).expect("connect");
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect");
 
     assert_eq!(
         conn.command(Command::Retune { hz: 7_030_000 }).unwrap(),
@@ -220,7 +220,7 @@ fn reading_a_meter_returns_a_reading_and_not_an_ack() {
     // confirms the question was well-formed and says nothing.
     let host = Dummy::new();
     let port = serve(Arc::clone(&host));
-    let mut conn = Connection::connect(("127.0.0.1", port), false).expect("connect");
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect");
 
     match conn
         .command(Command::ReadMeter { kind: MeterKind::S })
@@ -240,7 +240,7 @@ fn a_meter_the_radio_lacks_is_still_refused_as_unsupported() {
     // has a real answer.
     let host = Dummy::new();
     let port = serve(Arc::clone(&host));
-    let mut conn = Connection::connect(("127.0.0.1", port), false).expect("connect");
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect");
     match conn
         .command(Command::ReadMeter {
             kind: MeterKind::Comp,
@@ -259,7 +259,7 @@ fn a_meter_the_radio_has_but_is_not_reporting_is_not_unsupported() {
     // reasonably stop drawing the row.
     let host = Dummy::new();
     let port = serve(Arc::clone(&host));
-    let mut conn = Connection::connect(("127.0.0.1", port), false).expect("connect");
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect");
     match conn
         .command(Command::ReadMeter {
             kind: MeterKind::Swr,
@@ -278,7 +278,7 @@ fn a_radio_that_refuses_a_command_is_reported_rather_than_silently_ignored() {
     // word, and the client hears about it.
     let host = Dummy::new();
     let port = serve(Arc::clone(&host));
-    let mut conn = Connection::connect(("127.0.0.1", port), false).expect("connect");
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect");
     host.refuse.store(true, Ordering::Relaxed);
     match conn.command(Command::Retune { hz: 7_030_000 }).unwrap() {
         ServerMessage::Error { message, .. } => assert!(message.contains("said no")),
@@ -295,7 +295,7 @@ fn a_command_the_capability_set_refuses_never_reaches_the_radio() {
     // be applied and then reported as an error.
     let host = Dummy::new();
     let port = serve(Arc::clone(&host));
-    let mut conn = Connection::connect(("127.0.0.1", port), false).expect("connect");
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect");
     let reply = conn
         .command(Command::SetFrequency {
             vfo: 0,
@@ -316,6 +316,7 @@ fn state_read_before_the_radio_has_said_anything_is_not_ready_rather_than_zero()
     session.handle(cat_native::ClientMessage::Hello {
         version: cat_native::PROTOCOL_VERSION,
         spectrum: false,
+        audio: false,
     });
     match session.handle(cat_native::ClientMessage::Command(Command::ReadState)) {
         ServerMessage::Error { code, .. } => assert_eq!(code, ErrorCode::NotReady),
@@ -334,7 +335,7 @@ fn spectrum_frames_flow_to_a_client_that_asked_for_them() {
         bins: vec![-90.0; 8],
     });
     let port = serve(Arc::clone(&host));
-    let mut conn = Connection::connect(("127.0.0.1", port), true).expect("connect");
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::spectrum()).expect("connect");
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut got = None;
@@ -360,7 +361,7 @@ fn the_same_frame_is_not_sent_twice() {
         bins: vec![-90.0; 8],
     });
     let port = serve(Arc::clone(&host));
-    let mut conn = Connection::connect(("127.0.0.1", port), true).expect("connect");
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::spectrum()).expect("connect");
 
     // Take the first one.
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -391,7 +392,7 @@ fn a_client_that_declined_spectrum_still_gets_nothing_from_the_listener() {
         bins: vec![-90.0; 8],
     });
     let port = serve(Arc::clone(&host));
-    let mut conn = Connection::connect(("127.0.0.1", port), false).expect("connect");
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect");
     std::thread::sleep(Duration::from_millis(150));
     assert!(conn
         .poll(Some(Duration::from_millis(150)))
@@ -408,8 +409,8 @@ fn two_clients_see_one_radio() {
     // having at all.
     let host = Dummy::new();
     let port = serve(Arc::clone(&host));
-    let mut a = Connection::connect(("127.0.0.1", port), false).expect("connect a");
-    let mut b = Connection::connect(("127.0.0.1", port), false).expect("connect b");
+    let mut a = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect a");
+    let mut b = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect b");
 
     a.command(Command::Retune { hz: 21_074_000 }).unwrap();
     assert_eq!(b.read_state().unwrap().vfo_a_hz, 21_074_000);
@@ -420,7 +421,8 @@ fn the_threaded_client_gets_state_as_an_event() {
     // A frame loop asks and carries on drawing; the answer arrives later.
     let host = Dummy::new();
     let port = serve(Arc::clone(&host));
-    let client = cat_native::Client::connect(("127.0.0.1", port), false).expect("connect");
+    let client =
+        cat_native::Client::connect(("127.0.0.1", port), Streams::none()).expect("connect");
     assert!(client.request_state());
 
     let deadline = Instant::now() + Duration::from_secs(5);

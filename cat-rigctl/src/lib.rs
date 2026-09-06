@@ -78,6 +78,7 @@ mod protocol;
 use std::io;
 
 use async_trait::async_trait;
+use cat_framework::wire_format::CatWireFormat;
 use cat_framework::{CommandId, CommandTable};
 use cat_server::BrokerCatSession;
 use cat_transport_core::CatSession;
@@ -177,9 +178,9 @@ pub struct ServerConfig {
 /// function returns it directly — rather than discarding each task's
 /// result via `let _ = ...` and hardcoding `Ok(())` regardless of outcome.
 #[cfg(target_os = "linux")]
-pub async fn run<C, S, R, F>(
+pub async fn run<C, S, R, F, W>(
     session: S,
-    table: &'static CommandTable<C>,
+    table: &'static CommandTable<C, W>,
     config: ServerConfig,
     make_radio: F,
 ) -> io::Result<()>
@@ -189,6 +190,10 @@ where
     S::Error: std::error::Error + 'static,
     R: RigctlRadio + 'static,
     F: Fn(BrokerCatSession) -> R + Clone + 'static,
+    // The wire format the radio speaks. Defaulted nowhere, because a
+    // caller always has one -- but inferred from `table`, so no existing
+    // call site names it.
+    W: CatWireFormat + Default + Clone + 'static,
 {
     run_with_native(
         session,
@@ -212,9 +217,9 @@ where
 /// Serving consoles needs no `native_port`; without one this is exactly
 /// [`run`] plus an idle task.
 #[cfg(target_os = "linux")]
-pub async fn run_with_native<C, S, R, F, N, G>(
+pub async fn run_with_native<C, S, R, F, N, G, W>(
     session: S,
-    table: &'static CommandTable<C>,
+    table: &'static CommandTable<C, W>,
     config: ServerConfig,
     make_radio: F,
     make_native: G,
@@ -228,6 +233,7 @@ where
     F: Fn(BrokerCatSession) -> R + Clone + 'static,
     N: native_bridge::NativeRadio + 'static,
     G: FnOnce(BrokerCatSession) -> N + 'static,
+    W: CatWireFormat + Default + Clone + 'static,
 {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -357,9 +363,9 @@ where
 /// backend at all. `--rigctl-port` now works identically on both
 /// platforms.
 #[cfg(target_os = "windows")]
-pub fn run<C, S, R, F>(
+pub fn run<C, S, R, F, W>(
     session: S,
-    table: &'static CommandTable<C>,
+    table: &'static CommandTable<C, W>,
     config: ServerConfig,
     make_radio: F,
 ) -> io::Result<()>
@@ -388,9 +394,9 @@ where
 /// crate's Windows path uses, and the reason `NativeRadio` is `?Send`
 /// async rather than requiring a full executor.
 #[cfg(target_os = "windows")]
-pub fn run_with_native<C, S, R, F, N, G>(
+pub fn run_with_native<C, S, R, F, N, G, W>(
     session: S,
-    table: &'static CommandTable<C>,
+    table: &'static CommandTable<C, W>,
     config: ServerConfig,
     make_radio: F,
     make_native: G,

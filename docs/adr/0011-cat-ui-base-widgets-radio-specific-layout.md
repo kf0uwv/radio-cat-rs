@@ -225,3 +225,59 @@ is recorded explicitly in that app's `docs/renderer-parity.md`.
   genuinely irreconcilable difference surfaces mid-task rather than in a
   planning document. Such a case is escalated, not resolved by widening the
   shared widget.
+
+---
+
+## Amendment, 2026-09-02 — the console itself is shared, the window is not
+
+This ADR drew the line at *base widgets*: `cat-ui-egui` owned meters and a
+waterfall, and each app owned its console. A second radio needing a GUI
+showed that line was in the wrong place.
+
+`ts570d/gui/src/app.rs` was 1442 lines with **one** radio-specific mention
+in it, and that one a demo status string. Everything it drew it derived
+from `CapabilitiesWire`. Copying it per radio would have produced consoles
+that agreed until one was edited — the failure ADR 0013 exists to prevent,
+arriving by a different road.
+
+So `cat-ui-egui` now owns the whole console: `app`, `readout`, `devices`,
+`theme`, `tuning`. An app supplies a `main.rs` and a newtype whose body
+forwards to `Console::draw`.
+
+**The seam this ADR drew is otherwise kept exactly.** `eframe` stays out of
+this crate: a window and its event loop belong to a binary. That is why
+the forwarding newtype exists rather than an `impl eframe::App` here, and
+it is also what lets the offscreen renderer draw a console with no window
+at all.
+
+The acceptance bar was the same one this ADR set for the widget migration
+— the operator sees no change — and it was met literally: the offscreen
+still before and after the lift compares with no differing region.
+
+## Amendment, 2026-09-02 (second) — the terminal console moved too
+
+The same argument, one crate over. `ts570d/ui/src/console.rs` was 1805
+lines whose only radio-specific parts were **two**: an S-meter table read
+from one radio's static declaration, and a lookup that parsed a mode label
+back into a typed mode.
+
+Both are questions the capability document already answers, so
+`cat-ui-ratatui::console` now takes a `&CapabilitiesWire` and reads them
+from it. `cat_ui::display::RadioDisplay` moved with it — the console's view
+of a radio, 39 fields and none of them Kenwood.
+
+**The label lookup is gone rather than moved.** Parsing "CW" back into a
+mode works for exactly one radio's spelling; the next writes "CW-U" and a
+third has "DATA-U" with no counterpart at all. `RadioDisplay` now carries
+`mode_id` beside the label — the label is what an operator reads, the id
+is what code decides with — and the passband comes from
+`cat_ui::af::passband_for`, which reads the width the radio itself
+published.
+
+**`MeterReading::from_wire`** was added at the same time, because both
+renderers had written that scaling out separately. One path now: a
+TS-570D's 0-30 against an S-unit table and an FT-991A's uncalibrated 0-255
+cannot end up drawn to each other's scale.
+
+Acceptance was again "the operator sees no change", checked live against
+the emulator: same tabs, same meter labels, same AF panels.

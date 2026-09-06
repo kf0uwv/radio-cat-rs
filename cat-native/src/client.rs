@@ -103,6 +103,43 @@ type Result<T> = std::result::Result<T, ClientError>;
 
 /// A blocking connection to a native-protocol server.
 ///
+/// Which continuous streams a client wants.
+///
+/// A struct rather than a pair of bools, because two bools in a row at a
+/// call site is the argument order nobody gets right — and `connect(addr,
+/// true, false)` says nothing about which is which. Each is a separate
+/// opt-in: a console running a waterfall with no AF panels should not be
+/// sent audio it will throw away, and one drawing only meters wants
+/// neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Streams {
+    pub spectrum: bool,
+    pub audio: bool,
+}
+
+impl Streams {
+    /// Control messages only.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// The band panorama, and nothing else.
+    pub fn spectrum() -> Self {
+        Self {
+            spectrum: true,
+            audio: false,
+        }
+    }
+
+    /// Everything the server will send.
+    pub fn all() -> Self {
+        Self {
+            spectrum: true,
+            audio: true,
+        }
+    }
+}
+
 /// Handshaken on construction, so a `Connection` that exists has already
 /// agreed a version and holds the radio's capabilities. There is no
 /// "connected but not yet ready" state for a caller to forget to check.
@@ -120,35 +157,39 @@ pub struct Connection {
     /// Spectrum frames that arrived while waiting for a control reply.
     /// Only the newest is kept — see this module's docs.
     latest_spectrum: Option<SpectrumFrame>,
-    spectrum_enabled: bool,
+    /// The newest audio frame, on the same newest-wins terms.
+    latest_audio: Option<cat_signal::AudioFrame>,
+    streams: Streams,
 }
 
 impl Connection {
     /// Connect and complete the handshake.
     ///
-    /// `spectrum` decides whether this client receives spectrum frames at
-    /// all. Declining costs nothing and receives nothing: the server sends
-    /// not one byte of frame traffic to a client that said `false`.
-    pub fn connect<A: ToSocketAddrs>(addr: A, spectrum: bool) -> Result<Self> {
+    /// `streams` decides which continuous frames this client receives.
+    /// Declining costs nothing and receives nothing: the server sends not
+    /// one byte of frame traffic a client did not ask for.
+    pub fn connect<A: ToSocketAddrs>(addr: A, streams: Streams) -> Result<Self> {
         let stream = TcpStream::connect(addr)?;
         // Nagle would batch small control writes behind each other, which
         // on a request/response protocol is latency for no benefit.
         stream.set_nodelay(true)?;
-        Self::handshake(stream, spectrum)
+        Self::handshake(stream, streams)
     }
 
-    fn handshake(stream: TcpStream, spectrum: bool) -> Result<Self> {
+    fn handshake(stream: TcpStream, streams: Streams) -> Result<Self> {
         let mut conn = Self {
             stream,
             capabilities: placeholder_capabilities(),
             pending: Vec::new(),
             inbox: std::collections::VecDeque::new(),
             latest_spectrum: None,
-            spectrum_enabled: spectrum,
+            latest_audio: None,
+            streams,
         };
         conn.send(&ClientMessage::Hello {
             version: PROTOCOL_VERSION,
-            spectrum,
+            spectrum: streams.spectrum,
+            audio: streams.audio,
         })?;
         match conn.read_control()? {
             ServerMessage::Welcome {
@@ -175,7 +216,17 @@ impl Connection {
 
     /// Whether this connection asked for spectrum frames.
     pub fn spectrum_enabled(&self) -> bool {
-        self.spectrum_enabled
+        self.streams.spectrum
+    }
+
+    /// Which continuous streams this connection asked for.
+    pub fn streams(&self) -> Streams {
+        self.streams
+    }
+
+    /// The most recent audio frame seen, if any, clearing it.
+    pub fn take_audio(&mut self) -> Option<cat_signal::AudioFrame> {
+        self.latest_audio.take()
     }
 
     /// Send a command and wait for its reply.
@@ -195,6 +246,48 @@ impl Connection {
     pub fn read_state(&mut self) -> Result<crate::RadioState> {
         match self.command(Command::ReadState)? {
             ServerMessage::State(state) => Ok(*state),
+            other => Err(ClientError::Unexpected(other)),
+        }
+    }
+
+    /// Ask what signal hardware the *radio's* host can see.
+    ///
+    /// `Ok(None)` means the server declines the question -- it does not
+    /// offer device selection. That is deliberately not the same as
+    /// `Ok(Some(vec![]))`, which would be the server asserting its machine
+    /// has nothing attached. A console shows those differently, because
+    /// "plug something in" and "this server cannot help you from here"
+    /// send an operator to opposite ends of the shack.
+    ///
+    /// A server built before this command existed cannot deserialize the
+    /// `cmd` tag and answers `Malformed`. That is reported as `Ok(None)`
+    /// too: from a console's side an old server and a declining one are
+    /// the same situation, and neither is a fault worth an error dialog.
+    pub fn read_devices(&mut self) -> Result<Option<Vec<cat_signal::DeviceList>>> {
+        match self.command(Command::ReadDevices)? {
+            ServerMessage::Devices { lists } => Ok(Some(lists)),
+            ServerMessage::Error {
+                code: crate::ErrorCode::Unsupported | crate::ErrorCode::Malformed,
+                ..
+            } => Ok(None),
+            other => Err(ClientError::Unexpected(other)),
+        }
+    }
+
+    /// Ask the radio's host to attach one of the devices it offered.
+    ///
+    /// `spec` must come from a [`cat_signal::DeviceInfo`] the server sent,
+    /// not be composed here: device specs are the host's namespace.
+    ///
+    /// `Err(ClientError::Unexpected(Error { .. }))` carries the host's own
+    /// refusal message, which is the useful thing to show -- "device or
+    /// resource busy" tells an operator far more than "attach failed".
+    pub fn attach_device(&mut self, kind: cat_signal::DeviceKind, spec: &str) -> Result<()> {
+        match self.command(Command::AttachDevice {
+            kind,
+            spec: spec.to_string(),
+        })? {
+            ServerMessage::Ack => Ok(()),
             other => Err(ClientError::Unexpected(other)),
         }
     }
@@ -295,6 +388,11 @@ impl Connection {
                                 self.latest_spectrum = Some(frame);
                             }
                         }
+                        FrameKind::Audio => {
+                            if let Some(frame) = crate::decode_audio_payload(payload) {
+                                self.latest_audio = Some(frame);
+                            }
+                        }
                     }
                     consumed += used;
                 }
@@ -362,6 +460,8 @@ fn placeholder_capabilities() -> CapabilitiesWire {
         memory: None,
         menu: None,
         signal: cat_framework::capabilities::SignalSupport::None,
+        layout: None,
+        theme: None,
         installation: cat_framework::installation::Installation::default(),
     }
 }
@@ -378,6 +478,27 @@ pub enum Event {
     Disconnected(String),
 }
 
+/// A handle that can queue commands from anywhere.
+///
+/// A [`Client`] cannot be shared -- its event receiver is `!Sync` -- but
+/// the *sending* half can be, and often has to be: a console's device
+/// picker runs in a closure that has no access to the radio it is
+/// attached to, and a background task may want to retune without owning
+/// the connection.
+///
+/// Sending is fire-and-forget. The server's answer, `Ack` or `Error`,
+/// arrives through the `Client`'s events like any other, so a holder of a
+/// sink cannot see the outcome and should not pretend to.
+#[derive(Clone)]
+pub struct CommandSink(Sender<ClientMessage>);
+
+impl CommandSink {
+    /// Queue a command. `false` means the connection is gone.
+    pub fn send(&self, command: Command) -> bool {
+        self.0.send(ClientMessage::Command(command)).is_ok()
+    }
+}
+
 /// A [`Connection`] with a reader thread in front of it.
 ///
 /// The shape a frame loop needs: nothing here blocks. Spectrum frames land
@@ -388,6 +509,7 @@ pub struct Client {
     commands: Sender<ClientMessage>,
     events: Receiver<Event>,
     spectrum: Arc<Mutex<Option<SpectrumFrame>>>,
+    audio: Arc<Mutex<Option<cat_signal::AudioFrame>>>,
     capabilities: CapabilitiesWire,
 }
 
@@ -398,14 +520,16 @@ impl Client {
     /// deliberate: a caller that gets a `Client` back has already been
     /// told the radio's capabilities, so a GUI never has to render an
     /// "unknown radio" state that exists for a few milliseconds.
-    pub fn connect<A: ToSocketAddrs>(addr: A, spectrum: bool) -> Result<Self> {
-        let mut conn = Connection::connect(addr, spectrum)?;
+    pub fn connect<A: ToSocketAddrs>(addr: A, streams: Streams) -> Result<Self> {
+        let mut conn = Connection::connect(addr, streams)?;
         let capabilities = conn.capabilities().clone();
 
         let (command_tx, command_rx) = mpsc::channel::<ClientMessage>();
         let (event_tx, event_rx) = mpsc::channel::<Event>();
         let slot: Arc<Mutex<Option<SpectrumFrame>>> = Arc::new(Mutex::new(None));
         let thread_slot = Arc::clone(&slot);
+        let audio_slot: Arc<Mutex<Option<cat_signal::AudioFrame>>> = Arc::new(Mutex::new(None));
+        let thread_audio = Arc::clone(&audio_slot);
 
         std::thread::spawn(move || {
             loop {
@@ -435,6 +559,16 @@ impl Client {
                         return;
                     }
                 }
+                // `poll` decodes every frame kind and reports only the
+                // spectrum; the audio it decoded is waiting in the
+                // connection. Same newest-wins terms: a console redrawing
+                // at its own rate should see the latest trace, not work
+                // through a backlog of stale ones.
+                if let Some(frame) = conn.take_audio() {
+                    if let Ok(mut guard) = thread_audio.lock() {
+                        *guard = Some(frame);
+                    }
+                }
 
                 // Anything decoded as a control frame during that poll is
                 // waiting in the connection; hand it on.
@@ -459,6 +593,7 @@ impl Client {
             commands: command_tx,
             events: event_rx,
             spectrum: slot,
+            audio: audio_slot,
             capabilities,
         })
     }
@@ -496,5 +631,41 @@ impl Client {
     /// spectrum, and a backlog of stale frames is worse than none.
     pub fn take_spectrum(&self) -> Option<SpectrumFrame> {
         self.spectrum.lock().ok().and_then(|mut g| g.take())
+    }
+
+    /// The most recent audio frame seen, if any, clearing it.
+    pub fn take_audio(&self) -> Option<cat_signal::AudioFrame> {
+        self.audio.lock().ok().and_then(|mut g| g.take())
+    }
+
+    /// The slot the reader thread drops audio frames into.
+    ///
+    /// For the same reason as [`Client::spectrum_slot`]: the AF panels are
+    /// drawn by whatever thread owns them, which is not this one.
+    pub fn audio_slot(&self) -> Arc<Mutex<Option<cat_signal::AudioFrame>>> {
+        Arc::clone(&self.audio)
+    }
+
+    /// A handle for queueing commands from somewhere this client is not.
+    pub fn sink(&self) -> CommandSink {
+        CommandSink(self.commands.clone())
+    }
+
+    /// The slot the reader thread drops frames into.
+    ///
+    /// A `Client` cannot itself be shared across threads -- its event
+    /// receiver is `!Sync` -- but a spectrum consumer is usually somewhere
+    /// else entirely: a console's waterfall runs on its own thread so that
+    /// an FFT redraw cannot stall the radio poll. Handing out the slot
+    /// lets that thread read frames without the rest of the client coming
+    /// with it.
+    ///
+    /// Newest-wins, and `take`-shaped: a consumer that falls behind skips
+    /// frames rather than accumulating a backlog it would then draw late.
+    /// That is the right trade for a waterfall and the wrong one for
+    /// anything that must see every frame, which is why this is a slot
+    /// and not a channel.
+    pub fn spectrum_slot(&self) -> Arc<Mutex<Option<SpectrumFrame>>> {
+        Arc::clone(&self.spectrum)
     }
 }

@@ -33,7 +33,7 @@ use std::time::Duration;
 use cat_framework::capabilities::*;
 use cat_native::{
     decode_frame, encode_frame, ClientMessage, Command, Connection, FrameError, FrameKind,
-    NativeSession, ServerMessage,
+    NativeSession, ServerMessage, Streams,
 };
 use cat_signal::SpectrumFrame;
 
@@ -165,7 +165,7 @@ fn a_connection_that_exists_has_already_been_told_what_the_radio_is() {
     // There is no "connected but not yet handshaken" state to forget to
     // check: `connect` either returns capabilities or returns an error.
     let port = serve(Extra::Nothing);
-    let conn = Connection::connect(("127.0.0.1", port), false).expect("connect");
+    let conn = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect");
     assert_eq!(conn.capabilities().model, "Socket Test Radio");
     assert_eq!(conn.capabilities().modes.len(), 1);
     assert_eq!(conn.capabilities().rx_range.max_hz, 60_000_000);
@@ -177,7 +177,7 @@ fn the_radios_s_unit_table_survives_the_socket() {
     // mirror, so a remote console reads the same S-units as a local one
     // instead of quietly falling back to an interpolated scale.
     let port = serve(Extra::Nothing);
-    let conn = Connection::connect(("127.0.0.1", port), false).expect("connect");
+    let conn = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect");
     let s = conn.capabilities().meters[0]
         .s_units
         .expect("the table crossed the wire");
@@ -189,7 +189,7 @@ fn the_if_tap_orientation_survives_the_socket() {
     // A client that lost `inverted` would mirror every signal about the
     // dial and look entirely plausible doing it.
     let port = serve(Extra::Nothing);
-    let conn = Connection::connect(("127.0.0.1", port), false).expect("connect");
+    let conn = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect");
     match conn.capabilities().signal {
         SignalSupport::IfTapPoint {
             if_center_hz,
@@ -205,7 +205,7 @@ fn the_if_tap_orientation_survives_the_socket() {
 #[test]
 fn a_command_gets_its_own_reply_back() {
     let port = serve(Extra::Nothing);
-    let mut conn = Connection::connect(("127.0.0.1", port), false).expect("connect");
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect");
     let reply = conn
         .command(Command::SetFrequency {
             vfo: 0,
@@ -220,7 +220,7 @@ fn a_command_the_radio_cannot_do_is_refused_over_the_wire_too() {
     // Capability validation is the session's job, but a client has to be
     // able to *see* the refusal, with a code rather than English prose.
     let port = serve(Extra::Nothing);
-    let mut conn = Connection::connect(("127.0.0.1", port), false).expect("connect");
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect");
     let reply = conn
         .command(Command::SetFrequency {
             vfo: 0,
@@ -240,7 +240,7 @@ fn a_client_that_declines_spectrum_receives_not_one_byte_of_it() {
     // Asserted in-process already. Asserted here on an actual socket,
     // because "receives no frames" is a claim about the wire.
     let port = serve(Extra::SpectrumBurst(8));
-    let mut conn = Connection::connect(("127.0.0.1", port), false).expect("connect");
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect");
     conn.ping().expect("ping");
     assert!(conn.take_spectrum().is_none());
     assert!(conn
@@ -255,7 +255,7 @@ fn a_burst_of_spectrum_frames_collapses_to_the_newest() {
     // worse than none: the UI would spend its catching-up drawing
     // spectra that are no longer true.
     let port = serve(Extra::SpectrumBurst(8));
-    let mut conn = Connection::connect(("127.0.0.1", port), true).expect("connect");
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::spectrum()).expect("connect");
     // Give the burst time to arrive, then read it all in one go.
     std::thread::sleep(Duration::from_millis(100));
     let frame = conn
@@ -279,7 +279,7 @@ fn a_reply_arriving_behind_spectrum_frames_is_not_lost() {
     // for frames in its draw loop would lose command replies at random,
     // which is the worst kind of bug to go looking for later.
     let port = serve(Extra::SpectrumBurst(4));
-    let mut conn = Connection::connect(("127.0.0.1", port), true).expect("connect");
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::spectrum()).expect("connect");
     std::thread::sleep(Duration::from_millis(100));
 
     // Drain the burst with a poll, then ask a question.
@@ -317,7 +317,7 @@ fn a_frame_split_across_two_reads_still_decodes() {
         std::thread::sleep(Duration::from_millis(200));
     });
 
-    let conn = Connection::connect(("127.0.0.1", port), false).expect("connect");
+    let conn = Connection::connect(("127.0.0.1", port), Streams::none()).expect("connect");
     assert_eq!(conn.capabilities().model, "Socket Test Radio");
 }
 
@@ -329,7 +329,7 @@ fn a_server_that_hangs_up_is_reported_rather_than_hung_on() {
         let (stream, _) = listener.accept().expect("accept");
         drop(stream);
     });
-    let err = Connection::connect(("127.0.0.1", port), false)
+    let err = Connection::connect(("127.0.0.1", port), Streams::none())
         .err()
         .expect("connecting to a server that hangs up must fail");
     // Whether this arrives as a clean EOF or as RST depends on whether the
@@ -355,7 +355,7 @@ fn garbage_on_the_wire_is_a_frame_error_and_not_a_panic() {
         let _ = stream.flush();
         std::thread::sleep(Duration::from_millis(200));
     });
-    let err = Connection::connect(("127.0.0.1", port), false)
+    let err = Connection::connect(("127.0.0.1", port), Streams::none())
         .err()
         .expect("an unknown frame kind must not be accepted");
     assert!(
@@ -372,7 +372,7 @@ fn the_threaded_client_hands_a_frame_loop_what_it_needs_without_blocking() {
     // The shape a GUI uses: capabilities up front, spectrum newest-wins,
     // replies on a channel, and nothing that waits on a socket.
     let port = serve(Extra::SpectrumBurst(4));
-    let client = cat_native::Client::connect(("127.0.0.1", port), true).expect("connect");
+    let client = cat_native::Client::connect(("127.0.0.1", port), Streams::all()).expect("connect");
     assert_eq!(client.capabilities().model, "Socket Test Radio");
 
     assert!(client.send(Command::SetMode { mode: ModeId::Usb }));
@@ -432,7 +432,7 @@ fn connecting_to_nothing_fails_promptly() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    assert!(Connection::connect(("127.0.0.1", port), false).is_err());
+    assert!(Connection::connect(("127.0.0.1", port), Streams::none()).is_err());
 }
 
 /// Keeps `TcpStream` imported meaningfully if the above ever changes.

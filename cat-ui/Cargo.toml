@@ -15,3 +15,20 @@ description = "Renderer-agnostic presentation logic for radio consoles: formatti
 [dependencies]
 cat-framework = { path = "../cat-framework" }
 cat-signal = { path = "../cat-signal" }
+# The capability document a console is handed. These modules derive the
+# whole console structure from it -- which tabs exist, which quick controls
+# exist, what the command line will accept -- so both renderers must read
+# the same one. A TUI holding a `RadioCapabilities` converts with the
+# existing `CapabilitiesWire::from(&RadioCapabilities)`.
+cat-native = { path = "../cat-native" }
+
+# Layouts cross the wire: a radio's server says how its console is
+# arranged, so the description has to serialize. No `serde_json` here --
+# this crate has no opinion about the encoding, only that its types can be
+# encoded.
+serde = { workspace = true }
+
+[dev-dependencies]
+# Round-tripping a layout in tests. The crate itself has no opinion about
+# the encoding; the protocol picks one.
+serde_json = { workspace = true }

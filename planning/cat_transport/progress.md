@@ -1711,3 +1711,93 @@ Not committed, per standing rule. This completes ADR 0004's dispatch queue
 (Tasks 6/7/8, all now landed) — no further Windows serial-backend work is
 authorized or outstanding in this queue. STOPPING here per the
 one-task-at-a-time workflow.
+
+## 2026-09-01 — `cat-transport-rfc2217` (ADR 0016)
+
+New crate: a serial port, with its modem control lines, over TCP.
+
+### Why it was needed
+`ts570d`'s emulator hosts CAT on a pseudo-terminal, and Linux ptys implement
+**no** modem-control ioctls — `TIOCMGET`/`TIOCMBIS`/`TIOCMBIC` all return
+`ENOTTY` on both ends (measured, kernel 7.0.0). That station keys PTT from
+DTR, so no virtual radio could observe the one signal its interface is built
+on, and `SerialPort::open`'s `let _ = port.set_dtr(true)` made the failure
+silent. See `ts570d` ADR 0009.
+
+### Shape
+- `codec.rs` — pure Telnet + Com Port Control Option, both directions, no I/O.
+- `port.rs` — `Rfc2217Port: Transport + ModemControlLines`. Deliberately not
+  a `CatSession`: `SerialCatSession<Rfc2217Port>` already frames it and
+  already forwards the lines, so no framing code is duplicated.
+- `server.rs` — `Rfc2217Peer`, the device-server half of one connection,
+  also I/O-free. The emulator supplies only its sockets, so one
+  implementation of the protocol exists.
+
+### Decisions taken during implementation, for review
+1. **A reader thread, not a request/response worker.** `ModemControlLines`
+   is synchronous and a serial link is quiet for long stretches; a worker
+   parked in a read would queue `set_dtr` behind it and swallow a PTT key.
+   Writes go out through a separate mutex-guarded write half.
+2. **`cat_signal::synthetic::Emitter::envelope` made `pub`** (a change in
+   `cat-signal`, not this crate). The emulator's ACC2 receive-audio pin and
+   the IQ path must agree about when a station is transmitting; the only way
+   to guarantee that is for both to ask the same emitter.
+3. **First notification after a client subscribes always fires**, even when
+   every subscribed line is low — a client has no other way to learn where
+   the lines stand, and "not notified yet" and "all low" would otherwise be
+   indistinguishable.
+
+### A real bug this found
+`Rfc2217Port` had no `Drop`. The reader thread holds its own `Arc`, so
+dropping the last port closed nothing: the socket stayed open and the peer
+never saw a disconnect. On a DTR-keyed station that is a **transmitter left
+keyed by a program that has already exited**. Found by
+`emulator/tests/acc2_if.rs::unplugging_while_keyed_does_not_leave_the_transmitter_up`,
+not by review. Fixed with a `Drop` that shuts the socket down both ways, and
+pinned by `loopback.rs::dropping_the_port_disconnects_the_peer`.
+
+### Verification
+- `cargo test -p cat-transport-rfc2217`: 23 unit + 7 loopback pass.
+- `cargo test --workspace`: **570 passed, 0 failed** (was 541).
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo fmt`: applied.
+
+### Not done
+Line-state notification, flow-control suspend/resume and `PURGE-DATA` are
+decoded and handed to the caller, but nothing acts on them — no consumer
+here needs them.
+
+### 2026-09-01 (later) — a third bug, found only by running the application
+
+`cat-transport-rfc2217`'s reader thread wakes the task suspended in
+`Transport::read` from a different OS thread. Sound against
+`std::task::Waker`'s contract, and exactly what `completion` was built for —
+but **monoio's waker panics on a cross-thread wake unless its `sync` feature
+is enabled**:
+
+```
+thread 'rfc2217-reader' panicked at monoio/src/task/harness.rs:197:17:
+waker can only be sent across threads when `sync` feature enabled
+```
+
+Nothing here could have caught it. This crate's loopback tests use
+`futures::executor::block_on`, whose waker *is* thread-safe; so do the
+emulator's. `cat-transport-tcp`'s Windows backend uses the same primitive and
+never trips it, because there is no monoio on Windows. **This is the
+workspace's first cross-thread wake into a monoio task**, so there was no
+prior art and no test shaped to catch it. It surfaced the first time
+`ts570d`'s TUI was pointed at `--rfc2217`.
+
+The crate cannot enforce the requirement — it has no monoio dependency at
+all, which is the design working, not a gap. So it is documented in
+`lib.rs` and in ADR 0016's Consequences, and the executable guard lives in
+`ts570d/tests/rfc2217_under_monoio.rs`, next to the runtime and the feature
+flag.
+
+Worth recording how the guard had to be written: without the feature the
+reader thread's panic unwinds *that thread only*, so the suspended task is
+never woken and the failure mode is a **hang, not a red test** (confirmed —
+an un-timeouted version of the guard sat for five minutes and reported
+nothing). Every read in the guard is therefore wrapped in
+`monoio::time::timeout`, which was itself verified against a peer that
+accepts and never answers.

@@ -4,6 +4,7 @@ members = [
     "cat-transport-core",
     "cat-transport-serial",
     "cat-transport-tcp",
+    "cat-transport-rfc2217",
     "cat-transport-udp",
     "cat-client",
     "cat-native",
@@ -12,9 +13,11 @@ members = [
     "cat-diagnostics",
     "cat-signal",
     "cat-signal-rtlsdr",
+    "cat-signal-audio",
     "cat-ui",
     "cat-ui-ratatui",
     "cat-ui-egui",
+    "cat-layout",
 ]
 resolver = "2"
 
@@ -53,6 +56,10 @@ serde_json = "1.0"
 # ADR 0011 rev 4's acceptance bar for that migration is that the operator
 # sees no change.
 ratatui = { version = "0.26.3", features = ["crossterm"] }
+
+# Key events. `cat-ui-ratatui`'s console interprets them; reading them from
+# a terminal stays with each app, which owns the event loop.
+crossterm = { version = "0.27.0", features = ["event-stream"] }
 
 # Immediate-mode GUI. The widget crate depends on `egui` alone; `eframe`
 # (window + event loop + wgpu surface) belongs to each app's own binary,

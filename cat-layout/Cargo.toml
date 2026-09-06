@@ -1,0 +1,19 @@
+[package]
+name = "cat-layout"
+version = "0.7.3"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+description = "How a radio's console is arranged, said by the radio's own server"
+
+# Pure data and one solver. No rendering, no I/O, and deliberately no
+# dependency on `cat-ui` or either renderer: a layout is published by a
+# server and read by a console, so it has to sit below both. It cannot
+# live in `cat-ui` either, because `cat-ui` depends on `cat-native` and
+# `cat-native` is what carries a layout on the wire.
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

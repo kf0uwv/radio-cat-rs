@@ -36,3 +36,15 @@ device = ["dep:rtlsdr"]
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 rtlsdr = { version = "0.1", optional = true }
+
+# The diagnostic needs the driver it is diagnosing, so it is not built in a
+# default `cargo test --workspace`. Without this, `cargo clippy
+# --all-targets` tries to compile it against a `device` module that is not
+# there.
+[[example]]
+name = "enumerate"
+required-features = ["device"]
+
+[[example]]
+name = "capture"
+required-features = ["device"]

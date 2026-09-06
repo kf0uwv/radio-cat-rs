@@ -115,6 +115,35 @@ impl AudioScopeFrame {
     }
 }
 
+/// One block of audio, in both domains.
+///
+/// The scope trace and the AF spectrum come from the **same samples** and
+/// share a sequence number, so a console cannot draw a trace and a spectrum
+/// that disagree about what the radio was doing. That is why this is a pair
+/// rather than two independently pumped streams.
+///
+/// Neither half is a [`cat_signal::SpectrumFrame`] and neither can be
+/// positioned on a band axis — see `cat-signal`'s `audio` module for why
+/// that distinction is enforced by the type system rather than by a doc
+/// comment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioFrame {
+    pub scope: AudioScopeFrame,
+    pub spectrum: AudioSpectrumFrame,
+}
+
+impl AudioFrame {
+    /// The shared sequence number of both halves.
+    ///
+    /// Stamped by the **producer**, so a gap here means frames were
+    /// genuinely dropped between the radio and this console — unlike
+    /// `SpectrumFrame::sequence`, which `cat-signal-rtlsdr` stamps on
+    /// delivery and which therefore never shows a gap.
+    pub fn sequence(&self) -> u64 {
+        self.scope.sequence
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

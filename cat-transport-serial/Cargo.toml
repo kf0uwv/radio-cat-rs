@@ -22,6 +22,9 @@ path = "src/bin/pin_test.rs"
 
 [dependencies]
 cat-transport-core = { path = "../cat-transport-core" }
+# `FrameScanner`, so a session knows where a frame ends. `cat-transport-core`
+# already depends on `cat-framework`, so this adds no new edge to the graph.
+cat-framework = { path = "../cat-framework" }
 
 # Async trait support (compatible with !Send futures for monoio).
 async-trait = { workspace = true }

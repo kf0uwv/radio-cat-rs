@@ -13,6 +13,11 @@ description = "GPU-rendered widgets for a radio console: waterfall, spectrum plo
 cat-ui = { path = "../cat-ui" }
 cat-framework = { path = "../cat-framework" }
 cat-signal = { path = "../cat-signal" }
+# The console protocol. This crate now hosts the whole console, not just
+# widgets, and a console is a protocol client -- see `console`.
+cat-native = { path = "../cat-native" }
+# The layout and palette a radio's server publishes.
+cat-layout = { path = "../cat-layout" }
 
 # `egui` only, not `eframe`. eframe is the application framework -- window
 # creation, the event loop, the wgpu surface -- and per ADR 0011 that

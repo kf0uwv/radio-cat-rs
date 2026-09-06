@@ -1,0 +1,25 @@
+[package]
+name = "cat-transport-rfc2217"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "RFC 2217 CAT transport: a serial port, with its modem control lines, reached over TCP."
+
+[dependencies]
+cat-transport-core = { path = "../cat-transport-core" }
+
+# Async trait support (compatible with !Send futures for monoio).
+async-trait = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The port is exercised through the framing layer that will really sit on
+# top of it, not through its own internals.
+cat-transport-serial = { path = "../cat-transport-serial" }
+futures = { workspace = true }

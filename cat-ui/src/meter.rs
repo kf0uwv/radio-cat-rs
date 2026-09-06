@@ -71,6 +71,26 @@ impl MeterReading {
             .map(|descriptor| Self::from_descriptor(descriptor, raw))
     }
 
+    /// The same, from what a *server* published about its meters.
+    ///
+    /// A console on the far end of a socket has `MeterDescriptorWire`s and
+    /// not the radio's own static declaration. Both renderers had written
+    /// this scaling out separately — which is how one ends up drawing an
+    /// S9 where the other draws an S7 for the same reading — so there is
+    /// one path now.
+    pub fn from_wire(
+        meters: &[cat_native::MeterDescriptorWire],
+        kind: MeterKind,
+        raw: u16,
+    ) -> Option<Self> {
+        let descriptor = meters.iter().find(|m| m.kind == kind)?;
+        let mut reading = Self::new(descriptor.kind, raw, descriptor.raw_range);
+        if let Some(scale) = descriptor.s_units {
+            reading = reading.with_s_units(scale);
+        }
+        Some(reading)
+    }
+
     pub fn from_descriptor(descriptor: &MeterDescriptor, raw: u16) -> Self {
         Self {
             kind: descriptor.kind,

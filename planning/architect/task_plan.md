@@ -858,3 +858,108 @@ The earlier list stands, with these corrections:
 - **Added: each app's `docs/renderer-parity.md`**, the ADR 0013 exception
   table. Created during the app-side passes, seeded by whatever Tasks 18 and
   20 report.
+
+## Remote device enumeration over the native protocol (2026-09-02)
+
+**Why.** A console that does not own the radio must not offer its own
+machine's hardware as the radio's. `ts570d`'s TUI now says so honestly
+(`ConsoleSources::remote()`), but honesty is the floor. The GUI is a
+native-protocol client (ADR 0008 §3) and can do better: ask the server
+what the *radio's* host can see.
+
+**Scope check first.** Two remote paths exist and only one can carry this:
+
+| console | transport | can carry devices? |
+|---|---|---|
+| TUI `--server <addr>` | raw CAT TCP -> `--raw-tcp-port` | No. A Kenwood byte pipe has no capability concept; `remote()` is the permanent answer unless the TUI gains a native mode. |
+| GUI | native protocol -> `--console-port` | Yes. Typed, versioned, already carries `CapabilitiesWire` + `Installation`. |
+
+**Not a new `Installation`.** `Installation` answers "what is wired and
+streaming". This answers "what *could* be attached", which is a different
+question asked at a different time. They compose; neither replaces the other.
+
+Steps:
+1. `cat-native`: `Command::ReadDevices` / `Command::AttachDevice`,
+   `ServerMessage::Devices`, `publish_devices`/`published_devices` mirroring
+   the state pattern so `NativeSession` stays I/O-free.
+2. `cat-native::server::RadioHost::devices()` -> `Option<Vec<DeviceList>>`,
+   defaulting to `None` = "this server does not offer device selection".
+   Attach rides the existing `apply` seam.
+3. Client: `read_devices()` mapping both `Unsupported` and `Malformed` to
+   "not offered" -- an older server fails to deserialize an unknown `cmd`
+   tag and answers `Malformed`, which is a compatibility fact, not a bug.
+4. `ts570d` server host: enumerate/attach on the radio's host.
+5. GUI picker over `Selection`/`DeviceList` (already renderer-agnostic).
+
+## Audio over the native protocol (2026-09-02)
+
+The last recorded gap: a server can offer its sound cards and cannot
+attach one, because the protocol carries spectrum frames and no audio.
+
+**Carry `AudioFrame`, not PCM.** The server already has the samples and
+already computes the pair; sending raw PCM would move the DSP to the
+console, which has no sound hardware in the picture at all. It would also
+be larger: 48 kHz of f32 is ~190 KB/s against ~145 KB/s of finished
+frames at the pump rate.
+
+**Keep the pair together on the wire.** `AudioFrame` is a scope trace and
+a spectrum *from the same samples*, sharing a sequence number, precisely
+so a console cannot draw a trace and a spectrum that disagree. Two
+independent frame kinds would throw that away.
+
+Steps:
+1. `AudioFrame` moves from `cat-signal-audio` into `cat-signal`, beside
+   its two halves. It is a data pair with no I/O; keeping it in the audio
+   crate would force `cat-native` to depend on a crate that can link cpal
+   in order to name a struct. Re-exported so callers do not change.
+2. `FrameKind::Audio`, `encode_audio_payload`/`decode_audio_payload`.
+3. `Hello` gains an `audio` opt-in. `#[serde(default)]`, so a client that
+   predates it asks for nothing and is sent nothing.
+4. `RadioHost::audio()` defaulting to `None`; the pump sends newest-wins,
+   as it does for spectrum.
+5. `Client`: an audio slot, and `Streams { spectrum, audio }` replacing
+   the bare bool — a second bool in the same position is the argument
+   nobody gets right at the call site.
+6. `ts570d server --acc2-audio`, and an audio attach that actually works.
+7. The console's `RemoteAudio` tap, and the passband overlay driven by
+   the server's published `Installation` rather than assumed.
+
+## Porting the console stack to the other radios (2026-09-02)
+
+Survey first, because the two are in very different states:
+
+| repo | has | needs |
+|---|---|---|
+| `ft991a` | radio, ui (14k lines, pre-option-3 layout), server (raw CAT + rigctl), emulator | console protocol, a GUI, capability-derived workspaces |
+| `ic7100` | `docs/adr/` only — no code | **blocked**, see below |
+
+### The lever: the GUI is already radio-agnostic
+
+`ts570d/gui/src/app.rs` is 1442 lines with **one** radio-specific mention,
+and that is a demo status string. Everything it draws it derives from
+`CapabilitiesWire`. So the port is not "copy `gui/` into `ft991a`" — that
+would duplicate 1400 lines and guarantee they drift. It is **lift the
+console into `cat-ui-egui`** and leave each app a thin shell.
+
+That is what "as lightweight as possible" has to mean here, and it is what
+makes "the features of each radio are taken advantage of" fall out for
+free: workspaces, meters, modes, memory and menu extents are already read
+from the radio's own declaration, so an FT-991A console shows 151 menu
+items and no spectrum tab without anyone writing an FT-991A console.
+
+### Stages
+
+1. `cat-ui-egui::console` — the whole console, capability-driven.
+   `ts570d/gui` keeps only `main.rs` and its own demo fixture.
+2. `ft991a/server` gains `--console-port` and a `NativeRadio` impl.
+3. `ft991a/gui` — a thin shell over the shared console.
+
+### ic7100 is blocked and stays blocked
+
+Its own ADR 0001 records three preconditions. Two are not mine to clear:
+`CivFormat` has not been written and lives behind an unmerged, untagged
+branch; and **the CI-V reference guide is not in the repository**. That
+ADR is explicit that inferred web research must not substitute for the
+manual, matching the discipline `yaesu.md` and `kenwood.md` already
+enforce. Writing a CI-V driver from guesses is how a radio ends up keyed
+when nobody asked it to be. Not started.

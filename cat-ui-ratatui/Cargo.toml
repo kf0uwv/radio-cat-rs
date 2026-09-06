@@ -11,9 +11,17 @@ description = "Terminal widgets for a radio console: coarse waterfall, meter rai
 
 [dependencies]
 cat-ui = { path = "../cat-ui" }
+# The capability document the console derives itself from.
+cat-native = { path = "../cat-native" }
+# The arrangement a radio's server publishes. This crate draws the panels;
+# the layout says where they go.
+cat-layout = { path = "../cat-layout" }
 cat-framework = { path = "../cat-framework" }
 cat-signal = { path = "../cat-signal" }
 ratatui = { workspace = true }
+# Key events. The console interprets them (`handle_key`); reading them
+# from a terminal stays with the app, which owns the event loop.
+crossterm = { workspace = true }
 
 [dev-dependencies]
 futures = { workspace = true }

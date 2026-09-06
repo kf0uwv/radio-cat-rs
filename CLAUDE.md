@@ -2,18 +2,17 @@
 
 ## Repository status: extracted and in active use
 
-Seven crates exist, are implemented, and are consumed by both `ts570d` and
-`ft991a` via git dependency. Extraction from `ts570d` (the sibling repo this
-library was originally lifted from) is complete — see
+Eighteen crates exist, are implemented, and are consumed by three radio
+repositories — `ts570d` (Kenwood), `ft991a` (Yaesu) and `ic7100` (Icom).
+Extraction from `ts570d` (the sibling repo this library was originally
+lifted from) is complete — see
 [`docs/adr/0001-scope-and-crate-boundaries.md`](docs/adr/0001-scope-and-crate-boundaries.md)
 for the target design that guided it, `ts570d`'s ADR 0004/0005 for the
 source design, and [`docs/adr/README.md`](docs/adr/README.md) for the
 current status summary and links to every ADR.
 
-Agents working in this repository now touch real source under
-`cat-framework/`, `cat-transport-core/`, `cat-transport-serial/`,
-`cat-transport-tcp/`, `cat-transport-udp/`, `cat-client/`, `cat-server/`,
-plus:
+Agents working in this repository now touch real source under every
+`cat-*/` crate (see the Architecture section for the full list), plus:
 
 - planning documents under `./planning/`;
 - ADRs under `docs/adr/`;
@@ -94,6 +93,9 @@ cat-transport-serial (depends on: cat-transport-core)
 cat-transport-tcp    (depends on: cat-transport-core)
   └── TcpCatSession — length-prefixed frames
 
+cat-transport-rfc2217 (depends on: cat-transport-core)
+  └── RFC 2217 — serial over TCP, with real modem-control line signalling
+
 cat-transport-udp    (depends on: cat-transport-core)
   └── UdpCatSession — envelope format (session/request IDs) + client-side
       dedup cache + per-request timeout
@@ -109,6 +111,39 @@ cat-server           (depends on: cat-client, a cat-transport-* implementation)
       ownership, single ordered worker, request/response correlation by ID,
       timeout handling, disconnect handling, malformed-request rejection
   └── never the reverse dependency: a radio crate never depends on cat-server
+
+cat-rigctl           (depends on: cat-client, cat-framework)
+  └── the Hamlib/rigctld bridge, served alongside the native protocol by
+      every radio's server; generic over CatWireFormat, driven by
+      RadioCapabilities rather than a per-radio adapter
+
+cat-native           (depends on: cat-framework)
+  └── the typed console protocol: CapabilitiesWire, RadioState, FrameKind
+      (Control / Spectrum / Audio), Streams
+  └── `testing` module offers StubHost/serve_stub so a console can be
+      exercised with no radio and no emulator
+
+cat-layout           (NO local crate dependencies)
+  └── a console's arrangement and palette as plain data: PanelKind, Node,
+      Size, LayoutSpec, Theme
+  └── PanelKind::Custom(String) is the escape hatch — a radio names a widget
+      its own console supplies
+
+cat-signal           (NO local crate dependencies)
+  └── normalized SpectrumSource, framing and correction
+cat-signal-rtlsdr    (depends on: cat-signal) — RTL-SDR capture
+cat-signal-audio     (depends on: cat-signal) — sound-card capture
+
+cat-ui               (depends on: cat-native, cat-layout, cat-signal)
+  └── what a console shows, independent of any renderer: RadioDisplay, the
+      AF scope/FFT model, the click-to-tune Retune animation
+cat-ui-ratatui       (depends on: cat-ui) — the terminal console, shared
+cat-ui-egui          (depends on: cat-ui) — the GPU console, shared
+  └── both render a server-published LayoutSpec + Theme; neither knows any
+      radio's name. cat-ui-egui exposes a Widgets registry so a radio can
+      paint a PanelKind::Custom panel itself.
+
+cat-diagnostics      (depends on: cat-framework) — shared diagnostic runs
 ```
 
 ### Rules (violation is a blocking issue)
@@ -163,9 +198,17 @@ cat-server           (depends on: cat-client, a cat-transport-* implementation)
 - `cat-client/` — generic client-side request/response mechanics
 - `cat-transport-core/` — `Transport` / `CatSession` / `ModemControlLines`
   trait abstractions
-- `cat-transport-serial/`, `cat-transport-tcp/`, `cat-transport-udp/` —
+- `cat-transport-serial/`, `cat-transport-tcp/`, `cat-transport-udp/`,
+  `cat-transport-rfc2217/` —
   transport implementations
 - `cat-server/` — request broker / server mode
+- `cat-rigctl/` — Hamlib bridge, served next to the native protocol
+- `cat-native/` — the typed console protocol (+ `testing` stub host)
+- `cat-layout/` — layout and theme as data, authored by each radio's server
+- `cat-signal/`, `cat-signal-rtlsdr/`, `cat-signal-audio/` — spectrum sources
+- `cat-ui/` — renderer-independent console model
+- `cat-ui-ratatui/`, `cat-ui-egui/` — the two shared consoles
+- `cat-diagnostics/` — shared diagnostic runs
 - `docs/adr/` — ADRs recording the design (see ADR 0001 for the index)
 - `.claude/agents/` — subagent roster for this repository
 - `planning/` — per-agent planning-with-files directories

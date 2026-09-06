@@ -105,7 +105,15 @@ impl Emitter {
     ///
     /// Time is passed in rather than read from a clock so a test can step
     /// it, and so two renders of the same instant agree.
-    fn envelope(&self, t: f64) -> f32 {
+    ///
+    /// Public because the IQ path is not the only consumer. A radio's
+    /// **audio** output carries the same signals the panorama draws, and a
+    /// receiver whose AF went quiet while the waterfall still showed a
+    /// carrier — or the reverse — would be a worse fixture than one with no
+    /// audio at all. `ts570d`'s emulator builds its ACC2 receive-audio pin
+    /// on this, so both domains agree about when a station is on the air
+    /// because both ask the same emitter.
+    pub fn envelope(&self, t: f64) -> f32 {
         match self.emission {
             // Always on. A carrier is a carrier.
             Emission::Cw => {

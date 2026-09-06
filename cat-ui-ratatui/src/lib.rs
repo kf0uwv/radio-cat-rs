@@ -41,6 +41,13 @@
 //! point of this crate, not an afterthought — a console whose terminal
 //! renderer had no panorama would be exactly the drift ADR 0013 forbids.
 
+// The option-3 console. Lifted out of `ts570d/ui` once a second radio
+// needed the same one: 1805 lines whose only radio-specific parts were a
+// meter table and a mode-label lookup, both of which a capability
+// document already answers.
+pub mod af;
+pub mod console;
+pub mod devices;
 pub mod meter;
 pub mod panel;
 pub mod session;

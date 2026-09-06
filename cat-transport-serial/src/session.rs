@@ -20,6 +20,7 @@
 //! concrete implementation that reproduces the existing serial framing.
 
 use async_trait::async_trait;
+use cat_framework::wire_format::{AsciiLineFormat, FrameScanner};
 
 use cat_transport_core::{
     CatSession, ModemControlLines, ResponseDisposition, Transport, TransportError,
@@ -32,23 +33,42 @@ use cat_transport_core::{
 /// This is a move of the framing logic that used to live directly in
 /// `ts570d`'s `radio::RadioClient::read_response` — the wire bytes and
 /// response boundary are unchanged, only the layer that owns them moved.
-pub struct SerialCatSession<T: Transport> {
+pub struct SerialCatSession<T: Transport, F: FrameScanner = AsciiLineFormat> {
     /// The wrapped byte-level transport. Public so callers (including
     /// tests) that already hold a `Transport` implementation can still
     /// reach it directly — `SerialCatSession` is a thin framing layer, not
     /// an opaque handle.
     pub transport: T,
+    /// How a frame ends.
+    ///
+    /// Defaulted to `AsciiLineFormat`, so every existing caller compiles
+    /// unchanged and keeps reading until `;`. A binary protocol supplies
+    /// its own: CI-V frames end with `FD` and contain no semicolon at all,
+    /// so a session that waited for one would wait forever — which is
+    /// exactly what happened the first time an IC-7100 was pointed at
+    /// this.
+    format: F,
 }
 
-impl<T: Transport> SerialCatSession<T> {
+impl<T: Transport> SerialCatSession<T, AsciiLineFormat> {
     /// Wrap `transport` in a session that performs read-until-`;` framing.
     pub fn new(transport: T) -> Self {
-        Self { transport }
+        Self {
+            transport,
+            format: AsciiLineFormat,
+        }
+    }
+}
+
+impl<T: Transport, F: FrameScanner> SerialCatSession<T, F> {
+    /// Wrap `transport`, framing with `format`.
+    pub fn with_format(transport: T, format: F) -> Self {
+        Self { transport, format }
     }
 }
 
 #[async_trait(?Send)]
-impl<T: Transport> CatSession for SerialCatSession<T> {
+impl<T: Transport, F: FrameScanner> CatSession for SerialCatSession<T, F> {
     type Error = TransportError;
 
     async fn execute(
@@ -67,7 +87,9 @@ impl<T: Transport> CatSession for SerialCatSession<T> {
                 break;
             }
             response.push(buf[0]);
-            if buf[0] == b';' {
+            // The format decides where a frame ends. `AsciiLineFormat`
+            // says at `;`; CI-V says at `FD`.
+            if self.format.frame_complete(response) {
                 break;
             }
         }
@@ -99,7 +121,9 @@ impl<T: Transport> CatSession for SerialCatSession<T> {
 /// `CatSession::flush_rx`'s delegation to `self.transport.flush_rx()` above.
 /// A `SerialCatSession<T>` wrapping a transport WITHOUT modem lines (e.g. a
 /// test fake) simply does not get this impl — nothing to opt out of.
-impl<T: Transport + ModemControlLines> ModemControlLines for SerialCatSession<T> {
+impl<T: Transport + ModemControlLines, F: FrameScanner> ModemControlLines
+    for SerialCatSession<T, F>
+{
     fn set_rts(&self, asserted: bool) -> Result<(), TransportError> {
         self.transport.set_rts(asserted)
     }
