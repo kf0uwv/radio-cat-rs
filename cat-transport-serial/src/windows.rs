@@ -385,12 +385,15 @@ impl SerialPort {
         // `io_uring.rs`'s `SerialPort::open`). Errors are ignored
         // deliberately, mirroring Linux's "harmless on a device that
         // doesn't support it" handling.
-        if config.initial_rts {
-            let _ = port.set_rts(true);
-        }
-        if config.initial_dtr {
-            let _ = port.set_dtr(true);
-        }
+        // Drive both lines to the configured state, rather than only asserting
+        // when the flag is true. `false` means "hold this line low", not "leave
+        // it wherever the OS put it" — Linux raises DTR on open by default, so
+        // the old `if` form silently gave a caller who asked for DTR-low a
+        // DTR-high port. On a station that keys PTT from DTR (an ACC2 opto
+        // interface) that meant the radio transmitted from `open()` until the
+        // process exited. See `planning/cat_transport/task_plan.md` Task 10.
+        let _ = port.set_rts(config.initial_rts);
+        let _ = port.set_dtr(config.initial_dtr);
 
         Ok(port)
     }
