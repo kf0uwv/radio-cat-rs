@@ -472,6 +472,42 @@ impl Transport for SerialPort {
         SerialPort::flush_rx(self);
     }
 
+    /// Read and discard until the line has been quiet for one short interval.
+    ///
+    /// Uses a raw non-blocking `read(2)` rather than `self.stream.readv().await`.
+    /// monoio's `readv` waits for *readiness*: on a line that has gone quiet it
+    /// never completes, so a budget checked at the top of the loop is never
+    /// reached and the drain hangs until the broker's 5 s request timeout kills
+    /// it. Measured: every set taking 5002 ms and returning "physical radio
+    /// session did not respond". `read(2)` on an `O_NONBLOCK` fd returns EAGAIN
+    /// immediately, which is what "is the line quiet?" actually needs to ask.
+    ///
+    /// Bounded twice: three consecutive empty reads 20 ms apart (60 ms of
+    /// quiet), and a hard 400 ms ceiling so a radio that never stops talking
+    /// cannot wedge this.
+    async fn drain(&mut self) {
+        const SETTLE: std::time::Duration = std::time::Duration::from_millis(20);
+        const BUDGET: std::time::Duration = std::time::Duration::from_millis(400);
+        const QUIET_READS: u8 = 3;
+
+        let fd = self.stream.as_raw_fd();
+        let give_up = std::time::Instant::now() + BUDGET;
+        let mut empty: u8 = 0;
+        let mut buf = [0u8; 64];
+
+        while empty < QUIET_READS && std::time::Instant::now() < give_up {
+            // SAFETY: `fd` is valid for the lifetime of `self.stream`, and the
+            // buffer is a live local of the given length.
+            let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            if n > 0 {
+                empty = 0;
+                continue;
+            }
+            empty += 1;
+            std::thread::sleep(SETTLE);
+        }
+    }
+
     /// Flush the serial port output buffer.
     ///
     /// Calls `tcdrain(2)` which blocks until all output queued in the kernel

@@ -158,11 +158,27 @@ impl<T: Transport, F: FrameScanner> CatSession for SerialCatSession<T, F> {
     }
 
     async fn send(&mut self, request: &[u8]) -> Result<(), TransportError> {
-        // Deliberately does NOT read: set commands are fire-and-forget on
-        // the real radio. Reading here would block for the transport's full
-        // read timeout on every single set command in production.
+        // Deliberately does NOT read a *response*: set commands are
+        // fire-and-forget on the real radio, and reading would cost the full
+        // read timeout on every one.
         self.transport.write(request).await?;
         self.transport.flush().await?;
+        // But it must consume anything the radio volunteers, here, before
+        // returning.
+        //
+        // A rejected set sometimes answers `?;` and sometimes does not
+        // ("Occasionally this message may not appear due to microprocessor
+        // transients" — TS-570D manual). Such an answer is an orphan by
+        // construction: `send` has no reader waiting. Draining at the start
+        // of the *next* exchange is too late — the answer takes tens of
+        // milliseconds to arrive and lands after that drain has run and
+        // written, so the next read consumes it and every exchange after is
+        // off by one. Measured on hardware at 39 crossings in 40
+        // set-then-read cycles, `IF;` answering `SM0000;`.
+        //
+        // `drain` waits for a quiet line rather than blind-flushing, because
+        // a `tcflush` here cuts a frame mid-arrival and leaves its tail.
+        self.transport.drain().await;
         Ok(())
     }
 
@@ -307,6 +323,10 @@ mod tests {
 
         fn flush_rx(&mut self) {
             self.flush_rx_calls += 1;
+            // Actually discard. `tcflush(TCIFLUSH)` drops what is queued, and
+            // a fake that only counted the call would let a test "pass" while
+            // the bytes it was supposed to discard were still delivered.
+            self.reads.clear();
         }
     }
 
@@ -448,6 +468,113 @@ mod tests {
         let result = session.execute(b"FA;", &mut response).await;
 
         assert!(matches!(result, Err(TransportError::WriteTimeout)));
+    }
+
+    /// A transport that answers *when asked*, like a radio: the response to
+    /// a request is queued by `write`, not pre-loaded. That distinction is
+    /// the whole point here — an orphan is already in the buffer when the
+    /// next request is written, whereas that request's own answer arrives
+    /// afterwards and must survive the flush.
+    struct AnsweringTransport {
+        pending: VecDeque<u8>,
+        script: Vec<(Vec<u8>, Vec<u8>)>,
+        flush_rx_calls: usize,
+        drain_calls: usize,
+    }
+
+    impl AnsweringTransport {
+        fn new(script: Vec<(&str, &str)>) -> Self {
+            Self {
+                pending: VecDeque::new(),
+                script: script
+                    .into_iter()
+                    .map(|(q, a)| (q.as_bytes().to_vec(), a.as_bytes().to_vec()))
+                    .collect(),
+                flush_rx_calls: 0,
+                drain_calls: 0,
+            }
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl Transport for AnsweringTransport {
+        async fn write(&mut self, data: &[u8]) -> Result<usize, TransportError> {
+            if let Some((_, answer)) = self.script.iter().find(|(q, _)| q == data) {
+                let answer = answer.clone();
+                self.pending.extend(answer);
+            }
+            Ok(data.len())
+        }
+        async fn read(&mut self, buf: &mut [u8]) -> Result<usize, TransportError> {
+            match self.pending.pop_front() {
+                Some(b) => {
+                    buf[0] = b;
+                    Ok(1)
+                }
+                None => Ok(0),
+            }
+        }
+        async fn flush(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn flush_rx(&mut self) {
+            self.flush_rx_calls += 1;
+            self.pending.clear();
+        }
+
+        async fn drain(&mut self) {
+            self.drain_calls += 1;
+            self.pending.clear();
+        }
+    }
+
+    #[monoio::test(driver = "legacy")]
+    async fn a_set_consumes_its_own_orphaned_answer() {
+        // The radio answered a rejected set. `send` must consume that answer
+        // before returning, or the next request reads it as its own.
+        let t = AnsweringTransport::new(vec![("TX;", "?;"), ("FA;", "FA00014250000;")]);
+        let mut session = SerialCatSession::new(t);
+
+        session.send(b"TX;").await.unwrap();
+        assert_eq!(
+            session.transport.drain_calls, 1,
+            "send must drain the set's possible answer"
+        );
+
+        let mut response = Vec::new();
+        session.execute(b"FA;", &mut response).await.unwrap();
+        assert_eq!(
+            response, b"FA00014250000;",
+            "execute received the set's orphaned answer instead of its own"
+        );
+    }
+
+    #[monoio::test(driver = "legacy")]
+    async fn execute_without_a_preceding_send_does_not_flush() {
+        // The discipline must cost nothing on the ordinary read path.
+        let t = AnsweringTransport::new(vec![("FA;", "FA00014250000;")]);
+        let mut session = SerialCatSession::new(t);
+        let mut response = Vec::new();
+        session.execute(b"FA;", &mut response).await.unwrap();
+        assert_eq!(response, b"FA00014250000;");
+        assert_eq!(
+            session.transport.flush_rx_calls, 0,
+            "a clean read path must not flush"
+        );
+    }
+
+    #[monoio::test(driver = "legacy")]
+    async fn a_silent_set_still_leaves_the_next_read_intact() {
+        // The common case: the radio says nothing at all to a set. The drain
+        // must cost the caller nothing beyond a quiet window, and must not
+        // eat the next request's answer.
+        let t = AnsweringTransport::new(vec![("MD;", "MD2;")]);
+        let mut session = SerialCatSession::new(t);
+        session.send(b"FA00014250000;").await.unwrap();
+
+        let mut response = Vec::new();
+        session.execute(b"MD;", &mut response).await.unwrap();
+        assert_eq!(response, b"MD2;");
     }
 
     // ------------------------------------------------------------------
