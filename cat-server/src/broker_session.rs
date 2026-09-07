@@ -53,6 +53,30 @@ impl BrokerCatSession {
     pub fn new(handle: BrokerHandle, client_id: ClientId) -> Self {
         Self { handle, client_id }
     }
+
+    /// Run a caller-supplied task with exclusive access to the wire.
+    ///
+    /// The radio software supplies the closure; the broker only serialises
+    /// it against CAT traffic. See [`crate::BrokerHandle::submit_task`] —
+    /// including why an un-key must **not** go through here.
+    pub async fn submit_task(&self, run: crate::TaskFn) -> Option<Vec<u8>> {
+        self.handle.submit_task(self.client_id, run).await
+    }
+
+    /// A second handle onto the same broker, for work that must not queue.
+    ///
+    /// Exists for the PTT release path: `ptt_line.rs` is explicit that the
+    /// key which unkeys the transmitter must not wait behind a CAT exchange,
+    /// and a queued un-key can be delayed by a 2 s read timeout or the 5 s
+    /// broker timeout — while transmitting.
+    pub fn handle(&self) -> BrokerHandle {
+        self.handle.clone()
+    }
+
+    /// Which client this session speaks for.
+    pub fn client_id(&self) -> ClientId {
+        self.client_id
+    }
 }
 
 #[async_trait(?Send)]
