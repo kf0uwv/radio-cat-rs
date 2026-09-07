@@ -154,3 +154,31 @@ That was wrong. The flag's name describes an intent the code does not
 implement, and the comment saying so sits 400 lines away in the same file.
 The user's observation — TX dropped the moment the server was killed —
 is what corrected it.
+
+## Cross-consumer regression check (2026-09-06, Tasks 9/10 + framework)
+
+`radio-cat-rs` is consumed by `ts570d`, `ft991a` and `ic7100`, and all three
+depend on it by **path**, not by the pinned git tag — so local changes reach
+them immediately and breakage is testable now rather than at release.
+
+| repo | tests | failures |
+|---|---|---|
+| radio-cat-rs | 853 | 0 |
+| ts570d | 608 | 0 |
+| ft991a | 1147 | 0 |
+| ic7100 | 76 | 0 |
+
+Two specific risks were checked rather than assumed:
+
+- **Task 10 (lines now driven, not just asserted).** `ft991a` and `ic7100`
+  both use `SerialConfig::default()`, where `initial_rts`/`initial_dtr` are
+  `true`. Old code asserted; new code asserts. **Behaviour is identical for
+  them** — only a caller passing `false` sees a change, and `ts570d` is the
+  only one that does. This matters most for `ic7100`: CI-V level converters
+  are commonly powered from DTR/RTS, and the line still goes high.
+- **Framework dispatch (Query now tried before Set at equal width).** Only
+  changes behaviour where one command declares a Query form and a Set form
+  of the *same* width. Checked all three tables: `ft991a` (96 definitions)
+  and `ts570d` (73) have **no overlaps**; `ic7100` builds its definitions
+  through a helper rather than the `definition!` macro, so it was covered by
+  running its suite instead of by static analysis.

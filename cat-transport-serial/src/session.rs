@@ -60,6 +60,15 @@ impl<T: Transport> SerialCatSession<T, AsciiLineFormat> {
     }
 }
 
+/// Upper bound on a single response frame, in bytes.
+///
+/// `execute` reads until the wire format says the frame is complete. If a
+/// terminator never arrives — a desynchronised stream, a radio that stopped
+/// mid-answer — that loop has no natural end and the response buffer grows
+/// without limit. The longest legitimate TS-570D response is `IF` at 38
+/// bytes, so 64 leaves real headroom while still bounding the failure.
+const MAX_FRAME_LEN: usize = 64;
+
 impl<T: Transport, F: FrameScanner> SerialCatSession<T, F> {
     /// Wrap `transport`, framing with `format`.
     pub fn with_format(transport: T, format: F) -> Self {
@@ -81,7 +90,22 @@ impl<T: Transport, F: FrameScanner> CatSession for SerialCatSession<T, F> {
 
         let mut buf = [0u8; 1];
         loop {
-            let n = self.transport.read(&mut buf).await?;
+            let n = match self.transport.read(&mut buf).await {
+                Ok(n) => n,
+                Err(e) => {
+                    // A mid-frame failure is what poisons the stream. The
+                    // bytes already read have been consumed from the kernel
+                    // buffer and are about to be discarded with this error,
+                    // while the rest of the frame is still arriving — so the
+                    // *next* execute would read that tail as a fresh frame and
+                    // every request after it would be offset by one frame
+                    // boundary, permanently. Discard the remainder before
+                    // returning so the damage stops here.
+                    self.transport.flush_rx();
+                    response.clear();
+                    return Err(e);
+                }
+            };
             if n == 0 {
                 // EOF — return whatever we have (may be empty).
                 break;
@@ -91,6 +115,18 @@ impl<T: Transport, F: FrameScanner> CatSession for SerialCatSession<T, F> {
             // says at `;`; CI-V says at `FD`.
             if self.format.frame_complete(response) {
                 break;
+            }
+            if response.len() >= MAX_FRAME_LEN {
+                // No terminator inside a plausible frame. Without this the
+                // loop is unbounded and `response` grows without limit. The
+                // longest legitimate TS-570D response is `IF` at 38 bytes;
+                // the bound is deliberately well above that so a longer
+                // command in future fails loudly rather than silently.
+                self.transport.flush_rx();
+                response.clear();
+                return Err(TransportError::Other(format!(
+                    "response exceeded {MAX_FRAME_LEN} bytes with no terminator"
+                )));
             }
         }
 
@@ -347,6 +383,7 @@ mod tests {
     /// `ModemControlLines` methods on `SerialCatSession<T>` must delegate
     /// unchanged to the wrapped transport, exactly mirroring
     /// `flush_rx_delegates_to_transport` above.
+
     #[test]
     fn modem_control_lines_delegate_to_transport() {
         let transport = FakeTransport::new();
@@ -391,5 +428,145 @@ mod tests {
         let result = session.execute(b"FA;", &mut response).await;
 
         assert!(matches!(result, Err(TransportError::WriteTimeout)));
+    }
+
+    // ------------------------------------------------------------------
+    // Frame-boundary integrity (Phase 0 — response crossing)
+    //
+    // `execute` read one byte at a time and propagated errors with `?`. On a
+    // mid-frame failure the bytes already read were consumed and discarded
+    // with the error while the frame's tail stayed in the kernel buffer, so
+    // the *next* execute read that tail as a fresh frame and every request
+    // afterwards was offset by one frame boundary, permanently.
+    //
+    // Observed on a physical TS-570D: an `IF;` answered with
+    // `'0      000000 0002000008 ;'` — an IF frame's tail with its head gone
+    // — and later `IF;` answered `TN08;` and `CT0;`.
+    // ------------------------------------------------------------------
+
+    /// A transport that fails mid-frame once, then serves the tail — exactly
+    /// the shape that poisons the stream today.
+    struct MidFrameFailTransport {
+        reads: VecDeque<u8>,
+        fail_after: usize,
+        served: usize,
+        failed: bool,
+        flush_rx_calls: usize,
+    }
+
+    #[async_trait(?Send)]
+    impl Transport for MidFrameFailTransport {
+        async fn write(&mut self, data: &[u8]) -> Result<usize, TransportError> {
+            Ok(data.len())
+        }
+        async fn read(&mut self, buf: &mut [u8]) -> Result<usize, TransportError> {
+            if !self.failed && self.served >= self.fail_after {
+                self.failed = true;
+                return Err(TransportError::ReadTimeout);
+            }
+            match self.reads.pop_front() {
+                Some(b) => {
+                    buf[0] = b;
+                    self.served += 1;
+                    Ok(1)
+                }
+                None => Ok(0),
+            }
+        }
+        async fn flush(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn flush_rx(&mut self) {
+            self.flush_rx_calls += 1;
+            self.reads.clear();
+        }
+    }
+
+    #[monoio::test(driver = "legacy")]
+    async fn mid_frame_failure_does_not_poison_the_next_request() {
+        // 10 bytes of an IF frame arrive, then the read fails. The remaining
+        // bytes are still queued. A following request must NOT receive them.
+        let mut t = MidFrameFailTransport {
+            reads: "IF00014235340      000000 0002000008 ;".bytes().collect(),
+            fail_after: 10,
+            served: 0,
+            failed: false,
+            flush_rx_calls: 0,
+        };
+        t.reads.extend(b"FA00014235340;");
+        let mut session = SerialCatSession::new(t);
+
+        let mut first = Vec::new();
+        let r = session.execute(b"IF;", &mut first).await;
+        assert!(r.is_err(), "mid-frame timeout must surface as an error");
+
+        let mut second = Vec::new();
+        let _ = session.execute(b"FA;", &mut second).await;
+        let got = String::from_utf8_lossy(&second).to_string();
+        assert!(
+            !got.starts_with('0') && !got.contains("000000 0002"),
+            "second request received the first frame's tail: {got:?}"
+        );
+    }
+
+    #[monoio::test(driver = "legacy")]
+    async fn error_path_flushes_the_receive_buffer() {
+        // The concrete mechanism: after any failed exchange the stale tail
+        // must be discarded, not left for the next caller.
+        let mut t = MidFrameFailTransport {
+            reads: "IF00014235340      000000 0002000008 ;".bytes().collect(),
+            fail_after: 10,
+            served: 0,
+            failed: false,
+            flush_rx_calls: 0,
+        };
+        t.reads.extend(b"FA00014235340;");
+        let mut session = SerialCatSession::new(t);
+        let mut out = Vec::new();
+        let _ = session.execute(b"IF;", &mut out).await;
+        assert!(
+            session.transport.flush_rx_calls > 0,
+            "a failed execute must flush the receive buffer before returning"
+        );
+    }
+
+    #[monoio::test(driver = "legacy", timer = true)]
+    async fn a_frame_that_never_terminates_is_bounded() {
+        // No `;` ever arrives. Without a length bound `response` grows without
+        // limit and the loop never exits.
+        struct EndlessTransport;
+        #[async_trait(?Send)]
+        impl Transport for EndlessTransport {
+            async fn write(&mut self, d: &[u8]) -> Result<usize, TransportError> {
+                Ok(d.len())
+            }
+            async fn read(&mut self, buf: &mut [u8]) -> Result<usize, TransportError> {
+                buf[0] = b'X';
+                Ok(1)
+            }
+            async fn flush(&mut self) -> Result<(), TransportError> {
+                Ok(())
+            }
+            fn flush_rx(&mut self) {}
+        }
+        let mut session = SerialCatSession::new(EndlessTransport);
+        let mut out = Vec::new();
+        // Wrapped in a timeout deliberately: without a frame bound this loops
+        // forever, and an un-timeouted guard would *hang* rather than fail —
+        // the same trap `ts570d/tests/rfc2217_under_monoio.rs` documents.
+        let r = monoio::time::timeout(
+            std::time::Duration::from_secs(2),
+            session.execute(b"IF;", &mut out),
+        )
+        .await;
+        match r {
+            Err(_) => panic!("execute never returned: an unterminated frame is unbounded"),
+            Ok(inner) => {
+                assert!(
+                    inner.is_err(),
+                    "an unterminated frame must be bounded, not looped on"
+                );
+            }
+        }
     }
 }
