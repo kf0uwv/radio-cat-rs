@@ -255,8 +255,21 @@ impl<C: CommandId, F: CatWireFormat> CommandTable<C, F> {
     ) -> Result<CommandRequest<'a, C, F>, ParseError> {
         let (definition, parameters) = format.find_command(self, frame)?;
 
-        let operation = if parameters.is_empty() && definition.supports(CommandOperation::Query, 0)
-        {
+        // Match each operation at the width actually presented.
+        //
+        // Query is checked at `parameters.len()`, not at 0: not every read is
+        // a bare `CODE;`. Reading one menu entry has to say *which* entry, so
+        // the TS-570D's `EX` declares a 3-parameter query form alongside its
+        // 7-parameter set form. Gating Query on `parameters.is_empty()` made
+        // every such form unreachable — a non-empty parameter list was only
+        // ever tested against Set — so menu reads were rejected as malformed
+        // before they ever reached a radio.
+        //
+        // Query is tried before Set deliberately. The two widths should never
+        // collide (a command declaring the same width for both is a table
+        // bug), but if one does, resolving it to the *non-mutating* reading is
+        // the safe default: this parser sits in front of transmitters.
+        let operation = if definition.supports(CommandOperation::Query, parameters.len()) {
             CommandOperation::Query
         } else if parameters.is_empty() && definition.supports(CommandOperation::Action, 0) {
             CommandOperation::Action
@@ -682,12 +695,17 @@ mod tests {
     enum TestCommand {
         Frequency,
         Ping,
+        Menu,
     }
 
     const QUERY: &[CommandForm] = &[CommandForm::fixed(CommandOperation::Query, 0)];
     const SET_11: &[CommandForm] = &[CommandForm::fixed(CommandOperation::Set, 11)];
     const ACTION: &[CommandForm] = &[CommandForm::fixed(CommandOperation::Action, 0)];
     const NONE: &[CommandForm] = &[];
+    /// A *parameterised* query: reading a menu requires saying which menu.
+    /// Shaped exactly like the TS-570D's `EX` (`QUERY_SET_3`/`SET_7`).
+    const QUERY_3: &[CommandForm] = &[CommandForm::fixed(CommandOperation::Query, 3)];
+    const SET_7: &[CommandForm] = &[CommandForm::fixed(CommandOperation::Set, 7)];
 
     static DEFINITIONS: &[CommandDefinition<TestCommand>] = &[
         CommandDefinition {
@@ -697,6 +715,18 @@ mod tests {
             description: "Test frequency",
             query_forms: QUERY,
             set_forms: SET_11,
+            action_forms: NONE,
+            response_forms: NONE,
+            readable: true,
+            writable: true,
+        },
+        CommandDefinition {
+            id: TestCommand::Menu,
+            code: "EX",
+            name: "Extension Menu",
+            description: "Test parameterised query",
+            query_forms: QUERY_3,
+            set_forms: SET_7,
             action_forms: NONE,
             response_forms: NONE,
             readable: true,
@@ -765,6 +795,54 @@ mod tests {
             TABLE.parse(&AsciiLineFormat, b"FA123;"),
             Err(ParseError::InvalidParameterWidth { code, len }) if code == "\"FA\"" && len == 3
         ));
+    }
+
+    // ------------------------------------------------------------------
+    // Parameterised query forms (Task 11)
+    //
+    // Not every read is a bare `CODE;`. Reading one menu entry has to say
+    // *which* entry, so the query form carries parameters. Before Task 11
+    // the dispatch gated Query and Action on `parameters.is_empty()` and
+    // hardcoded width 0, so a non-empty parameter list was only ever tested
+    // against Set forms and a parameterised query could never match.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parses_parameterised_query_form() {
+        let request = TABLE
+            .parse(&AsciiLineFormat, b"EX034;")
+            .expect("EX034; is a legal 3-parameter query");
+        assert_eq!(request.operation, CommandOperation::Query);
+        assert_eq!(request.id, TestCommand::Menu);
+        assert_eq!(request.parameters.raw, b"034");
+    }
+
+    #[test]
+    fn parameterised_query_and_set_are_distinguished_by_width() {
+        // Same command, different widths: 3 reads, 7 writes.
+        let read = TABLE.parse(&AsciiLineFormat, b"EX034;").unwrap();
+        assert_eq!(read.operation, CommandOperation::Query);
+        let write = TABLE.parse(&AsciiLineFormat, b"EX0340009;").unwrap();
+        assert_eq!(write.operation, CommandOperation::Set);
+        assert_eq!(write.parameters.raw, b"0340009");
+    }
+
+    #[test]
+    fn parameterised_query_still_rejects_a_width_it_does_not_declare() {
+        // 4 is neither the query width (3) nor the set width (7).
+        assert!(matches!(
+            TABLE.parse(&AsciiLineFormat, b"EX0340;"),
+            Err(ParseError::InvalidParameterWidth { len, .. }) if len == 4
+        ));
+    }
+
+    #[test]
+    fn bare_query_is_unaffected_by_the_parameterised_path() {
+        // Regression guard: `FA;` has a zero-width query form and must keep
+        // taking the original branch.
+        let request = TABLE.parse(&AsciiLineFormat, b"FA;").unwrap();
+        assert_eq!(request.operation, CommandOperation::Query);
+        assert!(request.parameters.raw.is_empty());
     }
 
     #[test]
