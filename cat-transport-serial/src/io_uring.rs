@@ -487,9 +487,29 @@ impl Transport for SerialPort {
         // BorrowedFd::borrow_raw does not take ownership; we hold the fd
         // alive via self.stream for the duration of this call.
         let borrowed = unsafe { BorrowedFd::borrow_raw(raw_fd) };
-        tcdrain(borrowed)
-            .map_err(|e| TransportError::Io(std::io::Error::from_raw_os_error(e as i32)))?;
-        Ok(())
+        // `tcdrain` blocks until the output buffer has drained, which makes it
+        // one of the most EINTR-prone calls in the crate — and `execute` calls
+        // it immediately *after* writing the request. Letting EINTR escape here
+        // means the request is already on the wire when the exchange is
+        // abandoned, so nobody reads its response and the next request gets it
+        // instead. Every request after that is off by one, permanently.
+        //
+        // Measured on a TS-570D: a dispatch failing in 1 ms with
+        // `Interrupted system call`, immediately followed by the next request
+        // receiving the abandoned response. `read` and `write` have retried
+        // EINTR since Task 9; this call was missed.
+        loop {
+            match tcdrain(borrowed) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let io_err = std::io::Error::from_raw_os_error(e as i32);
+                    if is_retryable(&io_err) {
+                        continue;
+                    }
+                    return Err(TransportError::Io(io_err));
+                }
+            }
+        }
     }
 }
 

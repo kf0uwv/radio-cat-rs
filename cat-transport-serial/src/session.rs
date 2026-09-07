@@ -22,6 +22,7 @@
 use async_trait::async_trait;
 use cat_framework::wire_format::{AsciiLineFormat, FrameScanner};
 
+use crate::timeouts::READ_TIMEOUT;
 use cat_transport_core::{
     CatSession, ModemControlLines, ResponseDisposition, Transport, TransportError,
 };
@@ -88,8 +89,27 @@ impl<T: Transport, F: FrameScanner> CatSession for SerialCatSession<T, F> {
         self.transport.write(request).await?;
         self.transport.flush().await?;
 
+        // Whole-frame deadline. `Transport::read`'s budget is per *call*, and
+        // this loop calls it once per byte, so without this a single response
+        // can legitimately outlive the broker's own per-request timeout
+        // (`cat-server`'s DEFAULT_REQUEST_TIMEOUT, 5s). When that happens the
+        // broker drops this future mid-exchange and starts the next job, and
+        // two requests end up in flight on one serial port: the abandoned
+        // response is then read by whoever asks next. Measured on a TS-570D
+        // as `MD;` answering `SM0000;`.
+        //
+        // Bounding the whole frame here keeps this layer's failure inside its
+        // own error path -- which flushes -- instead of being cancelled from
+        // above, where nothing can clean up.
+        let frame_deadline = std::time::Instant::now() + READ_TIMEOUT;
+
         let mut buf = [0u8; 1];
         loop {
+            if std::time::Instant::now() >= frame_deadline {
+                self.transport.flush_rx();
+                response.clear();
+                return Err(TransportError::ReadTimeout);
+            }
             let n = match self.transport.read(&mut buf).await {
                 Ok(n) => n,
                 Err(e) => {
