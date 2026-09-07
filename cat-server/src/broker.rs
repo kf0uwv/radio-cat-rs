@@ -48,7 +48,7 @@ use cat_client::{CatClient, ClientError};
 use cat_framework::{
     AsciiLineFormat, CatWireFormat, CommandId, CommandOperation, CommandTable, ParseError,
 };
-use cat_transport_core::CatSession;
+use cat_transport_core::{CatSession, ModemControlLines};
 use thiserror::Error;
 
 use crate::local_channel::{self, Receiver, Sender};
@@ -221,6 +221,16 @@ where
     /// session (malformed-request rejection at the broker boundary).
     /// Bounded by `request_timeout` regardless of whether the underlying
     /// session enforces one of its own.
+    /// The underlying session's modem-control lines, if it has any.
+    ///
+    /// The broker does not use these itself — it hands them to a
+    /// [`Work::Task`] closure. Exposed here so that borrow is created by the
+    /// component that owns the session, for the duration of the call, rather
+    /// than captured by a caller and outliving the port.
+    pub fn session_modem_lines(&self) -> Option<&dyn ModemControlLines> {
+        self.client.session().modem_lines()
+    }
+
     pub async fn dispatch(
         &mut self,
         request: &[u8],
@@ -394,9 +404,37 @@ pub struct Job {
     pub client_id: ClientId,
     /// Monotonically-assigned id for this request, for tracking/logging.
     pub request_id: u64,
-    /// Raw wire-format request bytes.
-    pub payload: Vec<u8>,
+    /// What the worker should do with the session.
+    pub work: Work,
     reply: local_channel::OneshotSender<Vec<u8>>,
+}
+
+/// A task the radio software wants run with exclusive access to the wire.
+///
+/// The closure receives the session's modem-control lines if it has any. It
+/// is handed the borrow rather than capturing one: a captured raw fd would
+/// outlive the port and could be *reused* — this process also opens sound
+/// cards, an RTL-SDR and TCP sockets — so `TIOCMSET` on a stale fd could
+/// assert DTR on a different device entirely. Borrowing from the owner for
+/// the duration of the call makes that unrepresentable.
+///
+/// `Result` rather than panicking: `panic = "abort"` is set in consumers'
+/// release profiles, so `catch_unwind` is inert where it would matter most.
+pub type TaskFn =
+    Box<dyn for<'a> FnOnce(Option<&'a dyn ModemControlLines>) -> Result<Vec<u8>, String>>;
+
+/// What a [`Job`] asks the worker to do.
+pub enum Work {
+    /// Parse and execute raw wire-format bytes against the radio — the
+    /// original and overwhelmingly common case.
+    Wire(Vec<u8>),
+    /// Run a caller-supplied closure with exclusive access to the session.
+    ///
+    /// The broker deliberately learns nothing about what the task does. Its
+    /// contribution is the one thing nobody else can provide: running it
+    /// inside the single ordered worker, serialised against every CAT
+    /// exchange on the same wire.
+    Task(TaskFn),
 }
 
 /// The single ordered worker. Owns a [`Broker`] exclusively and services
@@ -428,8 +466,19 @@ where
     /// job queue is drained.
     pub async fn run(mut self) {
         while let Some(job) = self.receiver.recv().await {
-            let result = self.broker.dispatch(&job.payload).await;
-            let wire = outcome_to_wire(result);
+            let wire = match job.work {
+                Work::Wire(payload) => outcome_to_wire(self.broker.dispatch(&payload).await),
+                Work::Task(run) => match run(self.broker.session_modem_lines()) {
+                    Ok(bytes) => bytes,
+                    // Same `b"ERR "` convention the wire path uses, so a
+                    // caller cannot misparse a task failure as a CAT frame.
+                    Err(message) => {
+                        let mut v = b"ERR ".to_vec();
+                        v.extend_from_slice(message.as_bytes());
+                        v
+                    }
+                },
+            };
             // A disconnected requester (dropped its `OneshotReceiver`
             // before the reply was ready) is not an error here — the
             // worker does not know or care; it simply moves on to the next
@@ -457,6 +506,34 @@ impl BrokerHandle {
     /// (every handle dropped, or the worker task ended) — a listener
     /// should treat that as "the broker is gone" and stop serving new
     /// requests.
+    /// Submit a caller-supplied task to run with exclusive access to the wire.
+    ///
+    /// The closure is handed the session's modem-control lines (`None` if the
+    /// transport has none) and runs inside the single ordered worker, so it
+    /// cannot interleave with a CAT exchange. That serialisation is the whole
+    /// service being bought — the broker learns nothing about what the task
+    /// does.
+    ///
+    /// Use for **asserting** a PTT line, where ordering against CAT matters:
+    /// do not key before the command that set the mode has landed. Do **not**
+    /// route the *release* through here — an un-key must not queue behind a
+    /// CAT exchange that may take seconds, and a line change cannot corrupt a
+    /// frame in flight because `TIOCMSET` never touches the byte stream.
+    pub async fn submit_task(&self, client_id: ClientId, run: TaskFn) -> Option<Vec<u8>> {
+        let request_id = self.next_request_id.get();
+        self.next_request_id.set(request_id.wrapping_add(1));
+
+        let (reply, mut reply_rx) = local_channel::oneshot();
+        let job = Job {
+            client_id,
+            request_id,
+            work: Work::Task(run),
+            reply,
+        };
+        self.sender.send(job).ok()?;
+        reply_rx.recv().await
+    }
+
     pub async fn submit(&self, client_id: ClientId, payload: Vec<u8>) -> Option<Vec<u8>> {
         let request_id = self.next_request_id.get();
         self.next_request_id.set(request_id.wrapping_add(1));
@@ -465,7 +542,7 @@ impl BrokerHandle {
         let job = Job {
             client_id,
             request_id,
-            payload,
+            work: Work::Wire(payload),
             reply,
         };
         self.sender.send(job).ok()?;
@@ -671,6 +748,82 @@ mod tests {
     // -------------------------------------------------------------------
     // Happy path
     // -------------------------------------------------------------------
+
+    #[monoio::test(driver = "legacy", timer_enabled = true)]
+    async fn a_task_job_runs_on_the_worker_and_returns_its_own_reply() {
+        let (worker, handle) = build(ScriptedCatSession::with_script([]), &TABLE);
+        monoio::spawn(worker.run());
+
+        let out = handle
+            .submit_task(
+                ClientId::from_raw(7),
+                Box::new(|_lines| Ok(b"TASK-RAN".to_vec())),
+            )
+            .await;
+        assert_eq!(out.as_deref(), Some(&b"TASK-RAN"[..]));
+    }
+
+    #[monoio::test(driver = "legacy", timer_enabled = true)]
+    async fn a_task_is_serialised_between_wire_jobs() {
+        // The one service the broker provides a task: it cannot interleave
+        // with a CAT exchange on the same wire.
+        let (worker, handle) = build(
+            ScriptedCatSession::with_script([
+                Exchange::new("FA;", "FA00014250000;"),
+                Exchange::new("FA;", "FA00014250000;"),
+            ]),
+            &TABLE,
+        );
+        monoio::spawn(worker.run());
+
+        let first = handle.submit(ClientId::from_raw(1), b"FA;".to_vec()).await;
+        let task = handle
+            .submit_task(ClientId::from_raw(1), Box::new(|_| Ok(b"MID".to_vec())))
+            .await;
+        let second = handle.submit(ClientId::from_raw(1), b"FA;".to_vec()).await;
+
+        assert_eq!(first.as_deref(), Some(&b"FA00014250000;"[..]));
+        assert_eq!(task.as_deref(), Some(&b"MID"[..]));
+        assert_eq!(second.as_deref(), Some(&b"FA00014250000;"[..]));
+    }
+
+    #[monoio::test(driver = "legacy", timer_enabled = true)]
+    async fn a_failing_task_uses_the_err_convention() {
+        // A caller must not be able to misparse a task failure as a CAT frame.
+        let (worker, handle) = build(ScriptedCatSession::with_script([]), &TABLE);
+        monoio::spawn(worker.run());
+
+        let out = handle
+            .submit_task(
+                ClientId::from_raw(1),
+                Box::new(|_| Err("line control unavailable".to_string())),
+            )
+            .await
+            .expect("worker alive");
+        assert!(out.starts_with(b"ERR "), "got {out:?}");
+    }
+
+    #[monoio::test(driver = "legacy", timer_enabled = true)]
+    async fn a_task_is_told_when_the_session_has_no_modem_lines() {
+        // A socket session has no RTS/DTR. The task must be told `None`
+        // rather than handed something that cannot work.
+        let (worker, handle) = build(ScriptedCatSession::with_script([]), &TABLE);
+        monoio::spawn(worker.run());
+
+        let out = handle
+            .submit_task(
+                ClientId::from_raw(1),
+                Box::new(|lines| {
+                    Ok(if lines.is_some() {
+                        b"SOME".to_vec()
+                    } else {
+                        b"NONE".to_vec()
+                    })
+                }),
+            )
+            .await;
+        assert_eq!(out.as_deref(), Some(&b"NONE"[..]));
+    }
 
     #[monoio::test(driver = "legacy", timer_enabled = true)]
     async fn happy_path_query_returns_response_text() {
@@ -978,7 +1131,7 @@ mod tests {
         let send_result = handle.sender.send(Job {
             client_id: ClientId::from_raw(1),
             request_id: 0,
-            payload: b"FA;".to_vec(),
+            work: Work::Wire(b"FA;".to_vec()),
             reply: reply_tx,
         });
         assert!(send_result.is_ok(), "worker should still be alive");

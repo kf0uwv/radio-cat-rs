@@ -185,6 +185,13 @@ impl<T: Transport, F: FrameScanner> CatSession for SerialCatSession<T, F> {
     fn flush_rx(&mut self) {
         self.transport.flush_rx();
     }
+
+    fn modem_lines(&self) -> Option<&dyn ModemControlLines> {
+        // Delegate rather than `Some(self)`: this impl is bounded on
+        // `T: Transport`, not `T: ModemControlLines`, so the session cannot
+        // claim lines it may not have. The transport knows.
+        self.transport.modem_lines()
+    }
 }
 
 /// Blanket delegation: whenever the wrapped `Transport` also implements

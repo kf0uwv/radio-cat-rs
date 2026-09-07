@@ -80,6 +80,15 @@ where
         }
     }
 
+    /// Borrow the underlying session.
+    ///
+    /// Read-only, and deliberately narrow: added so a broker can expose the
+    /// session's modem-control lines to a task closure without the closure
+    /// capturing a handle that could outlive the port.
+    pub fn session(&self) -> &S {
+        &self.session
+    }
+
     /// Send a query command and return the radio's response string.
     ///
     /// # Errors

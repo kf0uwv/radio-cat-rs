@@ -472,6 +472,10 @@ impl Transport for SerialPort {
         SerialPort::flush_rx(self);
     }
 
+    fn modem_lines(&self) -> Option<&dyn ModemControlLines> {
+        Some(self)
+    }
+
     /// Read and discard until the line has been quiet for one short interval.
     ///
     /// Uses a raw non-blocking `read(2)` rather than `self.stream.readv().await`.

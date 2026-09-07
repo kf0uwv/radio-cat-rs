@@ -50,6 +50,16 @@ pub trait Transport {
     /// Default implementation is a no-op (e.g. for in-memory fakes).
     fn flush_rx(&mut self) {}
 
+    /// This transport's modem-control lines, if it has any.
+    ///
+    /// Defaulted to `None`, like [`Self::flush_rx`]: a socket has no RTS/DTR.
+    /// `SerialPort` overrides it. Lets a session expose lines it does not
+    /// itself implement, without bounding every generic wrapper on
+    /// `ModemControlLines`.
+    fn modem_lines(&self) -> Option<&dyn crate::ModemControlLines> {
+        None
+    }
+
     /// Discard anything the radio is still sending, waiting until the line
     /// goes quiet rather than clearing whatever happens to be buffered at
     /// this instant.

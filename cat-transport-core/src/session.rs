@@ -86,4 +86,21 @@ pub trait CatSession {
     /// Discard any unread/unsolicited bytes buffered by the session.
     /// Default implementation is a no-op (e.g. for in-memory test doubles).
     fn flush_rx(&mut self) {}
+
+    /// The session's modem-control lines, if it has any.
+    ///
+    /// Defaulted to `None` for the same reason [`Self::flush_rx`] is a
+    /// defaulted no-op: a TCP or in-memory session has no RTS/DTR to offer,
+    /// and should not be forced to say so. `SerialCatSession` overrides it.
+    ///
+    /// Exists so a broker can hand its session's lines to a caller-supplied
+    /// task *without* the caller capturing anything. A captured raw fd would
+    /// outlive the port and, worse than a use-after-close, could be **reused**
+    /// — this process also opens sound cards, an RTL-SDR and TCP sockets, so
+    /// `TIOCMSET` on a stale fd could assert DTR on an entirely different
+    /// device. Borrowing from the owner for the duration of the call makes
+    /// that unrepresentable.
+    fn modem_lines(&self) -> Option<&dyn crate::ModemControlLines> {
+        None
+    }
 }
