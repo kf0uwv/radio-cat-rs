@@ -258,12 +258,22 @@ impl<C: CommandId, F: CatWireFormat> CommandTable<C, F> {
         // Match each operation at the width actually presented.
         //
         // Query is checked at `parameters.len()`, not at 0: not every read is
-        // a bare `CODE;`. Reading one menu entry has to say *which* entry, so
-        // the TS-570D's `EX` declares a 3-parameter query form alongside its
-        // 7-parameter set form. Gating Query on `parameters.is_empty()` made
-        // every such form unreachable — a non-empty parameter list was only
-        // ever tested against Set — so menu reads were rejected as malformed
-        // before they ever reached a radio.
+        // a bare `CODE;`. A radio that lets a controller read one menu entry
+        // has to be told *which* entry, so such a command declares a
+        // parameterised query form beside its wider set form. Gating Query on
+        // `parameters.is_empty()` made every such form unreachable — a
+        // non-empty parameter list was only ever tested against Set — so
+        // those reads were rejected as malformed before reaching a radio.
+        //
+        // The TS-570D's `EX` was the motivating case and is **not** an
+        // example any more: it declared `QUERY_SET_3` until the bench
+        // established that this radio cannot read a menu it is not parked on
+        // (troubleshooting-plan.md item 34, and the reason `ts570d calibrate`
+        // exists at all). Its table now declares a bare `QUERY` only, which
+        // is the truth about the radio. The parser behaviour stays, because
+        // it is right for any radio that does support such a form — but no
+        // radio in this fleet currently does, so the coverage below is the
+        // only thing exercising it.
         //
         // Query is tried before Set deliberately. The two widths should never
         // collide (a command declaring the same width for both is a table
@@ -702,8 +712,14 @@ mod tests {
     const SET_11: &[CommandForm] = &[CommandForm::fixed(CommandOperation::Set, 11)];
     const ACTION: &[CommandForm] = &[CommandForm::fixed(CommandOperation::Action, 0)];
     const NONE: &[CommandForm] = &[];
-    /// A *parameterised* query: reading a menu requires saying which menu.
-    /// Shaped exactly like the TS-570D's `EX` (`QUERY_SET_3`/`SET_7`).
+    /// A *parameterised* query: reading one entry requires saying which.
+    ///
+    /// Shaped like a menu read, which is what motivated the parser handling
+    /// it. Deliberately a **synthetic** radio and not the TS-570D: that one
+    /// declared this form until the bench established it cannot read a menu
+    /// it is not parked on, and its table now says so. No radio in the fleet
+    /// declares a parameterised query today, so this fixture is the only
+    /// thing holding the behaviour up.
     const QUERY_3: &[CommandForm] = &[CommandForm::fixed(CommandOperation::Query, 3)];
     const SET_7: &[CommandForm] = &[CommandForm::fixed(CommandOperation::Set, 7)];
 
