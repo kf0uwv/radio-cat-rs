@@ -155,7 +155,22 @@ pub trait RadioHost: Send + Sync + 'static {
 /// a little over 30 fps — fast enough that a waterfall scrolls smoothly,
 /// slow enough that a dummy radio does not saturate a loopback socket with
 /// frames nobody asked to be that fresh.
+/// How long this loop blocks waiting for a client's next command before
+/// coming back round to push a frame.
 const PUMP_INTERVAL: Duration = Duration::from_millis(30);
+
+/// How often spectrum and audio frames are sent to a console.
+///
+/// Deliberately slower than [`PUMP_INTERVAL`], which governs how quickly
+/// this loop notices a client's commands and must stay brisk.
+///
+/// At the pump rate the server pushed about 29 spectrum and 24 audio
+/// frames a second -- roughly 345 KB/s -- and a console that renders each
+/// one into a terminal cannot keep up. Measured on a TS-570D: the TUI at
+/// 56% CPU with 31 KB backed up unread in its socket, which presents as
+/// the console hanging. Ten a second is a waterfall that still reads as
+/// live and an AF scope nobody can tell apart from thirty.
+const DISPLAY_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Serve the native protocol until the listener fails.
 ///
@@ -205,7 +220,7 @@ fn serve_one<H: RadioHost>(mut stream: TcpStream, host: Arc<H>) -> std::io::Resu
     session.set_theme(host.theme());
     let mut pending: Vec<u8> = Vec::new();
     let mut buf = [0u8; 8192];
-    let mut last_pump = Instant::now();
+    let mut last_display = Instant::now();
     let mut last_sequence: Option<u64> = None;
     let mut last_audio_sequence: Option<u64> = None;
 
@@ -269,8 +284,9 @@ fn serve_one<H: RadioHost>(mut stream: TcpStream, host: Arc<H>) -> std::io::Resu
         }
         pending.drain(..consumed);
 
-        if last_pump.elapsed() >= PUMP_INTERVAL {
-            last_pump = Instant::now();
+        // Pictures go out on their own clock. See DISPLAY_INTERVAL.
+        if last_display.elapsed() >= DISPLAY_INTERVAL {
+            last_display = Instant::now();
             if session.wants_audio() {
                 if let Some(frame) = host.audio() {
                     // Same don't-resend rule as spectrum, and it matters
