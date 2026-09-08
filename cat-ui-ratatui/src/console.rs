@@ -280,8 +280,32 @@ fn draw_layout(
         mode: !spec.root.places(&PanelKind::ModeBar),
     };
 
+    let placements = spec.resolve(to_area(area));
+
+    // A layout that places a Spectrum panel AND a Workspace draws the
+    // spectrum twice while the SPECTRUM tab is selected, because that
+    // tab's workspace content *is* the spectrum. Two identical waterfalls,
+    // each half the height they could be.
+    //
+    // Rather than blank the workspace -- which would leave a hole where
+    // the operator is looking -- the spectrum takes both. Same principle
+    // as `quick_rows` above: what the layout draws elsewhere must not be
+    // repeated, and here the panel and the tab are the same picture.
+    let spectrum_rect = placements
+        .iter()
+        .find(|p| p.kind == PanelKind::Spectrum)
+        .map(|p| to_rect(p.area));
+    let workspace_rect = placements
+        .iter()
+        .find(|p| p.kind == PanelKind::Workspace)
+        .map(|p| to_rect(p.area));
+    let merged = match (view.tab == Tab::Spectrum, spectrum_rect, workspace_rect) {
+        (true, Some(sp), Some(ws)) => Some(union(sp, ws)),
+        _ => None,
+    };
+
     let mut body = area;
-    for placement in spec.resolve(to_area(area)) {
+    for placement in placements {
         let r = to_rect(placement.area);
         match placement.kind {
             PanelKind::Readout => {
@@ -299,11 +323,15 @@ fn draw_layout(
             PanelKind::QuickBar => draw_quick_settings(f, r, radio, caps, quick_rows),
             PanelKind::MeterRail => draw_meters(f, r, radio, caps),
             PanelKind::LevelsRail => draw_reference(f, r, radio),
-            PanelKind::Spectrum => draw_spectrum(f, r, view),
+            // When merged, the spectrum is drawn once over both rects.
+            PanelKind::Spectrum => draw_spectrum(f, merged.unwrap_or(r), view),
             PanelKind::AfScope => draw_af_scope(f, r, view),
             PanelKind::AfFft => draw_af_fft(f, r, view),
             PanelKind::Workspace => {
-                draw_tab_content(f, r, radio, view);
+                // Already covered by the merged spectrum above.
+                if merged.is_none() {
+                    draw_tab_content(f, r, radio, view);
+                }
                 body = r;
             }
             PanelKind::Status => draw_status(f, r, radio, view),
@@ -322,6 +350,18 @@ fn draw_layout(
         }
     }
     body
+}
+
+/// The smallest rect containing both.
+///
+/// Used only for adjacent panels a layout stacked, so this is a merge
+/// rather than an approximation.
+fn union(a: Rect, b: Rect) -> Rect {
+    let x = a.x.min(b.x);
+    let y = a.y.min(b.y);
+    let right = (a.x + a.width).max(b.x + b.width);
+    let bottom = (a.y + a.height).max(b.y + b.height);
+    Rect::new(x, y, right - x, bottom - y)
 }
 
 fn to_area(r: Rect) -> cat_layout::Area {
@@ -1181,26 +1221,46 @@ fn draw_spectrum(f: &mut Frame, area: Rect, view: &ConsoleView) {
 
 // ── the reference rail ──────────────────────────────────────────────────
 
+/// The reference rail's rows, as text.
+///
+/// A dash where nothing was read. See `RadioDisplay::levels_known`: over
+/// the console protocol none of these fields arrive, and drawing the
+/// struct's defaults told the operator `AF 200` at a radio reading
+/// `AG034`, and `PRE off` at a radio with its preamp on -- confidently,
+/// and indistinguishably from a real reading.
+pub(crate) fn reference_facts(radio: &RadioDisplay) -> Vec<(&'static str, String)> {
+    let known = radio.levels_known;
+    let val = |s: String| if known { s } else { "—".to_string() };
+    let flag = |b: bool| {
+        if known {
+            on_off(b).to_string()
+        } else {
+            "—".to_string()
+        }
+    };
+    vec![
+        ("ANT", val(format!("{}", radio.antenna))),
+        ("AF", val(format!("{}", radio.af_gain))),
+        ("RF", val(format!("{}", radio.rf_gain))),
+        ("SQL", val(format!("{}", radio.squelch))),
+        ("MIC", val(format!("{}", radio.mic_gain))),
+        ("PWR", val(format!("{}W", radio.power_pct))),
+        ("AGC", val(format!("{}", radio.agc))),
+        ("NB", flag(radio.noise_blanker)),
+        ("NR", val(format!("{}", radio.noise_reduction))),
+        ("PRE", flag(radio.preamp)),
+        ("ATT", flag(radio.attenuator)),
+        ("PROC", flag(radio.speech_processor)),
+        ("VOX", flag(radio.vox)),
+        ("LOCK", flag(radio.freq_lock)),
+    ]
+}
+
 fn draw_reference(f: &mut Frame, area: Rect, radio: &RadioDisplay) {
     if area.width == 0 {
         return;
     }
-    let facts = [
-        ("ANT", format!("{}", radio.antenna)),
-        ("AF", format!("{}", radio.af_gain)),
-        ("RF", format!("{}", radio.rf_gain)),
-        ("SQL", format!("{}", radio.squelch)),
-        ("MIC", format!("{}", radio.mic_gain)),
-        ("PWR", format!("{}W", radio.power_pct)),
-        ("AGC", format!("{}", radio.agc)),
-        ("NB", on_off(radio.noise_blanker)),
-        ("NR", format!("{}", radio.noise_reduction)),
-        ("PRE", on_off(radio.preamp)),
-        ("ATT", on_off(radio.attenuator)),
-        ("PROC", on_off(radio.speech_processor)),
-        ("VOX", on_off(radio.vox)),
-        ("LOCK", on_off(radio.freq_lock)),
-    ];
+    let facts = reference_facts(radio);
     let lines: Vec<Line> = facts
         .iter()
         .map(|(k, v)| {
@@ -1265,6 +1325,67 @@ fn draw_command(f: &mut Frame, area: Rect, view: &ConsoleView) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_rail_with_nothing_read_shows_dashes_not_defaults() {
+        // Reported from the bench: the network console displayed `AF 200`
+        // at a radio reading AG034, and `PRE off` at a radio with its
+        // preamp on. Both were `RadioDisplay::default()` -- the console
+        // protocol carries none of these fields -- rendered
+        // indistinguishably from a real reading.
+        let radio = RadioDisplay::default();
+        assert!(!radio.levels_known, "a fresh display has read nothing");
+        for (k, v) in super::reference_facts(&radio) {
+            assert_eq!(v, "—", "{k} must not be drawn from a default");
+        }
+    }
+
+    #[test]
+    fn a_rail_that_was_read_shows_its_values() {
+        let radio = RadioDisplay {
+            levels_known: true,
+            af_gain: 34,
+            preamp: true,
+            ..Default::default()
+        };
+        let facts = super::reference_facts(&radio);
+        let get = |k: &str| {
+            facts
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.clone())
+                .unwrap()
+        };
+        assert_eq!(get("AF"), "34");
+        assert_eq!(get("PRE"), "on");
+        assert!(!facts.iter().any(|(_, v)| v == "—"), "nothing unknown here");
+    }
+
+    #[test]
+    fn two_stacked_panels_merge_into_one_rect() {
+        // The spectrum was being drawn twice on its own tab: once as the
+        // layout's Spectrum panel and once as the SPECTRUM tab's workspace
+        // content. Two identical waterfalls, each half the height it could
+        // have had. The fix gives the spectrum both rects rather than
+        // blanking the workspace, which would have left a hole exactly
+        // where the operator is looking.
+        let top = Rect::new(0, 5, 100, 12);
+        let bottom = Rect::new(0, 17, 100, 8);
+        let m = super::union(top, bottom);
+        assert_eq!(m, Rect::new(0, 5, 100, 20));
+        assert_eq!(
+            m.height,
+            top.height + bottom.height,
+            "no rows lost or invented between adjacent panels"
+        );
+    }
+
+    #[test]
+    fn union_is_order_independent() {
+        let a = Rect::new(2, 3, 10, 4);
+        let b = Rect::new(2, 7, 10, 6);
+        assert_eq!(super::union(a, b), super::union(b, a));
+    }
+
     use super::*;
 
     fn caps() -> cat_native::CapabilitiesWire {

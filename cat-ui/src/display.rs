@@ -61,6 +61,20 @@ pub struct RadioDisplay {
     pub smeter: u16,
 
     // --- Gains / levels ---
+    /// Whether the rail's settings were actually read from the radio.
+    ///
+    /// **False means every field below is a placeholder, not a reading.**
+    /// The console protocol's `RadioState` carries the dial, mode, split,
+    /// TX, memory channel, IF shift, filter width and meters -- and none
+    /// of AF, RF, SQL, MIC, PWR, AGC, NB, NR, PRE, ATT, PROC, VOX or LOCK.
+    /// A console attached over the network therefore knows none of them.
+    ///
+    /// Before this flag they were drawn from `Default`, so a network
+    /// console displayed `AF 200` at a radio reading `AG034` and `PRE off`
+    /// at a radio with its preamp on -- confidently, and indistinguishably
+    /// from a real reading. A dash is the honest rendering; the direct
+    /// serial console, which polls every one of these, sets this true.
+    pub levels_known: bool,
     pub af_gain: u8,
     pub rf_gain: u8,
     pub squelch: u8,
@@ -145,6 +159,7 @@ impl Default for RadioDisplay {
             memory_channel: 0,
             memory_mode: false,
             smeter: 0,
+            levels_known: false,
             af_gain: 200,
             rf_gain: 255,
             squelch: 0,
