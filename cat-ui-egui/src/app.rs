@@ -1325,7 +1325,7 @@ impl Console {
         let generation = self.waterfall.generation();
         let due = self
             .waterfall_uploaded_at
-            .is_none_or(|t| t.elapsed() >= WATERFALL_UPLOAD_INTERVAL);
+            .map_or(true, |t| t.elapsed() >= WATERFALL_UPLOAD_INTERVAL);
         if (self.waterfall_uploaded != Some(generation) && due) || self.waterfall_texture.is_none()
         {
             let image = egui::ColorImage::from_rgba_unmultiplied(
