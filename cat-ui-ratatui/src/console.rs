@@ -118,6 +118,16 @@ pub struct ConsoleView {
     pub cat_pending: usize,
     /// Newest first. Empty until a spectrum source is attached.
     pub spectrum: Vec<SpectrumFrame>,
+    /// Whether the tap is still feeding, which is not the same question
+    /// as whether `spectrum` has anything in it.
+    ///
+    /// It held frames from the first one ever received until the console
+    /// exited, so a dongle pulled out of its socket left the SOURCE tab
+    /// reporting the tap's centre and span in the streaming colour over a
+    /// waterfall that had stopped scrolling. The AUDIO row beside it has
+    /// always drawn the distinction -- "configured, no stream" is not
+    /// "nothing wired" -- and this is the same distinction for the tap.
+    pub spectrum_live: bool,
     pub audio: AudioState,
     pub af_scope: Option<AudioScopeFrame>,
     pub af_spectrum: Option<AudioSpectrumFrame>,
@@ -140,6 +150,7 @@ impl Default for ConsoleView {
             pending_vfo_hz: None,
             cat_pending: 0,
             spectrum: Vec::new(),
+            spectrum_live: false,
             // The design's default, and the honest one: this station has an
             // audio path wired and no client transport attached to it yet.
             audio: AudioState::Configured,
@@ -1238,10 +1249,14 @@ fn draw_source(f: &mut Frame, area: Rect, view: &ConsoleView) {
             .add_modifier(Modifier::BOLD),
     )));
 
-    lines.push(match view.spectrum.first() {
-        Some(frame) => Line::from(vec![
-            Span::styled("  IF TAP    ", Style::default().fg(DIM)),
-            Span::styled(
+    // Three states, like AUDIO below: feeding, attached-but-quiet, and
+    // nothing there at all. Those send an operator to three different
+    // places, and a tap that has stopped is the one that used to be
+    // reported as the first.
+    lines.push(Line::from(vec![
+        Span::styled("  IF TAP    ", Style::default().fg(DIM)),
+        match view.spectrum.first() {
+            Some(frame) if view.spectrum_live => Span::styled(
                 format!(
                     "{:.3} MHz span {} kHz, {} bins",
                     frame.center_hz as f64 / 1e6,
@@ -1250,12 +1265,10 @@ fn draw_source(f: &mut Frame, area: Rect, view: &ConsoleView) {
                 ),
                 Style::default().fg(Color::Green),
             ),
-        ]),
-        None => Line::from(vec![
-            Span::styled("  IF TAP    ", Style::default().fg(DIM)),
-            Span::styled("nothing attached", Style::default().fg(DIM)),
-        ]),
-    });
+            Some(_) => Span::styled("attached, no stream", Style::default().fg(DIM)),
+            None => Span::styled("nothing attached", Style::default().fg(DIM)),
+        },
+    ]));
 
     let audio = match view.audio {
         AudioState::Streaming => Span::styled(
@@ -2433,6 +2446,44 @@ mod tab_body_tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn the_source_tab_tells_a_quiet_tap_from_an_absent_one() {
+        // Three states, not two. "Feeding", "attached but not producing"
+        // and "nothing there" send an operator to three different places
+        // -- the same distinction the AUDIO row beside it has always
+        // drawn. A tap that stopped used to be reported as feeding,
+        // centre and span and all, in the streaming colour.
+        let frame = SpectrumFrame {
+            center_hz: 14_074_000,
+            span_hz: 96_000,
+            ref_level_dbm: -20.0,
+            bins: vec![-110.0; 8],
+            sequence: 1,
+        };
+
+        let mut view = ConsoleView {
+            tab: Tab::Source,
+            spectrum: vec![frame.clone()],
+            spectrum_live: true,
+            ..ConsoleView::default()
+        };
+        assert!(
+            screen(&view).contains("14.074"),
+            "a feeding tap reports itself"
+        );
+
+        view.spectrum_live = false;
+        let quiet = screen(&view);
+        assert!(
+            quiet.contains("attached, no stream"),
+            "a stopped tap is not a feeding one: {quiet}"
+        );
+        assert!(!quiet.contains("nothing attached"), "nor an absent one");
+
+        view.spectrum.clear();
+        assert!(screen(&view).contains("nothing attached"));
     }
 
     #[test]
