@@ -162,6 +162,20 @@ pub struct ServerConfig {
     pub rigctl_port: Option<u16>,
 }
 
+/// How often the state pump reads the radio while a console is watching.
+///
+/// Every poll is two CAT exchanges (`IF` then `SM`) on a link shared with
+/// whatever is keying the transmitter. A PTT command that arrives mid-poll
+/// waits for it, and on this bench the link occasionally stalls for two
+/// seconds -- measured max 2557 ms for a rigctl request. Hamlib's rig
+/// timeout is well under a second, so WSJT-X gives up on the PTT command,
+/// retries, and the key chatters: the operator hears the radio stuttering
+/// and sees power bursting between zero and full.
+///
+/// Two a second is still a live-looking S-meter and halves the window in
+/// which a keying command can be stuck behind a state read.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Bring up the broker (owning `session`, the one physical radio
 /// connection, validated against `table`) plus every listener `config`
 /// requests, and run until one of them fails.
@@ -318,11 +332,7 @@ where
             handle.clone(),
             cat_server::ClientId::from_raw(u64::MAX),
         ));
-        monoio::spawn(native_bridge::pump(
-            shared,
-            radio,
-            std::time::Duration::from_millis(200),
-        ));
+        monoio::spawn(native_bridge::pump(shared, radio, POLL_INTERVAL));
     }
 
     if tasks.is_empty() {
@@ -433,11 +443,7 @@ where
                 handle,
                 cat_server::ClientId::from_raw(u64::MAX),
             ));
-            cat_server::block_on::block_on(native_bridge::pump(
-                shared,
-                radio,
-                std::time::Duration::from_millis(200),
-            ));
+            cat_server::block_on::block_on(native_bridge::pump(shared, radio, POLL_INTERVAL));
         });
     }
 
