@@ -101,8 +101,29 @@ pub(crate) async fn dispatch<R: RigctlRadio>(radio: &mut R, line: &str) -> Strin
             Err(_) => RPRT_ERR.to_string(),
         },
         "T" => {
+            // Hamlib's `ptt_t` has four values, not two:
+            //
+            //   0  RIG_PTT_OFF
+            //   1  RIG_PTT_ON
+            //   2  RIG_PTT_ON_MIC
+            //   3  RIG_PTT_ON_DATA
+            //
+            // A client picks 2 or 3 when it knows which input the audio is
+            // arriving on -- WSJT-X sends `T 3` whenever its Transmit Audio
+            // Source is set to Rear/Data, which is the ordinary setting for
+            // any rig fed through an accessory connector. Accepting only
+            // `T 1` made PTT fail with "Invalid parameter" for exactly the
+            // configuration this bridge exists to serve.
+            //
+            // All three ON values key the transmitter. The distinction
+            // between them is which audio input the rig should listen to,
+            // and on a station wired through an accessory port that is a
+            // fact about the wiring rather than a per-transmission choice
+            // -- so it is not modelled on `RigctlRadio`, and adding it
+            // would change a trait two other radios implement to express
+            // something none of them can act on.
             let result = match args.first() {
-                Some(&"1") => radio.transmit().await,
+                Some(&"1") | Some(&"2") | Some(&"3") => radio.transmit().await,
                 Some(&"0") => radio.receive().await,
                 _ => return RPRT_ERR.to_string(),
             };
@@ -508,6 +529,42 @@ mod tests {
         let mut radio = FakeRadio::new();
         assert_eq!(run(dispatch(&mut radio, "T 1")), RPRT_OK);
         assert!(radio.transmitting);
+    }
+
+    #[test]
+    fn dispatch_capital_t_three_transmits() {
+        // RIG_PTT_ON_DATA. WSJT-X sends this whenever its Transmit Audio
+        // Source is Rear/Data -- the ordinary setting for a rig fed through
+        // an accessory connector. Rejecting it failed PTT with "Invalid
+        // parameter" for exactly the configuration this bridge serves:
+        //
+        //   netrigctl_set_ptt: cmd=T 3
+        //   RX: RPRT -1
+        //   rig_set_ptt returning(-1) Invalid parameter
+        let mut radio = FakeRadio::new();
+        assert_eq!(run(dispatch(&mut radio, "T 3")), RPRT_OK);
+        assert!(radio.transmitting);
+    }
+
+    #[test]
+    fn dispatch_capital_t_two_transmits() {
+        // RIG_PTT_ON_MIC. Keys like any other ON value: which input the
+        // audio arrives on is a fact about the wiring here, not something
+        // a caller chooses per transmission.
+        let mut radio = FakeRadio::new();
+        assert_eq!(run(dispatch(&mut radio, "T 2")), RPRT_OK);
+        assert!(radio.transmitting);
+    }
+
+    #[test]
+    fn dispatch_capital_t_rejects_a_value_hamlib_never_sends() {
+        // Still a closed set: `ptt_t` has four values and 4 is not one of
+        // them. A key request nobody can interpret must not key.
+        let mut radio = FakeRadio::new();
+        assert_eq!(run(dispatch(&mut radio, "T 4")), RPRT_ERR);
+        assert!(!radio.transmitting, "an unparsed value must never key");
+        assert_eq!(run(dispatch(&mut radio, "T")), RPRT_ERR);
+        assert!(!radio.transmitting);
     }
 
     #[test]
