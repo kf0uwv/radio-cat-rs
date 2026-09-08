@@ -130,6 +130,17 @@ pub struct Console {
     /// rather than by frame count — a console that dropped frames would
     /// otherwise animate in slow motion.
     last_frame_at: Option<std::time::Instant>,
+    /// When an audio frame last arrived. See `last_spectrum_at`; the AF
+    /// panels had the same forever-true liveness test.
+    last_audio_at: Option<std::time::Instant>,
+    /// When a spectrum frame last arrived.
+    ///
+    /// Distinct from `last_frame_at`, which ticks every *render* frame.
+    /// This one ticks only when the radio's host actually sent a picture,
+    /// which is the question "is the tap still feeding us?" -- and that
+    /// used to be answered with `latest.is_some()`, true forever after
+    /// the first frame ever received.
+    last_spectrum_at: Option<std::time::Instant>,
     /// The trace drawn above the fall, and its peak hold.
     ///
     /// A waterfall shows history and hides the present: the newest row is
@@ -199,6 +210,8 @@ impl Console {
             history: std::collections::VecDeque::new(),
             retune: None,
             last_frame_at: None,
+            last_spectrum_at: None,
+            last_audio_at: None,
             spectrum_has_its_own_panel: false,
             trace: cat_ui::spectrum_trace::Trace::new(),
             widgets: crate::widgets::Widgets::new(),
@@ -238,6 +251,12 @@ impl Console {
                 .push(frame, self.waterfall.width(), self.waterfall.floor_dbm());
         }
         self.latest = frames.last().cloned();
+        // And that they arrived, which is a separate fact from having
+        // them -- see `accept_audio`. Without this a still shows a full
+        // waterfall under a `SIGNAL` cell reporting the tap as dead.
+        if !frames.is_empty() {
+            self.last_spectrum_at = Some(std::time::Instant::now());
+        }
     }
 
     /// Install an audio frame, so a still shows the AF panels under load.
@@ -245,7 +264,7 @@ impl Console {
     /// Not a demo mode: an unconnected console correctly shows PENDING,
     /// which says nothing about whether the panels are drawn right.
     pub fn demo_audio(&mut self, frame: cat_signal::AudioFrame) {
-        self.audio = Some(frame);
+        self.accept_audio(frame);
     }
 
     /// The occasional settings, for a still.
@@ -399,7 +418,7 @@ impl Console {
             }
         }
         if let Some(frame) = audio {
-            self.audio = Some(frame);
+            self.accept_audio(frame);
         }
         // Every frame, visible panel or not: the waterfall's history is
         // what a retune reprojects, and a gap in it is a gap in the
@@ -412,6 +431,43 @@ impl Console {
         if let Some(why) = lost {
             self.on_link_lost(why);
         }
+    }
+
+    /// How long without a frame before the tap is no longer "live".
+    ///
+    /// Frames arrive around thirty a second on this bench, so two seconds
+    /// is some sixty missed in a row -- not a hiccup. Short enough that an
+    /// operator learns quickly, long enough that a busy host reordering a
+    /// few frames does not flicker the indicator.
+    const SPECTRUM_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// Take an audio block, and record that it arrived.
+    ///
+    /// One method rather than two fields set side by side, because
+    /// `audio_state` reads both and the two going out of step is silent:
+    /// the panels would say PENDING with a perfectly good trace in hand,
+    /// or LIVE over one that stopped. The still renderer set the frame
+    /// and not the time, and would have shown PENDING under a waveform.
+    pub fn accept_audio(&mut self, frame: cat_signal::AudioFrame) {
+        self.audio = Some(frame);
+        self.last_audio_at = Some(std::time::Instant::now());
+    }
+
+    /// Whether audio is still arriving. See [`Self::spectrum_is_live`].
+    fn audio_is_live(&self) -> bool {
+        self.last_audio_at
+            .is_some_and(|t| t.elapsed() < Self::SPECTRUM_STALE_AFTER)
+    }
+
+    /// Whether the tap is still feeding this console.
+    ///
+    /// Not "has it ever". A dongle that is unplugged, or a host that stops
+    /// publishing, leaves the last frame in place: the waterfall freezes
+    /// but keeps showing a plausible band, and the `SIGNAL` cell went on
+    /// saying `IF-TAP` in the live colour over it.
+    fn spectrum_is_live(&self) -> bool {
+        self.last_spectrum_at
+            .is_some_and(|t| t.elapsed() < Self::SPECTRUM_STALE_AFTER)
     }
 
     /// Forget everything that came from the radio.
@@ -443,6 +499,11 @@ impl Console {
         // disconnect; this is the GPU console catching up.
         self.readout = crate::readout::Readout::default();
         self.levels = None;
+        // The picture stops being current the moment the link does, and
+        // the waterfall keeps its scrollback rather than blanking -- so
+        // the indicator is the only thing that can say so.
+        self.last_spectrum_at = None;
+        self.last_audio_at = None;
     }
 
     /// What this console knows about the audio path, and it is three
@@ -454,7 +515,12 @@ impl Console {
     /// forever.
     fn audio_state(&self) -> cat_ui::af::AudioState {
         use cat_ui::af::AudioState;
-        if self.audio.is_some() {
+        // Still arriving, not merely "one arrived once". A sound card
+        // that stops -- unplugged, or a host that stops publishing --
+        // leaves the last block in place, and the panels went on saying
+        // LIVE over a trace that had stopped moving. Same window as the
+        // spectrum, and for the same reason.
+        if self.audio.is_some() && self.audio_is_live() {
             return AudioState::Streaming;
         }
         match self.capabilities() {
@@ -783,7 +849,7 @@ impl Console {
 
                 let signal = match caps.as_ref().map(|c| c.signal) {
                     Some(cat_native::SignalSupport::IfTapPoint { .. }) => {
-                        let live = self.latest.is_some();
+                        let live = self.spectrum_is_live();
                         value(
                             "IF-TAP",
                             if live {
@@ -1395,6 +1461,7 @@ impl Console {
             while self.history.len() > self.waterfall.height() as usize {
                 self.history.pop_back();
             }
+            self.last_spectrum_at = Some(std::time::Instant::now());
             // Fed here, alongside the fall, rather than in `spectrum`:
             // that method runs only while its panel is visible, and a
             // peak hold that stopped accumulating behind a hidden tab
@@ -2300,6 +2367,16 @@ mod tests {
         );
     }
 
+    fn demo_frame() -> cat_signal::SpectrumFrame {
+        cat_signal::SpectrumFrame {
+            center_hz: 14_074_000,
+            span_hz: 96_000,
+            ref_level_dbm: -20.0,
+            bins: vec![-110.0, -60.0, -110.0, -110.0],
+            sequence: 1,
+        }
+    }
+
     fn audio_frame() -> cat_signal::AudioFrame {
         cat_signal::AudioFrame {
             scope: cat_signal::AudioScopeFrame {
@@ -2328,8 +2405,64 @@ mod tests {
         // the panels say so rather than sitting at PENDING for ever.
         assert_eq!(console.audio_state(), AudioState::Absent);
 
-        console.audio = Some(audio_frame());
+        console.accept_audio(audio_frame());
         assert_eq!(console.audio_state(), AudioState::Streaming);
+    }
+
+    #[test]
+    fn a_still_reports_its_sources_as_live() {
+        // The still is how anyone sees this console. A frame pushed in
+        // without recording that it arrived leaves the picture full and
+        // the indicators saying nothing is feeding it -- which is what
+        // the liveness test cost when it first went in.
+        let mut console = connected(StubHost::new());
+        console.demo_spectrum(&[demo_frame()]);
+        console.demo_audio(audio_frame());
+        assert!(console.spectrum_is_live());
+        assert_eq!(console.audio_state(), cat_ui::af::AudioState::Streaming);
+    }
+
+    #[test]
+    fn audio_that_has_stopped_arriving_is_not_reported_streaming() {
+        // `audio.is_some()` was true forever after the first block, so a
+        // sound card that stopped left the AF panels saying LIVE over a
+        // trace that had stopped moving.
+        let mut console = connected(StubHost::new());
+        console.accept_audio(audio_frame());
+        assert_eq!(console.audio_state(), cat_ui::af::AudioState::Streaming);
+
+        console.last_audio_at = Some(std::time::Instant::now() - Console::SPECTRUM_STALE_AFTER);
+        assert_ne!(
+            console.audio_state(),
+            cat_ui::af::AudioState::Streaming,
+            "a card silent for the stale window is not streaming"
+        );
+    }
+
+    #[test]
+    fn a_tap_that_has_stopped_feeding_is_not_reported_live() {
+        // `latest.is_some()` was true forever after the first frame ever
+        // received, so an unplugged dongle left the SIGNAL cell saying
+        // IF-TAP in the live colour over a frozen waterfall.
+        let mut console = connected(StubHost::new());
+        assert!(!console.spectrum_is_live(), "nothing has arrived yet");
+
+        console.last_spectrum_at = Some(std::time::Instant::now());
+        assert!(console.spectrum_is_live());
+
+        console.last_spectrum_at = Some(std::time::Instant::now() - Console::SPECTRUM_STALE_AFTER);
+        assert!(
+            !console.spectrum_is_live(),
+            "a tap silent for the stale window is not feeding us"
+        );
+    }
+
+    #[test]
+    fn losing_the_link_takes_the_tap_with_it() {
+        let mut console = connected(StubHost::new());
+        console.last_spectrum_at = Some(std::time::Instant::now());
+        console.on_link_lost("closed".to_string());
+        assert!(!console.spectrum_is_live());
     }
 
     #[test]
@@ -2358,7 +2491,7 @@ mod tests {
         // A waveform left on screen after the link dropped is a picture of
         // a radio this console is no longer talking to.
         let mut console = connected(StubHost::new());
-        console.audio = Some(audio_frame());
+        console.accept_audio(audio_frame());
 
         console.link = Link::Down("dropped".to_string());
         console.audio = None;
