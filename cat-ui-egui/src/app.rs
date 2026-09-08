@@ -1891,7 +1891,7 @@ impl Console {
                     (full.height() / cell.y) as u16,
                 );
 
-                for placement in layout.resolve(in_cells) {
+                for placement in layout.resolve_with(in_cells, &natural) {
                     let rect = egui::Rect::from_min_size(
                         egui::pos2(
                             full.left() + f32::from(placement.area.x) * cell.x,
@@ -1937,6 +1937,27 @@ fn cell_size(ui: &egui::Ui) -> egui::Vec2 {
     let h = ui.fonts(|f| f.row_height(&font));
     egui::vec2(w.max(1.0), (h + 2.0).max(1.0))
 }
+
+/// What this console needs for a panel, in cells. See
+/// [`cat_layout::Size::Natural`].
+///
+/// The meter rail is the one that differs: this console draws a label row
+/// *and* a bar per meter, plus a pane header -- about 40 px a meter
+/// against a 17 px cell -- so four meters and a header want twelve cells.
+/// The terminal console draws the same panel in five. A layout that
+/// picked either number would be wrong for the other, and both mistakes
+/// shipped before the layout started asking.
+fn natural(kind: &cat_layout::PanelKind, direction: cat_layout::Direction) -> u16 {
+    match (kind, direction) {
+        (cat_layout::PanelKind::MeterRail, cat_layout::Direction::Rows) => METER_RAIL_CELLS,
+        _ => cat_layout::default_natural(kind, direction),
+    }
+}
+
+/// Cells this console's meter rail needs: a header plus a label row and a
+/// bar for each of the four meters. Measured off a render, not guessed --
+/// the first two guesses clipped ALC.
+const METER_RAIL_CELLS: u16 = 12;
 
 /// The arrangement a console uses when its server publishes none.
 ///

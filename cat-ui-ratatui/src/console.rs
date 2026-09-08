@@ -331,7 +331,7 @@ fn draw_layout(
         mode: !spec.root.places(&PanelKind::ModeBar),
     };
 
-    let placements = spec.resolve(to_area(area));
+    let placements = spec.resolve_with(to_area(area), &natural);
 
     // A layout that places a Spectrum panel AND a Workspace draws the
     // spectrum twice while the SPECTRUM tab is selected, because that
@@ -595,6 +595,18 @@ const METER_ROWS: u16 = 4;
 // is not a failing case to report -- it is a build that should not
 // happen. When they last disagreed the rail took fifteen rows to draw
 // five, and nothing anywhere said so.
+/// What this console needs for a panel, in cells. See
+/// [`cat_layout::Size::Natural`].
+///
+/// One row per meter and one for the link line. The GPU console draws the
+/// same panel in twelve, which is why the layout asks rather than picks.
+pub fn natural(kind: &cat_layout::PanelKind, direction: cat_layout::Direction) -> u16 {
+    match (kind, direction) {
+        (cat_layout::PanelKind::MeterRail, cat_layout::Direction::Rows) => METER_ROWS + 1,
+        _ => cat_layout::default_natural(kind, direction),
+    }
+}
+
 const _: () = assert!(
     METER_ROWS < cat_layout::METER_RAIL_ROWS,
     "the meter bars plus the link line must fit the rows the layout allots"
