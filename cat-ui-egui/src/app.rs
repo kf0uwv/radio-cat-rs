@@ -410,18 +410,39 @@ impl Console {
             self.devices_pending = false;
         }
         if let Some(why) = lost {
-            self.status = format!("connection lost: {why}");
-            self.link = Link::Down(why);
-            // A new connection is a new machine as far as this console
-            // knows. Keeping the old list would show one host's hardware
-            // while talking to another.
-            self.devices = crate::devices::Offer::Unasked;
-            self.devices_pending = false;
-            // The panels go back to pending rather than holding the last
-            // trace, which would be a waveform from a radio this console
-            // is no longer talking to.
-            self.audio = None;
+            self.on_link_lost(why);
         }
+    }
+
+    /// Forget everything that came from the radio.
+    ///
+    /// Extracted so it can be tested: the failure it prevents only shows
+    /// up when a link that was working stops, which is not a state a
+    /// console reaches on its own.
+    fn on_link_lost(&mut self, why: String) {
+        self.status = format!("connection lost: {why}");
+        self.link = Link::Down(why);
+        // A new connection is a new machine as far as this console
+        // knows. Keeping the old list would show one host's hardware
+        // while talking to another.
+        self.devices = crate::devices::Offer::Unasked;
+        self.devices_pending = false;
+        // The panels go back to pending rather than holding the last
+        // trace, which would be a waveform from a radio this console is
+        // no longer talking to.
+        self.audio = None;
+        // And so does everything read from the radio. `Field::Unknown` is
+        // what every pane already draws as an em dash, so this is the
+        // console saying it does not know rather than showing the last
+        // thing it was told as though it were still true.
+        //
+        // The dial is the one that matters. It is the number an operator
+        // acts on, and a dial that keeps reading 14.074.000 after the
+        // link died does not look stale -- it looks exactly like a live
+        // reading. The terminal console has always dashed it on
+        // disconnect; this is the GPU console catching up.
+        self.readout = crate::readout::Readout::default();
+        self.levels = None;
     }
 
     /// What this console knows about the audio path, and it is three
@@ -2309,6 +2330,27 @@ mod tests {
 
         console.audio = Some(audio_frame());
         assert_eq!(console.audio_state(), AudioState::Streaming);
+    }
+
+    #[test]
+    fn losing_the_link_stops_the_dial_reading_as_though_it_were_live() {
+        // The number an operator acts on. A dial still showing
+        // 14.074.000 after the link died does not look stale -- it looks
+        // exactly like a reading. The terminal console has always dashed
+        // it on disconnect.
+        let mut console = connected(StubHost::new());
+        console.readout.vfo_a_hz.confirm(14_074_000);
+        console.demo_levels();
+        assert_eq!(console.readout.vfo_a_hz.value(), Some(14_074_000));
+
+        console.on_link_lost("closed".to_string());
+
+        assert_eq!(
+            console.readout.vfo_a_hz.value(),
+            None,
+            "the dial must not survive the link"
+        );
+        assert!(console.levels.is_none(), "nor the occasional settings");
     }
 
     #[test]
