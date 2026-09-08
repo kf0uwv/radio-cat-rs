@@ -84,6 +84,17 @@ pub type InstallationFn = Arc<dyn Fn() -> cat_framework::installation::Installat
 /// What the poller publishes and the listener threads read.
 pub struct NativeShared {
     capabilities: &'static RadioCapabilities,
+    /// How many consoles are watching.
+    ///
+    /// The pump polls the radio to keep this cache warm. At display rate
+    /// on a 9600-baud link that is most of the link's capacity, and every
+    /// other client -- WSJT-X asking for frequency and PTT -- queues
+    /// behind it. Measured on a TS-570D: 383 ms median per rigctl request
+    /// with the pump running and nobody looking at a console.
+    ///
+    /// So the pump asks. Nobody watching means nothing needs a fresh
+    /// state, and the link belongs to whoever does.
+    consoles: std::sync::atomic::AtomicUsize,
     state: Mutex<Option<RadioState>>,
     spectrum: Mutex<Option<SpectrumFrame>>,
     /// The newest audio frame, on the same newest-wins terms as spectrum.
@@ -114,6 +125,7 @@ impl NativeShared {
     pub fn new(capabilities: &'static RadioCapabilities) -> Arc<Self> {
         Arc::new(Self {
             capabilities,
+            consoles: std::sync::atomic::AtomicUsize::new(0),
             state: Mutex::new(None),
             spectrum: Mutex::new(None),
             audio: Mutex::new(None),
@@ -136,6 +148,7 @@ impl NativeShared {
     ) -> Arc<Self> {
         Arc::new(Self {
             capabilities,
+            consoles: std::sync::atomic::AtomicUsize::new(0),
             state: Mutex::new(None),
             spectrum: Mutex::new(None),
             audio: Mutex::new(None),
@@ -224,9 +237,33 @@ impl NativeShared {
     }
 }
 
+impl NativeShared {
+    /// How many consoles are attached right now.
+    pub fn consoles(&self) -> usize {
+        self.consoles.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 impl RadioHost for NativeShared {
     fn capabilities(&self) -> &'static RadioCapabilities {
         self.capabilities
+    }
+
+    fn console_attached(&self) {
+        self.consoles
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn console_detached(&self) {
+        // `fetch_update` rather than `fetch_sub`: an unbalanced detach
+        // would wrap a `usize` to enormous and pin the pump at display
+        // rate forever, which is the failure this whole mechanism exists
+        // to avoid.
+        let _ = self.consoles.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |n| Some(n.saturating_sub(1)),
+        );
     }
 
     fn state(&self) -> RadioState {
@@ -308,7 +345,18 @@ impl RadioHost for NativeShared {
 /// Runs until the process ends. Commands are applied *before* the refresh
 /// so that a console's next read reflects what it just asked for rather
 /// than lagging a whole poll behind.
+/// How much slower to poll when no console is attached.
+///
+/// Not "never": a console that connects should find a state already
+/// there, and a five-second-old dial is a better first frame than a
+/// blank one. Slow enough that the link is effectively free for the
+/// clients that are actually asking.
+const IDLE_MULTIPLIER: u32 = 10;
+
 pub async fn pump<N: NativeRadio>(shared: Arc<NativeShared>, mut radio: N, interval: Duration) {
+    // Poll at display rate only while a console is watching. See
+    // `NativeShared::consoles`.
+    let idle = interval * IDLE_MULTIPLIER;
     loop {
         // Apply everything, then refresh, then answer. The order matters:
         // answering first lets a console's next read arrive before the
@@ -332,14 +380,59 @@ pub async fn pump<N: NativeRadio>(shared: Arc<NativeShared>, mut radio: N, inter
         // thread sleep on Linux would stall every other client for the
         // interval.
         #[cfg(target_os = "linux")]
-        monoio::time::sleep(interval).await;
+        let wait = if shared.consoles() > 0 {
+            interval
+        } else {
+            idle
+        };
+        monoio::time::sleep(wait).await;
         #[cfg(not(target_os = "linux"))]
-        std::thread::sleep(interval);
+        let wait = if shared.consoles() > 0 {
+            interval
+        } else {
+            idle
+        };
+        std::thread::sleep(wait);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_server_with_nobody_watching_reports_no_consoles() {
+        // The whole point: an idle server must be able to tell, so the
+        // pump can leave a slow serial link to the clients that are
+        // actually asking for something.
+        let shared = NativeShared::new(&RADIO);
+        assert_eq!(shared.consoles(), 0);
+    }
+
+    #[test]
+    fn consoles_are_counted_up_and_down() {
+        let shared = NativeShared::new(&RADIO);
+        shared.console_attached();
+        shared.console_attached();
+        assert_eq!(shared.consoles(), 2);
+        shared.console_detached();
+        assert_eq!(shared.consoles(), 1);
+        shared.console_detached();
+        assert_eq!(shared.consoles(), 0);
+    }
+
+    #[test]
+    fn an_unbalanced_detach_cannot_wrap_the_count() {
+        // `fetch_sub` on a usize at zero wraps to enormous, which would
+        // pin the pump at display rate forever -- the exact failure this
+        // mechanism exists to avoid, and it would look like the feature
+        // simply not working.
+        let shared = NativeShared::new(&RADIO);
+        shared.console_detached();
+        shared.console_detached();
+        assert_eq!(shared.consoles(), 0);
+        shared.console_attached();
+        assert_eq!(shared.consoles(), 1, "and it still counts up afterwards");
+    }
+
     use super::*;
     use cat_framework::capabilities::*;
 

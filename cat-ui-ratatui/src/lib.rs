@@ -46,6 +46,7 @@
 // meter table and a mode-label lookup, both of which a capability
 // document already answers.
 pub mod af;
+pub mod bigdigits;
 pub mod console;
 pub mod devices;
 pub mod meter;

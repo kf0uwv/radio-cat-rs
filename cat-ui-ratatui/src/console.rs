@@ -566,7 +566,7 @@ fn draw_content(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // tab bar
-            Constraint::Length(2), // readout, with the pending grammar
+            Constraint::Length(4), // readout: three-row dial + status
             Constraint::Length(6), // quick settings: BAND, MODE, 2x ribbon
             Constraint::Min(0),    // tab content
         ])
@@ -600,9 +600,33 @@ fn draw_tab_bar(f: &mut Frame, area: Rect, view: &ConsoleView) {
 }
 
 fn draw_readout(f: &mut Frame, area: Rect, radio: &RadioDisplay, view: &ConsoleView) {
+    // Transmitting is painted across the whole readout, not tucked into a
+    // two-character label between MODE and VFO. An operator has to be able
+    // to tell at a glance, from across the room, whether the radio is on
+    // the air -- it is the one piece of state with consequences outside
+    // the room.
+    if radio.tx {
+        let banner = Style::default()
+            .bg(Color::Red)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
+        for y in area.y..area.y + area.height {
+            f.buffer_mut()
+                .set_string(area.x, y, " ".repeat(area.width as usize), banner);
+        }
+    }
+
+    let big = area.height >= (crate::bigdigits::HEIGHT as u16 + 1);
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .constraints(if big {
+            [
+                Constraint::Length(crate::bigdigits::HEIGHT as u16),
+                Constraint::Length(1),
+            ]
+        } else {
+            [Constraint::Length(1), Constraint::Length(1)]
+        })
         .split(area);
 
     let hz = if radio.connected {
@@ -611,18 +635,60 @@ fn draw_readout(f: &mut Frame, area: Rect, radio: &RadioDisplay, view: &ConsoleV
         // Not zero, and not the last value pretending to be current.
         None
     };
-    f.render_widget(
-        Paragraph::new(vfo_readout(
-            hz,
-            view.pending_vfo_hz,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-            Style::default().fg(Color::Cyan),
-            Style::default().fg(DIM),
-        )),
-        rows[0],
-    );
+
+    let confirmed = if radio.tx {
+        Style::default()
+            .bg(Color::Red)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    };
+
+    if let (true, Some(hz), None) = (big, hz, view.pending_vfo_hz) {
+        // Three rows, so the dial is the largest thing on the panel --
+        // which is where every physical radio puts it.
+        let text = cat_ui::format::format_hz(hz);
+        let numeric: String = text
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        let glyphs = crate::bigdigits::render(&numeric);
+        for (i, row) in glyphs.iter().enumerate() {
+            let y = rows[0].y + i as u16;
+            if y < rows[0].y + rows[0].height {
+                f.buffer_mut().set_string(rows[0].x, y, row, confirmed);
+            }
+        }
+        // The unit stays small: it never changes, so it does not need the
+        // space, and giving it the space would crowd the digits.
+        let unit_x = rows[0].x + crate::bigdigits::width(&numeric) as u16 + 1;
+        if unit_x < rows[0].x + rows[0].width {
+            f.buffer_mut().set_string(
+                unit_x,
+                rows[0].y + crate::bigdigits::HEIGHT as u16 - 1,
+                "MHz",
+                if radio.tx {
+                    confirmed
+                } else {
+                    Style::default().fg(DIM)
+                },
+            );
+        }
+    } else {
+        f.render_widget(
+            Paragraph::new(vfo_readout(
+                hz,
+                view.pending_vfo_hz,
+                confirmed,
+                Style::default().fg(Color::Cyan),
+                Style::default().fg(DIM),
+            )),
+            rows[0],
+        );
+    }
 
     let vfo = if radio.split { "SPLIT" } else { "VFO A" };
     f.render_widget(
@@ -632,8 +698,19 @@ fn draw_readout(f: &mut Frame, area: Rect, radio: &RadioDisplay, view: &ConsoleV
             Span::styled(vfo, Style::default().fg(Color::White)),
             Span::raw("   "),
             Span::styled(
-                if radio.tx { "TX" } else { "RX" },
-                Style::default().fg(if radio.tx { Color::Red } else { Color::Green }),
+                if radio.tx {
+                    "◆ TRANSMITTING ◆"
+                } else {
+                    "RX"
+                },
+                if radio.tx {
+                    Style::default()
+                        .bg(Color::Red)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD | Modifier::RAPID_BLINK)
+                } else {
+                    Style::default().fg(Color::Green)
+                },
             ),
         ])),
         rows[1],

@@ -52,6 +52,19 @@ pub trait RadioHost: Send + Sync + 'static {
     /// What this radio is. Published once per connection, at handshake.
     fn capabilities(&self) -> &'static RadioCapabilities;
 
+    /// A console connected.
+    ///
+    /// Defaulted, so a host that does not care is unaffected. A host that
+    /// polls the radio to keep its cache warm does care: polling at
+    /// display rate when nobody is looking spends a slow serial link on
+    /// nothing, and every other client waits behind it.
+    fn console_attached(&self) {}
+
+    /// A console went away, however it went -- cleanly, by error, or by
+    /// the thread unwinding. Paired with `console_attached` by a guard, so
+    /// a count cannot leak.
+    fn console_detached(&self) {}
+
     /// What the radio is doing right now.
     fn state(&self) -> RadioState;
 
@@ -153,7 +166,18 @@ pub fn serve<H: RadioHost>(listener: TcpListener, host: Arc<H>) -> std::io::Resu
         let (stream, _) = listener.accept()?;
         let host = Arc::clone(&host);
         std::thread::spawn(move || {
-            let _ = serve_one(stream, host);
+            // A guard rather than a call at each exit: `serve_one` returns
+            // early on several error paths, and a leaked count would leave
+            // the radio polled at display rate forever.
+            struct Attached<'a, H: RadioHost>(&'a H);
+            impl<H: RadioHost> Drop for Attached<'_, H> {
+                fn drop(&mut self) {
+                    self.0.console_detached();
+                }
+            }
+            host.console_attached();
+            let _guard = Attached(host.as_ref());
+            let _ = serve_one(stream, Arc::clone(&host));
         });
     }
 }

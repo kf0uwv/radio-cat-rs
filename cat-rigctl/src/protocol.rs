@@ -37,6 +37,35 @@ use crate::RigctlRadio;
 pub(crate) const RPRT_OK: &str = "RPRT 0\n";
 pub(crate) const RPRT_ERR: &str = "RPRT -1\n";
 
+/// Retry an idempotent read once before reporting failure.
+///
+/// A serial link that stalls hands the caller a read timeout, and a
+/// polling client turns that into a visible error: WSJT-X reports
+/// "Invalid parameter while getting PTT state" and the operator sees a
+/// dialog for what was a hiccup. Measured on a TS-570D over a USB adapter
+/// that re-enumerates: about 4% of requests hit the transport's 2 s
+/// timeout, every one of them at exactly that bound, while the other 96%
+/// answered in a median 96 ms.
+///
+/// Only reads. `f`, `m` and `t` ask the radio what it is doing and asking
+/// twice is the same as asking once; a `T 1` retried after an ambiguous
+/// failure could key a transmitter whose first key already landed.
+///
+/// This masks a stall it cannot fix -- the cause is physical, and the
+/// bench record says so -- but a station that drops one poll in twenty is
+/// unusable, and one that silently takes 200 ms longer on those is not.
+macro_rules! read_twice {
+    ($call:expr) => {
+        match $call.await {
+            Ok(v) => Ok(v),
+            // Deliberately re-evaluates `$call`: a closure cannot hold the
+            // `&mut R` across two awaits, and a second call is exactly
+            // what a retry is.
+            Err(_) => $call.await,
+        }
+    };
+}
+
 /// Dispatch one rigctld command line against `radio`, returning the full
 /// response text (already newline-terminated). Generic over any
 /// [`RigctlRadio`] implementation, so this works against a real radio
@@ -54,7 +83,7 @@ pub(crate) async fn dispatch<R: RigctlRadio>(radio: &mut R, line: &str) -> Strin
     let args: Vec<&str> = parts.collect();
 
     match cmd {
-        "f" => match radio.get_vfo_a_hz().await {
+        "f" => match read_twice!(radio.get_vfo_a_hz()) {
             Ok(hz) => format!("{hz}\n"),
             Err(_) => RPRT_ERR.to_string(),
         },
@@ -76,7 +105,7 @@ pub(crate) async fn dispatch<R: RigctlRadio>(radio: &mut R, line: &str) -> Strin
                 Err(_) => RPRT_ERR.to_string(),
             }
         }
-        "m" => match radio.get_mode().await {
+        "m" => match read_twice!(radio.get_mode()) {
             // Passband is always reported as `0` ("use the rig's current
             // default") rather than a real bandwidth — see module docs on
             // why filter-width resolution is out of scope for this bridge.
@@ -95,7 +124,7 @@ pub(crate) async fn dispatch<R: RigctlRadio>(radio: &mut R, line: &str) -> Strin
                 None => RPRT_ERR.to_string(),
             }
         }
-        "t" => match radio.get_transmitting().await {
+        "t" => match read_twice!(radio.get_transmitting()) {
             Ok(false) => "0\n".to_string(),
             Ok(true) => "1\n".to_string(),
             Err(_) => RPRT_ERR.to_string(),
@@ -356,7 +385,11 @@ mod tests {
         vfo_hz: u64,
         mode: FakeMode,
         transmitting: bool,
+        /// Fails every call. The existing error tests rely on this being
+        /// persistent, so it stays that way.
         fail_next: bool,
+        /// Fails exactly once, then succeeds -- a transient stall.
+        fail_once: std::cell::Cell<bool>,
     }
 
     impl FakeRadio {
@@ -366,6 +399,7 @@ mod tests {
                 mode: FakeMode::Usb,
                 transmitting: false,
                 fail_next: false,
+                fail_once: std::cell::Cell::new(false),
             }
         }
 
@@ -383,14 +417,14 @@ mod tests {
         type Error = FakeError;
 
         async fn get_vfo_a_hz(&mut self) -> Result<u64, Self::Error> {
-            if self.fail_next {
+            if self.fail_next || self.fail_once.replace(false) {
                 return Err(FakeError);
             }
             Ok(self.vfo_hz)
         }
 
         async fn set_vfo_a_hz(&mut self, hz: u64) -> Result<(), Self::Error> {
-            if self.fail_next {
+            if self.fail_next || self.fail_once.replace(false) {
                 return Err(FakeError);
             }
             self.vfo_hz = hz;
@@ -398,14 +432,14 @@ mod tests {
         }
 
         async fn get_mode(&mut self) -> Result<Self::Mode, Self::Error> {
-            if self.fail_next {
+            if self.fail_next || self.fail_once.replace(false) {
                 return Err(FakeError);
             }
             Ok(self.mode)
         }
 
         async fn set_mode(&mut self, mode: Self::Mode) -> Result<(), Self::Error> {
-            if self.fail_next {
+            if self.fail_next || self.fail_once.replace(false) {
                 return Err(FakeError);
             }
             self.mode = mode;
@@ -413,14 +447,14 @@ mod tests {
         }
 
         async fn get_transmitting(&mut self) -> Result<bool, Self::Error> {
-            if self.fail_next {
+            if self.fail_next || self.fail_once.replace(false) {
                 return Err(FakeError);
             }
             Ok(self.transmitting)
         }
 
         async fn transmit(&mut self) -> Result<(), Self::Error> {
-            if self.fail_next {
+            if self.fail_next || self.fail_once.replace(false) {
                 return Err(FakeError);
             }
             self.transmitting = true;
@@ -428,7 +462,7 @@ mod tests {
         }
 
         async fn receive(&mut self) -> Result<(), Self::Error> {
-            if self.fail_next {
+            if self.fail_next || self.fail_once.replace(false) {
                 return Err(FakeError);
             }
             self.transmitting = false;
@@ -529,6 +563,43 @@ mod tests {
         let mut radio = FakeRadio::new();
         assert_eq!(run(dispatch(&mut radio, "T 1")), RPRT_OK);
         assert!(radio.transmitting);
+    }
+
+    #[test]
+    fn a_read_that_fails_once_is_retried_and_succeeds() {
+        // A stalled serial link hands back a read timeout, and a polling
+        // client turns that into a dialog: "Invalid parameter while
+        // getting PTT state". Measured on a TS-570D over a re-enumerating
+        // USB adapter, about 4% of requests hit the 2 s transport timeout
+        // while the rest answered in a median 96 ms.
+        let mut radio = FakeRadio::new();
+        radio.fail_once.set(true);
+        assert_eq!(run(dispatch(&mut radio, "f")), "14250000\n");
+
+        radio.fail_once.set(true);
+        assert_eq!(run(dispatch(&mut radio, "t")), "0\n");
+
+        radio.fail_once.set(true);
+        assert_eq!(run(dispatch(&mut radio, "m")), "USB\n0\n");
+    }
+
+    #[test]
+    fn a_read_that_keeps_failing_is_still_reported() {
+        // One retry, not a loop. A radio that is genuinely gone must be
+        // reported as gone rather than hung on.
+        let mut radio = FakeRadio::new();
+        radio.fail_next = true; // every call
+        assert_eq!(run(dispatch(&mut radio, "f")), RPRT_ERR);
+    }
+
+    #[test]
+    fn a_transmit_request_is_never_retried() {
+        // Keying is not idempotent. A `T 1` retried after an ambiguous
+        // failure could key a transmitter whose first key already landed.
+        let mut radio = FakeRadio::new();
+        radio.fail_once.set(true);
+        assert_eq!(run(dispatch(&mut radio, "T 1")), RPRT_ERR);
+        assert!(!radio.transmitting, "a failed key must not be retried");
     }
 
     #[test]
