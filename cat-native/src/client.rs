@@ -115,6 +115,12 @@ type Result<T> = std::result::Result<T, ClientError>;
 pub struct Streams {
     pub spectrum: bool,
     pub audio: bool,
+    /// How many frames a second this console can actually render.
+    ///
+    /// `None` accepts the server's conservative default. A GPU console
+    /// says 30; a terminal console should not, and the measurement that
+    /// says so is in `ClientMessage::Hello`.
+    pub max_fps: Option<u8>,
 }
 
 impl Streams {
@@ -128,6 +134,7 @@ impl Streams {
         Self {
             spectrum: true,
             audio: false,
+            max_fps: None,
         }
     }
 
@@ -136,7 +143,19 @@ impl Streams {
         Self {
             spectrum: true,
             audio: true,
+            max_fps: None,
         }
+    }
+
+    /// Ask for frames at a rate this console can actually render.
+    ///
+    /// Left unsaid, the server keeps a conservative default that suits a
+    /// terminal. A console that can draw faster has to say so, because
+    /// the server has no way to find out and guessing high is what makes
+    /// a slow console appear to hang.
+    pub fn at_fps(mut self, fps: u8) -> Self {
+        self.max_fps = Some(fps);
+        self
     }
 }
 
@@ -190,6 +209,7 @@ impl Connection {
             version: PROTOCOL_VERSION,
             spectrum: streams.spectrum,
             audio: streams.audio,
+            max_fps: streams.max_fps,
         })?;
         match conn.read_control()? {
             ServerMessage::Welcome {

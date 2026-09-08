@@ -139,6 +139,7 @@ fn a_console_that_asked_for_audio_receives_it() {
         Streams {
             spectrum: false,
             audio: true,
+            max_fps: None,
         },
     )
     .unwrap();
@@ -176,6 +177,7 @@ fn asking_for_audio_does_not_imply_asking_for_spectrum() {
         Streams {
             spectrum: false,
             audio: true,
+            max_fps: None,
         },
     )
     .unwrap();
@@ -199,6 +201,7 @@ fn a_stalled_capture_is_not_redrawn_as_though_it_were_live() {
         Streams {
             spectrum: false,
             audio: true,
+            max_fps: None,
         },
     )
     .unwrap();
@@ -230,6 +233,7 @@ fn a_host_with_no_audio_is_simply_quiet() {
         Streams {
             spectrum: false,
             audio: true,
+            max_fps: None,
         },
     )
     .unwrap();

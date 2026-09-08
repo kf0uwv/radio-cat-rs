@@ -308,6 +308,9 @@ impl RadioHost for NativeShared {
                 if_shift_hz: None,
                 filter_width_hz: None,
                 meters: Vec::new(),
+                // Nor these. See the note above: an unread block is
+                // reported as absent, not as somebody's defaults.
+                levels: None,
             })
     }
 

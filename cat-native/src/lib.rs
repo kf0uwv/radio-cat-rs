@@ -394,6 +394,30 @@ pub struct MeterSample {
     pub raw: u16,
 }
 
+/// The settings an operator changes occasionally.
+///
+/// Polled on a slower clock than the dial: a frequency moves constantly
+/// and is worth reading several times a second, while an AF gain is worth
+/// reading every few seconds. Reading all fourteen at the fast rate would
+/// be most of a 9600-baud link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RadioLevels {
+    pub af_gain: u8,
+    pub rf_gain: u8,
+    pub squelch: u8,
+    pub mic_gain: u8,
+    pub power_pct: u8,
+    pub agc: u8,
+    pub noise_reduction: u8,
+    pub antenna: u8,
+    pub noise_blanker: bool,
+    pub preamp: bool,
+    pub attenuator: bool,
+    pub speech_processor: bool,
+    pub vox: bool,
+    pub freq_lock: bool,
+}
+
 /// What the radio is doing right now.
 ///
 /// Every field is `Option` except the ones every radio has. A radio with
@@ -416,6 +440,24 @@ pub struct RadioState {
     /// an SWR meter during receive — may be absent or read zero; which of
     /// those it does is the radio's business, not the protocol's.
     pub meters: Vec<MeterSample>,
+    /// The settings an operator changes occasionally, if the server has
+    /// read them.
+    ///
+    /// Separate from the fields above because they are polled on a
+    /// different clock: a dial moves constantly and is worth reading five
+    /// times a second, while an AF gain is worth reading every few
+    /// seconds. Fourteen commands at the fast rate would be most of a
+    /// 9600-baud link.
+    ///
+    /// `None` means nobody has read them, and a console must say so
+    /// rather than draw its struct defaults -- which is what made a
+    /// network console display `AF 200` at a radio reading `AG034`.
+    ///
+    /// `#[serde(default)]` so a console built before this field existed,
+    /// or a server that does not implement the read, still speaks the
+    /// protocol.
+    #[serde(default)]
+    pub levels: Option<RadioLevels>,
 }
 
 impl RadioState {
@@ -424,6 +466,36 @@ impl RadioState {
         self.meters.iter().find(|m| m.kind == kind).map(|m| m.raw)
     }
 }
+
+/// The interval [`MAX_FPS`] works out to.
+pub const MAX_FPS_INTERVAL: std::time::Duration =
+    std::time::Duration::from_micros(1_000_000 / MAX_FPS as u64);
+
+/// The slowest frame rate worth streaming at.
+pub const MIN_FPS: u32 = 1;
+
+/// The fastest. Past this the link is being spent on frames nobody's eye
+/// separates, and the value arrives from the network, so it is bounded.
+pub const MAX_FPS: u32 = 60;
+
+/// How often spectrum and audio frames go to a client that has not said
+/// what it can render.
+///
+/// Deliberately slower than the server's command pump, which governs how
+/// quickly a client's commands are noticed and must stay brisk.
+///
+/// At the pump rate the server pushed about 29 spectrum and 24 audio
+/// frames a second -- roughly 345 KB/s -- and a console that renders each
+/// one into a terminal cannot keep up. Measured on a TS-570D: the TUI at
+/// 56% CPU with 31 KB backed up unread in its socket, which presents as
+/// the console hanging. Ten a second is a waterfall that still reads as
+/// live and an AF scope nobody can tell apart from thirty.
+///
+/// This was the rate for *everybody* for a while, and it was the wrong
+/// one for a GPU console, where ten a second is a fall visibly stepping.
+/// There is no single number that suits both, so a client that knows what
+/// it can draw says so and gets it; this is what the rest get.
+pub const DEFAULT_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -442,6 +514,22 @@ pub enum ClientMessage {
         /// panels is an ordinary way to run.
         #[serde(default)]
         audio: bool,
+        /// How many spectrum and audio frames a second this client can
+        /// actually render, if it knows.
+        ///
+        /// The server used to push at one global rate for everybody, and
+        /// there is no rate that suits both consoles. At 29 a second a
+        /// terminal console fell behind -- measured on a TS-570D at 56%
+        /// CPU with 31 KB backed up unread in its socket, which presents
+        /// as the console hanging -- while a GPU console at 10 a second
+        /// is a waterfall visibly stepping.
+        ///
+        /// So the client says. `#[serde(default)]` leaves it `None` for a
+        /// client built before this existed, and `None` keeps the old
+        /// conservative rate, which is the right answer for a console
+        /// that has not told us what it can take.
+        #[serde(default)]
+        max_fps: Option<u8>,
     },
     Command(Command),
     Ping,
@@ -514,6 +602,8 @@ pub struct NativeSession {
     handshaken: bool,
     spectrum: bool,
     audio: bool,
+    /// What this client said it can render. See `ClientMessage::Hello`.
+    max_fps: Option<u8>,
     /// The most recent state the host published.
     ///
     /// A cache, not a source. This session does not own a radio and must
@@ -558,6 +648,7 @@ impl NativeSession {
             handshaken: false,
             spectrum: false,
             audio: false,
+            max_fps: None,
             state: None,
             devices: None,
             layout: None,
@@ -612,6 +703,24 @@ impl NativeSession {
     /// The one question the frame pump asks. `false` until a successful
     /// `Hello` says otherwise, so a client that never handshakes cannot be
     /// sent frames either.
+    /// How often this client should be sent frames.
+    ///
+    /// Clamped, because this arrives from the network: a client asking
+    /// for 0 would divide by zero and one asking for 240 would be handed
+    /// the link. Below the floor there is no point having the stream at
+    /// all; above the ceiling nothing on the other end can draw it.
+    pub fn frame_interval(&self) -> std::time::Duration {
+        match self.max_fps {
+            Some(fps) => {
+                let fps = u32::from(fps).clamp(MIN_FPS, MAX_FPS);
+                std::time::Duration::from_micros(u64::from(1_000_000 / fps))
+            }
+            // A console that has not said keeps the rate that was safe
+            // for every console before it could.
+            None => DEFAULT_FRAME_INTERVAL,
+        }
+    }
+
     pub fn wants_spectrum(&self) -> bool {
         self.handshaken && self.spectrum
     }
@@ -637,6 +746,7 @@ impl NativeSession {
                 version,
                 spectrum,
                 audio,
+                max_fps,
             } => {
                 if version != PROTOCOL_VERSION {
                     return ServerMessage::Error {
@@ -650,6 +760,7 @@ impl NativeSession {
                 // A client only gets frames if it both handshook AND asked.
                 self.spectrum = spectrum;
                 self.audio = audio;
+                self.max_fps = max_fps;
                 ServerMessage::Welcome {
                     version: PROTOCOL_VERSION,
                     capabilities: Box::new(CapabilitiesWire {
@@ -1044,6 +1155,68 @@ mod tests {
         signal: SignalSupport::None,
     };
 
+    #[test]
+    fn a_client_that_says_nothing_keeps_the_conservative_rate() {
+        // The terminal console does not ask, and must not be sped up
+        // under it: at 29 frames a second it fell behind with 31 KB
+        // backed up unread in its socket, which presents as a hang.
+        let session = handshaken(true);
+        assert_eq!(session.frame_interval(), DEFAULT_FRAME_INTERVAL);
+    }
+
+    #[test]
+    fn a_client_gets_the_rate_it_asked_for() {
+        let mut session = NativeSession::new(&RADIO);
+        session.handle(ClientMessage::Hello {
+            version: PROTOCOL_VERSION,
+            spectrum: true,
+            audio: true,
+            max_fps: Some(30),
+        });
+        let interval = session.frame_interval();
+        assert!(
+            interval <= std::time::Duration::from_millis(34)
+                && interval >= std::time::Duration::from_millis(33),
+            "30 fps is a ~33 ms interval, got {interval:?}"
+        );
+    }
+
+    #[test]
+    fn an_absurd_rate_is_clamped_rather_than_believed() {
+        // This arrives from the network. Zero would divide by zero and
+        // 255 would hand a client the link.
+        for (asked, expect_at_least, expect_at_most) in [
+            (0u8, MAX_FPS_INTERVAL, DEFAULT_FRAME_INTERVAL * 10),
+            (255u8, MAX_FPS_INTERVAL, MAX_FPS_INTERVAL),
+        ] {
+            let mut session = NativeSession::new(&RADIO);
+            session.handle(ClientMessage::Hello {
+                version: PROTOCOL_VERSION,
+                spectrum: true,
+                audio: false,
+                max_fps: Some(asked),
+            });
+            let interval = session.frame_interval();
+            assert!(
+                interval >= expect_at_least && interval <= expect_at_most,
+                "{asked} fps clamped to {interval:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rate_is_only_taken_from_a_handshake_that_matched_versions() {
+        // A rejected Hello must not leave its numbers behind.
+        let mut session = NativeSession::new(&RADIO);
+        session.handle(ClientMessage::Hello {
+            version: PROTOCOL_VERSION + 1,
+            spectrum: true,
+            audio: true,
+            max_fps: Some(60),
+        });
+        assert_eq!(session.frame_interval(), DEFAULT_FRAME_INTERVAL);
+    }
+
     fn handshaken(spectrum: bool) -> NativeSession {
         handshaken_with(spectrum, false)
     }
@@ -1054,6 +1227,7 @@ mod tests {
             version: PROTOCOL_VERSION,
             spectrum,
             audio,
+            max_fps: None,
         });
         session
     }
@@ -1137,6 +1311,7 @@ mod tests {
             version: PROTOCOL_VERSION,
             spectrum: false,
             audio: false,
+            max_fps: None,
         });
 
         let ServerMessage::Welcome {
@@ -1164,6 +1339,7 @@ mod tests {
             version: PROTOCOL_VERSION + 1,
             spectrum: true,
             audio: false,
+            max_fps: None,
         });
         assert!(matches!(
             reply,
@@ -1272,6 +1448,7 @@ mod tests {
             version: PROTOCOL_VERSION,
             spectrum: false,
             audio: false,
+            max_fps: None,
         });
 
         for command in [
@@ -1354,6 +1531,7 @@ mod tests {
                 kind: MeterKind::S,
                 raw: 24,
             }],
+            levels: None,
         });
         assert_eq!(
             session.handle(ClientMessage::Command(Command::ReadMeter {
@@ -1536,6 +1714,7 @@ mod tests {
             version: PROTOCOL_VERSION,
             spectrum: true,
             audio: false,
+            max_fps: None,
         });
         let ServerMessage::Welcome { capabilities, .. } = reply else {
             panic!("expected Welcome")
@@ -1559,6 +1738,7 @@ mod tests {
             version: PROTOCOL_VERSION,
             spectrum: true,
             audio: false,
+            max_fps: None,
         });
         let ServerMessage::Welcome { capabilities, .. } = reply else {
             panic!("expected Welcome")
