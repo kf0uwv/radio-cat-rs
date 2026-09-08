@@ -110,6 +110,8 @@ pub struct WaterfallImage {
     no_data: [u8; 3],
     /// The frame every other row is re-projected onto.
     reference: Option<SpectrumFrame>,
+    /// See [`WaterfallImage::generation`].
+    generation: u64,
 }
 
 impl WaterfallImage {
@@ -120,6 +122,7 @@ impl WaterfallImage {
             height,
             pixels: vec![0; (width * height * 4) as usize],
             head: 0,
+            generation: 0,
             rows_filled: 0,
             palette,
             floor_dbm,
@@ -137,11 +140,24 @@ impl WaterfallImage {
     }
 
     /// How many rows hold real frames. Below `height`, the rest is unwritten.
+    /// Bumped whenever the image changes.
+    ///
+    /// Lets a renderer skip rebuilding and re-uploading a texture that is
+    /// identical to the one already on the GPU. Without it the console
+    /// allocated a full RGBA buffer, copied it and uploaded it thirty
+    /// times a second whether or not a single pixel had moved -- which on
+    /// a machine without a fast GPU is enough to make the window stop
+    /// responding.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn rows_filled(&self) -> u32 {
         self.rows_filled
     }
 
     pub fn set_no_data_color(&mut self, rgb: [u8; 3]) {
+        self.generation = self.generation.wrapping_add(1);
         self.no_data = rgb;
     }
 
@@ -160,6 +176,7 @@ impl WaterfallImage {
     /// when the staircase of `no_data` at its edges becomes the visible
     /// record of that move.
     pub fn push(&mut self, frame: &SpectrumFrame) {
+        self.generation = self.generation.wrapping_add(1);
         let reference = frame.clone();
         self.head = if self.rows_filled == 0 {
             0
@@ -190,6 +207,7 @@ impl WaterfallImage {
     /// scrollback instead of only above the seam. A console can call it on
     /// dial change and use [`push`](Self::push) the rest of the time.
     pub fn rebuild(&mut self, frames: &[SpectrumFrame]) {
+        self.generation = self.generation.wrapping_add(1);
         let Some(reference) = frames.first().cloned() else {
             self.pixels.fill(0);
             self.rows_filled = 0;
@@ -212,6 +230,7 @@ impl WaterfallImage {
     /// Only `center_hz`, `span_hz` and `ref_level_dbm` of `view` are read;
     /// its bins are not, so a caller can pass an empty frame as an axis.
     pub fn rebuild_onto(&mut self, frames: &[SpectrumFrame], view: &SpectrumFrame) {
+        self.generation = self.generation.wrapping_add(1);
         self.pixels.fill(0);
         self.rows_filled = 0;
         self.head = 0;
@@ -263,6 +282,27 @@ impl WaterfallImage {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_generation_moves_only_when_the_image_does() {
+        // A renderer uses this to skip rebuilding and re-uploading a
+        // texture identical to the one already on the GPU. Uploading the
+        // whole image thirty times a second regardless left the console
+        // unresponsive on a machine without a fast GPU.
+        let mut w = WaterfallImage::new(8, 4, Palette::TURBO, -120.0);
+        let g0 = w.generation();
+
+        assert_eq!(w.generation(), g0, "reading it changes nothing");
+        let _ = w.rgba();
+        assert_eq!(w.generation(), g0, "nor does rendering it");
+
+        w.push(&frame(14_074_000, 3, 8));
+        assert_ne!(w.generation(), g0, "a new row is a change");
+        let g1 = w.generation();
+
+        w.set_no_data_color([1, 2, 3]);
+        assert_ne!(w.generation(), g1, "so is a palette change");
+    }
+
     use super::*;
 
     fn frame(center_hz: u64, peak_bin: usize, bins: usize) -> SpectrumFrame {

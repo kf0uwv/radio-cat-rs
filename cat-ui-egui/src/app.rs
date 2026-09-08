@@ -36,6 +36,14 @@ enum Link {
     Up(Box<Client>),
 }
 
+/// How often the waterfall texture may be sent to the GPU.
+///
+/// A full RGBA upload of the whole image, which at 30 a second left the
+/// console unresponsive on a machine without a fast GPU -- sitting in
+/// `drm_syncobj_array_wait_timeout` at 48% CPU with its window frozen.
+/// Ten a second is a waterfall that still reads as live.
+const WATERFALL_UPLOAD_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
 pub struct Console {
     address: String,
     link: Link,
@@ -55,6 +63,22 @@ pub struct Console {
     offline_capabilities: Option<cat_native::CapabilitiesWire>,
     /// GPU copy of the waterfall, re-uploaded as rows arrive.
     waterfall_texture: Option<egui::TextureHandle>,
+    /// The waterfall generation already on the GPU.
+    ///
+    /// Rebuilding and re-uploading the whole texture on every repaint --
+    /// a full RGBA allocation, a copy and a GPU upload, thirty times a
+    /// second whether or not a pixel had moved -- was enough to leave the
+    /// window unresponsive on a machine without a fast GPU, sitting in
+    /// `drm_syncobj_array_wait_timeout` at 48% CPU.
+    waterfall_uploaded: Option<u64>,
+    /// When the waterfall texture last went to the GPU.
+    ///
+    /// Spectrum frames arrive at about 29 a second, so a
+    /// changed-since-last-upload test alone still uploads on nearly every
+    /// repaint. The image advances in `pump` regardless of drawing, so
+    /// refreshing the *picture* at a lower rate loses no history -- only
+    /// smoothness nobody is reading a waterfall for.
+    waterfall_uploaded_at: Option<std::time::Instant>,
     /// The frames behind the waterfall, newest first.
     ///
     /// Kept so the picture can be redrawn from a different vantage point.
@@ -122,6 +146,8 @@ impl Console {
             last_state_request: std::time::Instant::now(),
             offline_capabilities: None,
             waterfall_texture: None,
+            waterfall_uploaded: None,
+            waterfall_uploaded_at: None,
             history: std::collections::VecDeque::new(),
             retune: None,
             last_frame_at: None,
@@ -1294,22 +1320,33 @@ impl Console {
         // Paint it. The buffer was being filled and never drawn -- a
         // waterfall the console maintained and never showed, which is the
         // kind of thing only looking at the thing catches.
-        let image = egui::ColorImage::from_rgba_unmultiplied(
-            [
-                self.waterfall.width() as usize,
-                self.waterfall.height() as usize,
-            ],
-            &self.waterfall.rgba(),
-        );
-        match &mut self.waterfall_texture {
-            Some(handle) => handle.set(image, egui::TextureOptions::NEAREST),
-            None => {
-                self.waterfall_texture = Some(ui.ctx().load_texture(
-                    "waterfall",
-                    image,
-                    egui::TextureOptions::NEAREST,
-                ))
+        // Only when it actually changed, and at most `WATERFALL_UPLOAD_HZ`
+        // times a second. See `waterfall_uploaded`.
+        let generation = self.waterfall.generation();
+        let due = self
+            .waterfall_uploaded_at
+            .is_none_or(|t| t.elapsed() >= WATERFALL_UPLOAD_INTERVAL);
+        if (self.waterfall_uploaded != Some(generation) && due) || self.waterfall_texture.is_none()
+        {
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [
+                    self.waterfall.width() as usize,
+                    self.waterfall.height() as usize,
+                ],
+                &self.waterfall.rgba(),
+            );
+            match &mut self.waterfall_texture {
+                Some(handle) => handle.set(image, egui::TextureOptions::NEAREST),
+                None => {
+                    self.waterfall_texture = Some(ui.ctx().load_texture(
+                        "waterfall",
+                        image,
+                        egui::TextureOptions::NEAREST,
+                    ))
+                }
             }
+            self.waterfall_uploaded = Some(generation);
+            self.waterfall_uploaded_at = Some(std::time::Instant::now());
         }
         if let Some(handle) = &self.waterfall_texture {
             ui.painter().image(
