@@ -1381,7 +1381,11 @@ pub(crate) fn reference_facts(radio: &RadioDisplay) -> Vec<(&'static str, String
         ("RF", val(format!("{}", radio.rf_gain))),
         ("SQL", val(format!("{}", radio.squelch))),
         ("MIC", val(format!("{}", radio.mic_gain))),
-        ("PWR", val(format!("{}W", radio.power_pct))),
+        // Percent of rated output, which is what `PC` reports. It read
+        // "W" here, and on a 100 W radio the two numbers coincide -- a
+        // coincidence, not a unit. On a 5 W QRP rig it would have been
+        // wrong by twenty times.
+        ("PWR", val(format!("{}%", radio.power_pct))),
         ("AGC", val(format!("{}", radio.agc))),
         ("NB", flag(radio.noise_blanker)),
         ("NR", val(format!("{}", radio.noise_reduction))),
@@ -1474,6 +1478,42 @@ mod tests {
         for (k, v) in super::reference_facts(&radio) {
             assert_eq!(v, "—", "{k} must not be drawn from a default");
         }
+    }
+
+    #[test]
+    fn the_rail_draws_a_fixed_set_of_fields() {
+        // A caller decides whether the rail is "known" by counting how
+        // many of its reads answered, and it cannot count against a
+        // number that drifts. Fourteen: ANT, AF, RF, SQL, MIC, PWR, AGC,
+        // NB, NR, PRE, ATT, PROC, VOX, LOCK. Adding a row here without
+        // adding a read there would leave the new row permanently
+        // dashed, or -- worse, if the count were not updated -- let the
+        // rail call itself known with a field nobody read.
+        let facts = super::reference_facts(&RadioDisplay::default());
+        assert_eq!(facts.len(), 14);
+        let names: Vec<&str> = facts.iter().map(|(k, _)| *k).collect();
+        assert_eq!(
+            names,
+            vec![
+                "ANT", "AF", "RF", "SQL", "MIC", "PWR", "AGC", "NB", "NR", "PRE", "ATT", "PROC",
+                "VOX", "LOCK"
+            ]
+        );
+    }
+
+    #[test]
+    fn power_is_a_percentage_of_rated_output_not_watts() {
+        // `PC` reports a percentage. It was labelled `W`, and on a 100 W
+        // radio the two numbers coincide -- a coincidence, not a unit. On
+        // a 5 W rig it would have read twenty times high.
+        let radio = RadioDisplay {
+            levels_known: true,
+            power_pct: 40,
+            ..Default::default()
+        };
+        let facts = super::reference_facts(&radio);
+        let pwr = facts.iter().find(|(k, _)| *k == "PWR").unwrap();
+        assert_eq!(pwr.1, "40%");
     }
 
     #[test]
