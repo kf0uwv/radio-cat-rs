@@ -124,6 +124,28 @@ pub(crate) async fn dispatch<R: RigctlRadio>(radio: &mut R, line: &str) -> Strin
                 None => RPRT_ERR.to_string(),
             }
         }
+        // Two lines: the split flag, then the VFO that transmits. Hamlib's
+        // `netrigctl_get_split_vfo` reads both, and a one-line answer
+        // desyncs every reply after it on that connection.
+        "s" => match read_twice!(radio.get_split()) {
+            Ok(true) => "1\nVFOB\n".to_string(),
+            Ok(false) => "0\nVFOA\n".to_string(),
+            Err(_) => RPRT_ERR.to_string(),
+        },
+        "S" => {
+            // `S <split> <tx vfo>`. The VFO argument is accepted and not
+            // acted on: this radio's split *is* which VFO transmits, so
+            // "split on, transmit on VFO A" is not a state it has. Taking
+            // the flag and ignoring the name is what every radio with one
+            // transmit VFO can honestly do.
+            let Some(on) = args.first().and_then(|s| s.parse::<u8>().ok()) else {
+                return RPRT_ERR.to_string();
+            };
+            match radio.set_split(on != 0).await {
+                Ok(()) => RPRT_OK.to_string(),
+                Err(_) => RPRT_ERR.to_string(),
+            }
+        }
         "t" => match read_twice!(radio.get_transmitting()) {
             Ok(false) => "0\n".to_string(),
             Ok(true) => "1\n".to_string(),
@@ -384,6 +406,7 @@ mod tests {
     struct FakeRadio {
         vfo_hz: u64,
         mode: FakeMode,
+        split: bool,
         transmitting: bool,
         /// Fails every call. The existing error tests rely on this being
         /// persistent, so it stays that way.
@@ -398,6 +421,7 @@ mod tests {
                 vfo_hz: 14_250_000,
                 mode: FakeMode::Usb,
                 transmitting: false,
+                split: false,
                 fail_next: false,
                 fail_once: std::cell::Cell::new(false),
             }
@@ -413,6 +437,10 @@ mod tests {
 
     #[async_trait::async_trait(?Send)]
     impl RigctlRadio for FakeRadio {
+        fn unsupported() -> Self::Error {
+            FakeError
+        }
+
         type Mode = FakeMode;
         type Error = FakeError;
 
@@ -443,6 +471,15 @@ mod tests {
                 return Err(FakeError);
             }
             self.mode = mode;
+            Ok(())
+        }
+
+        async fn get_split(&mut self) -> Result<bool, Self::Error> {
+            Ok(self.split)
+        }
+
+        async fn set_split(&mut self, on: bool) -> Result<(), Self::Error> {
+            self.split = on;
             Ok(())
         }
 
@@ -499,6 +536,33 @@ mod tests {
     // and is exactly this crate's intended reuse of that primitive.
     fn run<F: std::future::Future>(fut: F) -> F::Output {
         cat_server::block_on::block_on(fut)
+    }
+
+    #[test]
+    fn split_is_answered_on_two_lines() {
+        // Hamlib's `netrigctl_get_split_vfo` reads the flag and the VFO.
+        // A one-line answer desyncs every reply after it on that
+        // connection -- the same trap `m` sets, from the other side.
+        let mut radio = FakeRadio::new();
+        let out = run(dispatch(&mut radio, "s"));
+        assert_eq!(out.lines().count(), 2, "got {out:?}");
+        assert_eq!(out, "0\nVFOA\n");
+    }
+
+    #[test]
+    fn setting_split_reports_it_back() {
+        let mut radio = FakeRadio::new();
+        assert_eq!(run(dispatch(&mut radio, "S 1 VFOB")), RPRT_OK);
+        assert_eq!(run(dispatch(&mut radio, "s")), "1\nVFOB\n");
+        assert_eq!(run(dispatch(&mut radio, "S 0 VFOA")), RPRT_OK);
+        assert_eq!(run(dispatch(&mut radio, "s")), "0\nVFOA\n");
+    }
+
+    #[test]
+    fn a_split_command_with_no_usable_argument_is_refused() {
+        let mut radio = FakeRadio::new();
+        assert_eq!(run(dispatch(&mut radio, "S")), RPRT_ERR);
+        assert_eq!(run(dispatch(&mut radio, "S x VFOB")), RPRT_ERR);
     }
 
     #[test]
@@ -853,6 +917,8 @@ mod capability_dump_state_tests {
         struct Placeholder;
         #[async_trait::async_trait(?Send)]
         impl crate::RigctlRadio for Placeholder {
+            fn unsupported() -> Self::Error {}
+
             type Mode = ();
             type Error = ();
             async fn get_vfo_a_hz(&mut self) -> Result<u64, ()> {
@@ -908,6 +974,8 @@ mod capability_dump_state_tests {
         struct Unmigrated;
         #[async_trait::async_trait(?Send)]
         impl crate::RigctlRadio for Unmigrated {
+            fn unsupported() -> Self::Error {}
+
             type Mode = ();
             type Error = ();
             async fn get_vfo_a_hz(&mut self) -> Result<u64, ()> {
@@ -1017,6 +1085,8 @@ mod hamlib_interop_regression_tests {
 
     #[async_trait::async_trait(?Send)]
     impl crate::RigctlRadio for Recorder {
+        fn unsupported() -> Self::Error {}
+
         type Mode = ();
         type Error = ();
         async fn get_vfo_a_hz(&mut self) -> Result<u64, ()> {
@@ -1129,6 +1199,8 @@ mod live_hamlib_tests {
 
     #[async_trait::async_trait(?Send)]
     impl crate::RigctlRadio for FakeRadio {
+        fn unsupported() -> Self::Error {}
+
         type Mode = ();
         type Error = ();
         async fn get_vfo_a_hz(&mut self) -> Result<u64, ()> {

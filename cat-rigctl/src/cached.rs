@@ -202,6 +202,27 @@ where
         Ok(())
     }
 
+    fn unsupported() -> Self::Error {
+        R::unsupported()
+    }
+
+    async fn get_split(&mut self) -> Result<bool, Self::Error> {
+        // From the cache, like the dial: split is carried on every state
+        // the pump publishes, and a client polling it during a QSO should
+        // not be paying for a round trip to learn something the console
+        // already knows.
+        match self.shared.recent_state(MAX_READ_AGE) {
+            Some(state) => Ok(state.split),
+            None => self.inner.get_split().await,
+        }
+    }
+
+    async fn set_split(&mut self, on: bool) -> Result<(), Self::Error> {
+        self.inner.set_split(on).await?;
+        self.shared.patch_state(|s| s.split = on);
+        Ok(())
+    }
+
     fn hamlib_mode_name(mode: Self::Mode) -> &'static str {
         R::hamlib_mode_name(mode)
     }
@@ -271,6 +292,7 @@ mod tests {
     /// What the fake radio was actually asked to do.
     #[derive(Default)]
     struct Log {
+        split: bool,
         gets: usize,
         mode_gets: usize,
         sets: Vec<u64>,
@@ -311,11 +333,21 @@ mod tests {
         async fn get_transmitting(&mut self) -> Result<bool, Self::Error> {
             Ok(false)
         }
+        async fn get_split(&mut self) -> Result<bool, Self::Error> {
+            Ok(self.0.borrow().split)
+        }
+        async fn set_split(&mut self, on: bool) -> Result<(), Self::Error> {
+            self.0.borrow_mut().split = on;
+            Ok(())
+        }
         async fn transmit(&mut self) -> Result<(), Self::Error> {
             Ok(())
         }
         async fn receive(&mut self) -> Result<(), Self::Error> {
             Ok(())
+        }
+        fn unsupported() -> Self::Error {
+            std::io::Error::other("unsupported")
         }
         fn hamlib_mode_name(_mode: Self::Mode) -> &'static str {
             "USB"
@@ -339,6 +371,9 @@ mod tests {
 
     #[async_trait(?Send)]
     impl RigctlRadio for Unmapped {
+        fn unsupported() -> Self::Error {
+            std::io::Error::other("unsupported")
+        }
         type Mode = ModeId;
         type Error = std::io::Error;
         async fn get_vfo_a_hz(&mut self) -> Result<u64, Self::Error> {
@@ -483,6 +518,9 @@ mod tests {
         struct Failing;
         #[async_trait(?Send)]
         impl RigctlRadio for Failing {
+            fn unsupported() -> Self::Error {
+                std::io::Error::other("unsupported")
+            }
             type Mode = ModeId;
             type Error = std::io::Error;
             async fn get_vfo_a_hz(&mut self) -> Result<u64, Self::Error> {
@@ -559,6 +597,24 @@ mod tests {
         let mut cached = Cached::new(Unmapped(Rc::clone(&log)), Arc::clone(&shared));
         cached.get_mode().await.unwrap();
         assert_eq!(log.borrow().mode_gets, 1);
+    }
+
+    #[monoio::test(driver = "legacy")]
+    async fn split_is_read_from_the_cache_and_a_set_patches_it() {
+        // Split is on every state the pump publishes. A client polling it
+        // during a QSO should not pay for a round trip to learn what the
+        // console already knows, and a client that sets it must read back
+        // what it set rather than the value from before.
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut cached, shared) = rig(&log);
+        shared.publish_now(Some(state_at(14_074_000)));
+        assert!(!cached.get_split().await.unwrap());
+
+        cached.set_split(true).await.unwrap();
+        assert!(
+            cached.get_split().await.unwrap(),
+            "a read after a set must see the set"
+        );
     }
 
     #[test]

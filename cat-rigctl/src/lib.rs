@@ -118,6 +118,30 @@ pub trait RigctlRadio {
     async fn get_mode(&mut self) -> Result<Self::Mode, Self::Error>;
     /// Set operating mode.
     async fn set_mode(&mut self, mode: Self::Mode) -> Result<(), Self::Error>;
+    /// Whether split is on: transmit on the other VFO.
+    ///
+    /// Defaulted to "not supported" rather than to `false`, because a
+    /// radio that cannot answer and a radio answering "off" are different
+    /// facts and a client acts differently on them. A radio that has
+    /// split says so in its capabilities, and `\dump_state` tells Hamlib
+    /// -- so leaving this unimplemented on such a radio advertises a
+    /// control that fails when used.
+    async fn get_split(&mut self) -> Result<bool, Self::Error> {
+        Err(Self::unsupported())
+    }
+
+    /// Put transmit on the other VFO, or bring it back.
+    async fn set_split(&mut self, _on: bool) -> Result<(), Self::Error> {
+        Err(Self::unsupported())
+    }
+
+    /// The error a defaulted method returns.
+    ///
+    /// A trait method cannot construct `Self::Error` without help, and
+    /// every implementor already has a way to say "this radio does not do
+    /// that" -- so it says which.
+    fn unsupported() -> Self::Error;
+
     /// Whether the radio is currently transmitting.
     async fn get_transmitting(&mut self) -> Result<bool, Self::Error>;
     /// Key the radio into transmit.
@@ -607,6 +631,10 @@ mod tests {
     impl RigctlRadio for UnusedRadio {
         type Mode = ();
         type Error = std::convert::Infallible;
+
+        fn unsupported() -> Self::Error {
+            unreachable!("UnusedRadio is never actually invoked")
+        }
 
         async fn get_vfo_a_hz(&mut self) -> Result<u64, Self::Error> {
             unreachable!("UnusedRadio is never actually invoked")
