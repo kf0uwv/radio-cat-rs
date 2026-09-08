@@ -36,13 +36,43 @@ enum Link {
     Up(Box<Client>),
 }
 
+/// The frame rate this console asks the server for.
+///
+/// Thirty, which is what a waterfall wants and what this console could
+/// not take until the texture upload became one row instead of the whole
+/// image. See `WATERFALL_UPLOAD_INTERVAL`.
+const GUI_FPS: u8 = 30;
+
+/// How much of the spectrum pane the trace takes.
+///
+/// A third: enough to read a peak's height against the grid, little
+/// enough that the waterfall keeps the scrollback an operator uses to
+/// spot a signal that has already stopped.
+const TRACE_FRACTION: f32 = 0.34;
+
+/// Below this the trace is not worth its rows.
+///
+/// Fifty pixels holds the three grid lines and still leaves a peak
+/// somewhere to go. Under that a trace cannot be read, and an unreadable
+/// trace costs the fall its history for nothing.
+const TRACE_MIN_HEIGHT: f32 = 50.0;
+
 /// How often the waterfall texture may be sent to the GPU.
 ///
-/// A full RGBA upload of the whole image, which at 30 a second left the
-/// console unresponsive on a machine without a fast GPU -- sitting in
-/// `drm_syncobj_array_wait_timeout` at 48% CPU with its window frozen.
-/// Ten a second is a waterfall that still reads as live.
-const WATERFALL_UPLOAD_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+/// This was 100 ms, and the reason was sound at the time: the renderer
+/// rebuilt the whole 512x256 image on the CPU (`rgba()` rotates the ring
+/// into display order, half a megabyte copied) and uploaded all of it
+/// every frame, whether one row had changed or all of them. At 30 a
+/// second that left the console unresponsive on a machine without a fast
+/// GPU -- sitting in `drm_syncobj_array_wait_timeout` at 48% CPU with its
+/// window frozen.
+///
+/// The upload is now a ring: the raw buffer stays on the GPU, a scroll
+/// uploads the **one row** that changed, and the rotation is done with UV
+/// coordinates at draw time. 2 KB a frame instead of 512 KB, so the
+/// throttle that bought back responsiveness is no longer paying for
+/// anything, and the rate goes back to what a waterfall should run at.
+const WATERFALL_UPLOAD_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
 pub struct Console {
     address: String,
@@ -63,6 +93,13 @@ pub struct Console {
     offline_capabilities: Option<cat_native::CapabilitiesWire>,
     /// GPU copy of the waterfall, re-uploaded as rows arrive.
     waterfall_texture: Option<egui::TextureHandle>,
+    /// The rebuild count already on the GPU.
+    ///
+    /// When this still matches, the ring on the GPU differs from the one
+    /// in memory by at most the rows scrolled in since -- so a one-row
+    /// upload per scroll is enough. When it does not, every pixel may
+    /// have moved and the whole image goes up.
+    waterfall_rebuilds: Option<u64>,
     /// The waterfall generation already on the GPU.
     ///
     /// Rebuilding and re-uploading the whole texture on every repaint --
@@ -71,6 +108,8 @@ pub struct Console {
     /// window unresponsive on a machine without a fast GPU, sitting in
     /// `drm_syncobj_array_wait_timeout` at 48% CPU.
     waterfall_uploaded: Option<u64>,
+    /// The occasional settings, once the server has read them.
+    levels: Option<cat_native::RadioLevels>,
     /// When the waterfall texture last went to the GPU.
     ///
     /// Spectrum frames arrive at about 29 a second, so a
@@ -91,6 +130,13 @@ pub struct Console {
     /// rather than by frame count — a console that dropped frames would
     /// otherwise animate in slow motion.
     last_frame_at: Option<std::time::Instant>,
+    /// The trace drawn above the fall, and its peak hold.
+    ///
+    /// A waterfall shows history and hides the present: the newest row is
+    /// one pixel high, so the signal an operator is tuning is the hardest
+    /// thing on the panel to read. Held here rather than rebuilt per
+    /// frame because a peak hold is, by definition, state.
+    trace: cat_ui::spectrum_trace::Trace,
     /// Whether this radio's layout placed a spectrum panel of its own.
     ///
     /// Resolved once per frame from the layout, so the workspace can avoid
@@ -147,11 +193,14 @@ impl Console {
             offline_capabilities: None,
             waterfall_texture: None,
             waterfall_uploaded: None,
+            waterfall_rebuilds: None,
+            levels: None,
             waterfall_uploaded_at: None,
             history: std::collections::VecDeque::new(),
             retune: None,
             last_frame_at: None,
             spectrum_has_its_own_panel: false,
+            trace: cat_ui::spectrum_trace::Trace::new(),
             widgets: crate::widgets::Widgets::new(),
             devices: crate::devices::Offer::default(),
             audio: None,
@@ -181,6 +230,12 @@ impl Console {
     pub fn demo_spectrum(&mut self, frames: &[cat_signal::SpectrumFrame]) {
         for frame in frames {
             self.waterfall.push(frame);
+            // The trace too, and not as an afterthought: a still that
+            // showed an empty grid above a full waterfall would prove the
+            // split works and nothing about the trace, which is the part
+            // that was just added.
+            self.trace
+                .push(frame, self.waterfall.width(), self.waterfall.floor_dbm());
         }
         self.latest = frames.last().cloned();
     }
@@ -193,10 +248,35 @@ impl Console {
         self.audio = Some(frame);
     }
 
+    /// The occasional settings, for a still.
+    ///
+    /// Values read off the bench radio on 2026-09-08, so the pane in a
+    /// still shows what an operator would actually see rather than
+    /// fourteen plausible-looking round numbers.
+    pub fn demo_levels(&mut self) {
+        self.levels = Some(cat_native::RadioLevels {
+            af_gain: 33,
+            rf_gain: 255,
+            squelch: 0,
+            mic_gain: 50,
+            power_pct: 100,
+            agc: 4,
+            noise_reduction: 0,
+            antenna: 1,
+            noise_blanker: false,
+            preamp: true,
+            attenuator: false,
+            speech_processor: false,
+            vox: false,
+            freq_lock: false,
+        });
+    }
+
     pub fn demo_state(&mut self) {
         self.readout.vfo_a_hz.confirm(14_074_000);
         self.readout.mode.confirm(cat_native::ModeId::Usb);
         self.readout.split.confirm(false);
+        self.readout.tx.confirm(std::env::var("TX").is_ok());
         self.readout.smeter_raw.confirm(17);
         self.readout.if_shift_hz.confirm(0);
         // The model this console was actually handed, not a name baked
@@ -214,7 +294,11 @@ impl Console {
         // Spectrum is requested unconditionally: this console's whole
         // reason for existing on a GPU is the waterfall, and a client that
         // declined would then have to reconnect to change its mind.
-        match Client::connect(self.address.as_str(), Streams::all()) {
+        // This console draws on a GPU and uploads one waterfall row per
+        // frame, so it can take the full rate -- and at the server's
+        // conservative default the fall visibly steps. The terminal
+        // console deliberately does not ask, and keeps that default.
+        match Client::connect(self.address.as_str(), Streams::all().at_fps(GUI_FPS)) {
             Ok(client) => {
                 self.tabs = workspace::tabs(client.capabilities());
                 self.active = self.tabs.first().map(|t| t.tab).unwrap_or(Tab::Source);
@@ -290,9 +374,17 @@ impl Console {
             }
         }
         if let Some(state) = confirmed {
+            // Kept so the LEVELS pane can draw them. `None` until the
+            // server's slow poll has landed, and drawn as em dashes until
+            // then -- which is what it always drew, honestly, before the
+            // protocol carried these at all.
+            if state.levels.is_some() {
+                self.levels = state.levels;
+            }
             self.readout.vfo_a_hz.confirm(state.vfo_a_hz);
             self.readout.mode.confirm(state.mode);
             self.readout.split.confirm(state.split);
+            self.readout.tx.confirm(state.transmitting);
             if let Some(hz) = state.if_shift_hz {
                 self.readout.if_shift_hz.confirm(hz);
             }
@@ -661,10 +753,10 @@ impl Console {
             Self::field(ui, "s", s, 130.0);
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let state = if self.readout.split.value().is_some() {
-                    value("RX", theme::pal().signal)
-                } else {
-                    value("—", theme::pal().absent)
+                let state = match self.readout.tx.value() {
+                    Some(true) => value("TX", theme::pal().warning),
+                    Some(false) => value("RX", theme::pal().signal),
+                    None => value("—", theme::pal().absent),
                 };
                 Self::field(ui, "state", state, 44.0);
 
@@ -883,11 +975,63 @@ impl Console {
     fn levels(&mut self, ui: &mut egui::Ui) {
         Self::pane_header(ui, "LEVELS", None);
         ui.add_space(4.0);
-        for label in ["AF", "RF", "SQL", "MIC", "PWR"] {
+        // Em dashes until the server has actually read these. They were
+        // hardcoded dashes before, which was honest -- the protocol
+        // carried no such fields -- and is still what an unread rail must
+        // look like. What changed is that there is now something true to
+        // draw once the slow poll lands.
+        // All fourteen, not the five this pane used to show. `RadioLevels`
+        // has carried the rest since the slow poll landed, and the
+        // terminal console's reference rail has always drawn all of them
+        // -- so the GUI was the odd one out, quietly missing nine
+        // settings an operator would go to the front panel to check.
+        let on_off = |b: bool| if b { "on" } else { "off" }.to_string();
+        let rows: [(&str, Option<String>); 14] = match self.levels {
+            Some(l) => [
+                ("ANT", Some(format!("ANT{}", l.antenna))),
+                ("AF", Some(l.af_gain.to_string())),
+                ("RF", Some(l.rf_gain.to_string())),
+                ("SQL", Some(l.squelch.to_string())),
+                ("MIC", Some(l.mic_gain.to_string())),
+                // Percent of this radio's rated output, which is what
+                // `PC` actually reports. It was labelled "W" before, and
+                // on a 100 W radio those happen to coincide -- a
+                // coincidence, not a unit.
+                ("PWR", Some(format!("{}%", l.power_pct))),
+                ("AGC", Some(l.agc.to_string())),
+                ("NR", Some(l.noise_reduction.to_string())),
+                ("NB", Some(on_off(l.noise_blanker))),
+                ("PRE", Some(on_off(l.preamp))),
+                ("ATT", Some(on_off(l.attenuator))),
+                ("PROC", Some(on_off(l.speech_processor))),
+                ("VOX", Some(on_off(l.vox))),
+                ("LOCK", Some(on_off(l.freq_lock))),
+            ],
+            None => [
+                ("ANT", None),
+                ("AF", None),
+                ("RF", None),
+                ("SQL", None),
+                ("MIC", None),
+                ("PWR", None),
+                ("AGC", None),
+                ("NR", None),
+                ("NB", None),
+                ("PRE", None),
+                ("ATT", None),
+                ("PROC", None),
+                ("VOX", None),
+                ("LOCK", None),
+            ],
+        };
+        for (label, value) in rows {
             ui.horizontal(|ui| {
                 ui.label(key(label));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(absent("—"));
+                    match &value {
+                        Some(v) => ui.label(v),
+                        None => ui.label(absent("—")),
+                    };
                 });
             });
         }
@@ -1198,6 +1342,10 @@ impl Console {
     /// the journey rather than snap back and start again.
     fn begin_retune(&mut self, target_hz: u64) {
         let from = self.current_view();
+        // A held peak belongs to a frequency that is about to leave the
+        // screen. Keeping it would draw a signal above a part of the band
+        // it was never in.
+        self.trace.clear();
         self.retune = Some(cat_ui::retune::Retune::to(from, target_hz as f64));
     }
 
@@ -1226,6 +1374,12 @@ impl Console {
             while self.history.len() > self.waterfall.height() as usize {
                 self.history.pop_back();
             }
+            // Fed here, alongside the fall, rather than in `spectrum`:
+            // that method runs only while its panel is visible, and a
+            // peak hold that stopped accumulating behind a hidden tab
+            // would show a stale peak the moment the tab came back.
+            self.trace
+                .push(&frame, self.waterfall.width(), self.waterfall.floor_dbm());
             self.latest = Some(frame);
         }
 
@@ -1281,6 +1435,118 @@ impl Console {
     }
 
     /// The waterfall, and the click that tunes it.
+    /// A full-width bar while the radio is keyed, and nothing when it is
+    /// not.
+    ///
+    /// Takes a strip off the top rather than overlaying: what an overlay
+    /// would cover during a transmission is the meters an operator is
+    /// transmitting in order to watch.
+    fn tx_banner(&self, ui: &mut egui::Ui) {
+        if self.readout.tx.value() != Some(true) {
+            return;
+        }
+        let width = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::hover());
+        ui.painter().rect_filled(rect, 0.0, theme::pal().warning);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "◆ ◆ ◆   T R A N S M I T T I N G   ◆ ◆ ◆",
+            egui::FontId::monospace(13.0),
+            Color32::WHITE,
+        );
+    }
+
+    /// The live trace and its peak hold, above the fall.
+    ///
+    /// Shares `sample_column`'s projection and the fall's `floor_dbm`, so
+    /// column *n* here is column *n* below. A trace on its own scale
+    /// would put a peak above a different frequency than the colour under
+    /// it -- and would look right while doing it.
+    fn draw_trace(&self, ui: &egui::Ui, rect: egui::Rect, frame: &SpectrumFrame) {
+        let painter = ui.painter();
+        let floor = self.waterfall.floor_dbm();
+        let pal = theme::pal();
+
+        // A grid at fixed intensities, labelled in the dBm they stand
+        // for. Bare percentages would say nothing an operator can use.
+        for fraction in [0.25_f32, 0.5, 0.75] {
+            let y = rect.bottom() - rect.height() * fraction;
+            painter.line_segment(
+                [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                Stroke::new(1.0, Color32::from_rgba_unmultiplied(0x1c, 0x24, 0x2a, 150)),
+            );
+            let dbm = cat_ui::spectrum_trace::dbm_at(fraction, floor, frame.ref_level_dbm);
+            painter.text(
+                egui::pos2(rect.left() + 3.0, y),
+                egui::Align2::LEFT_BOTTOM,
+                format!("{dbm:.0}"),
+                egui::FontId::monospace(theme::SIZE_KEY),
+                pal.absent,
+            );
+        }
+
+        let columns = self.trace.live().len();
+        if columns == 0 || rect.width() <= 0.0 {
+            return;
+        }
+        // The trace is computed on the waterfall's column count, which is
+        // not the pane's pixel width. Mapping through a fraction rather
+        // than assuming they match is what keeps the two aligned when the
+        // window is any size at all.
+        let x_of =
+            |column: usize| rect.left() + rect.width() * (column as f32 + 0.5) / columns as f32;
+        let y_of = |value: f32| rect.bottom() - rect.height() * value.clamp(0.0, 1.0);
+
+        // Peak hold under the live trace, so the live one stays readable
+        // where they touch.
+        Self::polyline(
+            painter,
+            self.trace.peak(),
+            &x_of,
+            &y_of,
+            Stroke::new(1.0, Color32::from_rgba_unmultiplied(0x9b, 0x7f, 0xd4, 140)),
+        );
+        Self::polyline(
+            painter,
+            self.trace.live(),
+            &x_of,
+            &y_of,
+            Stroke::new(1.2, pal.accent),
+        );
+    }
+
+    /// Draw a run of values, breaking the line at every gap.
+    ///
+    /// `None` is a frequency this frame never saw, because the dial had
+    /// moved. Joining across one would draw a straight line through band
+    /// the radio was not listening to -- an invented signal, which is the
+    /// thing `Sample::NoData` exists to prevent.
+    fn polyline(
+        painter: &egui::Painter,
+        values: &[Option<f32>],
+        x_of: &impl Fn(usize) -> f32,
+        y_of: &impl Fn(f32) -> f32,
+        stroke: Stroke,
+    ) {
+        let mut run: Vec<egui::Pos2> = Vec::new();
+        for (column, value) in values.iter().enumerate() {
+            match value {
+                Some(v) => run.push(egui::pos2(x_of(column), y_of(*v))),
+                None => {
+                    if run.len() > 1 {
+                        painter.add(egui::Shape::line(std::mem::take(&mut run), stroke));
+                    } else {
+                        run.clear();
+                    }
+                }
+            }
+        }
+        if run.len() > 1 {
+            painter.add(egui::Shape::line(run, stroke));
+        }
+    }
+
     fn spectrum(&mut self, ui: &mut egui::Ui) {
         let Some(caps) = self.capabilities().cloned() else {
             return;
@@ -1296,14 +1562,39 @@ impl Console {
         );
 
         let available = ui.available_size();
-        let (rect, response) =
+        let (whole, response) =
             ui.allocate_exact_size(Vec2::new(available.x, available.y.max(1.0)), Sense::click());
         ui.painter()
-            .rect_filled(rect, 0.0, Color32::from_rgb(4, 7, 10));
+            .rect_filled(whole, 0.0, Color32::from_rgb(4, 7, 10));
+
+        // Trace above, fall below, on one shared x-axis. The split is a
+        // fraction with a floor: on a short pane a proportional trace
+        // becomes too thin to read a peak off, and a trace nobody can
+        // read is worse than none -- it costs the waterfall its rows for
+        // nothing.
+        let trace_height = (whole.height() * TRACE_FRACTION)
+            .max(TRACE_MIN_HEIGHT)
+            .min(whole.height() * 0.6);
+        let (trace_rect, rect) = if whole.height() >= TRACE_MIN_HEIGHT * 2.0 {
+            (
+                egui::Rect::from_min_max(
+                    whole.min,
+                    egui::pos2(whole.max.x, whole.min.y + trace_height),
+                ),
+                egui::Rect::from_min_max(
+                    egui::pos2(whole.min.x, whole.min.y + trace_height),
+                    whole.max,
+                ),
+            )
+        } else {
+            // Not enough room for both. The fall is the one with the
+            // history in it, so it keeps the pane.
+            (egui::Rect::NOTHING, whole)
+        };
 
         let Some(frame) = self.latest.clone() else {
             ui.painter().text(
-                rect.center(),
+                whole.center(),
                 egui::Align2::CENTER_CENTER,
                 "NO STREAM",
                 egui::FontId::monospace(13.0),
@@ -1311,6 +1602,10 @@ impl Console {
             );
             return;
         };
+
+        if trace_rect.height() > 0.0 {
+            self.draw_trace(ui, trace_rect, &frame);
+        }
 
         // The image is advanced in `pump`, once per frame, rather than
         // here: this method is called only when the panel is visible, and
@@ -1323,51 +1618,97 @@ impl Console {
         // Only when it actually changed, and at most `WATERFALL_UPLOAD_HZ`
         // times a second. See `waterfall_uploaded`.
         let generation = self.waterfall.generation();
+        let rebuilds = self.waterfall.rebuilds();
         let due = self
             .waterfall_uploaded_at
             .map_or(true, |t| t.elapsed() >= WATERFALL_UPLOAD_INTERVAL);
+        let width = self.waterfall.width() as usize;
+        let height = self.waterfall.height() as usize;
         if (self.waterfall_uploaded != Some(generation) && due) || self.waterfall_texture.is_none()
         {
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [
-                    self.waterfall.width() as usize,
-                    self.waterfall.height() as usize,
-                ],
-                &self.waterfall.rgba(),
-            );
-            match &mut self.waterfall_texture {
-                Some(handle) => handle.set(image, egui::TextureOptions::NEAREST),
-                None => {
-                    self.waterfall_texture = Some(ui.ctx().load_texture(
+            // The ring goes up **unrotated**. Rotating it into display
+            // order here is what used to cost half a megabyte of copy and
+            // upload per frame; the rotation is free at draw time as two
+            // UV ranges. See `WATERFALL_UPLOAD_INTERVAL`.
+            let whole = self.waterfall_texture.is_none()
+                || self.waterfall_rebuilds != Some(rebuilds)
+                || self.waterfall_uploaded.is_none();
+            match (&mut self.waterfall_texture, whole) {
+                (Some(handle), false) => {
+                    // A scroll wrote exactly one row, at `head`. Upload
+                    // that row and nothing else.
+                    let head = self.waterfall.head() as usize;
+                    let row = egui::ColorImage::from_rgba_unmultiplied(
+                        [width, 1],
+                        self.waterfall.row_rgba(0),
+                    );
+                    handle.set_partial([0, head], row, egui::TextureOptions::NEAREST);
+                }
+                (Some(handle), true) => {
+                    let image = egui::ColorImage::from_rgba_unmultiplied(
+                        [width, height],
+                        self.waterfall.pixels(),
+                    );
+                    handle.set(image, egui::TextureOptions::NEAREST);
+                }
+                (slot @ None, _) => {
+                    let image = egui::ColorImage::from_rgba_unmultiplied(
+                        [width, height],
+                        self.waterfall.pixels(),
+                    );
+                    *slot = Some(ui.ctx().load_texture(
                         "waterfall",
                         image,
                         egui::TextureOptions::NEAREST,
-                    ))
+                    ));
                 }
             }
             self.waterfall_uploaded = Some(generation);
+            self.waterfall_rebuilds = Some(rebuilds);
             self.waterfall_uploaded_at = Some(std::time::Instant::now());
         }
         if let Some(handle) = &self.waterfall_texture {
-            ui.painter().image(
-                handle.id(),
-                rect,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
-            );
+            // Two quads, because the newest row is at `head` and the ring
+            // wraps. Screen row 0 is texture row `head`; rows `head`..end
+            // fill the top of the pane and rows 0..`head` the bottom.
+            // Doing this with UVs is what makes the one-row upload
+            // possible -- a texture whose rows had to be in display order
+            // would have to be rewritten on every scroll.
+            let head = self.waterfall.head() as f32 / height.max(1) as f32;
+            let split = rect.top() + rect.height() * (1.0 - head);
+            let top = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, split));
+            let bottom = egui::Rect::from_min_max(egui::pos2(rect.min.x, split), rect.max);
+            if top.height() > 0.0 {
+                ui.painter().image(
+                    handle.id(),
+                    top,
+                    egui::Rect::from_min_max(egui::pos2(0.0, head), egui::pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+            if bottom.height() > 0.0 && head > 0.0 {
+                ui.painter().image(
+                    handle.id(),
+                    bottom,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, head)),
+                    Color32::WHITE,
+                );
+            }
         }
 
         // A fixed reticle at the centre, not a movable cursor. An IF tap is
-        // dial-centred by construction, so the dial IS the centre.
-        let x = rect.center().x;
+        // dial-centred by construction, so the dial IS the centre. Drawn
+        // across both halves: it is one axis, and a reticle that stopped
+        // at the seam would read as two separate pictures.
+        let x = whole.center().x;
         ui.painter().line_segment(
-            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+            [egui::pos2(x, whole.top()), egui::pos2(x, whole.bottom())],
             Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xe6, 0xab, 0x44, 90)),
         );
 
         if let Some(pos) = response.interact_pointer_pos() {
-            if response.clicked() && rect.width() > 0.0 {
-                let fraction = (pos.x - rect.left()) / rect.width();
+            if response.clicked() && whole.width() > 0.0 {
+                let fraction = (pos.x - whole.left()) / whole.width();
                 match tuning::tune_target(
                     &frame,
                     fraction,
@@ -1530,6 +1871,12 @@ impl Console {
                     });
                     return;
                 }
+
+                // Keyed state first, and across the full width. It was
+                // one small cell in the header row -- and one that never
+                // read TX at all, because the readout did not carry the
+                // state. A transmitting radio is not a field on a form.
+                self.tx_banner(ui);
 
                 let full = ui.available_rect_before_wrap();
                 let cell = cell_size(ui);

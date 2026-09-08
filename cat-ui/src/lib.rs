@@ -67,6 +67,7 @@ pub mod retune;
 pub mod spectrum;
 /// Bin-to-display mapping, shared by every renderer.
 pub mod spectrum_map;
+pub mod spectrum_trace;
 pub mod workspace;
 
 pub use band::{Band, BandPlan};

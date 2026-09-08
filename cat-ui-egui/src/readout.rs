@@ -87,6 +87,15 @@ pub struct Readout {
     pub vfo_a_hz: Field<u64>,
     pub mode: Field<cat_native::ModeId>,
     pub split: Field<bool>,
+    /// Whether the radio is keyed.
+    ///
+    /// Carried on `RadioState` since the protocol's first version, and
+    /// not held here until now -- so the state cell keyed itself off
+    /// `split.is_some()` as a stand-in for "the link is answering" and
+    /// read `RX` no matter what the radio was doing. A console that
+    /// cannot say the radio is transmitting is missing the one value it
+    /// most has to be right about.
+    pub tx: Field<bool>,
     pub if_shift_hz: Field<i32>,
     pub filter_width_hz: Field<u32>,
     pub memory_channel: Field<u16>,
