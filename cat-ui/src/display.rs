@@ -77,6 +77,16 @@ pub struct RadioDisplay {
     /// operator looks at to judge whether the radio is doing what they
     /// asked.
     pub meter_kind: cat_framework::capabilities::MeterKind,
+    /// Any further meters the radio is reporting at the same moment.
+    ///
+    /// A TS-570D transmitting answers two meters at once: `SM;` gives the
+    /// power reading and `RM;` gives whichever of SWR, compression or ALC
+    /// the operator has selected. `smeter` holds the first because it is
+    /// the one every console draws largest; this holds the rest.
+    ///
+    /// Empty while receiving, and empty on a console that does not read
+    /// them -- which is the honest state, and draws as a dash.
+    pub meters: Vec<cat_native::MeterSample>,
 
     // --- Gains / levels ---
     /// Whether the rail's settings were actually read from the radio.
@@ -178,6 +188,7 @@ impl Default for RadioDisplay {
             memory_mode: false,
             smeter: 0,
             meter_kind: cat_framework::capabilities::MeterKind::S,
+            meters: Vec::new(),
             levels_known: false,
             af_gain: 200,
             rf_gain: 255,

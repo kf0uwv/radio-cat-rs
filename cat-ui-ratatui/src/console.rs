@@ -589,11 +589,19 @@ fn draw_meter_bars(
         .map(|(m, label)| {
             // The reading belongs to whichever meter it was taken from,
             // which on this family is not always `S`: `SM;` answers with
-            // the power meter while the radio is keyed. Drawing it on the
-            // S row regardless put a power level behind an S-unit scale.
-            let reading = (m.kind == radio.meter_kind)
-                .then(|| MeterReading::from_wire(&caps.meters, m.kind, radio.smeter))
-                .flatten();
+            // the power meter while the radio is keyed, and `RM;` answers
+            // with a second meter at the same moment. Drawing everything
+            // on the S row put a power level behind an S-unit scale.
+            let raw = if m.kind == radio.meter_kind {
+                Some(radio.smeter)
+            } else {
+                radio
+                    .meters
+                    .iter()
+                    .find(|s| s.kind == m.kind)
+                    .map(|s| s.raw)
+            };
+            let reading = raw.and_then(|raw| MeterReading::from_wire(&caps.meters, m.kind, raw));
             // A TX meter during receive keeps its row, dimmed.
             let active = if m.active_on_transmit {
                 radio.tx
