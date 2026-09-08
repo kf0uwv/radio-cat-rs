@@ -296,7 +296,7 @@ impl Console {
         self.readout.mode.confirm(cat_native::ModeId::Usb);
         self.readout.split.confirm(false);
         self.readout.tx.confirm(std::env::var("TX").is_ok());
-        self.readout.smeter_raw.confirm(17);
+        self.accept_meter(cat_native::MeterKind::S, 17);
         self.readout.if_shift_hz.confirm(0);
         // The model this console was actually handed, not a name baked
         // in when it served one radio. A still of an FT-991A captioned
@@ -420,8 +420,7 @@ impl Console {
             // receive reading or drew a power level behind an S-unit
             // scale, depending on which end got it wrong.
             if let Some(sample) = state.meters.first() {
-                self.readout.smeter_raw.confirm(sample.raw);
-                self.readout.meter_kind.confirm(sample.kind);
+                self.accept_meter(sample.kind, sample.raw);
             }
         }
         if let Some(frame) = audio {
@@ -447,6 +446,18 @@ impl Console {
     /// operator learns quickly, long enough that a busy host reordering a
     /// few frames does not flicker the indicator.
     const SPECTRUM_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// Record a meter reading and which meter it came from.
+    ///
+    /// One method rather than two fields set side by side. The rail draws
+    /// a reading on the row for its own meter, so a raw value without its
+    /// kind is a reading that matches no row and is drawn as a dash --
+    /// which is exactly what `demo_state` produced when it set only the
+    /// value, leaving the still showing an empty S-meter.
+    pub fn accept_meter(&mut self, kind: cat_native::MeterKind, raw: u16) {
+        self.readout.smeter_raw.confirm(raw);
+        self.readout.meter_kind.confirm(kind);
+    }
 
     /// Take an audio block, and record that it arrived.
     ///
@@ -1993,7 +2004,7 @@ impl Console {
                 let caps_for_density = self.capabilities().cloned();
                 let density = |kind: &cat_layout::PanelKind, dir: cat_layout::Direction| {
                     match &caps_for_density {
-                        Some(c) => natural(kind, dir, c),
+                        Some(c) => natural(kind, dir, c, cell.y),
                         None => cat_layout::default_natural(kind, dir),
                     }
                 };
@@ -2110,24 +2121,37 @@ fn natural(
     kind: &cat_layout::PanelKind,
     direction: cat_layout::Direction,
     caps: &cat_native::CapabilitiesWire,
+    cell_height: f32,
 ) -> u16 {
     match (kind, direction) {
         (cat_layout::PanelKind::MeterRail, cat_layout::Direction::Rows) => {
-            meter_rail_cells(caps.meters.len() as u16)
+            meter_rail_cells(caps.meters.len() as u16, cell_height)
         }
         _ => cat_layout::default_natural(kind, direction),
     }
 }
 
+/// Points this console's meter rail spends on its header.
+const RAIL_HEADER_POINTS: f32 = 25.0;
+
+/// Points it spends on each meter: a label row and a bar beneath it.
+const RAIL_METER_POINTS: f32 = 40.0;
+
 /// Cells this console's meter rail needs for `meters` of them.
 ///
-/// A pane header, then a label row and a bar each. Measured off a render
-/// rather than guessed -- 40 px a meter and a 25 px header against a
-/// 17 px cell, so five halves of a cell per meter and two for the header.
-/// The guesses that preceded the measurement clipped ALC twice.
-fn meter_rail_cells(meters: u16) -> u16 {
-    const HEADER: u16 = 2;
-    HEADER + meters.max(1).saturating_mul(5).div_ceil(2)
+/// Derived from the cell height the layout is actually being resolved in,
+/// not from a remembered one. It used to be "five halves of a cell per
+/// meter", which came from measuring a render at 40 px a meter against a
+/// 17 px cell -- and cells are nearer 15 px, so at five meters the
+/// estimate landed exactly on the boundary and clipped the last row. Two
+/// earlier guesses had already clipped ALC.
+///
+/// Rounded up, and never less than one meter's worth, so a radio that
+/// declares no meters still gets a panel rather than nothing.
+fn meter_rail_cells(meters: u16, cell_height: f32) -> u16 {
+    let cell = cell_height.max(1.0);
+    let points = RAIL_HEADER_POINTS + f32::from(meters.max(1)) * RAIL_METER_POINTS;
+    (points / cell).ceil() as u16
 }
 
 /// The arrangement a console uses when its server publishes none.
@@ -2416,6 +2440,50 @@ mod tests {
 
         console.accept_audio(audio_frame());
         assert_eq!(console.audio_state(), AudioState::Streaming);
+    }
+
+    #[test]
+    fn the_rail_asks_for_room_for_every_meter() {
+        // The estimate is in points and the layout resolves in cells, so
+        // it has to be told the cell height rather than remember one. It
+        // remembered 17 px when cells are nearer 15, and at five meters
+        // that landed exactly on the boundary and clipped the last row.
+        for cell in [12.0_f32, 15.1, 17.0, 24.0] {
+            for meters in 1..=8u16 {
+                let cells = meter_rail_cells(meters, cell);
+                let have = f32::from(cells) * cell;
+                let need = RAIL_HEADER_POINTS + f32::from(meters) * RAIL_METER_POINTS;
+                assert!(
+                    have >= need,
+                    "{meters} meters at {cell} px/cell: {cells} cells is {have} pts, need {need}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_radio_with_no_meters_still_gets_a_panel() {
+        // A panel that resolves to nothing is dropped, and the operator
+        // sees no sign anything was meant to be there.
+        assert!(meter_rail_cells(0, 15.1) > 0);
+    }
+
+    #[test]
+    fn a_degenerate_cell_height_does_not_divide_by_zero() {
+        assert!(meter_rail_cells(4, 0.0) > 0);
+    }
+
+    #[test]
+    fn a_still_shows_a_reading_on_its_meter() {
+        // A raw value without its kind matches no row and draws as a
+        // dash. `demo_state` set only the value, so the still showed an
+        // empty S-meter under a full waterfall.
+        let mut console = connected(StubHost::new());
+        console.demo_state();
+        assert!(
+            console.smeter_reading().is_some(),
+            "the still must show the meter it sets"
+        );
     }
 
     #[test]
