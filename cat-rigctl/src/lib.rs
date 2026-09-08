@@ -135,6 +135,24 @@ pub trait RigctlRadio {
         Err(Self::unsupported())
     }
 
+    /// The RIT offset in Hz, zero when RIT is off.
+    ///
+    /// Read-only here on purpose. `\dump_state` advertises a RIT range
+    /// from the radio's capabilities, so Hamlib offers the control either
+    /// way; answering the *read* is strictly better than refusing both
+    /// halves of it. Setting an offset is a separate question and not
+    /// every radio can: a TS-570D's CAT set has `RC` to clear and
+    /// `RU`/`RD` to step, and no command that takes a frequency.
+    async fn get_rit_hz(&mut self) -> Result<i32, Self::Error> {
+        Err(Self::unsupported())
+    }
+
+    /// The XIT offset in Hz, zero when XIT is off. See
+    /// [`Self::get_rit_hz`].
+    async fn get_xit_hz(&mut self) -> Result<i32, Self::Error> {
+        Err(Self::unsupported())
+    }
+
     /// The error a defaulted method returns.
     ///
     /// A trait method cannot construct `Self::Error` without help, and

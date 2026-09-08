@@ -146,6 +146,14 @@ pub(crate) async fn dispatch<R: RigctlRadio>(radio: &mut R, line: &str) -> Strin
                 Err(_) => RPRT_ERR.to_string(),
             }
         }
+        "i" => match read_twice!(radio.get_rit_hz()) {
+            Ok(hz) => format!("{hz}\n"),
+            Err(_) => RPRT_ERR.to_string(),
+        },
+        "x" => match read_twice!(radio.get_xit_hz()) {
+            Ok(hz) => format!("{hz}\n"),
+            Err(_) => RPRT_ERR.to_string(),
+        },
         "t" => match read_twice!(radio.get_transmitting()) {
             Ok(false) => "0\n".to_string(),
             Ok(true) => "1\n".to_string(),
@@ -407,6 +415,8 @@ mod tests {
         vfo_hz: u64,
         mode: FakeMode,
         split: bool,
+        rit_hz: i32,
+        xit_hz: i32,
         transmitting: bool,
         /// Fails every call. The existing error tests rely on this being
         /// persistent, so it stays that way.
@@ -422,6 +432,8 @@ mod tests {
                 mode: FakeMode::Usb,
                 transmitting: false,
                 split: false,
+                rit_hz: 0,
+                xit_hz: 0,
                 fail_next: false,
                 fail_once: std::cell::Cell::new(false),
             }
@@ -476,6 +488,20 @@ mod tests {
 
         async fn get_split(&mut self) -> Result<bool, Self::Error> {
             Ok(self.split)
+        }
+
+        async fn get_rit_hz(&mut self) -> Result<i32, Self::Error> {
+            if self.fail_next {
+                return Err(FakeError);
+            }
+            Ok(self.rit_hz)
+        }
+
+        async fn get_xit_hz(&mut self) -> Result<i32, Self::Error> {
+            if self.fail_next {
+                return Err(FakeError);
+            }
+            Ok(self.xit_hz)
         }
 
         async fn set_split(&mut self, on: bool) -> Result<(), Self::Error> {
@@ -536,6 +562,29 @@ mod tests {
     // and is exactly this crate's intended reuse of that primitive.
     fn run<F: std::future::Future>(fut: F) -> F::Output {
         cat_server::block_on::block_on(fut)
+    }
+
+    #[test]
+    fn rit_and_xit_are_read_rather_than_refused() {
+        // `\dump_state` advertises a RIT range from the radio's
+        // capabilities, so Hamlib offers the control whatever this does.
+        // Answering the read is strictly better than refusing both halves
+        // of it.
+        let mut radio = FakeRadio::new();
+        assert_eq!(run(dispatch(&mut radio, "i")), "0\n");
+        assert_eq!(run(dispatch(&mut radio, "x")), "0\n");
+        radio.rit_hz = -500;
+        radio.xit_hz = 250;
+        assert_eq!(run(dispatch(&mut radio, "i")), "-500\n");
+        assert_eq!(run(dispatch(&mut radio, "x")), "250\n");
+    }
+
+    #[test]
+    fn a_radio_that_cannot_report_rit_says_so() {
+        // The default is "unsupported", not zero: a radio that cannot
+        // answer and one answering "no offset" are different facts.
+        let mut radio = FakeRadio::failing();
+        assert_eq!(run(dispatch(&mut radio, "i")), RPRT_ERR);
     }
 
     #[test]

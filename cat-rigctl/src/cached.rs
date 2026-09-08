@@ -223,6 +223,22 @@ where
         Ok(())
     }
 
+    async fn get_rit_hz(&mut self) -> Result<i32, Self::Error> {
+        // Not cached: the poller's state does not carry it, and a
+        // decorator that silently answered the *default* would turn a
+        // radio that can report RIT into one that cannot. That is what
+        // this method existed as a hole for -- see the forwarding test.
+        self.inner.get_rit_hz().await
+    }
+
+    async fn get_xit_hz(&mut self) -> Result<i32, Self::Error> {
+        self.inner.get_xit_hz().await
+    }
+
+    fn mode_from_id(id: cat_framework::capabilities::ModeId) -> Option<Self::Mode> {
+        R::mode_from_id(id)
+    }
+
     fn hamlib_mode_name(mode: Self::Mode) -> &'static str {
         R::hamlib_mode_name(mode)
     }
@@ -335,6 +351,14 @@ mod tests {
         }
         async fn get_split(&mut self) -> Result<bool, Self::Error> {
             Ok(self.0.borrow().split)
+        }
+        // Distinctive, so a decorator answering the trait default is
+        // visible rather than plausible.
+        async fn get_rit_hz(&mut self) -> Result<i32, Self::Error> {
+            Ok(-321)
+        }
+        async fn get_xit_hz(&mut self) -> Result<i32, Self::Error> {
+            Ok(654)
         }
         async fn set_split(&mut self, on: bool) -> Result<(), Self::Error> {
             self.0.borrow_mut().split = on;
@@ -614,6 +638,32 @@ mod tests {
         assert!(
             cached.get_split().await.unwrap(),
             "a read after a set must see the set"
+        );
+    }
+
+    #[monoio::test(driver = "legacy")]
+    async fn every_defaulted_method_reaches_the_radio() {
+        // The failure this guards is silent and has happened twice:
+        // `capabilities()` and then `get_rit_hz`/`get_xit_hz`. A trait
+        // method with a default that the decorator does not override
+        // answers the *default* -- so wrapping a radio that can do
+        // something in a cache turns it into one that cannot, and nothing
+        // fails to compile.
+        //
+        // `FakeRadio` overrides each of these with a distinctive answer.
+        // Getting the default back means the decorator swallowed it.
+        let log = Rc::new(RefCell::new(Log::default()));
+        let (mut cached, _shared) = rig(&log);
+
+        assert_eq!(cached.get_rit_hz().await.unwrap(), -321, "get_rit_hz");
+        assert_eq!(cached.get_xit_hz().await.unwrap(), 654, "get_xit_hz");
+        assert!(
+            <Cached<FakeRadio> as RigctlRadio>::capabilities().is_some(),
+            "capabilities"
+        );
+        assert!(
+            <Cached<FakeRadio> as RigctlRadio>::mode_from_id(ModeId::Usb).is_some(),
+            "mode_from_id"
         );
     }
 
