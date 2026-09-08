@@ -102,6 +102,16 @@ pub struct Readout {
     /// Raw S-meter, paired with its range by the drawing code so the
     /// number never travels without its scale.
     pub smeter_raw: Field<u16>,
+    /// Which meter [`Self::smeter_raw`] is a reading of.
+    ///
+    /// `SM;` is two meters on this family: the S-meter while receiving,
+    /// and per the TS-570D manual "a calibrated power meter" while
+    /// transmitting. Drawing every reading on the S row put a power level
+    /// behind an S-unit scale, on the one meter an operator watches to
+    /// judge whether the radio is doing what they asked. The number never
+    /// travels without its scale; now it does not travel without its
+    /// meter either.
+    pub meter_kind: Field<cat_native::MeterKind>,
 }
 
 #[cfg(test)]

@@ -587,8 +587,12 @@ fn draw_meter_bars(
         .iter()
         .zip(&labels)
         .map(|(m, label)| {
-            let reading = (m.kind == MeterKind::S)
-                .then(|| MeterReading::from_wire(&caps.meters, MeterKind::S, radio.smeter))
+            // The reading belongs to whichever meter it was taken from,
+            // which on this family is not always `S`: `SM;` answers with
+            // the power meter while the radio is keyed. Drawing it on the
+            // S row regardless put a power level behind an S-unit scale.
+            let reading = (m.kind == radio.meter_kind)
+                .then(|| MeterReading::from_wire(&caps.meters, m.kind, radio.smeter))
                 .flatten();
             // A TX meter during receive keeps its row, dimmed.
             let active = if m.active_on_transmit {
@@ -1779,6 +1783,68 @@ mod tests {
         (0..h)
             .map(|y| (0..w).map(|x| buf.get(x, y).symbol().to_string()).collect())
             .collect()
+    }
+
+    #[test]
+    fn a_transmit_reading_is_drawn_on_the_transmit_meter() {
+        // `SM;` is two meters. The manual: "While receiving, serves as an
+        // S-meter... While transmitting, serves as a calibrated power
+        // meter". Every reading used to land on the S row with an S-unit
+        // scale applied, so a transmission showed `S9+20` for what was a
+        // power level -- on the one meter an operator watches to judge
+        // whether the radio is doing what they asked.
+        use cat_framework::capabilities::{MeterKind, RawRange};
+        let meter = |kind| cat_native::MeterDescriptorWire {
+            kind,
+            raw_range: RawRange::new(0, 30),
+            active_on_transmit: kind != MeterKind::S,
+            s_units: None,
+        };
+        let mut caps = test_caps();
+        caps.meters = vec![meter(MeterKind::S), meter(MeterKind::Po)];
+
+        let render = |radio: &RadioDisplay| {
+            let backend = ratatui::backend::TestBackend::new(22, 6);
+            let mut term = ratatui::Terminal::new(backend).unwrap();
+            term.draw(|f| draw_meters(f, f.size(), radio, &caps))
+                .unwrap();
+            let buf = term.backend().buffer();
+            (0..6u16)
+                .map(|y| {
+                    (0..22u16)
+                        .map(|x| buf.get(x, y).symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let receiving = RadioDisplay {
+            connected: true,
+            tx: false,
+            smeter: 20,
+            meter_kind: MeterKind::S,
+            ..RadioDisplay::default()
+        };
+        let rows = render(&receiving);
+        assert!(
+            rows[0].contains('█'),
+            "the S row carries the reading: {rows:?}"
+        );
+        assert!(!rows[1].contains('█'), "and the PO row does not");
+
+        let transmitting = RadioDisplay {
+            connected: true,
+            tx: true,
+            smeter: 20,
+            meter_kind: MeterKind::Po,
+            ..RadioDisplay::default()
+        };
+        let rows = render(&transmitting);
+        assert!(
+            !rows[0].contains('█'),
+            "a power reading must not be drawn as signal strength: {rows:?}"
+        );
+        assert!(rows[1].contains('█'), "it belongs on the PO row: {rows:?}");
     }
 
     #[test]

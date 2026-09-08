@@ -413,8 +413,15 @@ impl Console {
             if let Some(channel) = state.memory_channel {
                 self.readout.memory_channel.confirm(channel);
             }
-            if let Some(raw) = state.meter(cat_native::MeterKind::S) {
-                self.readout.smeter_raw.confirm(raw);
+            // Whichever meter the server labelled the sample with, and
+            // the label travels with the value. `SM;` answers with the
+            // power meter while the radio is keyed, and this used to ask
+            // only for `S` -- so a transmission either held the last
+            // receive reading or drew a power level behind an S-unit
+            // scale, depending on which end got it wrong.
+            if let Some(sample) = state.meters.first() {
+                self.readout.smeter_raw.confirm(sample.raw);
+                self.readout.meter_kind.confirm(sample.kind);
             }
         }
         if let Some(frame) = audio {
@@ -1165,7 +1172,7 @@ impl Console {
         ui.add_space(4.0);
 
         for descriptor in &caps.meters {
-            let reading = if descriptor.kind == cat_native::MeterKind::S {
+            let reading = if Some(descriptor.kind) == self.readout.meter_kind.value() {
                 self.smeter_reading()
             } else {
                 None
@@ -1411,10 +1418,12 @@ impl Console {
     fn smeter_reading(&self) -> Option<MeterReading> {
         let caps = self.capabilities()?;
         let raw = self.readout.smeter_raw.value()?;
-        let descriptor = caps
-            .meters
-            .iter()
-            .find(|m| m.kind == cat_native::MeterKind::S)?;
+        let kind = self
+            .readout
+            .meter_kind
+            .value()
+            .unwrap_or(cat_native::MeterKind::S);
+        let descriptor = caps.meters.iter().find(|m| m.kind == kind)?;
         let mut reading = MeterReading::new(descriptor.kind, raw, descriptor.raw_range);
         if let Some(scale) = descriptor.s_units {
             reading = reading.with_s_units(scale);

@@ -58,7 +58,25 @@ pub struct RadioDisplay {
     pub memory_mode: bool,
 
     // --- Meters ---
+    /// The S-meter's raw reading, while the radio is receiving.
+    ///
+    /// Kept as its own field because it is what every console draws
+    /// largest, and what `SM;` means while receiving.
     pub smeter: u16,
+    /// Which meter `smeter` is a reading of.
+    ///
+    /// **On this family of radios `SM;` is two meters.** The TS-570D
+    /// manual: "While receiving, serves as an S-meter... While
+    /// transmitting, serves as a calibrated power meter", and its CAT
+    /// reference notes against `SM` that in transmit mode the reply is a
+    /// power meter reading.
+    ///
+    /// The console had no way to say so, and drew every reading on the S
+    /// bar with an S-unit scale applied -- so a transmission showed
+    /// `S9+20` for what was really a power level, on the one meter an
+    /// operator looks at to judge whether the radio is doing what they
+    /// asked.
+    pub meter_kind: cat_framework::capabilities::MeterKind,
 
     // --- Gains / levels ---
     /// Whether the rail's settings were actually read from the radio.
@@ -159,6 +177,7 @@ impl Default for RadioDisplay {
             memory_channel: 0,
             memory_mode: false,
             smeter: 0,
+            meter_kind: cat_framework::capabilities::MeterKind::S,
             levels_known: false,
             af_gain: 200,
             rf_gain: 255,
