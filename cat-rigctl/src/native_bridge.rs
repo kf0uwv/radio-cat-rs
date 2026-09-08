@@ -37,6 +37,7 @@ use std::collections::VecDeque;
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use std::time::Instant;
 
 use cat_framework::capabilities::RadioCapabilities;
 use cat_native::{Command, RadioHost, RadioState};
@@ -57,6 +58,19 @@ pub trait NativeRadio {
 
     /// Apply a command that capabilities have already accepted.
     async fn apply(&mut self, command: &Command) -> Result<(), String>;
+
+    /// The settings an operator changes occasionally.
+    ///
+    /// Read on a much slower clock than [`Self::state`]: fourteen
+    /// commands at the dial's rate would be most of a 9600-baud link,
+    /// and an AF gain does not move between one second and the next.
+    ///
+    /// Defaulted to `None`, so a radio that has not implemented the read
+    /// is unaffected and its consoles show dashes rather than being told
+    /// invented values.
+    async fn levels(&mut self) -> Option<cat_native::RadioLevels> {
+        None
+    }
 }
 
 /// For a server that does not serve consoles.
@@ -81,6 +95,39 @@ type Pending = (Command, SyncSender<Result<(), String>>);
 /// How a host is asked what it has wired. See [`NativeShared::set_installation`].
 pub type InstallationFn = Arc<dyn Fn() -> cat_framework::installation::Installation + Send + Sync>;
 
+/// The cached radio reading, with the provenance needed to trust it.
+#[derive(Default)]
+struct Cache {
+    state: Option<RadioState>,
+    /// When the radio was *asked*, not when the answer was filed.
+    ///
+    /// Stamped before the read goes on the wire, so a reading that took
+    /// 300 ms on a slow link reports an age that includes those 300 ms.
+    /// Stamping at publish time would certify a half-second-old value as
+    /// brand new, and every freshness decision downstream would inherit
+    /// the error.
+    taken: Option<Instant>,
+    /// A field here was written by a set and has not been measured since.
+    ///
+    /// Reading it back is right -- a client that just set a frequency
+    /// should see it. Letting it justify *skipping* a write is not: if
+    /// the radio ACKed the set without taking it (memory mode, panel
+    /// LOCK), the cache now holds a value nobody ever observed, and the
+    /// operator's next identical set -- the one that could recover the
+    /// radio -- would be swallowed as redundant.
+    assumed: bool,
+    /// Bumped by every patch.
+    ///
+    /// `NativeRadio::state` is several CAT exchanges, and the broker
+    /// serialises one exchange at a time, so a rigctl set can land in the
+    /// middle of a poll. The poll then carries pre-set values, and
+    /// publishing it whole would overwrite the patch and stamp the stale
+    /// frequency as freshly measured -- a client told `RPRT 0` reads back
+    /// the frequency it just replaced. A poll whose generation moved
+    /// while it was on the wire raced a set and is dropped.
+    generation: u64,
+}
+
 /// What the poller publishes and the listener threads read.
 pub struct NativeShared {
     capabilities: &'static RadioCapabilities,
@@ -95,7 +142,13 @@ pub struct NativeShared {
     /// So the pump asks. Nobody watching means nothing needs a fresh
     /// state, and the link belongs to whoever does.
     consoles: std::sync::atomic::AtomicUsize,
-    state: Mutex<Option<RadioState>>,
+    /// The reading, and everything needed to judge it.
+    ///
+    /// One mutex, not two, so age and value cannot be read torn. The
+    /// interleaving that costs is: the pump discovers a front-panel move,
+    /// stamps the new time, a reader runs before the value lands, and a
+    /// set is skipped as redundant against a radio that has moved.
+    cache: Mutex<Cache>,
     spectrum: Mutex<Option<SpectrumFrame>>,
     /// The newest audio frame, on the same newest-wins terms as spectrum.
     audio: Mutex<Option<cat_signal::AudioFrame>>,
@@ -126,7 +179,7 @@ impl NativeShared {
         Arc::new(Self {
             capabilities,
             consoles: std::sync::atomic::AtomicUsize::new(0),
-            state: Mutex::new(None),
+            cache: Mutex::new(Cache::default()),
             spectrum: Mutex::new(None),
             audio: Mutex::new(None),
             queue: Mutex::new(VecDeque::new()),
@@ -149,7 +202,7 @@ impl NativeShared {
         Arc::new(Self {
             capabilities,
             consoles: std::sync::atomic::AtomicUsize::new(0),
-            state: Mutex::new(None),
+            cache: Mutex::new(Cache::default()),
             spectrum: Mutex::new(None),
             audio: Mutex::new(None),
             queue: Mutex::new(VecDeque::new()),
@@ -214,19 +267,43 @@ impl NativeShared {
 
     /// The dial, for an SDR that needs to follow it.
     pub fn dial_hz(&self) -> Option<u64> {
-        self.state.lock().ok()?.as_ref().map(|s| s.vfo_a_hz)
+        self.cache.lock().ok()?.state.as_ref().map(|s| s.vfo_a_hz)
     }
 
-    fn publish_state(&self, state: Option<RadioState>) {
-        if let Ok(mut slot) = self.state.lock() {
-            // A failed read leaves the last good state rather than blanking
-            // the console. One missed poll on a serial link is ordinary;
-            // showing em dashes for it would make the display flicker
-            // between "known" and "unknown" all day.
-            if state.is_some() {
-                *slot = state;
-            }
+    /// Publish as an uncontended poll would. Tests only.
+    #[cfg(test)]
+    pub(crate) fn publish_now(&self, state: Option<RadioState>) {
+        self.publish_state(state, Instant::now(), self.generation());
+    }
+
+    /// The generation to quote back to [`Self::publish_state`].
+    ///
+    /// Read this *before* starting a poll, not after.
+    fn generation(&self) -> u64 {
+        self.cache.lock().map(|c| c.generation).unwrap_or(0)
+    }
+
+    /// File a reading, unless a set overtook it while it was on the wire.
+    ///
+    /// `taken_at` is when the poll started and `generation` is what
+    /// [`Self::generation`] said at that moment.
+    fn publish_state(&self, state: Option<RadioState>, taken_at: Instant, generation: u64) {
+        // A failed read leaves the last good state rather than blanking
+        // the console. One missed poll on a serial link is ordinary;
+        // showing em dashes for it would make the display flicker
+        // between "known" and "unknown" all day.
+        let Some(state) = state else { return };
+        let Ok(mut cache) = self.cache.lock() else {
+            return;
+        };
+        if cache.generation != generation {
+            // Raced a set. These values predate it; the next poll will
+            // measure the radio as the set left it.
+            return;
         }
+        cache.state = Some(state);
+        cache.taken = Some(taken_at);
+        cache.assumed = false;
     }
 
     fn take_queued(&self) -> Vec<Pending> {
@@ -238,6 +315,72 @@ impl NativeShared {
 }
 
 impl NativeShared {
+    /// The cached state, if the radio has ever been read.
+    ///
+    /// What every client read is answered from. The pump refreshes it; a
+    /// client waiting on the wire for something already sitting here is
+    /// what made a rigctl read cost 305 ms against a 0 ms server.
+    pub fn cached_state(&self) -> Option<RadioState> {
+        self.cache.lock().ok()?.state.clone()
+    }
+
+    /// The cache only while it is recent enough to answer a client read.
+    ///
+    /// Unbounded staleness is the failure that matters here. The pump
+    /// deliberately keeps the last good state through a failed read, so a
+    /// radio that is switched off, unplugged or wedged leaves a plausible
+    /// frequency sitting in this slot forever. Answering `f` from it
+    /// would mean WSJT-X never learns the link is gone: it would log and
+    /// transmit against a frequency nobody has confirmed since the cable
+    /// came out. Past the bound the caller goes back to the wire and gets
+    /// a real error instead.
+    pub fn recent_state(&self, max_age: Duration) -> Option<RadioState> {
+        let cache = self.cache.lock().ok()?;
+        match cache.taken {
+            Some(taken) if taken.elapsed() <= max_age => cache.state.clone(),
+            _ => None,
+        }
+    }
+
+    /// The cache only while it is a *measurement* recent enough to decide
+    /// against writing. An assumed value never qualifies -- see
+    /// [`Cache::assumed`].
+    pub fn measured_state(&self, max_age: Duration) -> Option<RadioState> {
+        let cache = self.cache.lock().ok()?;
+        if cache.assumed {
+            return None;
+        }
+        match cache.taken {
+            Some(taken) if taken.elapsed() <= max_age => cache.state.clone(),
+            _ => None,
+        }
+    }
+
+    /// How long ago the cache was refreshed.
+    pub fn state_age(&self) -> Option<Duration> {
+        self.cache.lock().ok()?.taken.map(|t| t.elapsed())
+    }
+
+    /// Change the cache in place, so a read after a set sees the set.
+    ///
+    /// A client that sets a frequency and immediately reads it back must
+    /// not be told the old one because the next poll has not happened
+    /// yet. The console path has always done this ("apply everything,
+    /// then refresh, then answer"); this is the same discipline for
+    /// callers that patch a single field.
+    pub fn patch_state(&self, change: impl FnOnce(&mut RadioState)) {
+        if let Ok(mut cache) = self.cache.lock() {
+            // Bump the generation whether or not there is a state to
+            // patch: a poll already on the wire raced this set either
+            // way, and its values are pre-set either way.
+            cache.generation = cache.generation.wrapping_add(1);
+            cache.assumed = true;
+            if let Some(state) = cache.state.as_mut() {
+                change(state);
+            }
+        }
+    }
+
     /// How many consoles are attached right now.
     pub fn consoles(&self) -> usize {
         self.consoles.load(std::sync::atomic::Ordering::Relaxed)
@@ -255,10 +398,10 @@ impl NativeShared {
     /// S-meter is a much smaller cost than a truncated transmission.
     pub fn poll_interval(&self, watching: Duration, idle: Duration) -> Duration {
         let transmitting = self
-            .state
+            .cache
             .lock()
             .ok()
-            .and_then(|s| s.as_ref().map(|s| s.transmitting))
+            .and_then(|c| c.state.as_ref().map(|s| s.transmitting))
             .unwrap_or(false);
         if self.consoles() > 0 && !transmitting {
             watching
@@ -291,27 +434,23 @@ impl RadioHost for NativeShared {
     }
 
     fn state(&self) -> RadioState {
-        self.state
-            .lock()
-            .ok()
-            .and_then(|s| s.clone())
-            .unwrap_or_else(|| RadioState {
-                // Nothing has been read yet. Reported honestly rather than
-                // as zeros: the session turns a state it has not got into
-                // NotReady, and a console draws em dashes.
-                vfo_a_hz: 0,
-                vfo_b_hz: 0,
-                mode: cat_framework::capabilities::ModeId::Usb,
-                split: false,
-                transmitting: false,
-                memory_channel: None,
-                if_shift_hz: None,
-                filter_width_hz: None,
-                meters: Vec::new(),
-                // Nor these. See the note above: an unread block is
-                // reported as absent, not as somebody's defaults.
-                levels: None,
-            })
+        self.cached_state().unwrap_or_else(|| RadioState {
+            // Nothing has been read yet. Reported honestly rather than
+            // as zeros: the session turns a state it has not got into
+            // NotReady, and a console draws em dashes.
+            vfo_a_hz: 0,
+            vfo_b_hz: 0,
+            mode: cat_framework::capabilities::ModeId::Usb,
+            split: false,
+            transmitting: false,
+            memory_channel: None,
+            if_shift_hz: None,
+            filter_width_hz: None,
+            meters: Vec::new(),
+            // Nor these. See the note above: an unread block is
+            // reported as absent, not as somebody's defaults.
+            levels: None,
+        })
     }
 
     fn devices(&self) -> Option<Vec<cat_signal::DeviceList>> {
@@ -380,10 +519,19 @@ impl RadioHost for NativeShared {
 /// clients that are actually asking.
 const IDLE_MULTIPLIER: u32 = 10;
 
+/// How often the occasional settings are re-read.
+///
+/// Fourteen CAT commands. At the dial's poll rate that would be most of a
+/// 9600-baud link; every five seconds it is nothing, and an AF gain that
+/// is five seconds stale has never misled anybody.
+const LEVELS_INTERVAL: Duration = Duration::from_secs(5);
+
 pub async fn pump<N: NativeRadio>(shared: Arc<NativeShared>, mut radio: N, interval: Duration) {
     // Poll at display rate only while a console is watching. See
     // `NativeShared::consoles`.
     let idle = interval * IDLE_MULTIPLIER;
+    let mut levels: Option<cat_native::RadioLevels> = None;
+    let mut last_levels: Option<Instant> = None;
     loop {
         // Apply everything, then refresh, then answer. The order matters:
         // answering first lets a console's next read arrive before the
@@ -395,30 +543,45 @@ pub async fn pump<N: NativeRadio>(shared: Arc<NativeShared>, mut radio: N, inter
         for (command, reply) in queued {
             results.push((reply, radio.apply(&command).await));
         }
-        shared.publish_state(radio.state().await);
+        // Snapshot before asking, so a set that lands mid-poll is
+        // detectable at publish time. See `Cache::generation`.
+        let generation = shared.generation();
+        let taken_at = Instant::now();
+        let mut state = radio.state().await;
+        // The occasional settings ride along on the state message, but are
+        // read on their own clock. Kept across fast polls so a console is
+        // not shown dashes for four seconds out of every five.
+        if last_levels.map_or(true, |t: Instant| t.elapsed() >= LEVELS_INTERVAL) {
+            if let Some(fresh) = radio.levels().await {
+                levels = Some(fresh);
+                last_levels = Some(Instant::now());
+            }
+        }
+        if let Some(state) = state.as_mut() {
+            state.levels = levels;
+        }
+        shared.publish_state(state, taken_at, generation);
         for (reply, result) in results {
             // A console that has hung up leaves nobody to tell; that is
             // not an error worth logging on every disconnect.
             let _ = reply.send(result);
         }
+        // The choice is platform-independent, so it is made outside any
+        // `cfg`. It used to be made twice, once under each attribute, and
+        // an attribute binds to the single item beneath it: the
+        // `#[cfg(not(linux))]` covered only its `let`, leaving
+        // `std::thread::sleep` unguarded. Linux therefore ran *both*
+        // sleeps, and the second one blocked the whole monoio runtime --
+        // every rigctl client, every raw listener and the broker worker
+        // -- for a full interval per cycle. That is where the 2.5 s
+        // worst-case rigctl request came from.
+        let wait = shared.poll_interval(interval, idle);
         // Two platforms, two correct answers. On Linux the pump is a task
         // inside the broker's runtime and must yield to it; on Windows it
-        // owns a thread, and sleeping that thread is exactly right. A
-        // thread sleep on Linux would stall every other client for the
-        // interval.
+        // owns a thread, and sleeping that thread is exactly right.
         #[cfg(target_os = "linux")]
-        let wait = if shared.consoles() > 0 {
-            interval
-        } else {
-            idle
-        };
         monoio::time::sleep(wait).await;
         #[cfg(not(target_os = "linux"))]
-        let wait = if shared.consoles() > 0 {
-            interval
-        } else {
-            idle
-        };
         std::thread::sleep(wait);
     }
 }
@@ -438,6 +601,7 @@ mod tests {
             if_shift_hz: None,
             filter_width_hz: None,
             meters: Vec::new(),
+            levels: None,
         }
     }
 
@@ -452,10 +616,10 @@ mod tests {
         let shared = NativeShared::new(&RADIO);
         shared.console_attached();
 
-        shared.publish_state(Some(rx_state(false)));
+        shared.publish_now(Some(rx_state(false)));
         assert_eq!(shared.poll_interval(fast, slow), fast, "receiving: keep up");
 
-        shared.publish_state(Some(rx_state(true)));
+        shared.publish_now(Some(rx_state(true)));
         assert_eq!(
             shared.poll_interval(fast, slow),
             slow,
@@ -468,7 +632,7 @@ mod tests {
         let fast = Duration::from_millis(200);
         let slow = Duration::from_secs(2);
         let shared = NativeShared::new(&RADIO);
-        shared.publish_state(Some(rx_state(false)));
+        shared.publish_now(Some(rx_state(false)));
         assert_eq!(shared.poll_interval(fast, slow), slow);
     }
 
@@ -556,6 +720,7 @@ mod tests {
             if_shift_hz: None,
             filter_width_hz: None,
             meters: Vec::new(),
+            levels: None,
         }
     }
 
@@ -564,8 +729,8 @@ mod tests {
         // One missed poll on a serial link is ordinary. Blanking would make
         // the console flicker between known and unknown all day.
         let shared = NativeShared::new(&RADIO);
-        shared.publish_state(Some(state_at(14_074_000)));
-        shared.publish_state(None);
+        shared.publish_now(Some(state_at(14_074_000)));
+        shared.publish_now(None);
         assert_eq!(RadioHost::state(&*shared).vfo_a_hz, 14_074_000);
     }
 
@@ -614,12 +779,95 @@ mod tests {
     }
 
     #[test]
+    fn a_poll_that_raced_a_set_does_not_overwrite_it() {
+        // `NativeRadio::state` is several CAT exchanges and the broker
+        // serialises one exchange at a time, so a rigctl set can land in
+        // the middle of a poll. Publishing that poll whole would put the
+        // pre-set frequency back and stamp it as freshly measured -- the
+        // client is told `RPRT 0` and then reads back what it replaced.
+        let shared = NativeShared::new(&RADIO);
+        shared.publish_now(Some(state_at(14_070_000)));
+
+        let generation = shared.generation();
+        let taken_at = Instant::now();
+        // ... the poll is on the wire when the set lands ...
+        shared.patch_state(|s| s.vfo_a_hz = 14_074_000);
+        // ... and finishes carrying the frequency from before it.
+        shared.publish_state(Some(state_at(14_070_000)), taken_at, generation);
+
+        assert_eq!(shared.dial_hz(), Some(14_074_000));
+    }
+
+    #[test]
+    fn an_uncontended_poll_still_publishes() {
+        let shared = NativeShared::new(&RADIO);
+        shared.publish_now(Some(state_at(14_070_000)));
+        shared.publish_now(Some(state_at(21_074_000)));
+        assert_eq!(shared.dial_hz(), Some(21_074_000));
+    }
+
+    #[test]
+    fn a_patched_value_is_readable_but_is_not_a_measurement() {
+        // The distinction the skip depends on. A radio can ACK a set
+        // without taking it -- memory mode, panel LOCK -- leaving a value
+        // here nobody observed. Reading it back is right; letting it
+        // swallow the operator's next identical set is not.
+        let shared = NativeShared::new(&RADIO);
+        shared.publish_now(Some(state_at(14_070_000)));
+        assert!(shared.measured_state(Duration::from_secs(1)).is_some());
+
+        shared.patch_state(|s| s.vfo_a_hz = 14_074_000);
+        assert_eq!(shared.cached_state().unwrap().vfo_a_hz, 14_074_000);
+        assert_eq!(
+            shared
+                .recent_state(Duration::from_secs(1))
+                .unwrap()
+                .vfo_a_hz,
+            14_074_000
+        );
+        assert!(shared.measured_state(Duration::from_secs(1)).is_none());
+
+        // The next real poll restores it to a measurement.
+        shared.publish_now(Some(state_at(14_074_000)));
+        assert!(shared.measured_state(Duration::from_secs(1)).is_some());
+    }
+
+    #[test]
+    fn a_stale_cache_stops_answering_reads() {
+        // The pump keeps the last good state through a failed read, so an
+        // unplugged radio leaves a plausible frequency here forever.
+        // Serving `f` from it indefinitely removes the only signal Hamlib
+        // has that rig control is gone.
+        let shared = NativeShared::new(&RADIO);
+        shared.publish_now(Some(state_at(14_074_000)));
+        assert!(shared.recent_state(Duration::from_secs(30)).is_some());
+        assert!(shared.recent_state(Duration::ZERO).is_none());
+    }
+
+    #[test]
+    fn a_cache_that_has_never_been_read_is_not_recent() {
+        let shared = NativeShared::new(&RADIO);
+        assert!(shared.recent_state(Duration::from_secs(3600)).is_none());
+        assert!(shared.measured_state(Duration::from_secs(3600)).is_none());
+    }
+
+    #[test]
+    fn a_set_before_the_first_poll_still_moves_the_generation() {
+        // Nothing to patch yet, but a poll already on the wire raced the
+        // set either way and carries pre-set values either way.
+        let shared = NativeShared::new(&RADIO);
+        let generation = shared.generation();
+        shared.patch_state(|s| s.vfo_a_hz = 14_074_000);
+        assert_ne!(shared.generation(), generation);
+    }
+
+    #[test]
     fn the_dial_is_readable_for_an_sdr_that_has_to_follow_it() {
         // An IF tap is dial-centred, so the thread reading the dongle needs
         // to know where the radio is pointing.
         let shared = NativeShared::new(&RADIO);
         assert_eq!(shared.dial_hz(), None);
-        shared.publish_state(Some(state_at(21_074_000)));
+        shared.publish_now(Some(state_at(21_074_000)));
         assert_eq!(shared.dial_hz(), Some(21_074_000));
     }
 }

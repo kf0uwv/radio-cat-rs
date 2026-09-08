@@ -68,6 +68,8 @@
 //! full design record of this crate's Windows backend).
 
 #[cfg(target_os = "linux")]
+pub mod cached;
+#[cfg(target_os = "linux")]
 mod rigctl;
 #[cfg(target_os = "windows")]
 mod rigctl_windows;
@@ -76,6 +78,7 @@ pub mod native_bridge;
 mod protocol;
 
 use std::io;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use cat_framework::wire_format::CatWireFormat;
@@ -142,6 +145,24 @@ pub trait RigctlRadio {
     /// unchanged, with the placeholder tail they have always sent. A radio
     /// gains real rigctl capability reporting by describing itself, not by
     /// editing this crate.
+    /// This radio's own mode type for a wire [`ModeId`], where the two
+    /// map exactly.
+    ///
+    /// The mode read is the last one a cache cannot serve generically:
+    /// the cache holds a `ModeId` and a client wants `Self::Mode`, and
+    /// nothing on this trait crosses between them. Going by label does
+    /// not work either -- a `ModeDescriptor` label is what an operator
+    /// reads on a mode button ("CW-R", "DATA-U"), not what Hamlib calls
+    /// the mode.
+    ///
+    /// Defaulted to `None`, which keeps the read on the wire. Implement
+    /// it only where the mapping is genuinely one-to-one: answering with
+    /// an approximation would tell a client the radio is in a mode it is
+    /// not in, which is worse than a slow answer.
+    fn mode_from_id(_id: cat_framework::capabilities::ModeId) -> Option<Self::Mode> {
+        None
+    }
+
     fn capabilities() -> Option<&'static cat_framework::capabilities::RadioCapabilities> {
         None
     }
@@ -300,8 +321,21 @@ where
         info!("Rigctld-compatible TCP listener bound on 0.0.0.0:{port} (for WSJT-X)");
         let handle = handle.clone();
         let make_radio = make_radio.clone();
+        // Wrapped so a client is answered from the state the pump already
+        // holds instead of waiting on the wire for it -- see `cached`.
+        // Only when a cache exists to read: a server bound for rigctl
+        // alone has nothing polling, and must go to the radio.
+        let cache = native_shared.clone();
         tasks.push(monoio::spawn(async move {
-            let result = rigctl::serve(listener, handle, make_radio).await;
+            let result = match cache {
+                Some(shared) => {
+                    let make = move |session| {
+                        crate::cached::Cached::new(make_radio(session), Arc::clone(&shared))
+                    };
+                    rigctl::serve(listener, handle, make).await
+                }
+                None => rigctl::serve(listener, handle, make_radio).await,
+            };
             if let Err(e) = &result {
                 error!("Rigctld-compatible TCP listener on 0.0.0.0:{port} failed: {e}");
             }
