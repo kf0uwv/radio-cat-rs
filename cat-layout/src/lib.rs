@@ -53,6 +53,25 @@ pub use theme::{Rgb, Theme};
 
 use serde::{Deserialize, Serialize};
 
+/// Rows a [`PanelKind::MeterRail`] needs.
+///
+/// Sized for the **roomier** of the two renderers, which is the rule for
+/// every fixed size in a layout: both draw the same panel at different
+/// densities, and a layout that fits only the tighter one clips the
+/// other. The terminal console draws a meter per row and wants five --
+/// four bars and the link line. The GPU console draws a label row and a
+/// bar per meter, plus a pane header, and wants twelve -- measured off a render at 40 px a meter plus a
+/// 25 px header, against a 17 px cell. Twelve it is; the
+/// terminal console leaves the surplus blank below its content, which is
+/// what surplus should look like.
+///
+/// It lives here, in the vocabulary both sides share, because a layout
+/// that sizes this panel and a renderer that fills it have to agree, and
+/// they are written in different crates by different people at different
+/// times. When they disagreed the rail took fifteen rows to draw five,
+/// and the link line was stranded at the bottom of them.
+pub const METER_RAIL_ROWS: u16 = 12;
+
 /// A component a console can place.
 ///
 /// The named variants are the shared vocabulary, and most of a console is

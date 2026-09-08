@@ -238,6 +238,17 @@ pub fn draw(
     view: &ConsoleView,
     caps: &cat_native::CapabilitiesWire,
 ) -> Rect {
+    // Keyed state first, and across the full width. It used to be one
+    // styled word in a row of other words -- reported from the bench as
+    // not obvious enough, and that is the right complaint: a transmitting
+    // radio is not a field on a form, it is the single fact that changes
+    // what every other control on the screen will do. A whole row costs
+    // one line of a panel that has plenty and cannot be confused with
+    // anything else on the screen.
+    let area = match tx_banner(f, area, radio) {
+        Some(rest) => rest,
+        None => area,
+    };
     match &caps.layout {
         Some(spec) => draw_layout(f, area, radio, view, caps, spec),
         // No layout published. An older server has not declined one, it
@@ -253,6 +264,46 @@ pub fn draw(
             body
         }
     }
+}
+
+/// A full-width bar while the radio is keyed, and nothing when it is not.
+///
+/// Returns the area left for everything else, or `None` when there is no
+/// bar to draw. Deliberately takes a row rather than overlaying: an
+/// overlay hides whatever is under it, and the thing under it during a
+/// transmission is usually the meters an operator is transmitting in
+/// order to watch.
+fn tx_banner(f: &mut Frame, area: Rect, radio: &RadioDisplay) -> Option<Rect> {
+    if !radio.tx || area.height < 3 {
+        return None;
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(area);
+    let width = rows[0].width as usize;
+    let label = "  ◆ ◆ ◆   T R A N S M I T T I N G   ◆ ◆ ◆  ";
+    // Centred by padding rather than by an alignment, so the red runs the
+    // whole width instead of only under the text.
+    let pad = width.saturating_sub(label.chars().count()) / 2;
+    let banner = format!(
+        "{:pad$}{label}{:>rest$}",
+        "",
+        "",
+        pad = pad,
+        rest = width.saturating_sub(pad + label.chars().count())
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            banner,
+            Style::default()
+                .bg(Color::Red)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        rows[0],
+    );
+    Some(rows[1])
 }
 
 /// Draw the arrangement the radio's own server asked for.
@@ -524,6 +575,31 @@ fn draw_meter_bars(
     );
 }
 
+/// The bars this console draws: one row per meter.
+///
+/// Fixed, not `Min`. `Min(1)` let the bars absorb every spare row in the
+/// column -- fifteen of them on the TS-570D's layout at 120x40 -- so four
+/// rows of meters were drawn at the top, ten rows of nothing followed,
+/// and the `CAT idle` line sat alone at the bottom, fifteen rows from the
+/// meters it describes.
+///
+/// Deliberately *not* derived from `cat_layout::METER_RAIL_ROWS`, which
+/// is sized for the GPU console's roomier rail. This console is the
+/// tighter of the two and simply leaves the surplus blank beneath its
+/// content, rather than spreading four meters over ten rows.
+const METER_ROWS: u16 = 4;
+
+// The two halves have to agree and are written in different crates: the
+// layout sizes this panel, this file fills it. Checked at compile time
+// rather than in a test, because a layout that cannot hold its renderer
+// is not a failing case to report -- it is a build that should not
+// happen. When they last disagreed the rail took fifteen rows to draw
+// five, and nothing anywhere said so.
+const _: () = assert!(
+    METER_ROWS < cat_layout::METER_RAIL_ROWS,
+    "the meter bars plus the link line must fit the rows the layout allots"
+);
+
 fn draw_meters(
     f: &mut Frame,
     area: Rect,
@@ -533,9 +609,32 @@ fn draw_meters(
     if area.width == 0 || area.height == 0 {
         return;
     }
+    // The same one-column margin `draw_rail` keeps, and for the same
+    // reason: 22 / 72 / 26 is the design's split and it uses the full
+    // width, so a gutter cannot come out of the content pane. Without it
+    // a full-scale meter bar runs straight into whatever the layout put
+    // in the next column -- on this radio the S-meter's own "S8" ended up
+    // touching the spectrum panel's first character, reading as `S8NO
+    // SPECTRUM SOURCE`.
+    let area = Rect {
+        width: area.width.saturating_sub(1),
+        ..area
+    };
+    if area.width == 0 {
+        return;
+    }
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        // The link line sits directly beneath the bars, and any surplus
+        // falls below both. It used to be `Min(1)` then `Length(1)`,
+        // which pinned the link line to the *bottom* of whatever the
+        // layout allotted -- ten rows adrift from the meters it is
+        // reporting on.
+        .constraints([
+            Constraint::Length(METER_ROWS),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
         .split(area);
     draw_meter_bars(f, rows[0], radio, caps);
     let pending = if radio.connected {
@@ -1576,10 +1675,136 @@ mod tests {
         .unwrap();
     }
 
+    /// The whole screen as text, for a test that cares where things are.
+    fn screen(radio: &RadioDisplay, w: u16, h: u16) -> Vec<String> {
+        let view = ConsoleView::for_capabilities(&caps());
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            draw(f, f.size(), radio, &view, &test_caps());
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf.get(x, y).symbol().to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn the_meter_rail_keeps_a_gutter_so_a_full_bar_does_not_touch_the_next_panel() {
+        // A full-scale S-meter used to run its "S8" straight into the
+        // panel beside it, reading as `S8NO SPECTRUM SOURCE`.
+        let radio = RadioDisplay {
+            connected: true,
+            smeter: u16::MAX,
+            ..RadioDisplay::default()
+        };
+        let width = 22u16;
+        let backend = ratatui::backend::TestBackend::new(width, 6);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            draw_meters(f, f.size(), &radio, &test_caps());
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        for y in 0..6u16 {
+            assert_eq!(
+                buf.get(width - 1, y).symbol(),
+                " ",
+                "the last column is the gutter, row {y}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_keyed_radio_says_so_across_the_whole_width() {
+        // Reported from the bench: the old indicator was one styled word
+        // in a row of other words, and an operator did not see it. A
+        // transmitting radio is not a field on a form.
+        let radio = RadioDisplay {
+            tx: true,
+            connected: true,
+            ..RadioDisplay::default()
+        };
+        let rows = screen(&radio, 120, 40);
+        assert!(
+            rows[0].contains("T R A N S M I T T I N G"),
+            "the first row is the banner: {:?}",
+            rows[0]
+        );
+    }
+
+    #[test]
+    fn a_receiving_radio_does_not_give_up_a_row_to_the_banner() {
+        let radio = RadioDisplay {
+            tx: false,
+            connected: true,
+            ..RadioDisplay::default()
+        };
+        let rows = screen(&radio, 120, 40);
+        assert!(
+            !rows.iter().any(|r| r.contains("T R A N S M I T T I N G")),
+            "nothing is keyed, so nothing should say it is"
+        );
+    }
+
+    #[test]
+    fn the_banner_is_painted_the_whole_way_across() {
+        // Centred by padding rather than alignment: a bar of colour that
+        // stopped at the text would read as a label, not an alarm.
+        let radio = RadioDisplay {
+            tx: true,
+            connected: true,
+            ..RadioDisplay::default()
+        };
+        let view = ConsoleView::for_capabilities(&caps());
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            draw(f, f.size(), &radio, &view, &test_caps());
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        for x in [0u16, 1, 59, 118, 119] {
+            assert_eq!(
+                buf.get(x, 0).style().bg,
+                Some(Color::Red),
+                "column {x} of the banner must be painted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_terminal_too_short_for_a_banner_keeps_its_console() {
+        // Losing a row out of five to a banner would cost more than the
+        // banner is worth.
+        let radio = RadioDisplay {
+            tx: true,
+            connected: true,
+            ..RadioDisplay::default()
+        };
+        let rows = screen(&radio, 40, 2);
+        assert!(!rows.iter().any(|r| r.contains("TRANSMITTING")));
+    }
+
     #[test]
     fn it_also_draws_at_sizes_nobody_designed_for() {
-        let radio = RadioDisplay::default();
         let view = ConsoleView::for_capabilities(&caps());
+        for (w, h) in [(80u16, 24u16), (40, 12), (200, 60), (20, 5)] {
+            for tx in [false, true] {
+                let radio = RadioDisplay {
+                    tx,
+                    ..RadioDisplay::default()
+                };
+                let backend = ratatui::backend::TestBackend::new(w, h);
+                let mut term = ratatui::Terminal::new(backend).unwrap();
+                term.draw(|f| {
+                    draw(f, f.size(), &radio, &view, &test_caps());
+                })
+                .unwrap();
+            }
+        }
+        let radio = RadioDisplay::default();
         for (w, h) in [(80u16, 24u16), (40, 12), (200, 60), (20, 5)] {
             let backend = ratatui::backend::TestBackend::new(w, h);
             let mut term = ratatui::Terminal::new(backend).unwrap();
