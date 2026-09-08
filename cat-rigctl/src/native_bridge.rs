@@ -242,6 +242,30 @@ impl NativeShared {
     pub fn consoles(&self) -> usize {
         self.consoles.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// How long to wait before polling the radio again.
+    ///
+    /// Display rate only while a console is watching AND the radio is
+    /// receiving. **Transmitting backs off even with a console attached**:
+    /// nothing about the dial, mode or split changes mid-transmission, and
+    /// the link is shared with whatever is keying. A client polling PTT
+    /// during a transmission that queues behind a state refresh -- on a
+    /// 9600-baud link that occasionally stalls for two seconds -- can time
+    /// out and abort the transmission it was watching. A slightly stale
+    /// S-meter is a much smaller cost than a truncated transmission.
+    pub fn poll_interval(&self, watching: Duration, idle: Duration) -> Duration {
+        let transmitting = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|s| s.as_ref().map(|s| s.transmitting))
+            .unwrap_or(false);
+        if self.consoles() > 0 && !transmitting {
+            watching
+        } else {
+            idle
+        }
+    }
 }
 
 impl RadioHost for NativeShared {
@@ -398,6 +422,53 @@ pub async fn pump<N: NativeRadio>(shared: Arc<NativeShared>, mut radio: N, inter
 
 #[cfg(test)]
 mod tests {
+    /// A receiving radio. `RadioState` has no `Default`, deliberately --
+    /// a blank one would be a radio at DC in an invented mode.
+    fn rx_state(transmitting: bool) -> RadioState {
+        RadioState {
+            vfo_a_hz: 14_074_000,
+            vfo_b_hz: 14_074_000,
+            mode: ModeId::Usb,
+            split: false,
+            transmitting,
+            memory_channel: None,
+            if_shift_hz: None,
+            filter_width_hz: None,
+            meters: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_transmitting_radio_is_not_polled_at_display_rate() {
+        // A PTT poll that queues behind a state refresh, on a link that
+        // occasionally stalls for two seconds, can time out and abort the
+        // transmission it was watching. Reported from the bench as "the
+        // signal is terminating without being sent fully".
+        let fast = Duration::from_millis(200);
+        let slow = Duration::from_secs(2);
+        let shared = NativeShared::new(&RADIO);
+        shared.console_attached();
+
+        shared.publish_state(Some(rx_state(false)));
+        assert_eq!(shared.poll_interval(fast, slow), fast, "receiving: keep up");
+
+        shared.publish_state(Some(rx_state(true)));
+        assert_eq!(
+            shared.poll_interval(fast, slow),
+            slow,
+            "transmitting: leave the link to whatever is keying"
+        );
+    }
+
+    #[test]
+    fn nobody_watching_backs_off_whatever_the_radio_is_doing() {
+        let fast = Duration::from_millis(200);
+        let slow = Duration::from_secs(2);
+        let shared = NativeShared::new(&RADIO);
+        shared.publish_state(Some(rx_state(false)));
+        assert_eq!(shared.poll_interval(fast, slow), slow);
+    }
+
     #[test]
     fn a_server_with_nobody_watching_reports_no_consoles() {
         // The whole point: an idle server must be able to tell, so the
