@@ -86,6 +86,27 @@ impl<T: Transport, F: FrameScanner> CatSession for SerialCatSession<T, F> {
         request: &[u8],
         response: &mut Vec<u8>,
     ) -> Result<ResponseDisposition, TransportError> {
+        // Anything already buffered cannot be an answer to a request that
+        // has not been written yet, so it is stale by definition and must
+        // not be read as our response.
+        //
+        // The whole-frame deadline below closes the case where THIS layer
+        // abandons an exchange. It cannot close the case where bytes were
+        // left in the port by something else entirely: a USB serial adapter
+        // that re-enumerates mid-conversation leaves partial frames in its
+        // own FIFO, and those survive the process that was talking to it.
+        // Observed on 2026-09-08 after an FTDI re-enumeration -- 20 bytes,
+        // the tail of an `IF` reply plus a whole orphan `SM0011;`, which
+        // desynchronised every exchange afterwards by exactly one frame and
+        // survived several server restarts. `tcflush` at open does not
+        // catch it: that clears what is queued at that instant, and the
+        // driver goes on delivering transfers that were already in flight.
+        //
+        // Draining here rather than at open is what makes it robust -- it
+        // is checked on every exchange, so a frame that arrives late, or
+        // unsolicited, is discarded before it can be mistaken for a reply.
+        self.transport.drain().await;
+
         self.transport.write(request).await?;
         self.transport.flush().await?;
 
@@ -257,6 +278,13 @@ mod tests {
     struct FakeTransport {
         writes: Vec<u8>,
         reads: VecDeque<u8>,
+        /// Bytes sitting in the port BEFORE the exchange starts.
+        ///
+        /// Separate from `reads`, which models the reply arriving after
+        /// the request is written. Only this is what `drain` clears --
+        /// draining the reply would be modelling the opposite of reality.
+        stale: VecDeque<u8>,
+        drain_calls: usize,
         flush_rx_calls: usize,
         last_set_rts: Cell<Option<bool>>,
         last_set_dtr: Cell<Option<bool>>,
@@ -270,6 +298,8 @@ mod tests {
             Self {
                 writes: Vec::new(),
                 reads: VecDeque::new(),
+                stale: VecDeque::new(),
+                drain_calls: 0,
                 flush_rx_calls: 0,
                 last_set_rts: Cell::new(None),
                 last_set_dtr: Cell::new(None),
@@ -281,6 +311,11 @@ mod tests {
 
         fn enqueue_response(&mut self, response: &str) {
             self.reads.extend(response.as_bytes());
+        }
+
+        /// Leave rubbish in the port, as a re-enumerating adapter does.
+        fn leave_stale(&mut self, junk: &str) {
+            self.stale.extend(junk.as_bytes());
         }
     }
 
@@ -316,7 +351,8 @@ mod tests {
         }
 
         async fn read(&mut self, buf: &mut [u8]) -> Result<usize, TransportError> {
-            if let Some(byte) = self.reads.pop_front() {
+            // Stale bytes come out first -- they were there first.
+            if let Some(byte) = self.stale.pop_front().or_else(|| self.reads.pop_front()) {
                 buf[0] = byte;
                 Ok(1)
             } else {
@@ -326,6 +362,11 @@ mod tests {
 
         async fn flush(&mut self) -> Result<(), TransportError> {
             Ok(())
+        }
+
+        async fn drain(&mut self) {
+            self.drain_calls += 1;
+            self.stale.clear();
         }
 
         fn flush_rx(&mut self) {
@@ -364,6 +405,48 @@ mod tests {
         async fn flush(&mut self) -> Result<(), TransportError> {
             Ok(())
         }
+    }
+
+    #[monoio::test(driver = "legacy")]
+    async fn a_stale_frame_left_in_the_port_is_not_read_as_the_reply() {
+        // The 2026-09-08 failure. An FTDI adapter re-enumerated mid-session
+        // and left 20 bytes in its own FIFO -- the tail of an `IF` reply and
+        // a whole orphan `SM0011;`. Every exchange afterwards was one frame
+        // behind: `FA;` answered `SM0010;`, `MD;` answered the `IF`. It
+        // survived several server restarts, because `tcflush` at open clears
+        // only what is queued at that instant while the driver goes on
+        // delivering transfers already in flight.
+        let mut transport = FakeTransport::new();
+        transport.leave_stale(" 0002000008 ;SM0011;");
+        transport.enqueue_response("FA00014250000;");
+        let mut session = SerialCatSession::new(transport);
+
+        let mut response = Vec::new();
+        session.execute(b"FA;", &mut response).await.unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&response),
+            "FA00014250000;",
+            "the reply must be this request's, not whatever was left in the port"
+        );
+    }
+
+    #[monoio::test(driver = "legacy")]
+    async fn every_exchange_drains_before_writing() {
+        // Draining at open would not be enough: a frame can arrive late, or
+        // unsolicited, long after the port was opened. Checking on every
+        // exchange is what makes it robust.
+        let mut transport = FakeTransport::new();
+        transport.enqueue_response("FA00014250000;");
+        let mut session = SerialCatSession::new(transport);
+
+        let mut response = Vec::new();
+        session.execute(b"FA;", &mut response).await.unwrap();
+        assert_eq!(session.transport.drain_calls, 1);
+
+        response.clear();
+        session.transport.enqueue_response("FB00007100000;");
+        session.execute(b"FB;", &mut response).await.unwrap();
+        assert_eq!(session.transport.drain_calls, 2, "not just the first");
     }
 
     #[monoio::test(driver = "legacy")]
