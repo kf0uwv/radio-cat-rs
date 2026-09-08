@@ -1674,23 +1674,22 @@ impl Console {
             // Doing this with UVs is what makes the one-row upload
             // possible -- a texture whose rows had to be in display order
             // would have to be rewritten on every scroll.
-            let head = self.waterfall.head() as f32 / height.max(1) as f32;
-            let split = rect.top() + rect.height() * (1.0 - head);
-            let top = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, split));
-            let bottom = egui::Rect::from_min_max(egui::pos2(rect.min.x, split), rect.max);
-            if top.height() > 0.0 {
-                ui.painter().image(
-                    handle.id(),
-                    top,
-                    egui::Rect::from_min_max(egui::pos2(0.0, head), egui::pos2(1.0, 1.0)),
-                    Color32::WHITE,
+            for band in ring_bands(self.waterfall.head(), height as u32) {
+                let (y0, y1) = band.screen;
+                let quad = egui::Rect::from_min_max(
+                    egui::pos2(rect.left(), rect.top() + rect.height() * y0),
+                    egui::pos2(rect.right(), rect.top() + rect.height() * y1),
                 );
-            }
-            if bottom.height() > 0.0 && head > 0.0 {
+                if quad.height() <= 0.0 {
+                    continue;
+                }
                 ui.painter().image(
                     handle.id(),
-                    bottom,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, head)),
+                    quad,
+                    egui::Rect::from_min_max(
+                        egui::pos2(0.0, band.uv.0),
+                        egui::pos2(1.0, band.uv.1),
+                    ),
                     Color32::WHITE,
                 );
             }
@@ -1891,7 +1890,17 @@ impl Console {
                     (full.height() / cell.y) as u16,
                 );
 
-                for placement in layout.resolve_with(in_cells, &natural) {
+                // The closure captures the capabilities, because how tall
+                // a meter rail needs to be is a fact about the radio as
+                // much as about this renderer.
+                let caps_for_density = self.capabilities().cloned();
+                let density = |kind: &cat_layout::PanelKind, dir: cat_layout::Direction| {
+                    match &caps_for_density {
+                        Some(c) => natural(kind, dir, c),
+                        None => cat_layout::default_natural(kind, dir),
+                    }
+                };
+                for placement in layout.resolve_with(in_cells, &density) {
                     let rect = egui::Rect::from_min_size(
                         egui::pos2(
                             full.left() + f32::from(placement.area.x) * cell.x,
@@ -1931,6 +1940,58 @@ impl Console {
 /// The console is monospace throughout, so a layout expressed in cells
 /// maps onto it exactly. Measured from the font in force rather than
 /// assumed, because the type scale is the design system's and may change.
+/// One horizontal band of the waterfall: where it lands on the panel and
+/// which slice of the texture fills it, both as 0.0-1.0 fractions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Band {
+    /// Top and bottom, as a fraction of the panel's height.
+    screen: (f32, f32),
+    /// Top and bottom of the texture slice, as a fraction of its height.
+    uv: (f32, f32),
+}
+
+/// Where the ring's rows go on screen.
+///
+/// The waterfall buffer is a ring: the newest row is at `head` and older
+/// rows run downwards modulo the height. Uploading it in display order
+/// would mean rewriting the whole texture on every scroll, which is what
+/// used to cap this console at ten frames a second. Uploading it *as a
+/// ring* and rotating with UV coordinates costs nothing per frame -- but
+/// it means the texture has to be drawn as two pieces, because the ring
+/// wraps somewhere in the middle of it.
+///
+/// Screen row 0 is texture row `head`. So rows `head`..end fill the top
+/// of the panel, and rows 0..`head` fill the rest. When `head` is zero
+/// there is no wrap and one band covers everything.
+///
+/// Extracted from the draw call because it is arithmetic with an
+/// off-by-one in it, and an off-by-one here is a waterfall drawn torn --
+/// which is visible, but only once the ring has wrapped, which is a
+/// minute in and long after anybody stopped looking.
+fn ring_bands(head: u32, height: u32) -> Vec<Band> {
+    if height == 0 {
+        return Vec::new();
+    }
+    let head = head % height;
+    let split = f64::from(head) / f64::from(height);
+    if head == 0 {
+        return vec![Band {
+            screen: (0.0, 1.0),
+            uv: (0.0, 1.0),
+        }];
+    }
+    vec![
+        Band {
+            screen: (0.0, (1.0 - split) as f32),
+            uv: (split as f32, 1.0),
+        },
+        Band {
+            screen: ((1.0 - split) as f32, 1.0),
+            uv: (0.0, split as f32),
+        },
+    ]
+}
+
 fn cell_size(ui: &egui::Ui) -> egui::Vec2 {
     let font = egui::FontId::monospace(theme::SIZE_BODY);
     let w = ui.fonts(|f| f.glyph_width(&font, 'M'));
@@ -1941,23 +2002,36 @@ fn cell_size(ui: &egui::Ui) -> egui::Vec2 {
 /// What this console needs for a panel, in cells. See
 /// [`cat_layout::Size::Natural`].
 ///
-/// The meter rail is the one that differs: this console draws a label row
-/// *and* a bar per meter, plus a pane header -- about 40 px a meter
-/// against a 17 px cell -- so four meters and a header want twelve cells.
-/// The terminal console draws the same panel in five. A layout that
-/// picked either number would be wrong for the other, and both mistakes
-/// shipped before the layout started asking.
-fn natural(kind: &cat_layout::PanelKind, direction: cat_layout::Direction) -> u16 {
+/// The meter rail is the one that differs, and it differs in two ways at
+/// once: this console spends a label row *and* a bar on every meter where
+/// the terminal console spends one row, and the number of meters is the
+/// radio's business -- a TS-570D declares four, an FT-991A and an IC-7100
+/// seven. Every fixed number is wrong for something. Four cells a meter
+/// was wrong for the FT-991A's `ID`; twelve cells of rail was wrong for
+/// its `VDD` and `COMP`, which simply were not drawn.
+fn natural(
+    kind: &cat_layout::PanelKind,
+    direction: cat_layout::Direction,
+    caps: &cat_native::CapabilitiesWire,
+) -> u16 {
     match (kind, direction) {
-        (cat_layout::PanelKind::MeterRail, cat_layout::Direction::Rows) => METER_RAIL_CELLS,
+        (cat_layout::PanelKind::MeterRail, cat_layout::Direction::Rows) => {
+            meter_rail_cells(caps.meters.len() as u16)
+        }
         _ => cat_layout::default_natural(kind, direction),
     }
 }
 
-/// Cells this console's meter rail needs: a header plus a label row and a
-/// bar for each of the four meters. Measured off a render, not guessed --
-/// the first two guesses clipped ALC.
-const METER_RAIL_CELLS: u16 = 12;
+/// Cells this console's meter rail needs for `meters` of them.
+///
+/// A pane header, then a label row and a bar each. Measured off a render
+/// rather than guessed -- 40 px a meter and a 25 px header against a
+/// 17 px cell, so five halves of a cell per meter and two for the header.
+/// The guesses that preceded the measurement clipped ALC twice.
+fn meter_rail_cells(meters: u16) -> u16 {
+    const HEADER: u16 = 2;
+    HEADER + meters.max(1).saturating_mul(5).div_ceil(2)
+}
 
 /// The arrangement a console uses when its server publishes none.
 ///
@@ -1989,6 +2063,95 @@ fn default_layout() -> cat_layout::LayoutSpec {
 
 #[cfg(test)]
 mod tests {
+
+    /// Where texture row `row` lands on screen, according to the bands.
+    ///
+    /// The inverse of what the renderer does, so the test asks the
+    /// question an operator would: *is the newest row at the top, and is
+    /// every other row where it should be?*
+    fn screen_of(bands: &[Band], row: u32, height: u32) -> f32 {
+        let v = (f64::from(row) + 0.5) / f64::from(height);
+        for band in bands {
+            let (u0, u1) = (f64::from(band.uv.0), f64::from(band.uv.1));
+            if v >= u0 && v < u1 {
+                let (s0, s1) = (f64::from(band.screen.0), f64::from(band.screen.1));
+                let t = (v - u0) / (u1 - u0);
+                return (s0 + t * (s1 - s0)) as f32;
+            }
+        }
+        panic!("row {row} of {height} is in no band: {bands:?}");
+    }
+
+    #[test]
+    fn every_row_lands_where_the_ring_says_it_should() {
+        // The property that matters, and the one an off-by-one breaks:
+        // texture row `head` is screen row 0, and row `head + n` is
+        // screen row `n`, wrapping. A torn waterfall is exactly this
+        // going wrong, and it only shows once the ring has wrapped.
+        let height = 256u32;
+        for head in [0u32, 1, 2, 17, 128, 254, 255] {
+            let bands = ring_bands(head, height);
+            for n in 0..height {
+                let row = (head + n) % height;
+                let want = (f64::from(n) + 0.5) / f64::from(height);
+                let got = screen_of(&bands, row, height);
+                assert!(
+                    (f64::from(got) - want).abs() < 1e-6,
+                    "head {head}, row {row}: wanted {want}, got {got}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_bands_cover_the_panel_exactly_once() {
+        // A gap draws the panel's background through the waterfall; an
+        // overlap draws part of it twice, at the wrong scale.
+        for head in [0u32, 1, 100, 255] {
+            let bands = ring_bands(head, 256);
+            let screen: f32 = bands.iter().map(|b| b.screen.1 - b.screen.0).sum();
+            let uv: f32 = bands.iter().map(|b| b.uv.1 - b.uv.0).sum();
+            assert!((screen - 1.0).abs() < 1e-6, "head {head}: screen {screen}");
+            assert!((uv - 1.0).abs() < 1e-6, "head {head}: uv {uv}");
+            // And they must be in order, top to bottom, with no gap.
+            for pair in bands.windows(2) {
+                assert!(
+                    (pair[0].screen.1 - pair[1].screen.0).abs() < 1e-6,
+                    "head {head}: gap between bands"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_unwrapped_ring_is_drawn_in_one_piece() {
+        let bands = ring_bands(0, 256);
+        assert_eq!(bands.len(), 1);
+        assert_eq!(bands[0].screen, (0.0, 1.0));
+        assert_eq!(bands[0].uv, (0.0, 1.0));
+    }
+
+    #[test]
+    fn a_wrapped_ring_is_drawn_in_two() {
+        let bands = ring_bands(64, 256);
+        assert_eq!(bands.len(), 2);
+        // Screen row 0 is texture row 64, so the first band starts a
+        // quarter of the way down the texture.
+        assert!((bands[0].uv.0 - 0.25).abs() < 1e-6);
+        assert!((bands[0].screen.1 - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_degenerate_image_does_not_panic() {
+        // Nothing should reach here with a zero height, but a renderer
+        // that divides by one anyway is a renderer that cannot crash a
+        // console over a resize.
+        assert!(ring_bands(0, 0).is_empty());
+        assert!(ring_bands(9, 0).is_empty());
+        // A head at or past the end wraps rather than escaping.
+        assert_eq!(ring_bands(256, 256), ring_bands(0, 256));
+        assert_eq!(ring_bands(300, 256), ring_bands(44, 256));
+    }
     use super::*;
     use cat_native::testing::{serve_stub, StubHost};
     use cat_signal::{DeviceInfo, DeviceKind, DeviceList};

@@ -331,7 +331,12 @@ fn draw_layout(
         mode: !spec.root.places(&PanelKind::ModeBar),
     };
 
-    let placements = spec.resolve_with(to_area(area), &natural);
+    // The density closure captures the radio's capabilities, because how
+    // tall a meter rail needs to be is a fact about the radio -- how many
+    // meters it declares -- as much as about the renderer.
+    let density =
+        |kind: &cat_layout::PanelKind, dir: cat_layout::Direction| natural(kind, dir, caps);
+    let placements = spec.resolve_with(to_area(area), &density);
 
     // A layout that places a Spectrum panel AND a Workspace draws the
     // spectrum twice while the SPECTRUM tab is selected, because that
@@ -554,18 +559,44 @@ fn draw_meter_bars(
     // S-unit table, an FT-991A reports 0-255 with no calibration the
     // manual gives, and a bar drawn to the wrong one is wrong in a way
     // that looks entirely plausible.
-    let s = MeterReading::from_wire(&caps.meters, MeterKind::S, radio.smeter);
-    let meters: Vec<(&str, Option<MeterReading>, bool)> = vec![
-        ("S", s, !radio.tx),
-        ("PO", None, radio.tx),
-        ("SWR", None, radio.tx),
-        ("ALC", None, radio.tx),
-    ];
+    //
+    // The *list* comes from the radio too, and used to not. It was four
+    // literals -- S, PO, SWR, ALC -- which is a TS-570D's meter set named
+    // in the source, directly beneath a comment saying not to do that. An
+    // FT-991A declares five, adding `ID`, and the fifth was silently not
+    // drawn: a meter that is absent from a rail looks exactly like a
+    // radio that does not have one.
+    let labels: Vec<String> = caps
+        .meters
+        .iter()
+        .map(|m| format!("{:?}", m.kind).to_uppercase())
+        .collect();
+    let meters: Vec<(&str, Option<MeterReading>, bool)> = caps
+        .meters
+        .iter()
+        .zip(&labels)
+        .map(|(m, label)| {
+            let reading = (m.kind == MeterKind::S)
+                .then(|| MeterReading::from_wire(&caps.meters, MeterKind::S, radio.smeter))
+                .flatten();
+            // A TX meter during receive keeps its row, dimmed.
+            let active = if m.active_on_transmit {
+                radio.tx
+            } else {
+                !radio.tx
+            };
+            (label.as_str(), reading, active)
+        })
+        .collect();
+    // Wide enough for the longest label this radio has, plus a space --
+    // `COMP` and `VDD` are longer than anything a TS-570D declares, and a
+    // fixed four would run the bar into the label.
+    let label_width = labels.iter().map(|l| l.len()).max().unwrap_or(3) as u16 + 1;
     meter_rail(
         &meters,
         area,
         f.buffer_mut(),
-        4,
+        label_width,
         MeterStyles {
             active: Style::default().fg(Color::White),
             inactive: Style::default().fg(DIM),
@@ -575,42 +606,37 @@ fn draw_meter_bars(
     );
 }
 
-/// The bars this console draws: one row per meter.
-///
-/// Fixed, not `Min`. `Min(1)` let the bars absorb every spare row in the
-/// column -- fifteen of them on the TS-570D's layout at 120x40 -- so four
-/// rows of meters were drawn at the top, ten rows of nothing followed,
-/// and the `CAT idle` line sat alone at the bottom, fifteen rows from the
-/// meters it describes.
-///
-/// Deliberately *not* derived from `cat_layout::METER_RAIL_ROWS`, which
-/// is sized for the GPU console's roomier rail. This console is the
-/// tighter of the two and simply leaves the surplus blank beneath its
-/// content, rather than spreading four meters over ten rows.
-const METER_ROWS: u16 = 4;
-
-// The two halves have to agree and are written in different crates: the
-// layout sizes this panel, this file fills it. Checked at compile time
-// rather than in a test, because a layout that cannot hold its renderer
-// is not a failing case to report -- it is a build that should not
-// happen. When they last disagreed the rail took fifteen rows to draw
-// five, and nothing anywhere said so.
 /// What this console needs for a panel, in cells. See
 /// [`cat_layout::Size::Natural`].
 ///
-/// One row per meter and one for the link line. The GPU console draws the
-/// same panel in twelve, which is why the layout asks rather than picks.
-pub fn natural(kind: &cat_layout::PanelKind, direction: cat_layout::Direction) -> u16 {
+/// The meter rail is one row per meter the **radio** declares, plus one
+/// for the link line. A constant would be wrong twice over. The GPU
+/// console draws the same panel in about twelve cells, because it spends
+/// a label row and a bar on each meter -- and a TS-570D declares four
+/// meters where an FT-991A declares five. Either mistake shows as a meter
+/// that is simply not there, which looks like a radio that does not have
+/// one.
+///
+/// It was briefly a constant four, and that is exactly what it would have
+/// done to the FT-991A's `ID` meter.
+pub fn natural(
+    kind: &cat_layout::PanelKind,
+    direction: cat_layout::Direction,
+    caps: &cat_native::CapabilitiesWire,
+) -> u16 {
     match (kind, direction) {
-        (cat_layout::PanelKind::MeterRail, cat_layout::Direction::Rows) => METER_ROWS + 1,
+        (cat_layout::PanelKind::MeterRail, cat_layout::Direction::Rows) => meter_rows(caps) + 1,
         _ => cat_layout::default_natural(kind, direction),
     }
 }
 
-const _: () = assert!(
-    METER_ROWS < cat_layout::METER_RAIL_ROWS,
-    "the meter bars plus the link line must fit the rows the layout allots"
-);
+/// Rows the bars themselves need: one per meter this radio declares.
+///
+/// At least one, so a radio declaring none still puts its link line
+/// somewhere sensible rather than collapsing the panel.
+fn meter_rows(caps: &cat_native::CapabilitiesWire) -> u16 {
+    (caps.meters.len() as u16).max(1)
+}
 
 fn draw_meters(
     f: &mut Frame,
@@ -643,7 +669,7 @@ fn draw_meters(
         // layout allotted -- ten rows adrift from the meters it is
         // reporting on.
         .constraints([
-            Constraint::Length(METER_ROWS),
+            Constraint::Length(meter_rows(caps)),
             Constraint::Length(1),
             Constraint::Min(0),
         ])
@@ -1700,6 +1726,58 @@ mod tests {
         (0..h)
             .map(|y| (0..w).map(|x| buf.get(x, y).symbol().to_string()).collect())
             .collect()
+    }
+
+    #[test]
+    fn every_meter_the_radio_declares_is_drawn() {
+        // The rail draws `caps.meters`, which is a property of the radio,
+        // not of this file. A TS-570D declares four -- S, PO, SWR, ALC --
+        // and an FT-991A five, adding ID. A constant four here would drop
+        // the fifth silently, and a missing meter looks like a radio that
+        // does not have one.
+        use cat_framework::capabilities::{MeterKind, RawRange};
+        let meter = |kind| cat_native::MeterDescriptorWire {
+            kind,
+            raw_range: RawRange::new(0, 30),
+            active_on_transmit: kind != MeterKind::S,
+            s_units: None,
+        };
+        let mut caps = test_caps();
+        caps.meters = vec![
+            meter(MeterKind::S),
+            meter(MeterKind::Po),
+            meter(MeterKind::Swr),
+            meter(MeterKind::Alc),
+            meter(MeterKind::Id),
+        ];
+        let radio = RadioDisplay {
+            connected: true,
+            ..RadioDisplay::default()
+        };
+        let rows = natural(
+            &cat_layout::PanelKind::MeterRail,
+            cat_layout::Direction::Rows,
+            &caps,
+        );
+        let backend = ratatui::backend::TestBackend::new(22, rows);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| draw_meters(f, f.size(), &radio, &caps))
+            .unwrap();
+        let buf = term.backend().buffer();
+        let text: String = (0..rows)
+            .map(|y| {
+                (0..22u16)
+                    .map(|x| buf.get(x, y).symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for label in ["S", "PO", "SWR", "ALC", "ID"] {
+            assert!(
+                text.lines().any(|l| l.trim_start().starts_with(label)),
+                "{label} is missing from the rail:\n{text}"
+            );
+        }
     }
 
     #[test]
