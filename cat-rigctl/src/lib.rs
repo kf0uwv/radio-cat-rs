@@ -102,6 +102,34 @@ use tracing::{error, info};
 /// a smaller mode set) — which is exactly why these are trait methods each
 /// app implements itself, rather than a shared table this crate would have
 /// to own.
+///
+/// # The defaulted methods are a trap, and deliberately so
+///
+/// `get_split`, `set_split`, `get_rit_hz`, `get_xit_hz`, `mode_from_id`
+/// and `capabilities` all have defaults, so an impl that omits them
+/// compiles cleanly. From the client's side the result is
+/// indistinguishable from a radio that cannot do the thing: `s` answers
+/// "not split", `S` and `j` refuse.
+///
+/// The defaults exist because plenty of radios genuinely lack these, and
+/// a default of `false` or `0` would be a lie. But they mean a real
+/// capability goes missing in silence rather than as a compile error, and
+/// every one of them has been found missing on a shipped bridge at least
+/// once -- `capabilities` and the RIT pair on the TS-570D, split and
+/// `mode_from_id` on both the FT-991A and the IC-7100, each while the
+/// radio crate underneath had the command.
+///
+/// Two things follow for an implementor. Override every one of these the
+/// radio supports, checking the list against the radio rather than
+/// against what compiles. And test each override with an exchange rather
+/// than by asserting it exists: a test that fails when the method is
+/// deleted is the only kind that catches this, since deleting it is
+/// exactly what compiles.
+///
+/// It matters most where the radio also *advertises* the capability:
+/// `\dump_state`'s tail is generated from [`RigctlRadio::capabilities`],
+/// so a radio declaring split whose bridge inherited the default is
+/// telling Hamlib about a control that fails when used.
 #[async_trait(?Send)]
 pub trait RigctlRadio {
     /// This radio's mode type (e.g. `radio::Mode`).
