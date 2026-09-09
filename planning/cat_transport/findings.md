@@ -117,3 +117,68 @@
   `lib.rs` and is the first task with a real reason to run
   `cargo test`-shaped commands against the Windows target) rather than
   silently worked around or silently left unmentioned.
+
+
+## EINTR unhandled in the serial backend (2026-09-06, Task 9)
+
+Found against real hardware, not in review. `cat-transport-serial` has zero
+EINTR handling; `cat-transport-tcp/src/session.rs:246` has had the correct
+pattern all along. `read()` retries only `WouldBlock` and drops
+`Interrupted` into its fatal catch-all; `write()` has no retry loop at all.
+
+Second, compounding defect in the same area: `session.rs:79` and `:108`
+discard `Transport::write`'s return count, so a short `writev` silently
+truncates a CAT request. EINTR makes short writes likelier, which is a
+plausible mechanism for the intermittent wrong-response-frame symptom that
+prompted the investigation.
+
+Baselines re-measured 2026-09-06: `cat-transport-serial` **20** tests
+(this file's Task 7/8 entries cite 24 — stale), workspace **845**.
+
+
+## `initial_dtr: false` does not deassert DTR (2026-09-06, Task 10)
+
+`SerialPort::open` gates an *assert* on `initial_rts`/`initial_dtr`; it never
+drives the line low. Linux raises DTR on open by default, so a caller opting
+out still gets DTR asserted. On a DTR-keyed station that means **`ts570d
+server` transmits from startup until the process dies** — measured on a
+physical TS-570D, CAT-only server, 100 W into a dummy load.
+
+`RX;` cannot clear it (CAT cannot override an asserted PTT line); killing the
+process does (port close lowers DTR). Both were confirmed directly.
+
+Note for anyone reading the surrounding analysis: I initially cited
+`initial_dtr: false` in `ts570d/src/main.rs:834` as proof the server could
+*not* be keying, and concluded from that the fault must be the ACC2 cable.
+That was wrong. The flag's name describes an intent the code does not
+implement, and the comment saying so sits 400 lines away in the same file.
+The user's observation — TX dropped the moment the server was killed —
+is what corrected it.
+
+## Cross-consumer regression check (2026-09-06, Tasks 9/10 + framework)
+
+`radio-cat-rs` is consumed by `ts570d`, `ft991a` and `ic7100`, and all three
+depend on it by **path**, not by the pinned git tag — so local changes reach
+them immediately and breakage is testable now rather than at release.
+
+| repo | tests | failures |
+|---|---|---|
+| radio-cat-rs | 853 | 0 |
+| ts570d | 608 | 0 |
+| ft991a | 1147 | 0 |
+| ic7100 | 76 | 0 |
+
+Two specific risks were checked rather than assumed:
+
+- **Task 10 (lines now driven, not just asserted).** `ft991a` and `ic7100`
+  both use `SerialConfig::default()`, where `initial_rts`/`initial_dtr` are
+  `true`. Old code asserted; new code asserts. **Behaviour is identical for
+  them** — only a caller passing `false` sees a change, and `ts570d` is the
+  only one that does. This matters most for `ic7100`: CI-V level converters
+  are commonly powered from DTR/RTS, and the line still goes high.
+- **Framework dispatch (Query now tried before Set at equal width).** Only
+  changes behaviour where one command declares a Query form and a Set form
+  of the *same* width. Checked all three tables: `ft991a` (96 definitions)
+  and `ts570d` (73) have **no overlaps**; `ic7100` builds its definitions
+  through a helper rather than the `definition!` macro, so it was covered by
+  running its suite instead of by static analysis.

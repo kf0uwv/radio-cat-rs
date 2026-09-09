@@ -320,12 +320,15 @@ impl SerialPort {
         // `set_dtr` a caller uses later, rather than duplicating the ioctl
         // call here. Errors are ignored deliberately — PTY devices don't
         // support modem control lines and return ENOTTY, which is harmless.
-        if config.initial_rts {
-            let _ = port.set_rts(true);
-        }
-        if config.initial_dtr {
-            let _ = port.set_dtr(true);
-        }
+        // Drive both lines to the configured state, rather than only asserting
+        // when the flag is true. `false` means "hold this line low", not "leave
+        // it wherever the OS put it" — Linux raises DTR on open by default, so
+        // the old `if` form silently gave a caller who asked for DTR-low a
+        // DTR-high port. On a station that keys PTT from DTR (an ACC2 opto
+        // interface) that meant the radio transmitted from `open()` until the
+        // process exited. See `planning/cat_transport/task_plan.md` Task 10.
+        let _ = port.set_rts(config.initial_rts);
+        let _ = port.set_dtr(config.initial_dtr);
 
         Ok(port)
     }
@@ -344,6 +347,31 @@ impl SerialPort {
     }
 }
 
+/// Is this I/O error a transient interruption to re-submit, or a real failure?
+///
+/// Two kinds are transient on an `O_NONBLOCK` fd driven by io_uring:
+///
+/// - [`ErrorKind::WouldBlock`] (`EAGAIN`) — no data yet on a read, no buffer
+///   space yet on a write. Expected on a non-blocking fd, not a failure.
+/// - [`ErrorKind::Interrupted`] (`EINTR`) — a signal arrived while the
+///   operation was in flight. The operation did not fail, it did not *happen*;
+///   POSIX requires the caller to re-submit it.
+///
+/// Everything else is a genuine failure and must reach the caller — retrying
+/// a closed or revoked port would spin forever instead of reporting it.
+///
+/// Extracted as a free function so the decision is unit-testable: the errors
+/// arise inside `self.stream.readv(..).await` on a monoio stream, which cannot
+/// be mocked without standing up a runtime and a fake io_uring. The tests pin
+/// the decision, not the syscall.
+///
+/// `cat-transport-tcp/src/session.rs` has retried `Interrupted` since it was
+/// written; this backend never did, which is what
+/// `planning/cat_transport/task_plan.md`'s Task 9 was opened for.
+fn is_retryable(e: &std::io::Error) -> bool {
+    matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted)
+}
+
 #[async_trait(?Send)]
 impl Transport for SerialPort {
     /// Write `data` to the serial port. Returns the number of bytes written.
@@ -351,11 +379,41 @@ impl Transport for SerialPort {
     /// Uses `IORING_OP_WRITEV` (via `writev`) which works on any fd type,
     /// unlike `IORING_OP_SEND` which is socket-only.
     async fn write(&mut self, data: &[u8]) -> Result<usize, TransportError> {
-        // Build a single-segment VecBuf for writev
-        let buf: VecBuf = vec![data.to_vec()].into();
-        let (result, _buf) = self.stream.writev(buf).await;
-        let n = result?;
-        Ok(n)
+        // Budget shared with `read`. `READ_TIMEOUT`'s own documentation records
+        // Task 7's explicit decision that it "must not become a second,
+        // parallel constant", so this deliberately reuses it as the transport's
+        // one I/O budget rather than introducing a `WRITE_TIMEOUT` beside it.
+        let deadline = std::time::Instant::now() + READ_TIMEOUT;
+        let mut written = 0usize;
+
+        while written < data.len() {
+            // Build a single-segment VecBuf for writev over what is left. On a
+            // retry this re-sends only the unwritten tail, never the whole
+            // buffer again.
+            let buf: VecBuf = vec![data[written..].to_vec()].into();
+            let (result, _buf) = self.stream.writev(buf).await;
+            match result {
+                Ok(0) => {
+                    // Not reachable for a tty in practice, but looping on it
+                    // would spin forever, so say so instead.
+                    return Err(TransportError::Io(std::io::Error::new(
+                        ErrorKind::WriteZero,
+                        "serial writev made no progress",
+                    )));
+                }
+                Ok(n) => written += n,
+                Err(ref e) if is_retryable(e) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(TransportError::WriteTimeout);
+                    }
+                    // Re-submit. Each `.await` is a cooperative yield point,
+                    // as in `read` below.
+                }
+                Err(e) => return Err(TransportError::Io(e)),
+            }
+        }
+
+        Ok(written)
     }
 
     /// Read bytes from the serial port into `buf`. Returns the number of bytes read.
@@ -391,8 +449,12 @@ impl Transport for SerialPort {
                     }
                     return Ok(n);
                 }
-                Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                    // EAGAIN: no data yet. Check deadline before retrying.
+                Err(ref e) if is_retryable(e) => {
+                    // EAGAIN (no data yet) or EINTR (a signal interrupted the
+                    // in-flight readv). Both mean "re-submit"; neither is a
+                    // failure. Check the deadline before retrying, so a
+                    // sustained signal storm reports `ReadTimeout` rather than
+                    // looping without bound.
                     if std::time::Instant::now() >= deadline {
                         return Err(TransportError::ReadTimeout);
                     }
@@ -410,6 +472,46 @@ impl Transport for SerialPort {
         SerialPort::flush_rx(self);
     }
 
+    fn modem_lines(&self) -> Option<&dyn ModemControlLines> {
+        Some(self)
+    }
+
+    /// Read and discard until the line has been quiet for one short interval.
+    ///
+    /// Uses a raw non-blocking `read(2)` rather than `self.stream.readv().await`.
+    /// monoio's `readv` waits for *readiness*: on a line that has gone quiet it
+    /// never completes, so a budget checked at the top of the loop is never
+    /// reached and the drain hangs until the broker's 5 s request timeout kills
+    /// it. Measured: every set taking 5002 ms and returning "physical radio
+    /// session did not respond". `read(2)` on an `O_NONBLOCK` fd returns EAGAIN
+    /// immediately, which is what "is the line quiet?" actually needs to ask.
+    ///
+    /// Bounded twice: three consecutive empty reads 20 ms apart (60 ms of
+    /// quiet), and a hard 400 ms ceiling so a radio that never stops talking
+    /// cannot wedge this.
+    async fn drain(&mut self) {
+        const SETTLE: std::time::Duration = std::time::Duration::from_millis(20);
+        const BUDGET: std::time::Duration = std::time::Duration::from_millis(400);
+        const QUIET_READS: u8 = 3;
+
+        let fd = self.stream.as_raw_fd();
+        let give_up = std::time::Instant::now() + BUDGET;
+        let mut empty: u8 = 0;
+        let mut buf = [0u8; 64];
+
+        while empty < QUIET_READS && std::time::Instant::now() < give_up {
+            // SAFETY: `fd` is valid for the lifetime of `self.stream`, and the
+            // buffer is a live local of the given length.
+            let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            if n > 0 {
+                empty = 0;
+                continue;
+            }
+            empty += 1;
+            std::thread::sleep(SETTLE);
+        }
+    }
+
     /// Flush the serial port output buffer.
     ///
     /// Calls `tcdrain(2)` which blocks until all output queued in the kernel
@@ -425,9 +527,29 @@ impl Transport for SerialPort {
         // BorrowedFd::borrow_raw does not take ownership; we hold the fd
         // alive via self.stream for the duration of this call.
         let borrowed = unsafe { BorrowedFd::borrow_raw(raw_fd) };
-        tcdrain(borrowed)
-            .map_err(|e| TransportError::Io(std::io::Error::from_raw_os_error(e as i32)))?;
-        Ok(())
+        // `tcdrain` blocks until the output buffer has drained, which makes it
+        // one of the most EINTR-prone calls in the crate — and `execute` calls
+        // it immediately *after* writing the request. Letting EINTR escape here
+        // means the request is already on the wire when the exchange is
+        // abandoned, so nobody reads its response and the next request gets it
+        // instead. Every request after that is off by one, permanently.
+        //
+        // Measured on a TS-570D: a dispatch failing in 1 ms with
+        // `Interrupted system call`, immediately followed by the next request
+        // receiving the abandoned response. `read` and `write` have retried
+        // EINTR since Task 9; this call was missed.
+        loop {
+            match tcdrain(borrowed) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let io_err = std::io::Error::from_raw_os_error(e as i32);
+                    if is_retryable(&io_err) {
+                        continue;
+                    }
+                    return Err(TransportError::Io(io_err));
+                }
+            }
+        }
     }
 }
 
@@ -662,19 +784,31 @@ mod tests {
         );
     }
 
-    /// `SerialConfig::default()` must assert RTS and DTR at open time, matching
-    /// the crate's historical unconditional-assert behavior exactly (no
-    /// existing caller opts out, so the default must preserve it).
+    /// Opening a serial port must not key a transmitter.
+    ///
+    /// On many stations DTR is the PTT line, so asserting it at open time
+    /// transmits as a side effect of a program starting. This defaulted to
+    /// `true` until 2026-09-09, when a diagnostic script opened
+    /// `/dev/ttyUSB0` on a DTR-keyed TS-570D and keyed it.
+    ///
+    /// RTS keeps asserting: it is the hardware-flow-control line, no
+    /// caller in these repos keys from it, and a UART that never raises
+    /// RTS can wedge a link that expects it. The asymmetry is deliberate
+    /// -- this is about which line is dangerous, not about symmetry.
     #[test]
-    fn test_default_config_initial_rts_dtr_are_true() {
+    fn opening_a_port_does_not_assert_the_line_that_keys_a_transmitter() {
         let config = SerialConfig::default();
         assert!(
-            config.initial_rts,
-            "SerialConfig::default() must assert RTS at open time"
+            !config.initial_dtr,
+            "SerialConfig::default() asserts DTR at open time. On a station \
+             that keys PTT from DTR -- which is most of them -- that \
+             transmits the moment a program opens the port. Opt in where a \
+             station needs it, do not default to it."
         );
         assert!(
-            config.initial_dtr,
-            "SerialConfig::default() must assert DTR at open time"
+            config.initial_rts,
+            "RTS is flow control here, not keying, and a link that expects \
+             it can wedge without it"
         );
     }
 
@@ -872,5 +1006,60 @@ mod tests {
             &received_on_slave, master_to_slave_msg,
             "slave did not receive master's write"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Retry classification (Task 9 — EINTR)
+    //
+    // The failure these guard against lives inside
+    // `self.stream.readv(..).await` on a monoio stream, which cannot be
+    // mocked without standing up a runtime and a fake io_uring. Testing the
+    // syscall is not the point; testing the *decision* the loop makes about
+    // an error is. That decision is `is_retryable`, and these pin it.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn eintr_is_retryable() {
+        // EINTR: a signal arrived while the readv/writev was in flight. The
+        // operation was interrupted, not failed — the caller must re-submit.
+        // Before Task 9 this fell through `read`'s catch-all arm and killed
+        // the session with "Interrupted system call (os error 4)".
+        let e = std::io::Error::from(ErrorKind::Interrupted);
+        assert!(is_retryable(&e), "EINTR must be retried, not returned");
+    }
+
+    #[test]
+    fn eagain_is_retryable() {
+        // EAGAIN on an O_NONBLOCK fd: no data yet (read) or no buffer space
+        // yet (write). Always was retried in `read`; `write` did not retry it
+        // at all before Task 9.
+        let e = std::io::Error::from(ErrorKind::WouldBlock);
+        assert!(is_retryable(&e), "EAGAIN must be retried");
+    }
+
+    #[test]
+    fn real_errors_are_not_retryable() {
+        // Anything else is a genuine failure and must reach the caller.
+        // Retrying these would turn a closed port into an infinite loop.
+        for kind in [
+            ErrorKind::BrokenPipe,
+            ErrorKind::PermissionDenied,
+            ErrorKind::NotFound,
+            ErrorKind::InvalidInput,
+        ] {
+            let e = std::io::Error::from(kind);
+            assert!(!is_retryable(&e), "{kind:?} must be fatal, not retried");
+        }
+    }
+
+    #[test]
+    fn eintr_from_raw_os_error_is_retryable() {
+        // Belt and braces: the error that actually reached the operator came
+        // from the OS, not from `ErrorKind`. Confirm the raw errno maps to
+        // the same decision, so this does not depend on how the error was
+        // constructed.
+        let e = std::io::Error::from_raw_os_error(libc::EINTR);
+        assert_eq!(e.kind(), ErrorKind::Interrupted);
+        assert!(is_retryable(&e), "raw EINTR must be retried");
     }
 }

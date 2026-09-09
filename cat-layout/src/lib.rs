@@ -53,6 +53,25 @@ pub use theme::{Rgb, Theme};
 
 use serde::{Deserialize, Serialize};
 
+/// Rows a [`PanelKind::MeterRail`] needs.
+///
+/// Sized for the **roomier** of the two renderers, which is the rule for
+/// every fixed size in a layout: both draw the same panel at different
+/// densities, and a layout that fits only the tighter one clips the
+/// other. The terminal console draws a meter per row and wants five --
+/// four bars and the link line. The GPU console draws a label row and a
+/// bar per meter, plus a pane header, and wants twelve -- measured off a render at 40 px a meter plus a
+/// 25 px header, against a 17 px cell. Twelve it is; the
+/// terminal console leaves the surplus blank below its content, which is
+/// what surplus should look like.
+///
+/// It lives here, in the vocabulary both sides share, because a layout
+/// that sizes this panel and a renderer that fills it have to agree, and
+/// they are written in different crates by different people at different
+/// times. When they disagreed the rail took fifteen rows to draw five,
+/// and the link line was stranded at the bottom of them.
+pub const METER_RAIL_ROWS: u16 = 12;
+
 /// A component a console can place.
 ///
 /// The named variants are the shared vocabulary, and most of a console is
@@ -174,6 +193,29 @@ pub enum Size {
     Min(u16),
     /// A share of what is left, weighted against the other `Fill`s.
     Fill(u16),
+    /// As much as *this renderer* needs to draw this panel.
+    ///
+    /// `Fixed` is the right answer when a size is a property of the
+    /// content and the same everywhere -- an AF FFT is 20 cells because
+    /// that is 150 Hz per cell, on any console. This is for the other
+    /// case: the same panel, the same content, a different amount of room
+    /// to draw it in.
+    ///
+    /// The meter rail is the example. The terminal console draws a meter
+    /// per row and wants five; the GPU console draws a label row *and* a
+    /// bar per meter, plus a pane header, and wants twelve. A layout that
+    /// picks either number is wrong for one of them: the terminal's leaves
+    /// the GPU console clipping ALC, and the GPU's leaves the terminal
+    /// with seven blank rows in the middle of its rail. Both of those
+    /// shipped.
+    ///
+    /// So the layout stops guessing and asks. See
+    /// [`LayoutSpec::resolve_with`]; [`LayoutSpec::resolve`] answers from
+    /// [`default_natural`], which is the terminal console's density.
+    ///
+    /// On a child that is a split rather than a panel there is no single
+    /// panel to ask about, and this behaves as `Fill(1)`.
+    Natural,
 }
 
 /// A layout: a tree of splits with components at the leaves.
@@ -285,8 +327,17 @@ impl LayoutSpec {
     /// renderer should not have to check, and a zero-height panel is not a
     /// panel an operator can see.
     pub fn resolve(&self, area: Area) -> Vec<Placement> {
+        self.resolve_with(area, &default_natural)
+    }
+
+    /// The same, with this renderer's own idea of how much room a panel
+    /// needs. See [`Size::Natural`].
+    ///
+    /// `natural` is asked only about children whose size is `Natural`, and
+    /// answers in the caller's own units -- the same units as `area`.
+    pub fn resolve_with(&self, area: Area, natural: NaturalFn<'_>) -> Vec<Placement> {
         let mut out = Vec::new();
-        place(&self.root, area, &mut out);
+        place(&self.root, area, natural, &mut out);
         out
     }
 
@@ -296,14 +347,43 @@ impl LayoutSpec {
     /// not place a spectrum panel, and a renderer asking for one should
     /// get "not here" rather than a rectangle it then has to guess about.
     pub fn find(&self, area: Area, kind: &PanelKind) -> Option<Area> {
-        self.resolve(area)
+        self.find_with(area, kind, &default_natural)
+    }
+
+    /// The same, with this renderer's own density. See [`Size::Natural`].
+    pub fn find_with(&self, area: Area, kind: &PanelKind, natural: NaturalFn<'_>) -> Option<Area> {
+        self.resolve_with(area, natural)
             .into_iter()
             .find(|p| &p.kind == kind)
             .map(|p| p.area)
     }
 }
 
-fn place(node: &Node, area: Area, out: &mut Vec<Placement>) {
+/// How much room a renderer needs for a panel, in the renderer's units.
+///
+/// `Direction::Rows` asks for a height, `Direction::Columns` a width.
+pub type NaturalFn<'a> = &'a dyn Fn(&PanelKind, Direction) -> u16;
+
+/// What [`LayoutSpec::resolve`] assumes when nobody has said.
+///
+/// The **tighter** of the two consoles, deliberately, and the opposite of
+/// the rule for `Fixed`. A `Fixed` size has to fit the roomier renderer or
+/// that one clips; a `Natural` size is a floor that the asking renderer
+/// replaces, so the safe default is the smallest anything needs. A
+/// renderer that has not been taught its own density then gets a panel
+/// that is too small rather than one that squeezes everything else out.
+pub fn default_natural(kind: &PanelKind, direction: Direction) -> u16 {
+    match (kind, direction) {
+        (PanelKind::MeterRail, Direction::Rows) => METER_RAIL_ROWS,
+        // Nothing else uses `Natural` yet. `1` is a visible panel that is
+        // obviously wrong, which is a better failure than `0` -- a panel
+        // that resolved to nothing is dropped, and a renderer would show
+        // no sign anything was missing.
+        _ => 1,
+    }
+}
+
+fn place(node: &Node, area: Area, natural: NaturalFn<'_>, out: &mut Vec<Placement>) {
     if area.is_empty() {
         return;
     }
@@ -320,17 +400,34 @@ fn place(node: &Node, area: Area, out: &mut Vec<Placement>) {
                 Direction::Rows => area.height,
                 Direction::Columns => area.width,
             };
-            let spans = solve(children.iter().map(|c| c.size), total);
+            // `Natural` is turned into a concrete size here, before
+            // `solve` sees it, so the sharing rules stay one thing rather
+            // than one thing plus a special case.
+            let spans = solve(
+                children.iter().map(|c| concrete(c, *direction, natural)),
+                total,
+            );
             let mut offset = 0u16;
             for (child, span) in children.iter().zip(spans) {
                 let child_area = match direction {
                     Direction::Rows => Area::new(area.x, area.y + offset, area.width, span),
                     Direction::Columns => Area::new(area.x + offset, area.y, span, area.height),
                 };
-                place(&child.node, child_area, out);
+                place(&child.node, child_area, natural, out);
                 offset += span;
             }
         }
+    }
+}
+
+/// A child's size with [`Size::Natural`] resolved against a renderer.
+fn concrete(child: &Child, direction: Direction, natural: NaturalFn<'_>) -> Size {
+    match (child.size, &child.node) {
+        (Size::Natural, Node::Panel(kind)) => Size::Fixed(natural(kind, direction)),
+        // No single panel to ask about. A share of what is left is the
+        // least surprising thing for a container.
+        (Size::Natural, Node::Split { .. }) => Size::Fill(1),
+        (other, _) => other,
     }
 }
 
@@ -353,7 +450,12 @@ fn solve(sizes: impl Iterator<Item = Size> + Clone, total: u16) -> Vec<u16> {
     for size in &sizes {
         let want = match size {
             Size::Fixed(n) | Size::Min(n) => *n,
-            Size::Fill(_) => 0,
+            // `Natural` is substituted by `concrete` before it reaches
+            // here, so this arm is unreachable in practice. It is written
+            // as `Fill`-like rather than `unreachable!()` because a
+            // layout arriving over the network must never be able to
+            // panic a console.
+            Size::Fill(_) | Size::Natural => 0,
         };
         // All or nothing. A panel is `Fixed(20)` because twenty is what
         // its content needs — an AF FFT at 150 Hz per cell, a rail wide
@@ -369,6 +471,8 @@ fn solve(sizes: impl Iterator<Item = Size> + Clone, total: u16) -> Vec<u16> {
         .iter()
         .map(|s| match s {
             Size::Fill(w) => u32::from(*w),
+            // See the note in the pass above.
+            Size::Natural => 1,
             // A `Min` takes a share of the remainder too, weighted 1.
             // Otherwise a layout of one `Min` and nothing else would leave
             // the window mostly empty, which is never what was meant.
@@ -384,7 +488,10 @@ fn solve(sizes: impl Iterator<Item = Size> + Clone, total: u16) -> Vec<u16> {
         for (i, size) in sizes.iter().enumerate() {
             let w = match size {
                 Size::Fill(w) => u32::from(*w),
-                Size::Min(_) => 1,
+                // See the note in the first pass: substituted upstream,
+                // and weighted like a `Min` rather than panicking if a
+                // layout off the network somehow reaches here.
+                Size::Min(_) | Size::Natural => 1,
                 Size::Fixed(_) => 0,
             };
             if w == 0 {
@@ -409,6 +516,121 @@ fn solve(sizes: impl Iterator<Item = Size> + Clone, total: u16) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_natural_panel_gets_what_the_renderer_asks_for() {
+        // The whole point: two renderers, one layout, different answers.
+        let spec = LayoutSpec::new(Node::rows(vec![
+            Child::panel(Size::Natural, PanelKind::MeterRail),
+            Child::panel(Size::Fill(1), PanelKind::Workspace),
+        ]));
+        let area = Area::new(0, 0, 40, 40);
+
+        let tight = |k: &PanelKind, d: Direction| match (k, d) {
+            (PanelKind::MeterRail, Direction::Rows) => 5,
+            _ => default_natural(k, d),
+        };
+        let roomy = |k: &PanelKind, d: Direction| match (k, d) {
+            (PanelKind::MeterRail, Direction::Rows) => 12,
+            _ => default_natural(k, d),
+        };
+
+        let a = spec.find_with(area, &PanelKind::MeterRail, &tight).unwrap();
+        let b = spec.find_with(area, &PanelKind::MeterRail, &roomy).unwrap();
+        assert_eq!(a.height, 5);
+        assert_eq!(b.height, 12);
+    }
+
+    #[test]
+    fn what_a_natural_panel_does_not_take_goes_to_its_neighbours() {
+        // Not blank space. The seven rows the terminal console does not
+        // need for its rail are seven more rows of AF scope, which is
+        // vertical resolution, not padding.
+        let spec = LayoutSpec::new(Node::rows(vec![
+            Child::panel(Size::Natural, PanelKind::MeterRail),
+            Child::panel(Size::Fill(1), PanelKind::Workspace),
+        ]));
+        let area = Area::new(0, 0, 40, 40);
+        let tight = |k: &PanelKind, d: Direction| match (k, d) {
+            (PanelKind::MeterRail, Direction::Rows) => 5,
+            _ => default_natural(k, d),
+        };
+        let roomy = |k: &PanelKind, d: Direction| match (k, d) {
+            (PanelKind::MeterRail, Direction::Rows) => 12,
+            _ => default_natural(k, d),
+        };
+        let a = spec.find_with(area, &PanelKind::Workspace, &tight).unwrap();
+        let b = spec.find_with(area, &PanelKind::Workspace, &roomy).unwrap();
+        assert_eq!(a.height, 35);
+        assert_eq!(b.height, 28);
+        assert_eq!(a.height + 5, b.height + 12, "nothing is lost either way");
+    }
+
+    #[test]
+    fn resolve_without_a_density_still_works() {
+        // Every existing caller, and every radio that has not been taught
+        // about this, goes through here.
+        let spec = LayoutSpec::new(Node::rows(vec![
+            Child::panel(Size::Natural, PanelKind::MeterRail),
+            Child::panel(Size::Fill(1), PanelKind::Workspace),
+        ]));
+        let rail = spec
+            .find(Area::new(0, 0, 40, 40), &PanelKind::MeterRail)
+            .expect("placed");
+        assert_eq!(rail.height, METER_RAIL_ROWS);
+    }
+
+    #[test]
+    fn a_natural_column_asks_about_width() {
+        let spec = LayoutSpec::new(Node::columns(vec![
+            Child::panel(Size::Natural, PanelKind::MeterRail),
+            Child::panel(Size::Fill(1), PanelKind::Workspace),
+        ]));
+        let wide = |k: &PanelKind, d: Direction| match (k, d) {
+            (PanelKind::MeterRail, Direction::Columns) => 30,
+            _ => default_natural(k, d),
+        };
+        let rail = spec
+            .find_with(Area::new(0, 0, 100, 20), &PanelKind::MeterRail, &wide)
+            .unwrap();
+        assert_eq!(rail.width, 30);
+    }
+
+    #[test]
+    fn natural_on_a_split_is_a_share_rather_than_a_panic() {
+        // There is no single panel to ask about. A layout arriving over
+        // the network must never be able to take a console down.
+        let spec = LayoutSpec::new(Node::rows(vec![
+            Child::new(
+                Size::Natural,
+                Node::columns(vec![Child::panel(Size::Fill(1), PanelKind::Workspace)]),
+            ),
+            Child::panel(Size::Fill(1), PanelKind::Status),
+        ]));
+        let placed = spec.resolve(Area::new(0, 0, 40, 40));
+        assert_eq!(placed.len(), 2);
+        let workspace = placed
+            .iter()
+            .find(|p| p.kind == PanelKind::Workspace)
+            .unwrap();
+        assert_eq!(workspace.area.height, 20);
+    }
+
+    #[test]
+    fn a_natural_panel_too_big_for_the_window_loses_rather_than_shrinks() {
+        // Same all-or-nothing rule as `Fixed`: a rail that cannot have
+        // the rows its content needs is not a smaller rail, it is a wrong
+        // one, and an operator should see it is gone.
+        let spec = LayoutSpec::new(Node::rows(vec![Child::panel(
+            Size::Natural,
+            PanelKind::MeterRail,
+        )]));
+        let huge = |_: &PanelKind, _: Direction| 100u16;
+        assert_eq!(
+            spec.find_with(Area::new(0, 0, 40, 10), &PanelKind::MeterRail, &huge),
+            None
+        );
+    }
     use super::*;
 
     fn area() -> Area {

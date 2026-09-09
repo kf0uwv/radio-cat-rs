@@ -181,7 +181,9 @@ fn the_radios_s_unit_table_survives_the_socket() {
     let s = conn.capabilities().meters[0]
         .s_units
         .expect("the table crossed the wire");
-    assert_eq!(s.label(24), "S9+10");
+    // Raw 10 is S9+10 on this radio, measured against its own panel: raw
+    // 9 is S9 and every count above it is another ten dB.
+    assert_eq!(s.label(10), "S9+10");
 }
 
 #[test]

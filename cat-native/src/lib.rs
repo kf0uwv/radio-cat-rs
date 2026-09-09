@@ -70,7 +70,26 @@ use serde::{Deserialize, Serialize};
 
 /// Wire protocol version, sent in every [`ClientMessage::Hello`] and
 /// [`ServerMessage::Welcome`].
-pub const PROTOCOL_VERSION: u16 = 1;
+///
+/// # Bump this whenever a message's shape changes
+///
+/// A mismatch is refused at the handshake with a sentence naming both
+/// versions, which is a good error. Leaving this alone while changing a
+/// payload gets the *bad* error instead: the handshake passes, and the
+/// decode fails later somewhere inside a nested type.
+///
+/// That happened on 2026-09-09. `SUnitScale` grew from 13 thresholds to
+/// 16 so the labels could reach S9+60, and the version stayed at 1, so a
+/// console built an hour earlier connected happily and then died with
+/// `undecodable message: invalid length 16, expected 13 elements in
+/// sequence` -- a serde-internal complaint that names neither the field,
+/// the type, nor the fix, in front of an operator who had done nothing
+/// wrong. Version 2 is that change.
+///
+/// `the_capability_wire_shape_is_pinned_to_the_protocol_version` fails if
+/// the shape moves without this constant moving, so the coupling does not
+/// depend on anyone remembering it.
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Largest control payload accepted, to bound what a peer can make the
 /// other side allocate before it has proved anything.
@@ -394,6 +413,30 @@ pub struct MeterSample {
     pub raw: u16,
 }
 
+/// The settings an operator changes occasionally.
+///
+/// Polled on a slower clock than the dial: a frequency moves constantly
+/// and is worth reading several times a second, while an AF gain is worth
+/// reading every few seconds. Reading all fourteen at the fast rate would
+/// be most of a 9600-baud link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RadioLevels {
+    pub af_gain: u8,
+    pub rf_gain: u8,
+    pub squelch: u8,
+    pub mic_gain: u8,
+    pub power_pct: u8,
+    pub agc: u8,
+    pub noise_reduction: u8,
+    pub antenna: u8,
+    pub noise_blanker: bool,
+    pub preamp: bool,
+    pub attenuator: bool,
+    pub speech_processor: bool,
+    pub vox: bool,
+    pub freq_lock: bool,
+}
+
 /// What the radio is doing right now.
 ///
 /// Every field is `Option` except the ones every radio has. A radio with
@@ -416,6 +459,24 @@ pub struct RadioState {
     /// an SWR meter during receive — may be absent or read zero; which of
     /// those it does is the radio's business, not the protocol's.
     pub meters: Vec<MeterSample>,
+    /// The settings an operator changes occasionally, if the server has
+    /// read them.
+    ///
+    /// Separate from the fields above because they are polled on a
+    /// different clock: a dial moves constantly and is worth reading five
+    /// times a second, while an AF gain is worth reading every few
+    /// seconds. Fourteen commands at the fast rate would be most of a
+    /// 9600-baud link.
+    ///
+    /// `None` means nobody has read them, and a console must say so
+    /// rather than draw its struct defaults -- which is what made a
+    /// network console display `AF 200` at a radio reading `AG034`.
+    ///
+    /// `#[serde(default)]` so a console built before this field existed,
+    /// or a server that does not implement the read, still speaks the
+    /// protocol.
+    #[serde(default)]
+    pub levels: Option<RadioLevels>,
 }
 
 impl RadioState {
@@ -424,6 +485,36 @@ impl RadioState {
         self.meters.iter().find(|m| m.kind == kind).map(|m| m.raw)
     }
 }
+
+/// The interval [`MAX_FPS`] works out to.
+pub const MAX_FPS_INTERVAL: std::time::Duration =
+    std::time::Duration::from_micros(1_000_000 / MAX_FPS as u64);
+
+/// The slowest frame rate worth streaming at.
+pub const MIN_FPS: u32 = 1;
+
+/// The fastest. Past this the link is being spent on frames nobody's eye
+/// separates, and the value arrives from the network, so it is bounded.
+pub const MAX_FPS: u32 = 60;
+
+/// How often spectrum and audio frames go to a client that has not said
+/// what it can render.
+///
+/// Deliberately slower than the server's command pump, which governs how
+/// quickly a client's commands are noticed and must stay brisk.
+///
+/// At the pump rate the server pushed about 29 spectrum and 24 audio
+/// frames a second -- roughly 345 KB/s -- and a console that renders each
+/// one into a terminal cannot keep up. Measured on a TS-570D: the TUI at
+/// 56% CPU with 31 KB backed up unread in its socket, which presents as
+/// the console hanging. Ten a second is a waterfall that still reads as
+/// live and an AF scope nobody can tell apart from thirty.
+///
+/// This was the rate for *everybody* for a while, and it was the wrong
+/// one for a GPU console, where ten a second is a fall visibly stepping.
+/// There is no single number that suits both, so a client that knows what
+/// it can draw says so and gets it; this is what the rest get.
+pub const DEFAULT_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -442,6 +533,22 @@ pub enum ClientMessage {
         /// panels is an ordinary way to run.
         #[serde(default)]
         audio: bool,
+        /// How many spectrum and audio frames a second this client can
+        /// actually render, if it knows.
+        ///
+        /// The server used to push at one global rate for everybody, and
+        /// there is no rate that suits both consoles. At 29 a second a
+        /// terminal console fell behind -- measured on a TS-570D at 56%
+        /// CPU with 31 KB backed up unread in its socket, which presents
+        /// as the console hanging -- while a GPU console at 10 a second
+        /// is a waterfall visibly stepping.
+        ///
+        /// So the client says. `#[serde(default)]` leaves it `None` for a
+        /// client built before this existed, and `None` keeps the old
+        /// conservative rate, which is the right answer for a console
+        /// that has not told us what it can take.
+        #[serde(default)]
+        max_fps: Option<u8>,
     },
     Command(Command),
     Ping,
@@ -514,6 +621,8 @@ pub struct NativeSession {
     handshaken: bool,
     spectrum: bool,
     audio: bool,
+    /// What this client said it can render. See `ClientMessage::Hello`.
+    max_fps: Option<u8>,
     /// The most recent state the host published.
     ///
     /// A cache, not a source. This session does not own a radio and must
@@ -558,6 +667,7 @@ impl NativeSession {
             handshaken: false,
             spectrum: false,
             audio: false,
+            max_fps: None,
             state: None,
             devices: None,
             layout: None,
@@ -612,6 +722,24 @@ impl NativeSession {
     /// The one question the frame pump asks. `false` until a successful
     /// `Hello` says otherwise, so a client that never handshakes cannot be
     /// sent frames either.
+    /// How often this client should be sent frames.
+    ///
+    /// Clamped, because this arrives from the network: a client asking
+    /// for 0 would divide by zero and one asking for 240 would be handed
+    /// the link. Below the floor there is no point having the stream at
+    /// all; above the ceiling nothing on the other end can draw it.
+    pub fn frame_interval(&self) -> std::time::Duration {
+        match self.max_fps {
+            Some(fps) => {
+                let fps = u32::from(fps).clamp(MIN_FPS, MAX_FPS);
+                std::time::Duration::from_micros(u64::from(1_000_000 / fps))
+            }
+            // A console that has not said keeps the rate that was safe
+            // for every console before it could.
+            None => DEFAULT_FRAME_INTERVAL,
+        }
+    }
+
     pub fn wants_spectrum(&self) -> bool {
         self.handshaken && self.spectrum
     }
@@ -637,6 +765,7 @@ impl NativeSession {
                 version,
                 spectrum,
                 audio,
+                max_fps,
             } => {
                 if version != PROTOCOL_VERSION {
                     return ServerMessage::Error {
@@ -650,6 +779,7 @@ impl NativeSession {
                 // A client only gets frames if it both handshook AND asked.
                 self.spectrum = spectrum;
                 self.audio = audio;
+                self.max_fps = max_fps;
                 ServerMessage::Welcome {
                     version: PROTOCOL_VERSION,
                     capabilities: Box::new(CapabilitiesWire {
@@ -1044,6 +1174,68 @@ mod tests {
         signal: SignalSupport::None,
     };
 
+    #[test]
+    fn a_client_that_says_nothing_keeps_the_conservative_rate() {
+        // The terminal console does not ask, and must not be sped up
+        // under it: at 29 frames a second it fell behind with 31 KB
+        // backed up unread in its socket, which presents as a hang.
+        let session = handshaken(true);
+        assert_eq!(session.frame_interval(), DEFAULT_FRAME_INTERVAL);
+    }
+
+    #[test]
+    fn a_client_gets_the_rate_it_asked_for() {
+        let mut session = NativeSession::new(&RADIO);
+        session.handle(ClientMessage::Hello {
+            version: PROTOCOL_VERSION,
+            spectrum: true,
+            audio: true,
+            max_fps: Some(30),
+        });
+        let interval = session.frame_interval();
+        assert!(
+            interval <= std::time::Duration::from_millis(34)
+                && interval >= std::time::Duration::from_millis(33),
+            "30 fps is a ~33 ms interval, got {interval:?}"
+        );
+    }
+
+    #[test]
+    fn an_absurd_rate_is_clamped_rather_than_believed() {
+        // This arrives from the network. Zero would divide by zero and
+        // 255 would hand a client the link.
+        for (asked, expect_at_least, expect_at_most) in [
+            (0u8, MAX_FPS_INTERVAL, DEFAULT_FRAME_INTERVAL * 10),
+            (255u8, MAX_FPS_INTERVAL, MAX_FPS_INTERVAL),
+        ] {
+            let mut session = NativeSession::new(&RADIO);
+            session.handle(ClientMessage::Hello {
+                version: PROTOCOL_VERSION,
+                spectrum: true,
+                audio: false,
+                max_fps: Some(asked),
+            });
+            let interval = session.frame_interval();
+            assert!(
+                interval >= expect_at_least && interval <= expect_at_most,
+                "{asked} fps clamped to {interval:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rate_is_only_taken_from_a_handshake_that_matched_versions() {
+        // A rejected Hello must not leave its numbers behind.
+        let mut session = NativeSession::new(&RADIO);
+        session.handle(ClientMessage::Hello {
+            version: PROTOCOL_VERSION + 1,
+            spectrum: true,
+            audio: true,
+            max_fps: Some(60),
+        });
+        assert_eq!(session.frame_interval(), DEFAULT_FRAME_INTERVAL);
+    }
+
     fn handshaken(spectrum: bool) -> NativeSession {
         handshaken_with(spectrum, false)
     }
@@ -1054,6 +1246,7 @@ mod tests {
             version: PROTOCOL_VERSION,
             spectrum,
             audio,
+            max_fps: None,
         });
         session
     }
@@ -1118,16 +1311,17 @@ mod tests {
         let scale = SUnitScale::TS570D;
         let wire = MeterDescriptorWire {
             kind: MeterKind::S,
-            raw_range: RawRange::new(0, 30),
+            raw_range: RawRange::new(0, 15),
             active_on_transmit: false,
             s_units: Some(scale),
         };
         let json = serde_json::to_string(&wire).unwrap();
         let back: MeterDescriptorWire = serde_json::from_str(&json).unwrap();
         assert_eq!(back, wire);
-        // And still labels raw 24 the way the radio does, not the way a
-        // generic formula would.
-        assert_eq!(back.s_units.unwrap().label(24), "S9+10");
+        // And still labels raw 10 the way the radio does, not the way a
+        // generic formula would. Measured against the panel: raw 9 is S9
+        // and every count above it is another ten dB.
+        assert_eq!(back.s_units.unwrap().label(10), "S9+10");
     }
 
     #[test]
@@ -1137,6 +1331,7 @@ mod tests {
             version: PROTOCOL_VERSION,
             spectrum: false,
             audio: false,
+            max_fps: None,
         });
 
         let ServerMessage::Welcome {
@@ -1164,6 +1359,7 @@ mod tests {
             version: PROTOCOL_VERSION + 1,
             spectrum: true,
             audio: false,
+            max_fps: None,
         });
         assert!(matches!(
             reply,
@@ -1272,6 +1468,7 @@ mod tests {
             version: PROTOCOL_VERSION,
             spectrum: false,
             audio: false,
+            max_fps: None,
         });
 
         for command in [
@@ -1354,6 +1551,7 @@ mod tests {
                 kind: MeterKind::S,
                 raw: 24,
             }],
+            levels: None,
         });
         assert_eq!(
             session.handle(ClientMessage::Command(Command::ReadMeter {
@@ -1536,6 +1734,7 @@ mod tests {
             version: PROTOCOL_VERSION,
             spectrum: true,
             audio: false,
+            max_fps: None,
         });
         let ServerMessage::Welcome { capabilities, .. } = reply else {
             panic!("expected Welcome")
@@ -1559,6 +1758,7 @@ mod tests {
             version: PROTOCOL_VERSION,
             spectrum: true,
             audio: false,
+            max_fps: None,
         });
         let ServerMessage::Welcome { capabilities, .. } = reply else {
             panic!("expected Welcome")
@@ -1578,5 +1778,84 @@ mod tests {
         assert_eq!(back, wire);
         assert_eq!(back.signal, RADIO.signal);
         assert_eq!(back.filters.widths_hz, Some(vec![500, 2_400]));
+    }
+}
+
+/// The wire shape, pinned so it cannot change without somebody deciding to.
+///
+/// These are not tests of behaviour. They exist because a wire format has
+/// two ends, and the one that broke on 2026-09-09 was not in this repo:
+/// a console binary an hour older than the server connected, passed the
+/// handshake, and then died on `invalid length 16, expected 13 elements
+/// in sequence` -- serde complaining from inside a nested type, naming
+/// neither the field nor the fix, at an operator who had changed nothing.
+///
+/// The handshake already refuses a version mismatch with a good sentence
+/// -- `a_version_mismatch_is_refused_rather_than_guessed_at` covers that,
+/// and it was working. The gap was that nothing tied *the shape* to *the
+/// version*, so a payload could change while the version sat still, and
+/// the refusal never fired. That is what these close.
+#[cfg(test)]
+mod wire_shape_is_pinned {
+    use super::*;
+
+    /// Serialize the stub radio's capabilities the way the wire does.
+    fn wire_json() -> String {
+        let wire = CapabilitiesWire::from(&crate::testing::STUB_RADIO);
+        serde_json::to_string(&wire).expect("capabilities serialize")
+    }
+
+    #[test]
+    fn the_capability_wire_shape_is_pinned_to_the_protocol_version() {
+        // A change to any field name, field order, enum spelling or array
+        // width inside `CapabilitiesWire` moves this string. That is the
+        // point: the diff is the notification.
+        //
+        // WHEN THIS FAILS, it is telling you a peer built against the old
+        // shape can no longer decode this one. Do both of these:
+        //
+        //   1. bump `PROTOCOL_VERSION`, so the mismatch is refused at the
+        //      handshake with a sentence instead of surfacing later as a
+        //      serde error inside a nested type;
+        //   2. update the pin below to the new string.
+        //
+        // Doing only (2) restores the exact failure this exists to stop.
+        let pinned_version = 2;
+        assert_eq!(
+            PROTOCOL_VERSION, pinned_version,
+            "PROTOCOL_VERSION changed; update the pinned shape below in the \
+             same commit so the two cannot drift apart"
+        );
+
+        let json = wire_json();
+
+        // The specific field that broke it, called out rather than left
+        // for someone to find in a 2 kB string: `SUnitScale` is a
+        // fixed-width array on the wire, so its width is part of the
+        // format. 13 -> 16 is what version 2 is.
+        let thresholds = json
+            .split("\"thresholds\":[")
+            .nth(1)
+            .expect("the S-unit table is on the wire")
+            .split(']')
+            .next()
+            .expect("the table is a JSON array");
+        assert_eq!(
+            thresholds.split(',').count(),
+            16,
+            "the S-unit table changed width; a console built against the \
+             old width decodes this as `invalid length N, expected M \
+             elements in sequence` -- bump PROTOCOL_VERSION"
+        );
+    }
+
+    #[test]
+    fn a_capability_payload_round_trips_through_its_own_format() {
+        // The pin above catches a change. This catches the change being
+        // wrong: whatever the shape is, both directions must agree on it.
+        let wire = CapabilitiesWire::from(&crate::testing::STUB_RADIO);
+        let json = serde_json::to_string(&wire).expect("serialize");
+        let back: CapabilitiesWire = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(wire, back, "the wire format does not round trip");
     }
 }

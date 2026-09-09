@@ -193,44 +193,60 @@ mod tests {
 mod s_unit_scale_tests {
     use super::*;
 
-    /// The TS-570D TUI's table, transcribed from `ui/src/layout.rs` as it
-    /// stood before the migration. This is the reference an operator has
-    /// actually been reading.
-    fn ts570d_as_shipped(raw: u16) -> &'static str {
+    /// The TS-570D's table **as measured against its own panel**.
+    ///
+    /// One raw count per S-unit to S9, ten dB a count above it. An
+    /// operator read the panel on 2026-09-08 while the same signal was
+    /// sampled over CAT: raw 9 was S9, raw 10 was S9+10, raw 11 was
+    /// S9+20.
+    ///
+    /// This used to be the table the TUI shipped with, transcribed, on the
+    /// grounds that ADR 0011 rev 4 sets "the operator sees no change" as
+    /// the bar for migrating onto shared widgets. That bar was being met
+    /// by preserving a mistake: the shipped table put S9 at raw 20 on a
+    /// meter that stops at 15, so it read about five S-units low and
+    /// collapsed raw 9 and 10 onto one label. The operator *should* see a
+    /// change, and now does.
+    fn ts570d_as_measured(raw: u16) -> &'static str {
         match raw {
-            0..=2 => "S0",
-            3..=4 => "S1",
-            5..=6 => "S2",
-            7..=8 => "S3",
-            9..=10 => "S4",
-            11..=12 => "S5",
-            13..=14 => "S6",
-            15..=16 => "S7",
-            17..=18 => "S8",
-            19..=20 => "S9",
-            21..=24 => "S9+10",
-            25..=28 => "S9+20",
-            _ => "S9+30",
+            0 => "S0",
+            1 => "S1",
+            2 => "S2",
+            3 => "S3",
+            4 => "S4",
+            5 => "S5",
+            6 => "S6",
+            7 => "S7",
+            8 => "S8",
+            9 => "S9",
+            10 => "S9+10",
+            11 => "S9+20",
+            12 => "S9+30",
+            13 => "S9+40",
+            14 => "S9+50",
+            // Raw 15 is the top of the meter; anything above it is out of
+            // range and pegs at the same label rather than wrapping.
+            _ => "S9+60",
         }
     }
 
     #[test]
-    fn the_ts570d_scale_reproduces_its_shipped_table_exactly() {
-        // ADR 0011 rev 4's acceptance bar for migrating an app onto shared
-        // widgets is that the operator sees no change. This is that bar,
-        // as a test, across every raw value the meter can report.
+    fn the_ts570d_scale_reproduces_the_table_measured_from_the_radio() {
+        // Across every raw value the meter can report, and past it: the
+        // radio's documented range stops at 15, and a reading above that
+        // should still land somewhere sensible rather than panicking.
         for raw in 0..=40u16 {
             assert_eq!(
                 SUnitScale::TS570D.label(raw),
-                ts570d_as_shipped(raw),
-                "raw {raw} would have changed on screen"
+                ts570d_as_measured(raw),
+                "raw {raw} disagrees with the panel"
             );
         }
     }
 
     #[test]
     fn the_generic_formula_does_not_reproduce_it_and_that_is_the_point() {
-        // EIGHT of thirty-one raw values differ, and the count itself has
+        // TEN of the sixteen raw values differ, and the count itself has
         // a lesson in it. A scratch model of this comparison written in
         // Python reported seven -- it missed raw 10, because Python's
         // round() breaks ties to even and Rust's f32::round breaks them
@@ -242,16 +258,20 @@ mod s_unit_scale_tests {
         // them, and why SUnitScale exists at all: an S-meter's law is a
         // property of its circuit, and a formula that fits one radio is
         // not evidence about another.
-        let range = RawRange::new(0, 30);
-        let differing: Vec<u16> = (0..=30u16)
-            .filter(|r| format_smeter_label(*r, range) != ts570d_as_shipped(*r))
+        let range = RawRange::new(0, 15);
+        let differing: Vec<u16> = (0..=15u16)
+            .filter(|r| format_smeter_label(*r, range) != ts570d_as_measured(*r))
             .collect();
-        assert_eq!(differing, vec![2, 4, 6, 8, 10, 24, 27, 28]);
+        // Every raw value from 6 upward, which is where every signal an
+        // operator cares about lands. A generic formula spreads S0..S9+30
+        // evenly across the range; this radio puts one S-unit per count to
+        // S9 and ten dB a count above it, so the two curves never rejoin.
+        assert_eq!(differing, vec![6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     }
 
     #[test]
     fn a_reading_past_the_last_threshold_pegs_rather_than_wrapping() {
-        assert_eq!(SUnitScale::TS570D.label(u16::MAX), "S9+30");
+        assert_eq!(SUnitScale::TS570D.label(u16::MAX), "S9+60");
     }
 
     #[test]
@@ -273,7 +293,24 @@ mod s_unit_scale_tests {
         // Losing the short-slice form must not lose the capability: a
         // radio that does not resolve every unit repeats a threshold and
         // the units in between simply never appear.
-        let coarse = SUnitScale::new([10, 10, 10, 10, 10, 10, 10, 10, 10, 20, 20, 20, u16::MAX]);
+        let coarse = SUnitScale::new([
+            10,
+            10,
+            10,
+            10,
+            10,
+            10,
+            10,
+            10,
+            10,
+            20,
+            20,
+            20,
+            u16::MAX,
+            u16::MAX,
+            u16::MAX,
+            u16::MAX,
+        ]);
         assert_eq!(coarse.label(5), "S0");
         assert_eq!(coarse.label(15), "S9");
         assert_eq!(coarse.label(999), "S9+30");
@@ -287,6 +324,13 @@ mod s_unit_scale_tests {
         let range = RawRange::new(0, 255);
         assert_eq!(format_smeter_label_default(0, range), "S0");
         assert_eq!(format_smeter_label_default(170, range), "S9");
+
+        // `S_UNIT_LABELS` runs to S9+60, and this deliberately does not:
+        // where the top of a radio's meter actually falls is a property of
+        // that radio, and the fallback exists precisely for radios that
+        // have not told us. Claiming S9+60 at full scale would be a guess
+        // that reads sixty dB high on a meter that stops at S9+30, which
+        // is worse than the conservative end of the same uncertainty.
         assert_eq!(format_smeter_label_default(255, range), "S9+30");
     }
 }

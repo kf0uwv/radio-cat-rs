@@ -188,3 +188,144 @@ untouched — they were never the thing being de-duplicated.
 
 No behavior change beyond what the type-level adaptation forces. Single
 task, report back before anything further.
+
+## Task: broker jobs that carry a caller-supplied closure (2026-09-07)
+
+### Why
+rigctl `T 1` keys via CAT `TX;` (`ts570d/radio/src/ts570d.rs:277`). On a
+station wired for DTR PTT that is the wrong line, and the two are not
+equivalent — ACC2 pin 9 (PKS) mutes the mic while keyed, CAT `TX;` does not.
+The DTR capability exists (`radio::PttLine`, ADR 0010) but is wired only
+into the TUI path; server mode and rigctl never see it.
+
+### Why it cannot simply be "add a DTR job"
+`BrokerCatSession` holds a `BrokerHandle` and a `ClientId` and **no
+transport** (`broker_session.rs:48-51`) — by design, because the broker owns
+the session. Modem lines live on the transport. And `BrokerHandle` is
+non-generic (`sender: Sender<Job>`, `broker.rs:447-450`) while
+`BrokerWorker<C, S, F>` is generic over the session type, so a job cannot
+name `&mut S` without making the handle generic and infecting every listener.
+
+### Design (operator's, and it is the right one)
+**The job carries an anonymous function supplied by the radio software.**
+The broker does not learn about DTR, modem lines, or any other capability —
+it stays protocol- and transport-agnostic, which is its whole point. Its
+only contribution is the thing nobody else can provide: running that closure
+**inside the single ordered worker**, serialised against all CAT traffic on
+the same wire.
+
+    pub enum Job {
+        Wire { client_id, request_id, payload, reply },   // as today
+        Task { run: Box<dyn FnOnce() -> Vec<u8>>, reply }, // new
+    }
+
+`Job` is not generic, so a boxed `FnOnce` with no arguments fits without
+touching `BrokerHandle`'s type. The closure is **self-contained**: the radio
+software captures whatever it needs when it wires the server up, before the
+session is moved into the broker.
+
+### Consequences to accept deliberately
+- The closure captures a modem-line handle whose lifetime is no longer tied
+  to the session the broker owns. For the serial port that means the raw fd.
+  **This must be justified or guarded** — a closure outliving the port is a
+  use-after-close. Prefer capturing something that keeps the fd alive.
+- The broker cannot inspect or validate the closure. That is the trade for
+  keeping it agnostic; the radio software owns correctness of its own task.
+- Serialisation is the guarantee being bought, and it is exactly what the
+  DTR case needs: asserting PTT must not interleave with a CAT exchange
+  mid-frame.
+
+### Verification
+- Unit: a task job runs on the worker, in submission order relative to wire
+  jobs, and its reply reaches the submitter (oneshot, no misrouting).
+- Unit: a panicking task does not wedge the worker.
+- Hardware: rigctl `T 1` asserts DTR and the radio keys; `T 0` releases.
+  Cross-check `IF` bit 26. Under the proven TX interlock, on the dummy load,
+  at PC005.
+- Regression: all four consumers green (859 / 608 / 1147 / 76).
+
+### Status: PLAN ONLY — awaiting review before implementation.
+
+## v2 — post adversarial review. My no-argument closure is REJECTED.
+
+### The signature was wrong, and the fix is a pattern already in the trait
+I argued a closure could not take the session because `Job`/`BrokerHandle`
+are non-generic while `BrokerWorker<C,S,F>` is generic. That reasoning is
+about `&mut S`. It does not apply to a **trait object**, which is not
+generic:
+
+    type TaskFn = Box<dyn for<'a> FnOnce(Option<&'a dyn ModemControlLines>) -> Result<Vec<u8>, String>>;
+
+All five `ModemControlLines` methods take `&self`
+(`cat-transport-core/src/modem.rs:39-43`), so `&dyn` suffices. The worker
+produces the borrow via a **defaulted `CatSession` method**:
+
+    fn modem_lines(&self) -> Option<&dyn ModemControlLines> { None }
+
+overridden by `SerialCatSession`, which already carries the blanket
+`ModemControlLines` impl (`cat-transport-serial/src/session.rs:122-146`).
+
+**This is the `flush_rx` pattern** (`cat-transport-core/src/session.rs:88`) —
+a defaulted no-op overridden by the one implementation that can do it. Not a
+new mechanism; the one already chosen for exactly this shape.
+
+It **eliminates the lifetime problem I flagged as least-trusted**: the borrow
+is made by the worker from the session it owns, for the duration of the call.
+The closure never holds it, so it cannot outlive it. No `Arc`, no `dup`, no
+fd smuggled past the broker.
+
+Also killed: my option (D), "return an error rather than touch a closed fd".
+It is unimplementable — `fcntl(F_GETFD)` succeeds on a *reused* fd. And the
+raw-fd option was worse than use-after-close: this process opens sound cards,
+an RTL-SDR and TCP sockets, so a reused fd could mean `TIOCMSET` asserting
+DTR **on the wrong device**.
+
+### Verified myself, and one is worse than the review assumed
+
+- **`panic = "abort"` is set** (`ts570d/Cargo.toml`, `[profile.release]`).
+  So `catch_unwind` is **inert in the shipping binary**, and my planned test
+  ("a panicking task does not wedge the worker") would pass in dev and prove
+  nothing about release. If that test is written, its comment must say so.
+  Design for not panicking: closure returns `Result`, worker encodes failure.
+- **`stty -F /dev/ttyUSB0 -a` reports `-hupcl` — HUPCL is OFF.** By the flag,
+  an abort would close the fd *without* dropping DTR, leaving the transmitter
+  keyed with nothing left running to release it.
+  **But observation contradicts the flag**: DTR demonstrably dropped on close
+  twice this session (killing the server un-keyed the radio; a raw-open drain
+  script un-keyed it on close). `ftdi_sio` drops DTR on last close regardless
+  of HUPCL. **Conclusion: it happens to be safe here, for a driver-specific
+  reason, and must not be relied on.** The failsafes below are the answer.
+
+### Key through the queue; un-key BYPASSES it
+Serialising the assert is right — don't key before the command that set the
+mode has landed. Serialising the release is wrong, and `ptt_line.rs:126-131`
+already says so: "the key that unkeys the transmitter must not have to wait
+for that." A queued un-key could be delayed by seconds under pump load, or by
+a 2 s read timeout / 5 s broker timeout — while transmitting.
+
+Justification for splitting them: `TIOCMSET` does not touch the byte stream,
+so a line change cannot corrupt a CAT frame in flight. Un-key therefore has
+no ordering requirement; you always want it now.
+
+### Failsafes — MISSING from v1, and the most important part
+Nothing un-keyed on client disconnect. A rigctl client sends `T 1` and its
+TCP connection drops: **the radio stays keyed indefinitely.** Required:
+1. PTT de-asserts when the submitting client's connection closes.
+2. An absolute hard timeout (120 s) that de-asserts regardless of client state.
+
+This is precisely the accident the campaign exists to prevent.
+
+### Reject `PttLineKind::Rts` for this radio
+RTS is the TS-570D's receive-enable; the radio withholds CAT responses while
+it is low. A task dropping RTS makes CAT go silent — and would present as
+responses not arriving, i.e. **indistinguishable from the crossing bug that
+cost four theories**. Reject at the type or config level.
+
+### Smaller
+- Keep `client_id`/`request_id` on the Task variant — "which client keyed the
+  radio, and when" is exactly the observability this job wants.
+- Return `Result<Vec<u8>, String>`; worker encodes the `b"ERR "` convention
+  (`broker_session.rs:73-79`) so callers cannot misparse a task result as CAT.
+- Verification must add: `T 0` **while a CAT read is in flight**; wall-clock
+  un-key latency under pump load with a stated maximum; client disconnect
+  while keyed.

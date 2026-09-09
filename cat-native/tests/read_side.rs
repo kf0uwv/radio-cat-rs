@@ -149,6 +149,7 @@ impl RadioHost for Dummy {
             if_shift_hz: Some(0),
             filter_width_hz: None,
             meters,
+            levels: None,
         }
     }
 
@@ -317,6 +318,7 @@ fn state_read_before_the_radio_has_said_anything_is_not_ready_rather_than_zero()
         version: cat_native::PROTOCOL_VERSION,
         spectrum: false,
         audio: false,
+        max_fps: None,
     });
     match session.handle(cat_native::ClientMessage::Command(Command::ReadState)) {
         ServerMessage::Error { code, .. } => assert_eq!(code, ErrorCode::NotReady),

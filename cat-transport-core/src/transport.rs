@@ -49,4 +49,29 @@ pub trait Transport {
     /// Discard any unread bytes in the receive buffer.
     /// Default implementation is a no-op (e.g. for in-memory fakes).
     fn flush_rx(&mut self) {}
+
+    /// This transport's modem-control lines, if it has any.
+    ///
+    /// Defaulted to `None`, like [`Self::flush_rx`]: a socket has no RTS/DTR.
+    /// `SerialPort` overrides it. Lets a session expose lines it does not
+    /// itself implement, without bounding every generic wrapper on
+    /// `ModemControlLines`.
+    fn modem_lines(&self) -> Option<&dyn crate::ModemControlLines> {
+        None
+    }
+
+    /// Discard anything the radio is still sending, waiting until the line
+    /// goes quiet rather than clearing whatever happens to be buffered at
+    /// this instant.
+    ///
+    /// [`Self::flush_rx`] is `tcflush`-shaped: it drops what is queued right
+    /// now and cannot touch a frame still arriving. Using it to clear an
+    /// unread response therefore *creates* a partial frame as often as it
+    /// removes a whole one — measured on a TS-570D as `IF;` answering
+    /// `'000      000000 0002000008 ;'`, the tail of a frame whose head had
+    /// been flushed away mid-arrival.
+    ///
+    /// Default is a no-op, so transports with no receive buffer of their own
+    /// (and test fakes) need not implement it.
+    async fn drain(&mut self) {}
 }

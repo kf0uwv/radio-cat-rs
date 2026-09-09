@@ -79,7 +79,7 @@ pub mod worker_windows;
 #[cfg(test)]
 mod test_fixtures;
 
-pub use broker::{Broker, DispatchError, DispatchOutcome};
+pub use broker::{Broker, DispatchError, DispatchOutcome, TaskFn, Work};
 pub use broker_session::BrokerCatSession;
 pub use registry::{ClientId, ClientRegistry};
 

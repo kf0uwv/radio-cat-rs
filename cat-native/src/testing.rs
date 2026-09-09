@@ -155,6 +155,7 @@ impl RadioHost for StubHost {
             if_shift_hz: Some(0),
             filter_width_hz: None,
             meters: Vec::new(),
+            levels: None,
         }
     }
 

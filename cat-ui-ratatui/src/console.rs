@@ -118,6 +118,16 @@ pub struct ConsoleView {
     pub cat_pending: usize,
     /// Newest first. Empty until a spectrum source is attached.
     pub spectrum: Vec<SpectrumFrame>,
+    /// Whether the tap is still feeding, which is not the same question
+    /// as whether `spectrum` has anything in it.
+    ///
+    /// It held frames from the first one ever received until the console
+    /// exited, so a dongle pulled out of its socket left the SOURCE tab
+    /// reporting the tap's centre and span in the streaming colour over a
+    /// waterfall that had stopped scrolling. The AUDIO row beside it has
+    /// always drawn the distinction -- "configured, no stream" is not
+    /// "nothing wired" -- and this is the same distinction for the tap.
+    pub spectrum_live: bool,
     pub audio: AudioState,
     pub af_scope: Option<AudioScopeFrame>,
     pub af_spectrum: Option<AudioSpectrumFrame>,
@@ -140,6 +150,7 @@ impl Default for ConsoleView {
             pending_vfo_hz: None,
             cat_pending: 0,
             spectrum: Vec::new(),
+            spectrum_live: false,
             // The design's default, and the honest one: this station has an
             // audio path wired and no client transport attached to it yet.
             audio: AudioState::Configured,
@@ -238,6 +249,17 @@ pub fn draw(
     view: &ConsoleView,
     caps: &cat_native::CapabilitiesWire,
 ) -> Rect {
+    // Keyed state first, and across the full width. It used to be one
+    // styled word in a row of other words -- reported from the bench as
+    // not obvious enough, and that is the right complaint: a transmitting
+    // radio is not a field on a form, it is the single fact that changes
+    // what every other control on the screen will do. A whole row costs
+    // one line of a panel that has plenty and cannot be confused with
+    // anything else on the screen.
+    let area = match tx_banner(f, area, radio) {
+        Some(rest) => rest,
+        None => area,
+    };
     match &caps.layout {
         Some(spec) => draw_layout(f, area, radio, view, caps, spec),
         // No layout published. An older server has not declined one, it
@@ -253,6 +275,46 @@ pub fn draw(
             body
         }
     }
+}
+
+/// A full-width bar while the radio is keyed, and nothing when it is not.
+///
+/// Returns the area left for everything else, or `None` when there is no
+/// bar to draw. Deliberately takes a row rather than overlaying: an
+/// overlay hides whatever is under it, and the thing under it during a
+/// transmission is usually the meters an operator is transmitting in
+/// order to watch.
+fn tx_banner(f: &mut Frame, area: Rect, radio: &RadioDisplay) -> Option<Rect> {
+    if !radio.tx || area.height < 3 {
+        return None;
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(area);
+    let width = rows[0].width as usize;
+    let label = "  ◆ ◆ ◆   T R A N S M I T T I N G   ◆ ◆ ◆  ";
+    // Centred by padding rather than by an alignment, so the red runs the
+    // whole width instead of only under the text.
+    let pad = width.saturating_sub(label.chars().count()) / 2;
+    let banner = format!(
+        "{:pad$}{label}{:>rest$}",
+        "",
+        "",
+        pad = pad,
+        rest = width.saturating_sub(pad + label.chars().count())
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            banner,
+            Style::default()
+                .bg(Color::Red)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        rows[0],
+    );
+    Some(rows[1])
 }
 
 /// Draw the arrangement the radio's own server asked for.
@@ -280,8 +342,37 @@ fn draw_layout(
         mode: !spec.root.places(&PanelKind::ModeBar),
     };
 
+    // The density closure captures the radio's capabilities, because how
+    // tall a meter rail needs to be is a fact about the radio -- how many
+    // meters it declares -- as much as about the renderer.
+    let density =
+        |kind: &cat_layout::PanelKind, dir: cat_layout::Direction| natural(kind, dir, caps);
+    let placements = spec.resolve_with(to_area(area), &density);
+
+    // A layout that places a Spectrum panel AND a Workspace draws the
+    // spectrum twice while the SPECTRUM tab is selected, because that
+    // tab's workspace content *is* the spectrum. Two identical waterfalls,
+    // each half the height they could be.
+    //
+    // Rather than blank the workspace -- which would leave a hole where
+    // the operator is looking -- the spectrum takes both. Same principle
+    // as `quick_rows` above: what the layout draws elsewhere must not be
+    // repeated, and here the panel and the tab are the same picture.
+    let spectrum_rect = placements
+        .iter()
+        .find(|p| p.kind == PanelKind::Spectrum)
+        .map(|p| to_rect(p.area));
+    let workspace_rect = placements
+        .iter()
+        .find(|p| p.kind == PanelKind::Workspace)
+        .map(|p| to_rect(p.area));
+    let merged = match (view.tab == Tab::Spectrum, spectrum_rect, workspace_rect) {
+        (true, Some(sp), Some(ws)) => Some(union(sp, ws)),
+        _ => None,
+    };
+
     let mut body = area;
-    for placement in spec.resolve(to_area(area)) {
+    for placement in placements {
         let r = to_rect(placement.area);
         match placement.kind {
             PanelKind::Readout => {
@@ -299,11 +390,15 @@ fn draw_layout(
             PanelKind::QuickBar => draw_quick_settings(f, r, radio, caps, quick_rows),
             PanelKind::MeterRail => draw_meters(f, r, radio, caps),
             PanelKind::LevelsRail => draw_reference(f, r, radio),
-            PanelKind::Spectrum => draw_spectrum(f, r, view),
+            // When merged, the spectrum is drawn once over both rects.
+            PanelKind::Spectrum => draw_spectrum(f, merged.unwrap_or(r), view),
             PanelKind::AfScope => draw_af_scope(f, r, view),
             PanelKind::AfFft => draw_af_fft(f, r, view),
             PanelKind::Workspace => {
-                draw_tab_content(f, r, radio, view);
+                // Already covered by the merged spectrum above.
+                if merged.is_none() {
+                    draw_tab_content(f, r, radio, view);
+                }
                 body = r;
             }
             PanelKind::Status => draw_status(f, r, radio, view),
@@ -322,6 +417,18 @@ fn draw_layout(
         }
     }
     body
+}
+
+/// The smallest rect containing both.
+///
+/// Used only for adjacent panels a layout stacked, so this is a merge
+/// rather than an approximation.
+fn union(a: Rect, b: Rect) -> Rect {
+    let x = a.x.min(b.x);
+    let y = a.y.min(b.y);
+    let right = (a.x + a.width).max(b.x + b.width);
+    let bottom = (a.y + a.height).max(b.y + b.height);
+    Rect::new(x, y, right - x, bottom - y)
 }
 
 fn to_area(r: Rect) -> cat_layout::Area {
@@ -463,18 +570,56 @@ fn draw_meter_bars(
     // S-unit table, an FT-991A reports 0-255 with no calibration the
     // manual gives, and a bar drawn to the wrong one is wrong in a way
     // that looks entirely plausible.
-    let s = MeterReading::from_wire(&caps.meters, MeterKind::S, radio.smeter);
-    let meters: Vec<(&str, Option<MeterReading>, bool)> = vec![
-        ("S", s, !radio.tx),
-        ("PO", None, radio.tx),
-        ("SWR", None, radio.tx),
-        ("ALC", None, radio.tx),
-    ];
+    //
+    // The *list* comes from the radio too, and used to not. It was four
+    // literals -- S, PO, SWR, ALC -- which is a TS-570D's meter set named
+    // in the source, directly beneath a comment saying not to do that. An
+    // FT-991A declares five, adding `ID`, and the fifth was silently not
+    // drawn: a meter that is absent from a rail looks exactly like a
+    // radio that does not have one.
+    let labels: Vec<String> = caps
+        .meters
+        .iter()
+        .map(|m| format!("{:?}", m.kind).to_uppercase())
+        .collect();
+    let meters: Vec<(&str, Option<MeterReading>, bool)> = caps
+        .meters
+        .iter()
+        .zip(&labels)
+        .map(|(m, label)| {
+            // The reading belongs to whichever meter it was taken from,
+            // which on this family is not always `S`: `SM;` answers with
+            // the power meter while the radio is keyed, and `RM;` answers
+            // with a second meter at the same moment. Drawing everything
+            // on the S row put a power level behind an S-unit scale.
+            let raw = if m.kind == radio.meter_kind {
+                Some(radio.smeter)
+            } else {
+                radio
+                    .meters
+                    .iter()
+                    .find(|s| s.kind == m.kind)
+                    .map(|s| s.raw)
+            };
+            let reading = raw.and_then(|raw| MeterReading::from_wire(&caps.meters, m.kind, raw));
+            // A TX meter during receive keeps its row, dimmed.
+            let active = if m.active_on_transmit {
+                radio.tx
+            } else {
+                !radio.tx
+            };
+            (label.as_str(), reading, active)
+        })
+        .collect();
+    // Wide enough for the longest label this radio has, plus a space --
+    // `COMP` and `VDD` are longer than anything a TS-570D declares, and a
+    // fixed four would run the bar into the label.
+    let label_width = labels.iter().map(|l| l.len()).max().unwrap_or(3) as u16 + 1;
     meter_rail(
         &meters,
         area,
         f.buffer_mut(),
-        4,
+        label_width,
         MeterStyles {
             active: Style::default().fg(Color::White),
             inactive: Style::default().fg(DIM),
@@ -482,6 +627,38 @@ fn draw_meter_bars(
             empty: DIM,
         },
     );
+}
+
+/// What this console needs for a panel, in cells. See
+/// [`cat_layout::Size::Natural`].
+///
+/// The meter rail is one row per meter the **radio** declares, plus one
+/// for the link line. A constant would be wrong twice over. The GPU
+/// console draws the same panel in about twelve cells, because it spends
+/// a label row and a bar on each meter -- and a TS-570D declares four
+/// meters where an FT-991A declares five. Either mistake shows as a meter
+/// that is simply not there, which looks like a radio that does not have
+/// one.
+///
+/// It was briefly a constant four, and that is exactly what it would have
+/// done to the FT-991A's `ID` meter.
+pub fn natural(
+    kind: &cat_layout::PanelKind,
+    direction: cat_layout::Direction,
+    caps: &cat_native::CapabilitiesWire,
+) -> u16 {
+    match (kind, direction) {
+        (cat_layout::PanelKind::MeterRail, cat_layout::Direction::Rows) => meter_rows(caps) + 1,
+        _ => cat_layout::default_natural(kind, direction),
+    }
+}
+
+/// Rows the bars themselves need: one per meter this radio declares.
+///
+/// At least one, so a radio declaring none still puts its link line
+/// somewhere sensible rather than collapsing the panel.
+fn meter_rows(caps: &cat_native::CapabilitiesWire) -> u16 {
+    (caps.meters.len() as u16).max(1)
 }
 
 fn draw_meters(
@@ -493,9 +670,32 @@ fn draw_meters(
     if area.width == 0 || area.height == 0 {
         return;
     }
+    // The same one-column margin `draw_rail` keeps, and for the same
+    // reason: 22 / 72 / 26 is the design's split and it uses the full
+    // width, so a gutter cannot come out of the content pane. Without it
+    // a full-scale meter bar runs straight into whatever the layout put
+    // in the next column -- on this radio the S-meter's own "S8" ended up
+    // touching the spectrum panel's first character, reading as `S8NO
+    // SPECTRUM SOURCE`.
+    let area = Rect {
+        width: area.width.saturating_sub(1),
+        ..area
+    };
+    if area.width == 0 {
+        return;
+    }
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        // The link line sits directly beneath the bars, and any surplus
+        // falls below both. It used to be `Min(1)` then `Length(1)`,
+        // which pinned the link line to the *bottom* of whatever the
+        // layout allotted -- ten rows adrift from the meters it is
+        // reporting on.
+        .constraints([
+            Constraint::Length(meter_rows(caps)),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
         .split(area);
     draw_meter_bars(f, rows[0], radio, caps);
     let pending = if radio.connected {
@@ -566,7 +766,7 @@ fn draw_content(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // tab bar
-            Constraint::Length(2), // readout, with the pending grammar
+            Constraint::Length(4), // readout: three-row dial + status
             Constraint::Length(6), // quick settings: BAND, MODE, 2x ribbon
             Constraint::Min(0),    // tab content
         ])
@@ -600,9 +800,33 @@ fn draw_tab_bar(f: &mut Frame, area: Rect, view: &ConsoleView) {
 }
 
 fn draw_readout(f: &mut Frame, area: Rect, radio: &RadioDisplay, view: &ConsoleView) {
+    // Transmitting is painted across the whole readout, not tucked into a
+    // two-character label between MODE and VFO. An operator has to be able
+    // to tell at a glance, from across the room, whether the radio is on
+    // the air -- it is the one piece of state with consequences outside
+    // the room.
+    if radio.tx {
+        let banner = Style::default()
+            .bg(Color::Red)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
+        for y in area.y..area.y + area.height {
+            f.buffer_mut()
+                .set_string(area.x, y, " ".repeat(area.width as usize), banner);
+        }
+    }
+
+    let big = area.height >= (crate::bigdigits::HEIGHT as u16 + 1);
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .constraints(if big {
+            [
+                Constraint::Length(crate::bigdigits::HEIGHT as u16),
+                Constraint::Length(1),
+            ]
+        } else {
+            [Constraint::Length(1), Constraint::Length(1)]
+        })
         .split(area);
 
     let hz = if radio.connected {
@@ -611,18 +835,60 @@ fn draw_readout(f: &mut Frame, area: Rect, radio: &RadioDisplay, view: &ConsoleV
         // Not zero, and not the last value pretending to be current.
         None
     };
-    f.render_widget(
-        Paragraph::new(vfo_readout(
-            hz,
-            view.pending_vfo_hz,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-            Style::default().fg(Color::Cyan),
-            Style::default().fg(DIM),
-        )),
-        rows[0],
-    );
+
+    let confirmed = if radio.tx {
+        Style::default()
+            .bg(Color::Red)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    };
+
+    if let (true, Some(hz), None) = (big, hz, view.pending_vfo_hz) {
+        // Three rows, so the dial is the largest thing on the panel --
+        // which is where every physical radio puts it.
+        let text = cat_ui::format::format_hz(hz);
+        let numeric: String = text
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        let glyphs = crate::bigdigits::render(&numeric);
+        for (i, row) in glyphs.iter().enumerate() {
+            let y = rows[0].y + i as u16;
+            if y < rows[0].y + rows[0].height {
+                f.buffer_mut().set_string(rows[0].x, y, row, confirmed);
+            }
+        }
+        // The unit stays small: it never changes, so it does not need the
+        // space, and giving it the space would crowd the digits.
+        let unit_x = rows[0].x + crate::bigdigits::width(&numeric) as u16 + 1;
+        if unit_x < rows[0].x + rows[0].width {
+            f.buffer_mut().set_string(
+                unit_x,
+                rows[0].y + crate::bigdigits::HEIGHT as u16 - 1,
+                "MHz",
+                if radio.tx {
+                    confirmed
+                } else {
+                    Style::default().fg(DIM)
+                },
+            );
+        }
+    } else {
+        f.render_widget(
+            Paragraph::new(vfo_readout(
+                hz,
+                view.pending_vfo_hz,
+                confirmed,
+                Style::default().fg(Color::Cyan),
+                Style::default().fg(DIM),
+            )),
+            rows[0],
+        );
+    }
 
     let vfo = if radio.split { "SPLIT" } else { "VFO A" };
     f.render_widget(
@@ -632,8 +898,19 @@ fn draw_readout(f: &mut Frame, area: Rect, radio: &RadioDisplay, view: &ConsoleV
             Span::styled(vfo, Style::default().fg(Color::White)),
             Span::raw("   "),
             Span::styled(
-                if radio.tx { "TX" } else { "RX" },
-                Style::default().fg(if radio.tx { Color::Red } else { Color::Green }),
+                if radio.tx {
+                    "◆ TRANSMITTING ◆"
+                } else {
+                    "RX"
+                },
+                if radio.tx {
+                    Style::default()
+                        .bg(Color::Red)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD | Modifier::RAPID_BLINK)
+                } else {
+                    Style::default().fg(Color::Green)
+                },
             ),
         ])),
         rows[1],
@@ -984,10 +1261,14 @@ fn draw_source(f: &mut Frame, area: Rect, view: &ConsoleView) {
             .add_modifier(Modifier::BOLD),
     )));
 
-    lines.push(match view.spectrum.first() {
-        Some(frame) => Line::from(vec![
-            Span::styled("  IF TAP    ", Style::default().fg(DIM)),
-            Span::styled(
+    // Three states, like AUDIO below: feeding, attached-but-quiet, and
+    // nothing there at all. Those send an operator to three different
+    // places, and a tap that has stopped is the one that used to be
+    // reported as the first.
+    lines.push(Line::from(vec![
+        Span::styled("  IF TAP    ", Style::default().fg(DIM)),
+        match view.spectrum.first() {
+            Some(frame) if view.spectrum_live => Span::styled(
                 format!(
                     "{:.3} MHz span {} kHz, {} bins",
                     frame.center_hz as f64 / 1e6,
@@ -996,12 +1277,10 @@ fn draw_source(f: &mut Frame, area: Rect, view: &ConsoleView) {
                 ),
                 Style::default().fg(Color::Green),
             ),
-        ]),
-        None => Line::from(vec![
-            Span::styled("  IF TAP    ", Style::default().fg(DIM)),
-            Span::styled("nothing attached", Style::default().fg(DIM)),
-        ]),
-    });
+            Some(_) => Span::styled("attached, no stream", Style::default().fg(DIM)),
+            None => Span::styled("nothing attached", Style::default().fg(DIM)),
+        },
+    ]));
 
     let audio = match view.audio {
         AudioState::Streaming => Span::styled(
@@ -1104,26 +1383,50 @@ fn draw_spectrum(f: &mut Frame, area: Rect, view: &ConsoleView) {
 
 // ── the reference rail ──────────────────────────────────────────────────
 
+/// The reference rail's rows, as text.
+///
+/// A dash where nothing was read. See `RadioDisplay::levels_known`: over
+/// the console protocol none of these fields arrive, and drawing the
+/// struct's defaults told the operator `AF 200` at a radio reading
+/// `AG034`, and `PRE off` at a radio with its preamp on -- confidently,
+/// and indistinguishably from a real reading.
+pub(crate) fn reference_facts(radio: &RadioDisplay) -> Vec<(&'static str, String)> {
+    let known = radio.levels_known;
+    let val = |s: String| if known { s } else { "—".to_string() };
+    let flag = |b: bool| {
+        if known {
+            on_off(b).to_string()
+        } else {
+            "—".to_string()
+        }
+    };
+    vec![
+        ("ANT", val(format!("{}", radio.antenna))),
+        ("AF", val(format!("{}", radio.af_gain))),
+        ("RF", val(format!("{}", radio.rf_gain))),
+        ("SQL", val(format!("{}", radio.squelch))),
+        ("MIC", val(format!("{}", radio.mic_gain))),
+        // Percent of rated output, which is what `PC` reports. It read
+        // "W" here, and on a 100 W radio the two numbers coincide -- a
+        // coincidence, not a unit. On a 5 W QRP rig it would have been
+        // wrong by twenty times.
+        ("PWR", val(format!("{}%", radio.power_pct))),
+        ("AGC", val(format!("{}", radio.agc))),
+        ("NB", flag(radio.noise_blanker)),
+        ("NR", val(format!("{}", radio.noise_reduction))),
+        ("PRE", flag(radio.preamp)),
+        ("ATT", flag(radio.attenuator)),
+        ("PROC", flag(radio.speech_processor)),
+        ("VOX", flag(radio.vox)),
+        ("LOCK", flag(radio.freq_lock)),
+    ]
+}
+
 fn draw_reference(f: &mut Frame, area: Rect, radio: &RadioDisplay) {
     if area.width == 0 {
         return;
     }
-    let facts = [
-        ("ANT", format!("{}", radio.antenna)),
-        ("AF", format!("{}", radio.af_gain)),
-        ("RF", format!("{}", radio.rf_gain)),
-        ("SQL", format!("{}", radio.squelch)),
-        ("MIC", format!("{}", radio.mic_gain)),
-        ("PWR", format!("{}W", radio.power_pct)),
-        ("AGC", format!("{}", radio.agc)),
-        ("NB", on_off(radio.noise_blanker)),
-        ("NR", format!("{}", radio.noise_reduction)),
-        ("PRE", on_off(radio.preamp)),
-        ("ATT", on_off(radio.attenuator)),
-        ("PROC", on_off(radio.speech_processor)),
-        ("VOX", on_off(radio.vox)),
-        ("LOCK", on_off(radio.freq_lock)),
-    ];
+    let facts = reference_facts(radio);
     let lines: Vec<Line> = facts
         .iter()
         .map(|(k, v)| {
@@ -1188,6 +1491,103 @@ fn draw_command(f: &mut Frame, area: Rect, view: &ConsoleView) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_rail_with_nothing_read_shows_dashes_not_defaults() {
+        // Reported from the bench: the network console displayed `AF 200`
+        // at a radio reading AG034, and `PRE off` at a radio with its
+        // preamp on. Both were `RadioDisplay::default()` -- the console
+        // protocol carries none of these fields -- rendered
+        // indistinguishably from a real reading.
+        let radio = RadioDisplay::default();
+        assert!(!radio.levels_known, "a fresh display has read nothing");
+        for (k, v) in super::reference_facts(&radio) {
+            assert_eq!(v, "—", "{k} must not be drawn from a default");
+        }
+    }
+
+    #[test]
+    fn the_rail_draws_a_fixed_set_of_fields() {
+        // A caller decides whether the rail is "known" by counting how
+        // many of its reads answered, and it cannot count against a
+        // number that drifts. Fourteen: ANT, AF, RF, SQL, MIC, PWR, AGC,
+        // NB, NR, PRE, ATT, PROC, VOX, LOCK. Adding a row here without
+        // adding a read there would leave the new row permanently
+        // dashed, or -- worse, if the count were not updated -- let the
+        // rail call itself known with a field nobody read.
+        let facts = super::reference_facts(&RadioDisplay::default());
+        assert_eq!(facts.len(), 14);
+        let names: Vec<&str> = facts.iter().map(|(k, _)| *k).collect();
+        assert_eq!(
+            names,
+            vec![
+                "ANT", "AF", "RF", "SQL", "MIC", "PWR", "AGC", "NB", "NR", "PRE", "ATT", "PROC",
+                "VOX", "LOCK"
+            ]
+        );
+    }
+
+    #[test]
+    fn power_is_a_percentage_of_rated_output_not_watts() {
+        // `PC` reports a percentage. It was labelled `W`, and on a 100 W
+        // radio the two numbers coincide -- a coincidence, not a unit. On
+        // a 5 W rig it would have read twenty times high.
+        let radio = RadioDisplay {
+            levels_known: true,
+            power_pct: 40,
+            ..Default::default()
+        };
+        let facts = super::reference_facts(&radio);
+        let pwr = facts.iter().find(|(k, _)| *k == "PWR").unwrap();
+        assert_eq!(pwr.1, "40%");
+    }
+
+    #[test]
+    fn a_rail_that_was_read_shows_its_values() {
+        let radio = RadioDisplay {
+            levels_known: true,
+            af_gain: 34,
+            preamp: true,
+            ..Default::default()
+        };
+        let facts = super::reference_facts(&radio);
+        let get = |k: &str| {
+            facts
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.clone())
+                .unwrap()
+        };
+        assert_eq!(get("AF"), "34");
+        assert_eq!(get("PRE"), "on");
+        assert!(!facts.iter().any(|(_, v)| v == "—"), "nothing unknown here");
+    }
+
+    #[test]
+    fn two_stacked_panels_merge_into_one_rect() {
+        // The spectrum was being drawn twice on its own tab: once as the
+        // layout's Spectrum panel and once as the SPECTRUM tab's workspace
+        // content. Two identical waterfalls, each half the height it could
+        // have had. The fix gives the spectrum both rects rather than
+        // blanking the workspace, which would have left a hole exactly
+        // where the operator is looking.
+        let top = Rect::new(0, 5, 100, 12);
+        let bottom = Rect::new(0, 17, 100, 8);
+        let m = super::union(top, bottom);
+        assert_eq!(m, Rect::new(0, 5, 100, 20));
+        assert_eq!(
+            m.height,
+            top.height + bottom.height,
+            "no rows lost or invented between adjacent panels"
+        );
+    }
+
+    #[test]
+    fn union_is_order_independent() {
+        let a = Rect::new(2, 3, 10, 4);
+        let b = Rect::new(2, 7, 10, 6);
+        assert_eq!(super::union(a, b), super::union(b, a));
+    }
+
     use super::*;
 
     fn caps() -> cat_native::CapabilitiesWire {
@@ -1378,10 +1778,250 @@ mod tests {
         .unwrap();
     }
 
+    /// The whole screen as text, for a test that cares where things are.
+    fn screen(radio: &RadioDisplay, w: u16, h: u16) -> Vec<String> {
+        let view = ConsoleView::for_capabilities(&caps());
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            draw(f, f.size(), radio, &view, &test_caps());
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf.get(x, y).symbol().to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_transmit_reading_is_drawn_on_the_transmit_meter() {
+        // `SM;` is two meters. The manual: "While receiving, serves as an
+        // S-meter... While transmitting, serves as a calibrated power
+        // meter". Every reading used to land on the S row with an S-unit
+        // scale applied, so a transmission showed `S9+20` for what was a
+        // power level -- on the one meter an operator watches to judge
+        // whether the radio is doing what they asked.
+        use cat_framework::capabilities::{MeterKind, RawRange};
+        let meter = |kind| cat_native::MeterDescriptorWire {
+            kind,
+            raw_range: RawRange::new(0, 30),
+            active_on_transmit: kind != MeterKind::S,
+            s_units: None,
+        };
+        let mut caps = test_caps();
+        caps.meters = vec![meter(MeterKind::S), meter(MeterKind::Po)];
+
+        let render = |radio: &RadioDisplay| {
+            let backend = ratatui::backend::TestBackend::new(22, 6);
+            let mut term = ratatui::Terminal::new(backend).unwrap();
+            term.draw(|f| draw_meters(f, f.size(), radio, &caps))
+                .unwrap();
+            let buf = term.backend().buffer();
+            (0..6u16)
+                .map(|y| {
+                    (0..22u16)
+                        .map(|x| buf.get(x, y).symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let receiving = RadioDisplay {
+            connected: true,
+            tx: false,
+            smeter: 20,
+            meter_kind: MeterKind::S,
+            ..RadioDisplay::default()
+        };
+        let rows = render(&receiving);
+        assert!(
+            rows[0].contains('█'),
+            "the S row carries the reading: {rows:?}"
+        );
+        assert!(!rows[1].contains('█'), "and the PO row does not");
+
+        let transmitting = RadioDisplay {
+            connected: true,
+            tx: true,
+            smeter: 20,
+            meter_kind: MeterKind::Po,
+            ..RadioDisplay::default()
+        };
+        let rows = render(&transmitting);
+        assert!(
+            !rows[0].contains('█'),
+            "a power reading must not be drawn as signal strength: {rows:?}"
+        );
+        assert!(rows[1].contains('█'), "it belongs on the PO row: {rows:?}");
+    }
+
+    #[test]
+    fn every_meter_the_radio_declares_is_drawn() {
+        // The rail draws `caps.meters`, which is a property of the radio,
+        // not of this file. A TS-570D declares four -- S, PO, SWR, ALC --
+        // and an FT-991A five, adding ID. A constant four here would drop
+        // the fifth silently, and a missing meter looks like a radio that
+        // does not have one.
+        use cat_framework::capabilities::{MeterKind, RawRange};
+        let meter = |kind| cat_native::MeterDescriptorWire {
+            kind,
+            raw_range: RawRange::new(0, 30),
+            active_on_transmit: kind != MeterKind::S,
+            s_units: None,
+        };
+        let mut caps = test_caps();
+        caps.meters = vec![
+            meter(MeterKind::S),
+            meter(MeterKind::Po),
+            meter(MeterKind::Swr),
+            meter(MeterKind::Alc),
+            meter(MeterKind::Id),
+        ];
+        let radio = RadioDisplay {
+            connected: true,
+            ..RadioDisplay::default()
+        };
+        let rows = natural(
+            &cat_layout::PanelKind::MeterRail,
+            cat_layout::Direction::Rows,
+            &caps,
+        );
+        let backend = ratatui::backend::TestBackend::new(22, rows);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| draw_meters(f, f.size(), &radio, &caps))
+            .unwrap();
+        let buf = term.backend().buffer();
+        let text: String = (0..rows)
+            .map(|y| {
+                (0..22u16)
+                    .map(|x| buf.get(x, y).symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for label in ["S", "PO", "SWR", "ALC", "ID"] {
+            assert!(
+                text.lines().any(|l| l.trim_start().starts_with(label)),
+                "{label} is missing from the rail:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_meter_rail_keeps_a_gutter_so_a_full_bar_does_not_touch_the_next_panel() {
+        // A full-scale S-meter used to run its "S8" straight into the
+        // panel beside it, reading as `S8NO SPECTRUM SOURCE`.
+        let radio = RadioDisplay {
+            connected: true,
+            smeter: u16::MAX,
+            ..RadioDisplay::default()
+        };
+        let width = 22u16;
+        let backend = ratatui::backend::TestBackend::new(width, 6);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            draw_meters(f, f.size(), &radio, &test_caps());
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        for y in 0..6u16 {
+            assert_eq!(
+                buf.get(width - 1, y).symbol(),
+                " ",
+                "the last column is the gutter, row {y}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_keyed_radio_says_so_across_the_whole_width() {
+        // Reported from the bench: the old indicator was one styled word
+        // in a row of other words, and an operator did not see it. A
+        // transmitting radio is not a field on a form.
+        let radio = RadioDisplay {
+            tx: true,
+            connected: true,
+            ..RadioDisplay::default()
+        };
+        let rows = screen(&radio, 120, 40);
+        assert!(
+            rows[0].contains("T R A N S M I T T I N G"),
+            "the first row is the banner: {:?}",
+            rows[0]
+        );
+    }
+
+    #[test]
+    fn a_receiving_radio_does_not_give_up_a_row_to_the_banner() {
+        let radio = RadioDisplay {
+            tx: false,
+            connected: true,
+            ..RadioDisplay::default()
+        };
+        let rows = screen(&radio, 120, 40);
+        assert!(
+            !rows.iter().any(|r| r.contains("T R A N S M I T T I N G")),
+            "nothing is keyed, so nothing should say it is"
+        );
+    }
+
+    #[test]
+    fn the_banner_is_painted_the_whole_way_across() {
+        // Centred by padding rather than alignment: a bar of colour that
+        // stopped at the text would read as a label, not an alarm.
+        let radio = RadioDisplay {
+            tx: true,
+            connected: true,
+            ..RadioDisplay::default()
+        };
+        let view = ConsoleView::for_capabilities(&caps());
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            draw(f, f.size(), &radio, &view, &test_caps());
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        for x in [0u16, 1, 59, 118, 119] {
+            assert_eq!(
+                buf.get(x, 0).style().bg,
+                Some(Color::Red),
+                "column {x} of the banner must be painted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_terminal_too_short_for_a_banner_keeps_its_console() {
+        // Losing a row out of five to a banner would cost more than the
+        // banner is worth.
+        let radio = RadioDisplay {
+            tx: true,
+            connected: true,
+            ..RadioDisplay::default()
+        };
+        let rows = screen(&radio, 40, 2);
+        assert!(!rows.iter().any(|r| r.contains("TRANSMITTING")));
+    }
+
     #[test]
     fn it_also_draws_at_sizes_nobody_designed_for() {
-        let radio = RadioDisplay::default();
         let view = ConsoleView::for_capabilities(&caps());
+        for (w, h) in [(80u16, 24u16), (40, 12), (200, 60), (20, 5)] {
+            for tx in [false, true] {
+                let radio = RadioDisplay {
+                    tx,
+                    ..RadioDisplay::default()
+                };
+                let backend = ratatui::backend::TestBackend::new(w, h);
+                let mut term = ratatui::Terminal::new(backend).unwrap();
+                term.draw(|f| {
+                    draw(f, f.size(), &radio, &view, &test_caps());
+                })
+                .unwrap();
+            }
+        }
+        let radio = RadioDisplay::default();
         for (w, h) in [(80u16, 24u16), (40, 12), (200, 60), (20, 5)] {
             let backend = ratatui::backend::TestBackend::new(w, h);
             let mut term = ratatui::Terminal::new(backend).unwrap();
@@ -1754,44 +2394,60 @@ mod meter_tests {
             .expect("this fixture has an S meter")
     }
 
-    /// The table this console shipped with, before any of it moved into a
-    /// shared crate. Written out in full rather than referenced, so that a
+    /// The table this console draws, **measured against the radio's own
+    /// panel**. Written out in full rather than referenced, so that a
     /// change to `SUnitScale::TS570D` upstream shows up here as a failure
     /// rather than as agreement.
-    fn as_shipped(smeter: u16) -> &'static str {
+    ///
+    /// One raw count per S-unit to S9, ten dB a count above. Read off the
+    /// radio on 2026-09-08 with an operator watching the panel while the
+    /// same signal was sampled over CAT.
+    fn as_measured(smeter: u16) -> &'static str {
         match smeter {
-            0..=2 => "S0",
-            3..=4 => "S1",
-            5..=6 => "S2",
-            7..=8 => "S3",
-            9..=10 => "S4",
-            11..=12 => "S5",
-            13..=14 => "S6",
-            15..=16 => "S7",
-            17..=18 => "S8",
-            19..=20 => "S9",
-            21..=24 => "S9+10",
-            25..=28 => "S9+20",
-            _ => "S9+30",
+            0 => "S0",
+            1 => "S1",
+            2 => "S2",
+            3 => "S3",
+            4 => "S4",
+            5 => "S5",
+            6 => "S6",
+            7 => "S7",
+            8 => "S8",
+            9 => "S9",
+            10 => "S9+10",
+            11 => "S9+20",
+            12 => "S9+30",
+            13 => "S9+40",
+            14 => "S9+50",
+            // Raw 15 is the top of the meter. The four counts above S9+20
+            // were not read off the panel -- the operator's three
+            // readings stop there -- but they continue the same ten dB a
+            // count and arrive exactly at S9+60 on the last value the
+            // radio can report, which is the reason to believe them.
+            _ => "S9+60",
         }
     }
 
     #[test]
-    fn every_value_the_meter_can_report_still_reads_the_way_it_always_has() {
-        // The acceptance bar for moving onto shared widgets (radio-cat-rs
-        // ADR 0011 rev 4) is that the operator sees no change, and the
-        // layout rebuild does not lower it. For the S-unit readout that is
-        // checkable exhaustively, so it is: the meter reports 0-30 and this
-        // walks all 31.
+    fn every_value_the_meter_can_report_reads_the_way_the_panel_does() {
+        // Checkable exhaustively, so it is: the meter reports 0-15 and
+        // this walks all sixteen.
         //
         // It exercises the whole path -- capabilities to `MeterReading` to
-        // label -- so it fails if the radio stops publishing its table, not
-        // only if the table changes.
-        for raw in 0..=30u16 {
+        // label -- so it fails if the radio stops publishing its table,
+        // not only if the table changes.
+        //
+        // This used to assert the meter "still reads the way it always
+        // has", against ADR 0011 rev 4's "the operator sees no change"
+        // bar. That bar was holding a mistake in place: the inherited
+        // table put S9 at raw 20 on a meter that stops at 15, so it read
+        // about five S-units low. The operator should see a change here,
+        // and does.
+        for raw in 0..=15u16 {
             assert_eq!(
                 reading(raw).s_unit(),
-                as_shipped(raw),
-                "raw {raw} changed meaning"
+                as_measured(raw),
+                "raw {raw} disagrees with the panel"
             );
         }
     }
@@ -1880,6 +2536,44 @@ mod tab_body_tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn the_source_tab_tells_a_quiet_tap_from_an_absent_one() {
+        // Three states, not two. "Feeding", "attached but not producing"
+        // and "nothing there" send an operator to three different places
+        // -- the same distinction the AUDIO row beside it has always
+        // drawn. A tap that stopped used to be reported as feeding,
+        // centre and span and all, in the streaming colour.
+        let frame = SpectrumFrame {
+            center_hz: 14_074_000,
+            span_hz: 96_000,
+            ref_level_dbm: -20.0,
+            bins: vec![-110.0; 8],
+            sequence: 1,
+        };
+
+        let mut view = ConsoleView {
+            tab: Tab::Source,
+            spectrum: vec![frame.clone()],
+            spectrum_live: true,
+            ..ConsoleView::default()
+        };
+        assert!(
+            screen(&view).contains("14.074"),
+            "a feeding tap reports itself"
+        );
+
+        view.spectrum_live = false;
+        let quiet = screen(&view);
+        assert!(
+            quiet.contains("attached, no stream"),
+            "a stopped tap is not a feeding one: {quiet}"
+        );
+        assert!(!quiet.contains("nothing attached"), "nor an absent one");
+
+        view.spectrum.clear();
+        assert!(screen(&view).contains("nothing attached"));
     }
 
     #[test]

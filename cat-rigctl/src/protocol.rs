@@ -37,6 +37,35 @@ use crate::RigctlRadio;
 pub(crate) const RPRT_OK: &str = "RPRT 0\n";
 pub(crate) const RPRT_ERR: &str = "RPRT -1\n";
 
+/// Retry an idempotent read once before reporting failure.
+///
+/// A serial link that stalls hands the caller a read timeout, and a
+/// polling client turns that into a visible error: WSJT-X reports
+/// "Invalid parameter while getting PTT state" and the operator sees a
+/// dialog for what was a hiccup. Measured on a TS-570D over a USB adapter
+/// that re-enumerates: about 4% of requests hit the transport's 2 s
+/// timeout, every one of them at exactly that bound, while the other 96%
+/// answered in a median 96 ms.
+///
+/// Only reads. `f`, `m` and `t` ask the radio what it is doing and asking
+/// twice is the same as asking once; a `T 1` retried after an ambiguous
+/// failure could key a transmitter whose first key already landed.
+///
+/// This masks a stall it cannot fix -- the cause is physical, and the
+/// bench record says so -- but a station that drops one poll in twenty is
+/// unusable, and one that silently takes 200 ms longer on those is not.
+macro_rules! read_twice {
+    ($call:expr) => {
+        match $call.await {
+            Ok(v) => Ok(v),
+            // Deliberately re-evaluates `$call`: a closure cannot hold the
+            // `&mut R` across two awaits, and a second call is exactly
+            // what a retry is.
+            Err(_) => $call.await,
+        }
+    };
+}
+
 /// Dispatch one rigctld command line against `radio`, returning the full
 /// response text (already newline-terminated). Generic over any
 /// [`RigctlRadio`] implementation, so this works against a real radio
@@ -54,7 +83,7 @@ pub(crate) async fn dispatch<R: RigctlRadio>(radio: &mut R, line: &str) -> Strin
     let args: Vec<&str> = parts.collect();
 
     match cmd {
-        "f" => match radio.get_vfo_a_hz().await {
+        "f" => match read_twice!(radio.get_vfo_a_hz()) {
             Ok(hz) => format!("{hz}\n"),
             Err(_) => RPRT_ERR.to_string(),
         },
@@ -76,7 +105,7 @@ pub(crate) async fn dispatch<R: RigctlRadio>(radio: &mut R, line: &str) -> Strin
                 Err(_) => RPRT_ERR.to_string(),
             }
         }
-        "m" => match radio.get_mode().await {
+        "m" => match read_twice!(radio.get_mode()) {
             // Passband is always reported as `0` ("use the rig's current
             // default") rather than a real bandwidth — see module docs on
             // why filter-width resolution is out of scope for this bridge.
@@ -95,14 +124,81 @@ pub(crate) async fn dispatch<R: RigctlRadio>(radio: &mut R, line: &str) -> Strin
                 None => RPRT_ERR.to_string(),
             }
         }
-        "t" => match radio.get_transmitting().await {
+        // Two lines: the split flag, then the VFO that transmits. Hamlib's
+        // `netrigctl_get_split_vfo` reads both, and a one-line answer
+        // desyncs every reply after it on that connection.
+        "s" => match read_twice!(radio.get_split()) {
+            Ok(true) => "1\nVFOB\n".to_string(),
+            Ok(false) => "0\nVFOA\n".to_string(),
+            Err(_) => RPRT_ERR.to_string(),
+        },
+        "S" => {
+            // `S <split> <tx vfo>`. The VFO argument is accepted and not
+            // acted on: this radio's split *is* which VFO transmits, so
+            // "split on, transmit on VFO A" is not a state it has. Taking
+            // the flag and ignoring the name is what every radio with one
+            // transmit VFO can honestly do.
+            let Some(on) = args.first().and_then(|s| s.parse::<u8>().ok()) else {
+                return RPRT_ERR.to_string();
+            };
+            match radio.set_split(on != 0).await {
+                Ok(()) => RPRT_OK.to_string(),
+                Err(_) => RPRT_ERR.to_string(),
+            }
+        }
+        // `j`/`z`, per Hamlib's own table. These were `i` and `x` until
+        // 2026-09-09, which are not RIT and XIT at all: `i` is
+        // `get_split_freq` and `x` is `get_split_mode`. So a client asking
+        // for the split transmit frequency got an RIT offset in Hz and had
+        // no way to know -- and `x`, which Hamlib reads as two lines (mode
+        // then passband), got one, desyncing every reply after it on that
+        // connection. Both are worse than the refusal they replaced.
+        //
+        // Caught against the physical radio: `j` answered `RPRT -1` while
+        // `x` answered `0`, and one being implemented and the other not
+        // was impossible -- both accessors were right there.
+        "j" => match read_twice!(radio.get_rit_hz()) {
+            Ok(hz) => format!("{hz}\n"),
+            Err(_) => RPRT_ERR.to_string(),
+        },
+        "z" => match read_twice!(radio.get_xit_hz()) {
+            Ok(hz) => format!("{hz}\n"),
+            Err(_) => RPRT_ERR.to_string(),
+        },
+        // `i`/`x` are deliberately not implemented. `RigctlRadio` has no
+        // split-frequency or split-mode accessor -- `get_split` answers
+        // only whether split is on -- so the honest answer is the refusal
+        // the fall-through gives, and a client that needs the TX frequency
+        // asks for a capability this bridge does not claim.
+        "t" => match read_twice!(radio.get_transmitting()) {
             Ok(false) => "0\n".to_string(),
             Ok(true) => "1\n".to_string(),
             Err(_) => RPRT_ERR.to_string(),
         },
         "T" => {
+            // Hamlib's `ptt_t` has four values, not two:
+            //
+            //   0  RIG_PTT_OFF
+            //   1  RIG_PTT_ON
+            //   2  RIG_PTT_ON_MIC
+            //   3  RIG_PTT_ON_DATA
+            //
+            // A client picks 2 or 3 when it knows which input the audio is
+            // arriving on -- WSJT-X sends `T 3` whenever its Transmit Audio
+            // Source is set to Rear/Data, which is the ordinary setting for
+            // any rig fed through an accessory connector. Accepting only
+            // `T 1` made PTT fail with "Invalid parameter" for exactly the
+            // configuration this bridge exists to serve.
+            //
+            // All three ON values key the transmitter. The distinction
+            // between them is which audio input the rig should listen to,
+            // and on a station wired through an accessory port that is a
+            // fact about the wiring rather than a per-transmission choice
+            // -- so it is not modelled on `RigctlRadio`, and adding it
+            // would change a trait two other radios implement to express
+            // something none of them can act on.
             let result = match args.first() {
-                Some(&"1") => radio.transmit().await,
+                Some(&"1") | Some(&"2") | Some(&"3") => radio.transmit().await,
                 Some(&"0") => radio.receive().await,
                 _ => return RPRT_ERR.to_string(),
             };
@@ -334,8 +430,15 @@ mod tests {
     struct FakeRadio {
         vfo_hz: u64,
         mode: FakeMode,
+        split: bool,
+        rit_hz: i32,
+        xit_hz: i32,
         transmitting: bool,
+        /// Fails every call. The existing error tests rely on this being
+        /// persistent, so it stays that way.
         fail_next: bool,
+        /// Fails exactly once, then succeeds -- a transient stall.
+        fail_once: std::cell::Cell<bool>,
     }
 
     impl FakeRadio {
@@ -344,7 +447,11 @@ mod tests {
                 vfo_hz: 14_250_000,
                 mode: FakeMode::Usb,
                 transmitting: false,
+                split: false,
+                rit_hz: 0,
+                xit_hz: 0,
                 fail_next: false,
+                fail_once: std::cell::Cell::new(false),
             }
         }
 
@@ -358,18 +465,22 @@ mod tests {
 
     #[async_trait::async_trait(?Send)]
     impl RigctlRadio for FakeRadio {
+        fn unsupported() -> Self::Error {
+            FakeError
+        }
+
         type Mode = FakeMode;
         type Error = FakeError;
 
         async fn get_vfo_a_hz(&mut self) -> Result<u64, Self::Error> {
-            if self.fail_next {
+            if self.fail_next || self.fail_once.replace(false) {
                 return Err(FakeError);
             }
             Ok(self.vfo_hz)
         }
 
         async fn set_vfo_a_hz(&mut self, hz: u64) -> Result<(), Self::Error> {
-            if self.fail_next {
+            if self.fail_next || self.fail_once.replace(false) {
                 return Err(FakeError);
             }
             self.vfo_hz = hz;
@@ -377,29 +488,52 @@ mod tests {
         }
 
         async fn get_mode(&mut self) -> Result<Self::Mode, Self::Error> {
-            if self.fail_next {
+            if self.fail_next || self.fail_once.replace(false) {
                 return Err(FakeError);
             }
             Ok(self.mode)
         }
 
         async fn set_mode(&mut self, mode: Self::Mode) -> Result<(), Self::Error> {
-            if self.fail_next {
+            if self.fail_next || self.fail_once.replace(false) {
                 return Err(FakeError);
             }
             self.mode = mode;
             Ok(())
         }
 
-        async fn get_transmitting(&mut self) -> Result<bool, Self::Error> {
+        async fn get_split(&mut self) -> Result<bool, Self::Error> {
+            Ok(self.split)
+        }
+
+        async fn get_rit_hz(&mut self) -> Result<i32, Self::Error> {
             if self.fail_next {
+                return Err(FakeError);
+            }
+            Ok(self.rit_hz)
+        }
+
+        async fn get_xit_hz(&mut self) -> Result<i32, Self::Error> {
+            if self.fail_next {
+                return Err(FakeError);
+            }
+            Ok(self.xit_hz)
+        }
+
+        async fn set_split(&mut self, on: bool) -> Result<(), Self::Error> {
+            self.split = on;
+            Ok(())
+        }
+
+        async fn get_transmitting(&mut self) -> Result<bool, Self::Error> {
+            if self.fail_next || self.fail_once.replace(false) {
                 return Err(FakeError);
             }
             Ok(self.transmitting)
         }
 
         async fn transmit(&mut self) -> Result<(), Self::Error> {
-            if self.fail_next {
+            if self.fail_next || self.fail_once.replace(false) {
                 return Err(FakeError);
             }
             self.transmitting = true;
@@ -407,7 +541,7 @@ mod tests {
         }
 
         async fn receive(&mut self) -> Result<(), Self::Error> {
-            if self.fail_next {
+            if self.fail_next || self.fail_once.replace(false) {
                 return Err(FakeError);
             }
             self.transmitting = false;
@@ -444,6 +578,77 @@ mod tests {
     // and is exactly this crate's intended reuse of that primitive.
     fn run<F: std::future::Future>(fut: F) -> F::Output {
         cat_server::block_on::block_on(fut)
+    }
+
+    #[test]
+    fn rit_and_xit_are_read_rather_than_refused() {
+        // `\dump_state` advertises a RIT range from the radio's
+        // capabilities, so Hamlib offers the control whatever this does.
+        // Answering the read is strictly better than refusing both halves
+        // of it.
+        let mut radio = FakeRadio::new();
+        assert_eq!(run(dispatch(&mut radio, "j")), "0\n");
+        assert_eq!(run(dispatch(&mut radio, "z")), "0\n");
+        radio.rit_hz = -500;
+        radio.xit_hz = 250;
+        assert_eq!(run(dispatch(&mut radio, "j")), "-500\n");
+        assert_eq!(run(dispatch(&mut radio, "z")), "250\n");
+    }
+
+    #[test]
+    fn the_letters_are_hamlibs_letters_and_not_ones_that_look_right() {
+        // `rigctl --help`: `J: set_rit / j: get_rit`, `Z: set_xit /
+        // z: get_xit`, `I: set_split_freq / i: get_split_freq`,
+        // `X: set_split_mode / x: get_split_mode`.
+        //
+        // RIT and XIT were on `i` and `x` for a day. Both are split
+        // commands, so a client asking for the split transmit frequency
+        // was handed an RIT offset in Hz -- a plausible-looking number,
+        // silently wrong -- and `x`, which Hamlib reads as two lines, got
+        // one and desynced every reply after it on that connection.
+        //
+        // This bridge has no split-frequency or split-mode accessor, so
+        // both must refuse rather than answer with something else.
+        let mut radio = FakeRadio::new();
+        radio.rit_hz = -500;
+        radio.xit_hz = 250;
+        assert_eq!(run(dispatch(&mut radio, "i")), RPRT_ERR);
+        assert_eq!(run(dispatch(&mut radio, "x")), RPRT_ERR);
+    }
+
+    #[test]
+    fn a_radio_that_cannot_report_rit_says_so() {
+        // The default is "unsupported", not zero: a radio that cannot
+        // answer and one answering "no offset" are different facts.
+        let mut radio = FakeRadio::failing();
+        assert_eq!(run(dispatch(&mut radio, "j")), RPRT_ERR);
+    }
+
+    #[test]
+    fn split_is_answered_on_two_lines() {
+        // Hamlib's `netrigctl_get_split_vfo` reads the flag and the VFO.
+        // A one-line answer desyncs every reply after it on that
+        // connection -- the same trap `m` sets, from the other side.
+        let mut radio = FakeRadio::new();
+        let out = run(dispatch(&mut radio, "s"));
+        assert_eq!(out.lines().count(), 2, "got {out:?}");
+        assert_eq!(out, "0\nVFOA\n");
+    }
+
+    #[test]
+    fn setting_split_reports_it_back() {
+        let mut radio = FakeRadio::new();
+        assert_eq!(run(dispatch(&mut radio, "S 1 VFOB")), RPRT_OK);
+        assert_eq!(run(dispatch(&mut radio, "s")), "1\nVFOB\n");
+        assert_eq!(run(dispatch(&mut radio, "S 0 VFOA")), RPRT_OK);
+        assert_eq!(run(dispatch(&mut radio, "s")), "0\nVFOA\n");
+    }
+
+    #[test]
+    fn a_split_command_with_no_usable_argument_is_refused() {
+        let mut radio = FakeRadio::new();
+        assert_eq!(run(dispatch(&mut radio, "S")), RPRT_ERR);
+        assert_eq!(run(dispatch(&mut radio, "S x VFOB")), RPRT_ERR);
     }
 
     #[test]
@@ -508,6 +713,79 @@ mod tests {
         let mut radio = FakeRadio::new();
         assert_eq!(run(dispatch(&mut radio, "T 1")), RPRT_OK);
         assert!(radio.transmitting);
+    }
+
+    #[test]
+    fn a_read_that_fails_once_is_retried_and_succeeds() {
+        // A stalled serial link hands back a read timeout, and a polling
+        // client turns that into a dialog: "Invalid parameter while
+        // getting PTT state". Measured on a TS-570D over a re-enumerating
+        // USB adapter, about 4% of requests hit the 2 s transport timeout
+        // while the rest answered in a median 96 ms.
+        let mut radio = FakeRadio::new();
+        radio.fail_once.set(true);
+        assert_eq!(run(dispatch(&mut radio, "f")), "14250000\n");
+
+        radio.fail_once.set(true);
+        assert_eq!(run(dispatch(&mut radio, "t")), "0\n");
+
+        radio.fail_once.set(true);
+        assert_eq!(run(dispatch(&mut radio, "m")), "USB\n0\n");
+    }
+
+    #[test]
+    fn a_read_that_keeps_failing_is_still_reported() {
+        // One retry, not a loop. A radio that is genuinely gone must be
+        // reported as gone rather than hung on.
+        let mut radio = FakeRadio::new();
+        radio.fail_next = true; // every call
+        assert_eq!(run(dispatch(&mut radio, "f")), RPRT_ERR);
+    }
+
+    #[test]
+    fn a_transmit_request_is_never_retried() {
+        // Keying is not idempotent. A `T 1` retried after an ambiguous
+        // failure could key a transmitter whose first key already landed.
+        let mut radio = FakeRadio::new();
+        radio.fail_once.set(true);
+        assert_eq!(run(dispatch(&mut radio, "T 1")), RPRT_ERR);
+        assert!(!radio.transmitting, "a failed key must not be retried");
+    }
+
+    #[test]
+    fn dispatch_capital_t_three_transmits() {
+        // RIG_PTT_ON_DATA. WSJT-X sends this whenever its Transmit Audio
+        // Source is Rear/Data -- the ordinary setting for a rig fed through
+        // an accessory connector. Rejecting it failed PTT with "Invalid
+        // parameter" for exactly the configuration this bridge serves:
+        //
+        //   netrigctl_set_ptt: cmd=T 3
+        //   RX: RPRT -1
+        //   rig_set_ptt returning(-1) Invalid parameter
+        let mut radio = FakeRadio::new();
+        assert_eq!(run(dispatch(&mut radio, "T 3")), RPRT_OK);
+        assert!(radio.transmitting);
+    }
+
+    #[test]
+    fn dispatch_capital_t_two_transmits() {
+        // RIG_PTT_ON_MIC. Keys like any other ON value: which input the
+        // audio arrives on is a fact about the wiring here, not something
+        // a caller chooses per transmission.
+        let mut radio = FakeRadio::new();
+        assert_eq!(run(dispatch(&mut radio, "T 2")), RPRT_OK);
+        assert!(radio.transmitting);
+    }
+
+    #[test]
+    fn dispatch_capital_t_rejects_a_value_hamlib_never_sends() {
+        // Still a closed set: `ptt_t` has four values and 4 is not one of
+        // them. A key request nobody can interpret must not key.
+        let mut radio = FakeRadio::new();
+        assert_eq!(run(dispatch(&mut radio, "T 4")), RPRT_ERR);
+        assert!(!radio.transmitting, "an unparsed value must never key");
+        assert_eq!(run(dispatch(&mut radio, "T")), RPRT_ERR);
+        assert!(!radio.transmitting);
     }
 
     #[test]
@@ -725,6 +1003,8 @@ mod capability_dump_state_tests {
         struct Placeholder;
         #[async_trait::async_trait(?Send)]
         impl crate::RigctlRadio for Placeholder {
+            fn unsupported() -> Self::Error {}
+
             type Mode = ();
             type Error = ();
             async fn get_vfo_a_hz(&mut self) -> Result<u64, ()> {
@@ -780,6 +1060,8 @@ mod capability_dump_state_tests {
         struct Unmigrated;
         #[async_trait::async_trait(?Send)]
         impl crate::RigctlRadio for Unmigrated {
+            fn unsupported() -> Self::Error {}
+
             type Mode = ();
             type Error = ();
             async fn get_vfo_a_hz(&mut self) -> Result<u64, ()> {
@@ -889,6 +1171,8 @@ mod hamlib_interop_regression_tests {
 
     #[async_trait::async_trait(?Send)]
     impl crate::RigctlRadio for Recorder {
+        fn unsupported() -> Self::Error {}
+
         type Mode = ();
         type Error = ();
         async fn get_vfo_a_hz(&mut self) -> Result<u64, ()> {
@@ -1001,6 +1285,8 @@ mod live_hamlib_tests {
 
     #[async_trait::async_trait(?Send)]
     impl crate::RigctlRadio for FakeRadio {
+        fn unsupported() -> Self::Error {}
+
         type Mode = ();
         type Error = ();
         async fn get_vfo_a_hz(&mut self) -> Result<u64, ()> {

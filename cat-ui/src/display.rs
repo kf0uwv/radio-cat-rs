@@ -58,9 +58,51 @@ pub struct RadioDisplay {
     pub memory_mode: bool,
 
     // --- Meters ---
+    /// The S-meter's raw reading, while the radio is receiving.
+    ///
+    /// Kept as its own field because it is what every console draws
+    /// largest, and what `SM;` means while receiving.
     pub smeter: u16,
+    /// Which meter `smeter` is a reading of.
+    ///
+    /// **On this family of radios `SM;` is two meters.** The TS-570D
+    /// manual: "While receiving, serves as an S-meter... While
+    /// transmitting, serves as a calibrated power meter", and its CAT
+    /// reference notes against `SM` that in transmit mode the reply is a
+    /// power meter reading.
+    ///
+    /// The console had no way to say so, and drew every reading on the S
+    /// bar with an S-unit scale applied -- so a transmission showed
+    /// `S9+20` for what was really a power level, on the one meter an
+    /// operator looks at to judge whether the radio is doing what they
+    /// asked.
+    pub meter_kind: cat_framework::capabilities::MeterKind,
+    /// Any further meters the radio is reporting at the same moment.
+    ///
+    /// A TS-570D transmitting answers two meters at once: `SM;` gives the
+    /// power reading and `RM;` gives whichever of SWR, compression or ALC
+    /// the operator has selected. `smeter` holds the first because it is
+    /// the one every console draws largest; this holds the rest.
+    ///
+    /// Empty while receiving, and empty on a console that does not read
+    /// them -- which is the honest state, and draws as a dash.
+    pub meters: Vec<cat_native::MeterSample>,
 
     // --- Gains / levels ---
+    /// Whether the rail's settings were actually read from the radio.
+    ///
+    /// **False means every field below is a placeholder, not a reading.**
+    /// The console protocol's `RadioState` carries the dial, mode, split,
+    /// TX, memory channel, IF shift, filter width and meters -- and none
+    /// of AF, RF, SQL, MIC, PWR, AGC, NB, NR, PRE, ATT, PROC, VOX or LOCK.
+    /// A console attached over the network therefore knows none of them.
+    ///
+    /// Before this flag they were drawn from `Default`, so a network
+    /// console displayed `AF 200` at a radio reading `AG034` and `PRE off`
+    /// at a radio with its preamp on -- confidently, and indistinguishably
+    /// from a real reading. A dash is the honest rendering; the direct
+    /// serial console, which polls every one of these, sets this true.
+    pub levels_known: bool,
     pub af_gain: u8,
     pub rf_gain: u8,
     pub squelch: u8,
@@ -145,6 +187,9 @@ impl Default for RadioDisplay {
             memory_channel: 0,
             memory_mode: false,
             smeter: 0,
+            meter_kind: cat_framework::capabilities::MeterKind::S,
+            meters: Vec::new(),
+            levels_known: false,
             af_gain: 200,
             rf_gain: 255,
             squelch: 0,

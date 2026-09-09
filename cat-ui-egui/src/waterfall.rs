@@ -110,6 +110,16 @@ pub struct WaterfallImage {
     no_data: [u8; 3],
     /// The frame every other row is re-projected onto.
     reference: Option<SpectrumFrame>,
+    /// See [`WaterfallImage::generation`].
+    generation: u64,
+    /// Bumped only when every pixel may have moved.
+    ///
+    /// A `push` writes exactly one row and moves `head`; a rebuild, a
+    /// palette change or a clear can change all of them. A renderer
+    /// keeping the ring on the GPU needs to tell those apart: the first
+    /// is a one-row upload, the second is the whole image. `generation`
+    /// alone cannot, because it moves for both.
+    rebuilds: u64,
 }
 
 impl WaterfallImage {
@@ -120,12 +130,23 @@ impl WaterfallImage {
             height,
             pixels: vec![0; (width * height * 4) as usize],
             head: 0,
+            generation: 0,
+            rebuilds: 0,
             rows_filled: 0,
             palette,
             floor_dbm,
             no_data: [26, 30, 34],
             reference: None,
         }
+    }
+
+    /// The noise floor this image maps to the bottom of its palette.
+    ///
+    /// Exposed so a trace drawn above the fall can use the same scale.
+    /// Two scales would put a peak in the trace at a different height
+    /// from the colour under it.
+    pub fn floor_dbm(&self) -> f32 {
+        self.floor_dbm
     }
 
     pub fn width(&self) -> u32 {
@@ -137,11 +158,47 @@ impl WaterfallImage {
     }
 
     /// How many rows hold real frames. Below `height`, the rest is unwritten.
+    /// Bumped whenever the image changes.
+    ///
+    /// Lets a renderer skip rebuilding and re-uploading a texture that is
+    /// identical to the one already on the GPU. Without it the console
+    /// allocated a full RGBA buffer, copied it and uploaded it thirty
+    /// times a second whether or not a single pixel had moved -- which on
+    /// a machine without a fast GPU is enough to make the window stop
+    /// responding.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// See [`Self::rebuilds`]. Changes only when a one-row upload is not
+    /// enough to bring a GPU copy up to date.
+    pub fn rebuilds(&self) -> u64 {
+        self.rebuilds
+    }
+
+    /// Where the newest row sits in the raw buffer.
+    ///
+    /// The buffer is a ring: row `head` is the newest and rows run
+    /// downwards modulo the height. A renderer that uploads
+    /// [`Self::pixels`] as-is uses this to map the ring onto the screen
+    /// with UV coordinates instead of rotating half a megabyte of pixels
+    /// on the CPU every frame.
+    pub fn head(&self) -> u32 {
+        self.head as u32
+    }
+
+    /// The raw ring, unrotated. Pairs with [`Self::head`].
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
     pub fn rows_filled(&self) -> u32 {
         self.rows_filled
     }
 
     pub fn set_no_data_color(&mut self, rgb: [u8; 3]) {
+        self.generation = self.generation.wrapping_add(1);
+        self.rebuilds = self.rebuilds.wrapping_add(1);
         self.no_data = rgb;
     }
 
@@ -160,6 +217,7 @@ impl WaterfallImage {
     /// when the staircase of `no_data` at its edges becomes the visible
     /// record of that move.
     pub fn push(&mut self, frame: &SpectrumFrame) {
+        self.generation = self.generation.wrapping_add(1);
         let reference = frame.clone();
         self.head = if self.rows_filled == 0 {
             0
@@ -190,6 +248,8 @@ impl WaterfallImage {
     /// scrollback instead of only above the seam. A console can call it on
     /// dial change and use [`push`](Self::push) the rest of the time.
     pub fn rebuild(&mut self, frames: &[SpectrumFrame]) {
+        self.generation = self.generation.wrapping_add(1);
+        self.rebuilds = self.rebuilds.wrapping_add(1);
         let Some(reference) = frames.first().cloned() else {
             self.pixels.fill(0);
             self.rows_filled = 0;
@@ -212,6 +272,8 @@ impl WaterfallImage {
     /// Only `center_hz`, `span_hz` and `ref_level_dbm` of `view` are read;
     /// its bins are not, so a caller can pass an empty frame as an axis.
     pub fn rebuild_onto(&mut self, frames: &[SpectrumFrame], view: &SpectrumFrame) {
+        self.generation = self.generation.wrapping_add(1);
+        self.rebuilds = self.rebuilds.wrapping_add(1);
         self.pixels.fill(0);
         self.rows_filled = 0;
         self.head = 0;
@@ -263,6 +325,92 @@ impl WaterfallImage {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_scroll_moves_the_head_but_is_not_a_rebuild() {
+        // The distinction a renderer keeping the ring on the GPU depends
+        // on: a scroll wrote one row and needs a one-row upload; a
+        // rebuild may have moved every pixel and needs the whole image.
+        // Uploading the whole image every frame is what capped this
+        // console at ten frames a second.
+        let mut img = WaterfallImage::new(8, 4, Palette::TURBO, -120.0);
+        let f = frame(14_074_000, 1, 4);
+        img.push(&f);
+        let rebuilds = img.rebuilds();
+        let head = img.head();
+        img.push(&f);
+        assert_eq!(img.rebuilds(), rebuilds, "a scroll is not a rebuild");
+        assert_ne!(img.head(), head, "but it does move the head");
+    }
+
+    #[test]
+    fn a_rebuild_is_one() {
+        let mut img = WaterfallImage::new(8, 4, Palette::TURBO, -120.0);
+        let f = frame(14_074_000, 1, 4);
+        img.push(&f);
+        let rebuilds = img.rebuilds();
+        img.rebuild(std::slice::from_ref(&f));
+        assert_ne!(img.rebuilds(), rebuilds);
+    }
+
+    #[test]
+    fn a_palette_change_counts_as_a_rebuild() {
+        // It recolours every pixel, so a one-row upload would leave the
+        // GPU holding the old colours for the whole scrollback.
+        let mut img = WaterfallImage::new(8, 4, Palette::TURBO, -120.0);
+        let rebuilds = img.rebuilds();
+        img.set_no_data_color([1, 2, 3]);
+        assert_ne!(img.rebuilds(), rebuilds);
+    }
+
+    #[test]
+    fn the_head_names_the_row_the_newest_frame_was_written_to() {
+        // A renderer maps screen row 0 to texture row `head`. If that is
+        // wrong the waterfall is drawn torn, offset by however far the
+        // ring has wrapped.
+        let mut img = WaterfallImage::new(4, 4, Palette::TURBO, -120.0);
+        for i in 0usize..3 {
+            img.push(&frame(14_074_000, i % 2, 2));
+            let head = img.head() as usize;
+            let stride = (img.width() * 4) as usize;
+            let at_head = &img.pixels()[head * stride..head * stride + stride];
+            assert_eq!(
+                at_head,
+                img.row_rgba(0),
+                "row 0 of the display is row `head` of the ring"
+            );
+        }
+    }
+
+    #[test]
+    fn the_head_stays_inside_the_image() {
+        let mut img = WaterfallImage::new(4, 4, Palette::TURBO, -120.0);
+        for _ in 0..20 {
+            img.push(&frame(14_074_000, 0, 2));
+            assert!(img.head() < img.height());
+        }
+    }
+
+    #[test]
+    fn the_generation_moves_only_when_the_image_does() {
+        // A renderer uses this to skip rebuilding and re-uploading a
+        // texture identical to the one already on the GPU. Uploading the
+        // whole image thirty times a second regardless left the console
+        // unresponsive on a machine without a fast GPU.
+        let mut w = WaterfallImage::new(8, 4, Palette::TURBO, -120.0);
+        let g0 = w.generation();
+
+        assert_eq!(w.generation(), g0, "reading it changes nothing");
+        let _ = w.rgba();
+        assert_eq!(w.generation(), g0, "nor does rendering it");
+
+        w.push(&frame(14_074_000, 3, 8));
+        assert_ne!(w.generation(), g0, "a new row is a change");
+        let g1 = w.generation();
+
+        w.set_no_data_color([1, 2, 3]);
+        assert_ne!(w.generation(), g1, "so is a palette change");
+    }
+
     use super::*;
 
     fn frame(center_hz: u64, peak_bin: usize, bins: usize) -> SpectrumFrame {

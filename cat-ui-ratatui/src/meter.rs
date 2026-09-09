@@ -153,7 +153,7 @@ pub fn smeter_line(reading: Option<MeterReading>, label_style: Style, dim: Style
             Span::styled("  no reading yet", dim),
         ]),
         Some(r) => Line::from(vec![
-            Span::styled(r.s_unit(), label_style),
+            Span::styled(r.s_unit_display(), label_style),
             Span::styled(format!("  {}/{}", r.raw, r.range.max), dim),
         ]),
     }
@@ -165,6 +165,12 @@ pub fn smeter_line(reading: Option<MeterReading>, label_style: Style, dim: Style
 /// A meter that is present but inactive — a TX meter during receive — is
 /// passed with `active: false` and keeps its row, dimmed. Reflowing the
 /// rail on every transmit would make the whole panel jump.
+/// The narrowest bar worth keeping when a readout competes for the row.
+///
+/// Below this the bar stops conveying anything and the number is all that
+/// is left, so the number is what gets dropped instead.
+const MIN_BAR: u16 = 8;
+
 pub fn meter_rail(
     meters: &[(&str, Option<MeterReading>, bool)],
     area: Rect,
@@ -189,12 +195,38 @@ pub fn meter_rail(
         if bar_x >= area.x + area.width {
             continue;
         }
+        // A readout on the right, because a bar alone is only legible as
+        // "about this long". `MeterReading::s_unit` already computes the
+        // radio's own S-unit label -- it was simply never shown, so an S9
+        // and an S7 looked like two bars of similar length and nothing
+        // else. Non-S meters get a percentage, which is the only thing
+        // meaningful without a calibration the radio did not publish.
+        let readout = match (reading, is_active) {
+            (Some(r), true) if r.kind == cat_framework::capabilities::MeterKind::S => {
+                Some(r.s_unit_display())
+            }
+            (Some(r), true) => Some(format!("{}%", r.percent())),
+            _ => None,
+        };
+        // Only when there is room for a bar worth drawing beside it: on a
+        // narrow terminal the bar is the more useful of the two.
+        let value_width = match &readout {
+            Some(text) if area.width > label_width + MIN_BAR + text.len() as u16 + 1 => {
+                text.len() as u16 + 1
+            }
+            _ => 0,
+        };
         let bar_area = Rect {
             x: bar_x,
             y,
-            width: area.width - label_width,
+            width: area.width - label_width - value_width,
             height: 1,
         };
+        if value_width > 0 {
+            if let Some(text) = &readout {
+                buf.set_string(bar_area.x + bar_area.width + 1, y, text, style);
+            }
+        }
         match (reading, is_active) {
             (Some(r), true) => meter_bar(*r, bar_area, buf, fill, empty),
             // Present but inert: an empty trough, so the row still reads as
@@ -226,6 +258,93 @@ mod tests {
 
     fn filled(b: &Buffer, w: u16) -> usize {
         (0..w).filter(|x| b.get(*x, 0).symbol() == "█").count()
+    }
+
+    /// Read a whole row back as text.
+    fn row(b: &Buffer, w: u16) -> String {
+        (0..w).map(|x| b.get(x, 0).symbol()).collect()
+    }
+
+    fn s_reading(raw: u16) -> MeterReading {
+        MeterReading::new(MeterKind::S, raw, RawRange::new(0, 30))
+    }
+
+    #[test]
+    fn an_s_meter_row_shows_its_s_unit_not_just_a_bar() {
+        // The complaint this fixes: "SMeter is hard to read". A bar alone
+        // is legible only as "about this long" -- an S9 and an S7 are two
+        // similar-looking bars and nothing else. `s_unit()` was already
+        // computed and simply never drawn.
+        let mut b = Buffer::empty(Rect::new(0, 0, 40, 1));
+        meter_rail(
+            &[("S", Some(s_reading(20)), true)],
+            Rect::new(0, 0, 40, 1),
+            &mut b,
+            4,
+            MeterStyles {
+                active: Style::default(),
+                inactive: Style::default(),
+                fill: Color::Green,
+                empty: Color::DarkGray,
+            },
+        );
+        let text = row(&b, 40);
+        assert!(text.starts_with('S'), "label still first: {text:?}");
+        assert!(
+            text.trim_end().ends_with("S9"),
+            "the S-unit must be readable at the end of the row: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_narrow_row_keeps_the_bar_and_drops_the_number() {
+        // Below a usable bar width the number is all that would be left,
+        // so the number is what goes -- a rail of bare numbers is not a
+        // rail any more.
+        let mut b = Buffer::empty(Rect::new(0, 0, 12, 1));
+        meter_rail(
+            &[("S", Some(s_reading(30)), true)],
+            Rect::new(0, 0, 12, 1),
+            &mut b,
+            4,
+            MeterStyles {
+                active: Style::default(),
+                inactive: Style::default(),
+                fill: Color::Green,
+                empty: Color::DarkGray,
+            },
+        );
+        assert!(filled(&b, 12) > 0, "the bar must survive a narrow row");
+        assert!(
+            !row(&b, 12).contains("S9+"),
+            "no room for a readout here: {:?}",
+            row(&b, 12)
+        );
+    }
+
+    #[test]
+    fn an_inert_tx_meter_shows_no_number() {
+        // A TX meter during receive keeps its row dimmed and empty. A
+        // number beside it would read as a live measurement.
+        let mut b = Buffer::empty(Rect::new(0, 0, 40, 1));
+        meter_rail(
+            &[("ALC", None, false)],
+            Rect::new(0, 0, 40, 1),
+            &mut b,
+            4,
+            MeterStyles {
+                active: Style::default(),
+                inactive: Style::default(),
+                fill: Color::Green,
+                empty: Color::DarkGray,
+            },
+        );
+        let text = row(&b, 40);
+        assert!(text.starts_with("ALC"));
+        assert!(
+            !text.contains('%') && !text.contains("S9"),
+            "an inert row must not show a value: {text:?}"
+        );
     }
 
     #[test]
@@ -383,10 +502,11 @@ mod tests {
 
     #[test]
     fn a_radios_own_s_unit_table_beats_the_generic_formula() {
-        // Raw 24 is where the TS-570D's table and the interpolated formula
-        // part company; a console that passes `None` silently loses its
-        // radio's calibration.
-        let bare = MeterReading::new(MeterKind::S, 24, RawRange::new(0, 30));
+        // Raw 10 is where the TS-570D's table and the interpolated
+        // formula part company; a console that passes `None` silently
+        // loses its radio's calibration. The radio calls it S9+10, an
+        // even spread across 0-15 calls it something else.
+        let bare = MeterReading::new(MeterKind::S, 10, RawRange::new(0, 15));
         let with_table = bare.with_s_units(cat_ui::SUnitScale::TS570D);
         assert_eq!(with_table.s_unit(), "S9+10");
         assert_ne!(
@@ -420,9 +540,30 @@ mod tests {
             dim,
         );
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.starts_with("S9"), "got {text:?}");
+        // `~` because this reading carries no table: the label came from
+        // the generic formula, and a renderer that shows a guess exactly
+        // as it shows a measurement is claiming more than it knows.
+        assert!(text.starts_with("~S9"), "got {text:?}");
         // The raw value is what makes a miscalibrated meter diagnosable.
         assert!(text.contains("20/30"), "got {text:?}");
+    }
+
+    #[test]
+    fn a_measured_s_unit_is_shown_without_the_estimate_marker() {
+        // The other half of the same rule: a radio that published its own
+        // table has been measured, so its label carries no hedge. If the
+        // marker ever appeared on a calibrated radio it would train the
+        // operator to ignore it on the one that needs it.
+        let dim = Style::default();
+        let measured = MeterReading::new(MeterKind::S, 10, RawRange::new(0, 15))
+            .with_s_units(cat_ui::SUnitScale::TS570D);
+        let line = smeter_line(Some(measured), dim, dim);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("S9+10"), "got {text:?}");
+        assert!(
+            !text.contains('~'),
+            "a measured label must not hedge: {text:?}"
+        );
     }
 
     #[test]

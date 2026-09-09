@@ -878,3 +878,219 @@ bar for Windows work.
 
 ### Status: see `progress.md` for what was actually implemented and the
 ### full verification transcript.
+
+
+## Task 9 (EINTR and short-write handling in `cat-transport-serial`'s
+## io_uring backend) — 2026-09-06
+
+### Why now — a real-hardware failure, not a code-review finding
+
+Surfaced running `ts570d server --port /dev/ttyUSB0` against a physical
+TS-570D (not the emulator, not a pty). Scripted CAT over the raw TCP port
+was intermittently unreliable: some requests answered correctly, others
+returned a frame belonging to a different request or a stale one. `FA;` and
+`MD;` both returned an `IF` frame at one point. It eventually surfaced
+explicitly as:
+
+    ERR physical radio session error: transport error: IO error:
+    Interrupted system call (os error 4)
+
+That is EINTR reaching the caller as a fatal session error.
+
+### Diagnosis (code read, not inference)
+
+`cat-transport-serial/src/io_uring.rs`:
+
+- **`read()`** (~379-406) loops and retries `ErrorKind::WouldBlock` against a
+  `READ_TIMEOUT` deadline. Every other error, `ErrorKind::Interrupted`
+  included, falls to the catch-all `Err(e) => return Err(TransportError::Io(e))`
+  at ~404. A signal delivered while the readv is in flight therefore kills
+  the read.
+- **`write()`** (~353-359) has *no retry loop at all*:
+  `let (result, _buf) = self.stream.writev(buf).await; let n = result?;`
+  EINTR propagates directly.
+
+`grep -rniE 'EINTR|Interrupted'` across the workspace: handled in
+`cat-transport-tcp/src/session.rs:246`, `cat-server/src/tcp_windows.rs:148`
+and `cat-rigctl/src/rigctl_windows.rs:148`. **Zero occurrences in
+`cat-transport-serial`.** The pattern is established in this codebase; it
+was simply never applied to the serial backend.
+
+### Second defect found while diagnosing — callers discard `write`'s count
+
+`cat-transport-serial/src/session.rs:79` and `:108` both do:
+
+    self.transport.write(request).await?;
+
+The returned byte count is dropped. `writev` may legally return a short
+count, so a partial write silently truncates the CAT request and the radio
+then sees a malformed command. CAT requests are short enough that this is
+unlikely to bite on its own, but **EINTR makes short writes more likely**,
+so the two defects compound: this is a plausible contributor to the
+wrong-frame symptom above, independent of the fatal-error path.
+
+### Plan (TDD — test first, then fix)
+
+1. **Extract the retry decision into a pure, testable function.** The
+   failure lives inside `self.stream.readv(...).await` on a monoio stream,
+   which cannot be mocked without a runtime. Testing the *syscall* is not
+   the goal; testing the *decision* is. Add something of the shape
+   `fn retry_disposition(e: &std::io::Error) -> Disposition` with
+   `Retry | Timeout | Fatal`, and unit-test it directly for
+   `Interrupted`, `WouldBlock`, and a representative fatal kind. Write
+   these tests first; they fail because the function does not exist.
+2. **Fix `read()`** to route `Interrupted` to `Retry`.
+3. **Fix `write()`** to loop until all bytes are written, retrying
+   `Interrupted` and advancing on short counts, returning `data.len()` on
+   success.
+4. **Best-effort integration test** over the existing pty harness (the
+   crate already builds master/slave pairs — see `io_uring.rs:620, :833`):
+   deliver a signal to the process during an in-flight read and assert the
+   read still completes. Flagged as possibly flaky — see judgment calls.
+5. Leave `session.rs:79/:108` discarding the count, but only *after* (3)
+   makes a short return impossible. Note it in `findings.md` rather than
+   changing two call sites for a condition that can no longer occur.
+
+### Judgment calls flagged for review before any code is written
+
+- **EINTR still respects the read deadline.** Retrying without a deadline
+  check risks an unbounded loop under a signal storm. The cost is that a
+  sustained storm reports `ReadTimeout` rather than the underlying EINTR,
+  which is a slightly misleading error but a safe one. Alternative
+  considered and rejected: a separate EINTR retry budget, which adds a
+  second tunable for a case no one has hit.
+- **`write()` loops internally to completion** rather than returning short
+  and making every caller loop. This matches what the two existing callers
+  already assume by discarding the count, and it is the smaller change.
+- **The pty signal test may be inherently flaky** — the signal has to land
+  inside a narrow window while the readv is in flight. If it cannot be made
+  deterministic in a few attempts it will be dropped rather than committed
+  flaky, and the pure-function tests from (1) stand as the real guard.
+  **This is the main thing worth a second opinion before I start.**
+- **Scope held to this crate.** `cat-framework/src/cat.rs:258`
+  (parameterised query forms unreachable, menu read dead) and the missing
+  audio-level metering in `ts570d`'s server are separate defects found in
+  the same session; they are *not* in this task and want their own plans
+  in their own planning directories.
+
+### Verification plan
+
+Baselines **re-measured immediately before touching any file**, not taken
+from this document's earlier tasks (which cite 24 for this crate and are
+now stale):
+
+- `cargo test -p cat-transport-serial` — **20 passed** at baseline.
+- `cargo test --workspace` — **845 passed** at baseline, 0 failed.
+
+After: both must be green with the new tests added, no regressions. Plus
+`cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo fmt --all -- --check`. No Windows cross-check needed — the change is
+confined to the io_uring (Linux) backend; `windows.rs` is untouched.
+
+Real-hardware re-test is the acceptance criterion that actually matters:
+re-run the scripted CAT loop against the TS-570D on a dummy load and
+confirm `FA;`/`MD;`/`IF;` answer correctly and repeatedly.
+
+### Status: PLAN ONLY — no code written. Awaiting architect/user review per
+### CLAUDE.md's mandatory review workflow.
+
+
+## Task 10 (`initial_dtr`/`initial_rts` only gate the assert — the server keys
+## the transmitter on every start) — 2026-09-06
+
+### Severity: this transmits without being asked to
+
+On a station that keys PTT from DTR (an ACC2 opto interface — the documented
+`ts570d --cat-dtr` topology), `ts570d server` **puts the radio into transmit
+the moment it opens the port, and holds it there for the life of the
+process.** Observed on a physical TS-570D at 100 W into a dummy load.
+
+### Diagnosis
+
+`SerialConfig::default()` sets `initial_dtr: true` (`config.rs:67`), and
+`SerialPort::open` does:
+
+    if config.initial_rts { let _ = port.set_rts(true); }
+    if config.initial_dtr { let _ = port.set_dtr(true); }
+
+The flags **only gate an assert**. They never deassert. This crate's own test
+says so in as many words (`io_uring.rs:741`):
+
+    `initial_rts`/`initial_dtr` only gate the assert call, they are not a
+    precondition for `open()` succeeding.
+
+The Linux tty layer raises DTR on open by default. So a caller passing
+`initial_dtr: false` — which reads exactly like "do not assert DTR" — gets
+DTR asserted anyway, by the kernel, with nothing in the code path lowering
+it. `ts570d`'s `run_server_mode()` (`src/main.rs:834`) passes precisely that,
+with the comment "Never assert DTR at open", and is keyed regardless.
+
+### Evidence chain (all measured, none inferred)
+
+| Observation | Explanation under this diagnosis |
+|---|---|
+| `IF` bit 26 reads TX the instant the server starts | kernel raised DTR at open |
+| `RX;` sent three times does not clear it | CAT cannot override a physically asserted PTT line |
+| Killing the process drops the radio to RX immediately | port closed, HUPCL lowered DTR |
+| A CAT-only server shows it too | nothing to do with console, audio or SDR |
+
+The last row matters: this is not config-specific. Any `ts570d server` on a
+DTR-keyed station does it.
+
+### Fix
+
+Drive the line to the configured state unconditionally rather than branching
+on it:
+
+    let _ = port.set_rts(config.initial_rts);
+    let _ = port.set_dtr(config.initial_dtr);
+
+Two lines. `false` now means "hold this line low", which is what every
+caller already believed it meant. Defaults are unchanged (both `true`), so
+no existing behaviour moves except the opted-out case that is currently
+broken. ENOTTY on a pty stays ignored exactly as now.
+
+### Judgment calls for review
+
+- **Apply the same change to RTS, not just DTR.** The bug is symmetric and
+  fixing only the line that bit us leaves the same trap set for the next
+  person. The TS-570D uses RTS as receive-enable, so an explicit low is
+  meaningful there too.
+- **Rename the fields.** `initial_dtr` reads as "the initial DTR state",
+  which is exactly how `ts570d` used it and how I read it while writing the
+  analysis that wrongly cleared the server. If the semantics become "the
+  state to drive at open" the current names are finally accurate, so the
+  rename may be unnecessary — but the names earned scrutiny. Flagging rather
+  than deciding.
+- **Windows path (`windows.rs:391`) has the same shape** and should get the
+  same treatment, type-checked only per this crate's standing bar.
+
+### Verification — and an honest limit
+
+**The unit tests cannot prove this one.** Modem-control ioctls return ENOTTY
+on a pty, which is what the existing suite runs on; the crate's own tests
+assert ENOTTY rather than line state. After the fix the code is
+unconditional, so there is no branch left to test either. Writing a test
+that passes without touching a real UART would be theatre.
+
+So:
+
+- `cargo test -p cat-transport-serial` (24 at Task 9) and
+  `cargo test --workspace` (849) must stay green — a regression guard, not
+  evidence of the fix.
+- `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt`.
+- **The actual acceptance test is on hardware**: start `ts570d server`
+  against the physical radio and confirm `IF` bit 26 reads `0`. That check
+  belongs in `ts570d`'s `planning/hardware_validation/` harness as a
+  startup assertion — assert RX *before* any phase runs, which is also the
+  interlock that would have caught this hours earlier.
+
+### How this was missed for so long
+
+Every existing test runs against the emulator over a pty, where modem
+control returns ENOTTY and DTR does not exist. The one configuration that
+exercises real DTR is a real radio, and nothing in the repo tests against
+one. This is the same gap `ts570d`'s hardware-validation plan was opened
+for, and it is now the strongest argument for that campaign.
+
+### Status: PLAN ONLY — no code written. Awaiting review.

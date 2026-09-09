@@ -68,6 +68,8 @@
 //! full design record of this crate's Windows backend).
 
 #[cfg(target_os = "linux")]
+pub mod cached;
+#[cfg(target_os = "linux")]
 mod rigctl;
 #[cfg(target_os = "windows")]
 mod rigctl_windows;
@@ -76,6 +78,7 @@ pub mod native_bridge;
 mod protocol;
 
 use std::io;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use cat_framework::wire_format::CatWireFormat;
@@ -99,6 +102,34 @@ use tracing::{error, info};
 /// a smaller mode set) — which is exactly why these are trait methods each
 /// app implements itself, rather than a shared table this crate would have
 /// to own.
+///
+/// # The defaulted methods are a trap, and deliberately so
+///
+/// `get_split`, `set_split`, `get_rit_hz`, `get_xit_hz`, `mode_from_id`
+/// and `capabilities` all have defaults, so an impl that omits them
+/// compiles cleanly. From the client's side the result is
+/// indistinguishable from a radio that cannot do the thing: `s` answers
+/// "not split", `S` and `j` refuse.
+///
+/// The defaults exist because plenty of radios genuinely lack these, and
+/// a default of `false` or `0` would be a lie. But they mean a real
+/// capability goes missing in silence rather than as a compile error, and
+/// every one of them has been found missing on a shipped bridge at least
+/// once -- `capabilities` and the RIT pair on the TS-570D, split and
+/// `mode_from_id` on both the FT-991A and the IC-7100, each while the
+/// radio crate underneath had the command.
+///
+/// Two things follow for an implementor. Override every one of these the
+/// radio supports, checking the list against the radio rather than
+/// against what compiles. And test each override with an exchange rather
+/// than by asserting it exists: a test that fails when the method is
+/// deleted is the only kind that catches this, since deleting it is
+/// exactly what compiles.
+///
+/// It matters most where the radio also *advertises* the capability:
+/// `\dump_state`'s tail is generated from [`RigctlRadio::capabilities`],
+/// so a radio declaring split whose bridge inherited the default is
+/// telling Hamlib about a control that fails when used.
 #[async_trait(?Send)]
 pub trait RigctlRadio {
     /// This radio's mode type (e.g. `radio::Mode`).
@@ -115,6 +146,48 @@ pub trait RigctlRadio {
     async fn get_mode(&mut self) -> Result<Self::Mode, Self::Error>;
     /// Set operating mode.
     async fn set_mode(&mut self, mode: Self::Mode) -> Result<(), Self::Error>;
+    /// Whether split is on: transmit on the other VFO.
+    ///
+    /// Defaulted to "not supported" rather than to `false`, because a
+    /// radio that cannot answer and a radio answering "off" are different
+    /// facts and a client acts differently on them. A radio that has
+    /// split says so in its capabilities, and `\dump_state` tells Hamlib
+    /// -- so leaving this unimplemented on such a radio advertises a
+    /// control that fails when used.
+    async fn get_split(&mut self) -> Result<bool, Self::Error> {
+        Err(Self::unsupported())
+    }
+
+    /// Put transmit on the other VFO, or bring it back.
+    async fn set_split(&mut self, _on: bool) -> Result<(), Self::Error> {
+        Err(Self::unsupported())
+    }
+
+    /// The RIT offset in Hz, zero when RIT is off.
+    ///
+    /// Read-only here on purpose. `\dump_state` advertises a RIT range
+    /// from the radio's capabilities, so Hamlib offers the control either
+    /// way; answering the *read* is strictly better than refusing both
+    /// halves of it. Setting an offset is a separate question and not
+    /// every radio can: a TS-570D's CAT set has `RC` to clear and
+    /// `RU`/`RD` to step, and no command that takes a frequency.
+    async fn get_rit_hz(&mut self) -> Result<i32, Self::Error> {
+        Err(Self::unsupported())
+    }
+
+    /// The XIT offset in Hz, zero when XIT is off. See
+    /// [`Self::get_rit_hz`].
+    async fn get_xit_hz(&mut self) -> Result<i32, Self::Error> {
+        Err(Self::unsupported())
+    }
+
+    /// The error a defaulted method returns.
+    ///
+    /// A trait method cannot construct `Self::Error` without help, and
+    /// every implementor already has a way to say "this radio does not do
+    /// that" -- so it says which.
+    fn unsupported() -> Self::Error;
+
     /// Whether the radio is currently transmitting.
     async fn get_transmitting(&mut self) -> Result<bool, Self::Error>;
     /// Key the radio into transmit.
@@ -142,6 +215,24 @@ pub trait RigctlRadio {
     /// unchanged, with the placeholder tail they have always sent. A radio
     /// gains real rigctl capability reporting by describing itself, not by
     /// editing this crate.
+    /// This radio's own mode type for a wire [`ModeId`], where the two
+    /// map exactly.
+    ///
+    /// The mode read is the last one a cache cannot serve generically:
+    /// the cache holds a `ModeId` and a client wants `Self::Mode`, and
+    /// nothing on this trait crosses between them. Going by label does
+    /// not work either -- a `ModeDescriptor` label is what an operator
+    /// reads on a mode button ("CW-R", "DATA-U"), not what Hamlib calls
+    /// the mode.
+    ///
+    /// Defaulted to `None`, which keeps the read on the wire. Implement
+    /// it only where the mapping is genuinely one-to-one: answering with
+    /// an approximation would tell a client the radio is in a mode it is
+    /// not in, which is worse than a slow answer.
+    fn mode_from_id(_id: cat_framework::capabilities::ModeId) -> Option<Self::Mode> {
+        None
+    }
+
     fn capabilities() -> Option<&'static cat_framework::capabilities::RadioCapabilities> {
         None
     }
@@ -161,6 +252,20 @@ pub struct ServerConfig {
     /// The Hamlib rigctld-compatible TCP listener, for WSJT-X.
     pub rigctl_port: Option<u16>,
 }
+
+/// How often the state pump reads the radio while a console is watching.
+///
+/// Every poll is two CAT exchanges (`IF` then `SM`) on a link shared with
+/// whatever is keying the transmitter. A PTT command that arrives mid-poll
+/// waits for it, and on this bench the link occasionally stalls for two
+/// seconds -- measured max 2557 ms for a rigctl request. Hamlib's rig
+/// timeout is well under a second, so WSJT-X gives up on the PTT command,
+/// retries, and the key chatters: the operator hears the radio stuttering
+/// and sees power bursting between zero and full.
+///
+/// Two a second is still a live-looking S-meter and halves the window in
+/// which a keying command can be stuck behind a state read.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Bring up the broker (owning `session`, the one physical radio
 /// connection, validated against `table`) plus every listener `config`
@@ -286,8 +391,21 @@ where
         info!("Rigctld-compatible TCP listener bound on 0.0.0.0:{port} (for WSJT-X)");
         let handle = handle.clone();
         let make_radio = make_radio.clone();
+        // Wrapped so a client is answered from the state the pump already
+        // holds instead of waiting on the wire for it -- see `cached`.
+        // Only when a cache exists to read: a server bound for rigctl
+        // alone has nothing polling, and must go to the radio.
+        let cache = native_shared.clone();
         tasks.push(monoio::spawn(async move {
-            let result = rigctl::serve(listener, handle, make_radio).await;
+            let result = match cache {
+                Some(shared) => {
+                    let make = move |session| {
+                        crate::cached::Cached::new(make_radio(session), Arc::clone(&shared))
+                    };
+                    rigctl::serve(listener, handle, make).await
+                }
+                None => rigctl::serve(listener, handle, make_radio).await,
+            };
             if let Err(e) = &result {
                 error!("Rigctld-compatible TCP listener on 0.0.0.0:{port} failed: {e}");
             }
@@ -318,11 +436,7 @@ where
             handle.clone(),
             cat_server::ClientId::from_raw(u64::MAX),
         ));
-        monoio::spawn(native_bridge::pump(
-            shared,
-            radio,
-            std::time::Duration::from_millis(200),
-        ));
+        monoio::spawn(native_bridge::pump(shared, radio, POLL_INTERVAL));
     }
 
     if tasks.is_empty() {
@@ -433,11 +547,7 @@ where
                 handle,
                 cat_server::ClientId::from_raw(u64::MAX),
             ));
-            cat_server::block_on::block_on(native_bridge::pump(
-                shared,
-                radio,
-                std::time::Duration::from_millis(200),
-            ));
+            cat_server::block_on::block_on(native_bridge::pump(shared, radio, POLL_INTERVAL));
         });
     }
 
@@ -567,6 +677,10 @@ mod tests {
     impl RigctlRadio for UnusedRadio {
         type Mode = ();
         type Error = std::convert::Infallible;
+
+        fn unsupported() -> Self::Error {
+            unreachable!("UnusedRadio is never actually invoked")
+        }
 
         async fn get_vfo_a_hz(&mut self) -> Result<u64, Self::Error> {
             unreachable!("UnusedRadio is never actually invoked")

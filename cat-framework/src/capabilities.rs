@@ -367,8 +367,15 @@ pub struct MeterDescriptor {
 }
 
 /// The labels [`SUnitScale`] assigns, in order.
-pub const S_UNIT_LABELS: [&str; 13] = [
-    "S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S9+10", "S9+20", "S9+30",
+///
+/// Up to `S9+60`, which is where the scale on a receiver's meter ends.
+/// This stopped at `S9+30` and every reading above it collapsed onto that
+/// one label -- on a TS-570D that was the top four of its sixteen raw
+/// values, and on an IC-7100 the top quarter of its range, drawn as up to
+/// 30 dB weaker than the radio was reporting.
+pub const S_UNIT_LABELS: [&str; 16] = [
+    "S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S9+10", "S9+20", "S9+30", "S9+40",
+    "S9+50", "S9+60",
 ];
 
 /// Where each S-unit boundary falls on a radio's raw meter scale.
@@ -385,7 +392,8 @@ pub const S_UNIT_LABELS: [&str; 13] = [
 /// widget that can be told the wrong one. Both travel with the reading.
 ///
 /// `thresholds` is the **inclusive upper bound** of each label in
-/// [`S_UNIT_LABELS`], ascending. It is a fixed 13 rather than a slice so
+/// [`S_UNIT_LABELS`], ascending. It is a fixed-size array rather than a
+/// slice so
 /// that a scale is `Copy`, is `const`-constructible, crosses the native
 /// protocol without an owned mirror, and cannot be built with a length
 /// that does not match the labels. A reading above the last threshold
@@ -402,12 +410,41 @@ impl SUnitScale {
         Self { thresholds }
     }
 
-    /// The Kenwood TS-570D's table, as its TUI has always drawn it.
+    /// The Kenwood TS-570D's table, **measured against its own meter**.
     ///
-    /// Preserved exactly rather than approximated: this is what its
-    /// operators have been reading, and ADR 0011 rev 4 sets "the operator
-    /// sees no change" as the bar for migrating onto shared widgets.
-    pub const TS570D: Self = Self::new([2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 24, 28, u16::MAX]);
+    /// One raw count per S-unit up to S9, then ten dB a count above it.
+    /// Read off the radio on 2026-09-08 by an operator watching the panel
+    /// while the same signal was sampled over CAT:
+    ///
+    /// | raw | panel |
+    /// |---|---|
+    /// | 9 | S9 |
+    /// | 10 | S9+10 |
+    /// | 11 | S9+20 |
+    ///
+    /// Three points, one front-end step apart, on one signal. They fix the
+    /// top half; the bottom half follows from raw 0 being S0 and raw 9
+    /// being S9 — nine counts for nine S-units — which also puts full
+    /// scale (raw 15, per the manual's `SM` range of `0000~0015`) at
+    /// S9+60, the conventional top of an S-meter. A scale that lands on
+    /// both of those independently is unlikely to be a coincidence.
+    ///
+    /// The table this replaces was inherited from the old TUI and was out
+    /// by about five S-units: it put S9 at raw 20, which this radio never
+    /// reaches, so a signal the panel called S9+10 was drawn as S4 and a
+    /// ten dB change did not move the display at all. That is the
+    /// "S meter doesn't seem to match" reported from the bench, and ADR
+    /// 0011 rev 4's "the operator sees no change" was preserving a
+    /// mistake.
+    ///
+    /// The top four counts continue the same ten dB a count: raw 12 is
+    /// S9+30 and raw 15, the top of the meter, is S9+60. Those were not
+    /// measured -- the three readings above are the evidence, and they
+    /// stop at S9+20 -- but they are the same straight line, and the line
+    /// arriving exactly at S9+60 on the last raw value the radio can
+    /// report is the reason to believe it.
+    pub const TS570D: Self =
+        Self::new([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, u16::MAX]);
 
     /// The label for a raw reading.
     pub fn label(&self, raw: u16) -> &'static str {

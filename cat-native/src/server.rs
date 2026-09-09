@@ -52,6 +52,19 @@ pub trait RadioHost: Send + Sync + 'static {
     /// What this radio is. Published once per connection, at handshake.
     fn capabilities(&self) -> &'static RadioCapabilities;
 
+    /// A console connected.
+    ///
+    /// Defaulted, so a host that does not care is unaffected. A host that
+    /// polls the radio to keep its cache warm does care: polling at
+    /// display rate when nobody is looking spends a slow serial link on
+    /// nothing, and every other client waits behind it.
+    fn console_attached(&self) {}
+
+    /// A console went away, however it went -- cleanly, by error, or by
+    /// the thread unwinding. Paired with `console_attached` by a guard, so
+    /// a count cannot leak.
+    fn console_detached(&self) {}
+
     /// What the radio is doing right now.
     fn state(&self) -> RadioState;
 
@@ -142,6 +155,8 @@ pub trait RadioHost: Send + Sync + 'static {
 /// a little over 30 fps — fast enough that a waterfall scrolls smoothly,
 /// slow enough that a dummy radio does not saturate a loopback socket with
 /// frames nobody asked to be that fresh.
+/// How long this loop blocks waiting for a client's next command before
+/// coming back round to push a frame.
 const PUMP_INTERVAL: Duration = Duration::from_millis(30);
 
 /// Serve the native protocol until the listener fails.
@@ -153,7 +168,18 @@ pub fn serve<H: RadioHost>(listener: TcpListener, host: Arc<H>) -> std::io::Resu
         let (stream, _) = listener.accept()?;
         let host = Arc::clone(&host);
         std::thread::spawn(move || {
-            let _ = serve_one(stream, host);
+            // A guard rather than a call at each exit: `serve_one` returns
+            // early on several error paths, and a leaked count would leave
+            // the radio polled at display rate forever.
+            struct Attached<'a, H: RadioHost>(&'a H);
+            impl<H: RadioHost> Drop for Attached<'_, H> {
+                fn drop(&mut self) {
+                    self.0.console_detached();
+                }
+            }
+            host.console_attached();
+            let _guard = Attached(host.as_ref());
+            let _ = serve_one(stream, Arc::clone(&host));
         });
     }
 }
@@ -166,11 +192,29 @@ pub fn serve_at<A: std::net::ToSocketAddrs, H: RadioHost>(
     serve(TcpListener::bind(addr)?, host)
 }
 
+/// How long to block for a client's next command before pushing a frame.
+///
+/// The time left until the next frame is due, capped at [`PUMP_INTERVAL`]
+/// so a slow-frame client's commands are still noticed briskly, and
+/// floored so a deadline already past does not ask for a zero timeout --
+/// which on a socket means *block forever*, the one value that must never
+/// be passed here.
+fn wake_for(last_display: Instant, interval: Duration) -> Duration {
+    /// Below this the timeout is not worth arming precisely, and zero is
+    /// forbidden outright: `set_read_timeout(Some(ZERO))` is an error on
+    /// some platforms and an infinite block on others.
+    const FLOOR: Duration = Duration::from_millis(1);
+    interval
+        .saturating_sub(last_display.elapsed())
+        .clamp(FLOOR, PUMP_INTERVAL)
+}
+
 fn serve_one<H: RadioHost>(mut stream: TcpStream, host: Arc<H>) -> std::io::Result<()> {
     stream.set_nodelay(true)?;
     // Bounded so the loop comes back to the spectrum pump even when the
     // client is silent. Without this a connection that only listens would
-    // never be sent a frame.
+    // never be sent a frame. Re-armed each pass to the next frame's
+    // deadline -- see `wake_for`.
     stream.set_read_timeout(Some(PUMP_INTERVAL))?;
 
     let mut session = NativeSession::with_installation(host.capabilities(), host.installation());
@@ -181,11 +225,31 @@ fn serve_one<H: RadioHost>(mut stream: TcpStream, host: Arc<H>) -> std::io::Resu
     session.set_theme(host.theme());
     let mut pending: Vec<u8> = Vec::new();
     let mut buf = [0u8; 8192];
-    let mut last_pump = Instant::now();
+    let mut last_display = Instant::now();
     let mut last_sequence: Option<u64> = None;
     let mut last_audio_sequence: Option<u64> = None;
+    // What the read timeout is currently armed for, so it is only
+    // re-armed when it actually changes. `set_read_timeout` is a syscall
+    // and this loop runs tens of times a second.
+    let mut armed = PUMP_INTERVAL;
 
     loop {
+        // Wake in time for the next frame, not merely soon.
+        //
+        // This used to block for a flat `PUMP_INTERVAL` of 30 ms while
+        // the frame check asked for `elapsed >= interval`. At the default
+        // 100 ms those never interfered. At 30 fps -- a 33 ms interval --
+        // 30 ms is just short of it, so every frame missed its deadline
+        // by 3 ms and waited a whole further tick: frames went out every
+        // 60 ms and a console that asked for 30 fps measured **17.9**.
+        //
+        // Sleeping to the deadline instead costs nothing when the client
+        // is slow (the cap still applies) and is exact when it is fast.
+        let wake = wake_for(last_display, session.frame_interval());
+        if wake != armed {
+            stream.set_read_timeout(Some(wake))?;
+            armed = wake;
+        }
         match stream.read(&mut buf) {
             Ok(0) => return Ok(()),
             Ok(n) => pending.extend_from_slice(&buf[..n]),
@@ -245,8 +309,12 @@ fn serve_one<H: RadioHost>(mut stream: TcpStream, host: Arc<H>) -> std::io::Resu
         }
         pending.drain(..consumed);
 
-        if last_pump.elapsed() >= PUMP_INTERVAL {
-            last_pump = Instant::now();
+        // Pictures go out on their own clock, at the rate this client
+        // said it can render. Read from the session each time rather than
+        // cached: the handshake that sets it arrives on this same loop,
+        // so a value read once at the top would always be the default.
+        if last_display.elapsed() >= session.frame_interval() {
+            last_display = Instant::now();
             if session.wants_audio() {
                 if let Some(frame) = host.audio() {
                     // Same don't-resend rule as spectrum, and it matters
@@ -284,4 +352,50 @@ fn write_control(stream: &mut TcpStream, message: &ServerMessage) -> std::io::Re
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     stream.write_all(&encode_frame(FrameKind::Control, &payload))?;
     stream.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_fast_client_is_woken_in_time_for_its_deadline() {
+        // The defect this exists for: a flat 30 ms block against a 33 ms
+        // deadline missed it by 3 ms every time, so frames went out every
+        // 60 ms and a console asking for 30 fps measured 17.9.
+        let interval = Duration::from_millis(33);
+        let wake = wake_for(Instant::now(), interval);
+        assert!(
+            wake <= interval,
+            "must not sleep past the deadline: {wake:?}"
+        );
+    }
+
+    #[test]
+    fn a_slow_client_still_has_its_commands_noticed_briskly() {
+        // A 10 fps client must not leave the loop blind to input for
+        // 100 ms; the cap is what keeps commands responsive.
+        let wake = wake_for(Instant::now(), Duration::from_millis(100));
+        assert_eq!(wake, PUMP_INTERVAL);
+    }
+
+    #[test]
+    fn a_deadline_already_past_asks_for_a_short_wait_not_none() {
+        // `set_read_timeout(Some(ZERO))` means block forever on some
+        // platforms and is an error on others. Either would wedge this
+        // loop, so zero must be unreachable.
+        let long_ago = Instant::now() - Duration::from_secs(5);
+        let wake = wake_for(long_ago, Duration::from_millis(33));
+        assert!(!wake.is_zero(), "zero would block forever");
+        assert!(wake <= PUMP_INTERVAL);
+    }
+
+    #[test]
+    fn the_wait_never_exceeds_the_cap_however_slow_the_client() {
+        for ms in [1u64, 33, 100, 1000, 60_000] {
+            let wake = wake_for(Instant::now(), Duration::from_millis(ms));
+            assert!(wake <= PUMP_INTERVAL, "{ms} ms asked for {wake:?}");
+            assert!(!wake.is_zero());
+        }
+    }
 }
