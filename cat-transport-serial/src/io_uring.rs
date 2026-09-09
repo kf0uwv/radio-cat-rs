@@ -784,19 +784,31 @@ mod tests {
         );
     }
 
-    /// `SerialConfig::default()` must assert RTS and DTR at open time, matching
-    /// the crate's historical unconditional-assert behavior exactly (no
-    /// existing caller opts out, so the default must preserve it).
+    /// Opening a serial port must not key a transmitter.
+    ///
+    /// On many stations DTR is the PTT line, so asserting it at open time
+    /// transmits as a side effect of a program starting. This defaulted to
+    /// `true` until 2026-09-09, when a diagnostic script opened
+    /// `/dev/ttyUSB0` on a DTR-keyed TS-570D and keyed it.
+    ///
+    /// RTS keeps asserting: it is the hardware-flow-control line, no
+    /// caller in these repos keys from it, and a UART that never raises
+    /// RTS can wedge a link that expects it. The asymmetry is deliberate
+    /// -- this is about which line is dangerous, not about symmetry.
     #[test]
-    fn test_default_config_initial_rts_dtr_are_true() {
+    fn opening_a_port_does_not_assert_the_line_that_keys_a_transmitter() {
         let config = SerialConfig::default();
         assert!(
-            config.initial_rts,
-            "SerialConfig::default() must assert RTS at open time"
+            !config.initial_dtr,
+            "SerialConfig::default() asserts DTR at open time. On a station \
+             that keys PTT from DTR -- which is most of them -- that \
+             transmits the moment a program opens the port. Opt in where a \
+             station needs it, do not default to it."
         );
         assert!(
-            config.initial_dtr,
-            "SerialConfig::default() must assert DTR at open time"
+            config.initial_rts,
+            "RTS is flow control here, not keying, and a link that expects \
+             it can wedge without it"
         );
     }
 

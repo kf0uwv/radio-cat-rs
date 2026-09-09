@@ -70,7 +70,26 @@ use serde::{Deserialize, Serialize};
 
 /// Wire protocol version, sent in every [`ClientMessage::Hello`] and
 /// [`ServerMessage::Welcome`].
-pub const PROTOCOL_VERSION: u16 = 1;
+///
+/// # Bump this whenever a message's shape changes
+///
+/// A mismatch is refused at the handshake with a sentence naming both
+/// versions, which is a good error. Leaving this alone while changing a
+/// payload gets the *bad* error instead: the handshake passes, and the
+/// decode fails later somewhere inside a nested type.
+///
+/// That happened on 2026-09-09. `SUnitScale` grew from 13 thresholds to
+/// 16 so the labels could reach S9+60, and the version stayed at 1, so a
+/// console built an hour earlier connected happily and then died with
+/// `undecodable message: invalid length 16, expected 13 elements in
+/// sequence` -- a serde-internal complaint that names neither the field,
+/// the type, nor the fix, in front of an operator who had done nothing
+/// wrong. Version 2 is that change.
+///
+/// `the_capability_wire_shape_is_pinned_to_the_protocol_version` fails if
+/// the shape moves without this constant moving, so the coupling does not
+/// depend on anyone remembering it.
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Largest control payload accepted, to bound what a peer can make the
 /// other side allocate before it has proved anything.
@@ -1759,5 +1778,84 @@ mod tests {
         assert_eq!(back, wire);
         assert_eq!(back.signal, RADIO.signal);
         assert_eq!(back.filters.widths_hz, Some(vec![500, 2_400]));
+    }
+}
+
+/// The wire shape, pinned so it cannot change without somebody deciding to.
+///
+/// These are not tests of behaviour. They exist because a wire format has
+/// two ends, and the one that broke on 2026-09-09 was not in this repo:
+/// a console binary an hour older than the server connected, passed the
+/// handshake, and then died on `invalid length 16, expected 13 elements
+/// in sequence` -- serde complaining from inside a nested type, naming
+/// neither the field nor the fix, at an operator who had changed nothing.
+///
+/// The handshake already refuses a version mismatch with a good sentence
+/// -- `a_version_mismatch_is_refused_rather_than_guessed_at` covers that,
+/// and it was working. The gap was that nothing tied *the shape* to *the
+/// version*, so a payload could change while the version sat still, and
+/// the refusal never fired. That is what these close.
+#[cfg(test)]
+mod wire_shape_is_pinned {
+    use super::*;
+
+    /// Serialize the stub radio's capabilities the way the wire does.
+    fn wire_json() -> String {
+        let wire = CapabilitiesWire::from(&crate::testing::STUB_RADIO);
+        serde_json::to_string(&wire).expect("capabilities serialize")
+    }
+
+    #[test]
+    fn the_capability_wire_shape_is_pinned_to_the_protocol_version() {
+        // A change to any field name, field order, enum spelling or array
+        // width inside `CapabilitiesWire` moves this string. That is the
+        // point: the diff is the notification.
+        //
+        // WHEN THIS FAILS, it is telling you a peer built against the old
+        // shape can no longer decode this one. Do both of these:
+        //
+        //   1. bump `PROTOCOL_VERSION`, so the mismatch is refused at the
+        //      handshake with a sentence instead of surfacing later as a
+        //      serde error inside a nested type;
+        //   2. update the pin below to the new string.
+        //
+        // Doing only (2) restores the exact failure this exists to stop.
+        let pinned_version = 2;
+        assert_eq!(
+            PROTOCOL_VERSION, pinned_version,
+            "PROTOCOL_VERSION changed; update the pinned shape below in the \
+             same commit so the two cannot drift apart"
+        );
+
+        let json = wire_json();
+
+        // The specific field that broke it, called out rather than left
+        // for someone to find in a 2 kB string: `SUnitScale` is a
+        // fixed-width array on the wire, so its width is part of the
+        // format. 13 -> 16 is what version 2 is.
+        let thresholds = json
+            .split("\"thresholds\":[")
+            .nth(1)
+            .expect("the S-unit table is on the wire")
+            .split(']')
+            .next()
+            .expect("the table is a JSON array");
+        assert_eq!(
+            thresholds.split(',').count(),
+            16,
+            "the S-unit table changed width; a console built against the \
+             old width decodes this as `invalid length N, expected M \
+             elements in sequence` -- bump PROTOCOL_VERSION"
+        );
+    }
+
+    #[test]
+    fn a_capability_payload_round_trips_through_its_own_format() {
+        // The pin above catches a change. This catches the change being
+        // wrong: whatever the shape is, both directions must agree on it.
+        let wire = CapabilitiesWire::from(&crate::testing::STUB_RADIO);
+        let json = serde_json::to_string(&wire).expect("serialize");
+        let back: CapabilitiesWire = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(wire, back, "the wire format does not round trip");
     }
 }

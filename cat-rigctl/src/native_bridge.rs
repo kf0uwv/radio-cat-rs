@@ -92,6 +92,64 @@ impl NativeRadio for NoNative {
 
 type Pending = (Command, SyncSender<Result<(), String>>);
 
+/// What a queued command contends for, when two of them cannot both hold.
+///
+/// Two sets aimed at the same thing are not two instructions -- they are
+/// one instruction and a correction. Sending both means the radio visits
+/// the abandoned value on its way to the wanted one, which on a 9600-baud
+/// link is a dial that visibly jumps to a frequency nobody asked for and
+/// then moves again. `None` means the command contends with nothing and
+/// is always sent.
+///
+/// Reads are deliberately `None`. Two clients asking for the S-meter are
+/// not in conflict; each is owed its own answer, and dropping one to
+/// "win" would answer a question that was asked with a reply to a
+/// different one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    /// Per-VFO: setting A and setting B are not the same instruction.
+    Frequency(u8),
+    Mode,
+    Split,
+    MemoryChannel,
+    FilterWidth,
+    IfShift,
+    /// Its own slot rather than `Frequency(0)`: a retune moves the IF-tap
+    /// source with the dial, so the two are not interchangeable even when
+    /// they name the same hertz.
+    Retune,
+}
+
+impl Slot {
+    fn of(command: &Command) -> Option<Self> {
+        match command {
+            Command::SetFrequency { vfo, .. } => Some(Slot::Frequency(*vfo)),
+            Command::SetMode { .. } => Some(Slot::Mode),
+            Command::SetSplit { .. } => Some(Slot::Split),
+            Command::SetMemoryChannel { .. } => Some(Slot::MemoryChannel),
+            Command::SetFilterWidth { .. } => Some(Slot::FilterWidth),
+            Command::SetIfShift { .. } => Some(Slot::IfShift),
+            Command::Retune { .. } => Some(Slot::Retune),
+            // Reads, and the device commands that never reach this queue.
+            Command::ReadMeter { .. }
+            | Command::ReadState
+            | Command::ReadDevices
+            | Command::AttachDevice { .. } => None,
+        }
+    }
+}
+
+/// What a client is told when its set was replaced before it was sent.
+///
+/// An explicit answer, not silence and not `Ok`. Silence would leave the
+/// caller blocked on `APPLY_TIMEOUT` and then told "the radio did not
+/// answer in time", which is false -- the radio was never asked. `Ok`
+/// would be worse: the client would believe the radio is on a frequency
+/// it never visited, which is the same lie as a set that reports success
+/// without being read back.
+pub const SUPERSEDED: &str = "superseded: a newer setting for the same \
+control was queued before this one reached the radio";
+
 /// How a host is asked what it has wired. See [`NativeShared::set_installation`].
 pub type InstallationFn = Arc<dyn Fn() -> cat_framework::installation::Installation + Send + Sync>;
 
@@ -469,11 +527,7 @@ impl RadioHost for NativeShared {
                 None => Err("this server does not offer device selection".to_string()),
             };
         }
-        let (tx, rx) = sync_channel(1);
-        self.queue
-            .lock()
-            .map_err(|_| "the server's command queue is poisoned".to_string())?
-            .push_back((command.clone(), tx));
+        let rx = self.enqueue(command)?;
         match rx.recv_timeout(APPLY_TIMEOUT) {
             Ok(result) => result,
             Err(_) => Err("the radio did not answer in time".to_string()),
@@ -502,6 +556,52 @@ impl RadioHost for NativeShared {
 
     fn audio(&self) -> Option<cat_signal::AudioFrame> {
         self.audio.lock().ok().and_then(|a| a.clone())
+    }
+}
+
+impl NativeShared {
+    /// Put a command on the queue, dropping any queued set it replaces.
+    ///
+    /// Split out from `apply` so the last-in-wins rule can be tested
+    /// without a thread parked on `APPLY_TIMEOUT`. A test that has to race
+    /// a timeout to observe a queue is a test that fails on a loaded
+    /// machine and teaches everyone to re-run it.
+    fn enqueue(
+        &self,
+        command: &Command,
+    ) -> Result<std::sync::mpsc::Receiver<Result<(), String>>, String> {
+        let (tx, rx) = sync_channel(1);
+        {
+            let mut queue = self
+                .queue
+                .lock()
+                .map_err(|_| "the server's command queue is poisoned".to_string())?;
+            // Last in wins. A set still waiting to go out is not an
+            // instruction the radio has seen, so replacing it costs
+            // nothing and sending both costs a dial that jumps to an
+            // abandoned value first.
+            //
+            // Only the queue. A command the pump has already taken is on
+            // the wire and cannot be recalled -- "queued" is the whole
+            // scope of this, and claiming more would be claiming to undo
+            // something already done.
+            if let Some(slot) = Slot::of(command) {
+                let mut kept = VecDeque::with_capacity(queue.len());
+                for (queued, reply) in queue.drain(..) {
+                    if Slot::of(&queued) == Some(slot) {
+                        // Answer it rather than dropping it on the floor.
+                        // A send that fails means the caller already gave
+                        // up, which is fine and not this code's problem.
+                        let _ = reply.send(Err(SUPERSEDED.to_string()));
+                    } else {
+                        kept.push_back((queued, reply));
+                    }
+                }
+                *queue = kept;
+            }
+            queue.push_back((command.clone(), tx));
+        }
+        Ok(rx)
     }
 }
 
@@ -686,7 +786,7 @@ mod tests {
         required: true,
         shareable_with: &[],
     }];
-    static RADIO: RadioCapabilities = RadioCapabilities {
+    pub(super) static RADIO: RadioCapabilities = RadioCapabilities {
         model: "Bridge Test Radio",
         endpoints: EndpointSet::new(ENDPOINTS),
         vfos: VfoCapability {
@@ -869,5 +969,182 @@ mod tests {
         assert_eq!(shared.dial_hz(), None);
         shared.publish_now(Some(state_at(21_074_000)));
         assert_eq!(shared.dial_hz(), Some(21_074_000));
+    }
+}
+
+/// Last in wins, on the queue only.
+///
+/// Two clients setting the same control are not giving two instructions;
+/// they are giving one and correcting it. Sending both means the radio
+/// visits the abandoned value on the way to the wanted one, which on a
+/// 9600-baud link is a dial that jumps somewhere nobody asked for and then
+/// moves again.
+///
+/// These exercise `enqueue` rather than `apply` on purpose: `apply` parks
+/// the caller on `APPLY_TIMEOUT` waiting for a pump that is not running,
+/// so a test built on it would be racing a timeout to look at a queue.
+#[cfg(test)]
+mod last_in_wins {
+    use super::tests::RADIO;
+    use super::*;
+    use cat_framework::capabilities::{MeterKind, ModeId};
+
+    fn queued(shared: &NativeShared) -> Vec<Command> {
+        shared.take_queued().into_iter().map(|(c, _)| c).collect()
+    }
+
+    #[test]
+    fn a_newer_set_replaces_the_one_still_queued() {
+        let shared = NativeShared::new(&RADIO);
+        let first = shared
+            .enqueue(&Command::SetFrequency {
+                vfo: 0,
+                hz: 14_074_000,
+            })
+            .expect("enqueue");
+        let _second = shared
+            .enqueue(&Command::SetFrequency {
+                vfo: 0,
+                hz: 14_100_000,
+            })
+            .expect("enqueue");
+
+        assert_eq!(
+            queued(&shared),
+            vec![Command::SetFrequency {
+                vfo: 0,
+                hz: 14_100_000
+            }],
+            "only the newest set for a control should reach the radio"
+        );
+
+        // And the displaced caller was answered, not abandoned.
+        assert_eq!(
+            first
+                .try_recv()
+                .expect("the superseded caller was answered"),
+            Err(SUPERSEDED.to_string())
+        );
+    }
+
+    #[test]
+    fn the_superseded_caller_is_told_rather_than_left_to_time_out() {
+        // Three ways to handle a dropped command, only one of them
+        // honest. Silence parks the client until `APPLY_TIMEOUT` and then
+        // tells it "the radio did not answer in time" -- false, the radio
+        // was never asked. `Ok(())` is worse: the client believes the
+        // radio is on a frequency it never visited, which is the same lie
+        // as a set that reports success without being read back.
+        let shared = NativeShared::new(&RADIO);
+        let displaced = shared
+            .enqueue(&Command::SetMode { mode: ModeId::Usb })
+            .expect("enqueue");
+        let _winner = shared
+            .enqueue(&Command::SetMode { mode: ModeId::Lsb })
+            .expect("enqueue");
+
+        match displaced.try_recv() {
+            Ok(Err(why)) => {
+                assert!(
+                    why.contains("superseded"),
+                    "the reason should say what happened: {why}"
+                );
+            }
+            Ok(Ok(())) => panic!("a command that never reached the radio must not report success"),
+            Err(_) => panic!("the superseded caller was left waiting on a timeout"),
+        }
+    }
+
+    #[test]
+    fn the_two_vfos_are_not_the_same_control() {
+        // Setting A and setting B are two instructions, not an
+        // instruction and a correction. Collapsing them would silently
+        // drop half of every split setup.
+        let shared = NativeShared::new(&RADIO);
+        let _a = shared
+            .enqueue(&Command::SetFrequency {
+                vfo: 0,
+                hz: 14_074_000,
+            })
+            .expect("enqueue");
+        let _b = shared
+            .enqueue(&Command::SetFrequency {
+                vfo: 1,
+                hz: 14_100_000,
+            })
+            .expect("enqueue");
+        assert_eq!(queued(&shared).len(), 2, "both VFOs must still be set");
+    }
+
+    #[test]
+    fn different_controls_do_not_displace_each_other() {
+        let shared = NativeShared::new(&RADIO);
+        let _f = shared
+            .enqueue(&Command::SetFrequency {
+                vfo: 0,
+                hz: 14_074_000,
+            })
+            .expect("enqueue");
+        let _m = shared
+            .enqueue(&Command::SetMode { mode: ModeId::Usb })
+            .expect("enqueue");
+        let _s = shared
+            .enqueue(&Command::SetSplit { enabled: true })
+            .expect("enqueue");
+        assert_eq!(queued(&shared).len(), 3);
+    }
+
+    #[test]
+    fn a_read_is_never_dropped_for_a_newer_read() {
+        // Two clients asking for the S-meter are not in conflict. Each is
+        // owed its own answer, and "winning" would mean answering one
+        // client's question with a reply addressed to another's.
+        let shared = NativeShared::new(&RADIO);
+        let _one = shared
+            .enqueue(&Command::ReadMeter { kind: MeterKind::S })
+            .expect("enqueue");
+        let _two = shared
+            .enqueue(&Command::ReadMeter { kind: MeterKind::S })
+            .expect("enqueue");
+        let _state = shared.enqueue(&Command::ReadState).expect("enqueue");
+        assert_eq!(queued(&shared).len(), 3, "reads must not coalesce");
+    }
+
+    #[test]
+    fn a_command_already_taken_for_the_wire_is_not_recalled() {
+        // The scope of the rule, stated as a test. Once the pump has taken
+        // a command it is on its way down the serial link and cannot be
+        // recalled; claiming otherwise would be claiming to undo something
+        // already done. A later set queues normally behind it.
+        let shared = NativeShared::new(&RADIO);
+        let taken_caller = shared
+            .enqueue(&Command::SetFrequency {
+                vfo: 0,
+                hz: 14_074_000,
+            })
+            .expect("enqueue");
+        let in_flight = shared.take_queued();
+        assert_eq!(in_flight.len(), 1, "the pump took it");
+
+        let _newer = shared
+            .enqueue(&Command::SetFrequency {
+                vfo: 0,
+                hz: 14_100_000,
+            })
+            .expect("enqueue");
+
+        // The in-flight caller is still waiting on the radio, not
+        // superseded: nothing has answered its channel.
+        assert!(
+            taken_caller.try_recv().is_err(),
+            "a command already on the wire must not be reported superseded"
+        );
+        assert_eq!(
+            queued(&shared),
+            vec![Command::SetFrequency {
+                vfo: 0,
+                hz: 14_100_000
+            }]
+        );
     }
 }

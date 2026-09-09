@@ -37,7 +37,30 @@ pub struct SerialConfig {
     /// e.g. RTS-keyed CW/PTT, where idle/asserted polarity matters and this
     /// crate asserting it first would be an unwanted side effect.
     pub initial_rts: bool,
-    /// Same as `initial_rts`, for DTR. Defaults to `true`.
+    /// Same as `initial_rts`, for DTR. **Defaults to `false`.**
+    ///
+    /// # Why this default is not `true`
+    ///
+    /// On a great many amateur stations DTR *is* the PTT line. Asserting
+    /// it at open time keys the transmitter -- into whatever load and on
+    /// whatever frequency the radio happens to be on -- as a side effect
+    /// of a program starting up.
+    ///
+    /// This defaulted to `true` until 2026-09-09, to "preserve historical
+    /// behaviour". On that day a diagnostic script opened `/dev/ttyUSB0`
+    /// on a TS-570D whose PTT is DTR-keyed, and keyed the radio; the same
+    /// default is what a caller who has not thought about modem lines
+    /// gets. `ts570d` passes `false` at all six of its open sites and
+    /// documents why in `port_guard.rs`; `ft991a` and `ic7100` passed
+    /// nothing and were silently getting the asserting behaviour.
+    ///
+    /// The two failures are not comparable. If a station genuinely needs
+    /// DTR high -- some interfaces take their power from it -- the cost of
+    /// this default is that CAT does not work until someone sets it, which
+    /// is visible in the first second and fixed by one field. The cost of
+    /// the other default being wrong is an unattended transmission.
+    ///
+    /// So: opt *in* to asserting DTR, and say why where you do.
     pub initial_dtr: bool,
 }
 
@@ -64,7 +87,8 @@ impl Default for SerialConfig {
             parity: Parity::None,
             flow_control: FlowControl::None,
             initial_rts: true,
-            initial_dtr: true,
+            // See the field's own doc: DTR is PTT on many stations.
+            initial_dtr: false,
         }
     }
 }

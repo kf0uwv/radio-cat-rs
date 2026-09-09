@@ -318,7 +318,8 @@ impl SerialPort {
     /// and sets non-overlapped read/write timeouts (`SetCommTimeouts`)
     /// before returning. Spawns the background worker thread that drives
     /// `ReadFile`/`WriteFile` (ADR 0004 §1), then asserts RTS/DTR per
-    /// `config.initial_rts`/`config.initial_dtr` (both default `true`) via
+    /// `config.initial_rts` (default `true`) / `config.initial_dtr`
+    /// (default `false` -- DTR is PTT on many stations) via
     /// [`ModemControlLines`], identical sequencing to the Linux
     /// implementation (`io_uring.rs`'s `SerialPort::open`).
     pub fn open(path: &str, config: SerialConfig) -> SerialResult<Self> {
