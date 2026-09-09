@@ -2416,7 +2416,15 @@ mod meter_tests {
             9 => "S9",
             10 => "S9+10",
             11 => "S9+20",
-            _ => "S9+30",
+            12 => "S9+30",
+            13 => "S9+40",
+            14 => "S9+50",
+            // Raw 15 is the top of the meter. The four counts above S9+20
+            // were not read off the panel -- the operator's three
+            // readings stop there -- but they continue the same ten dB a
+            // count and arrive exactly at S9+60 on the last value the
+            // radio can report, which is the reason to believe them.
+            _ => "S9+60",
         }
     }
 

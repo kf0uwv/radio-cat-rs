@@ -221,7 +221,12 @@ mod s_unit_scale_tests {
             9 => "S9",
             10 => "S9+10",
             11 => "S9+20",
-            _ => "S9+30",
+            12 => "S9+30",
+            13 => "S9+40",
+            14 => "S9+50",
+            // Raw 15 is the top of the meter; anything above it is out of
+            // range and pegs at the same label rather than wrapping.
+            _ => "S9+60",
         }
     }
 
@@ -241,7 +246,7 @@ mod s_unit_scale_tests {
 
     #[test]
     fn the_generic_formula_does_not_reproduce_it_and_that_is_the_point() {
-        // EIGHT of thirty-one raw values differ, and the count itself has
+        // TEN of the sixteen raw values differ, and the count itself has
         // a lesson in it. A scratch model of this comparison written in
         // Python reported seven -- it missed raw 10, because Python's
         // round() breaks ties to even and Rust's f32::round breaks them
@@ -257,16 +262,16 @@ mod s_unit_scale_tests {
         let differing: Vec<u16> = (0..=15u16)
             .filter(|r| format_smeter_label(*r, range) != ts570d_as_measured(*r))
             .collect();
-        // Half the reachable scale, and the half that matters: every raw
-        // value from 6 upward, which is where every signal an operator
-        // cares about lands. A generic formula spreads S0..S9+30 evenly
-        // across the range; this radio does not.
-        assert_eq!(differing, vec![6, 7, 8, 9, 10, 11, 12, 13]);
+        // Every raw value from 6 upward, which is where every signal an
+        // operator cares about lands. A generic formula spreads S0..S9+30
+        // evenly across the range; this radio puts one S-unit per count to
+        // S9 and ten dB a count above it, so the two curves never rejoin.
+        assert_eq!(differing, vec![6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     }
 
     #[test]
     fn a_reading_past_the_last_threshold_pegs_rather_than_wrapping() {
-        assert_eq!(SUnitScale::TS570D.label(u16::MAX), "S9+30");
+        assert_eq!(SUnitScale::TS570D.label(u16::MAX), "S9+60");
     }
 
     #[test]
@@ -288,7 +293,24 @@ mod s_unit_scale_tests {
         // Losing the short-slice form must not lose the capability: a
         // radio that does not resolve every unit repeats a threshold and
         // the units in between simply never appear.
-        let coarse = SUnitScale::new([10, 10, 10, 10, 10, 10, 10, 10, 10, 20, 20, 20, u16::MAX]);
+        let coarse = SUnitScale::new([
+            10,
+            10,
+            10,
+            10,
+            10,
+            10,
+            10,
+            10,
+            10,
+            20,
+            20,
+            20,
+            u16::MAX,
+            u16::MAX,
+            u16::MAX,
+            u16::MAX,
+        ]);
         assert_eq!(coarse.label(5), "S0");
         assert_eq!(coarse.label(15), "S9");
         assert_eq!(coarse.label(999), "S9+30");
@@ -302,6 +324,13 @@ mod s_unit_scale_tests {
         let range = RawRange::new(0, 255);
         assert_eq!(format_smeter_label_default(0, range), "S0");
         assert_eq!(format_smeter_label_default(170, range), "S9");
+
+        // `S_UNIT_LABELS` runs to S9+60, and this deliberately does not:
+        // where the top of a radio's meter actually falls is a property of
+        // that radio, and the fallback exists precisely for radios that
+        // have not told us. Claiming S9+60 at full scale would be a guess
+        // that reads sixty dB high on a meter that stops at S9+30, which
+        // is worse than the conservative end of the same uncertainty.
         assert_eq!(format_smeter_label_default(255, range), "S9+30");
     }
 }
