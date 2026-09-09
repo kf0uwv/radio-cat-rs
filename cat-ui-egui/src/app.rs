@@ -850,7 +850,7 @@ impl Console {
 
             let s = match self.smeter_reading() {
                 Some(r) => value(
-                    format!("{}  {}/{}", r.s_unit(), r.raw, r.range.max),
+                    format!("{}  {}/{}", r.s_unit_display(), r.raw, r.range.max),
                     theme::pal().text,
                 ),
                 None => value("—", theme::pal().absent),

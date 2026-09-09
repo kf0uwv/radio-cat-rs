@@ -153,7 +153,7 @@ pub fn smeter_line(reading: Option<MeterReading>, label_style: Style, dim: Style
             Span::styled("  no reading yet", dim),
         ]),
         Some(r) => Line::from(vec![
-            Span::styled(r.s_unit(), label_style),
+            Span::styled(r.s_unit_display(), label_style),
             Span::styled(format!("  {}/{}", r.raw, r.range.max), dim),
         ]),
     }
@@ -203,7 +203,7 @@ pub fn meter_rail(
         // meaningful without a calibration the radio did not publish.
         let readout = match (reading, is_active) {
             (Some(r), true) if r.kind == cat_framework::capabilities::MeterKind::S => {
-                Some(r.s_unit().to_string())
+                Some(r.s_unit_display())
             }
             (Some(r), true) => Some(format!("{}%", r.percent())),
             _ => None,
@@ -540,9 +540,30 @@ mod tests {
             dim,
         );
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.starts_with("S9"), "got {text:?}");
+        // `~` because this reading carries no table: the label came from
+        // the generic formula, and a renderer that shows a guess exactly
+        // as it shows a measurement is claiming more than it knows.
+        assert!(text.starts_with("~S9"), "got {text:?}");
         // The raw value is what makes a miscalibrated meter diagnosable.
         assert!(text.contains("20/30"), "got {text:?}");
+    }
+
+    #[test]
+    fn a_measured_s_unit_is_shown_without_the_estimate_marker() {
+        // The other half of the same rule: a radio that published its own
+        // table has been measured, so its label carries no hedge. If the
+        // marker ever appeared on a calibrated radio it would train the
+        // operator to ignore it on the one that needs it.
+        let dim = Style::default();
+        let measured = MeterReading::new(MeterKind::S, 10, RawRange::new(0, 15))
+            .with_s_units(cat_ui::SUnitScale::TS570D);
+        let line = smeter_line(Some(measured), dim, dim);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("S9+10"), "got {text:?}");
+        assert!(
+            !text.contains('~'),
+            "a measured label must not hedge: {text:?}"
+        );
     }
 
     #[test]

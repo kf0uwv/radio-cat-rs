@@ -126,6 +126,33 @@ impl MeterReading {
         }
     }
 
+    /// Whether [`s_unit`](Self::s_unit) came from the radio's own table.
+    ///
+    /// `false` means it came from the generic formula, which is a guess:
+    /// the radio published no S-unit breakpoints, so nobody has measured
+    /// where S9 falls on this scale. The label is still worth showing --
+    /// see [`crate::format::format_smeter_label_default`] -- but a
+    /// renderer that presents a guess and a measurement identically is
+    /// telling the operator something it does not know. Mark it.
+    pub fn s_unit_is_measured(&self) -> bool {
+        self.s_units.is_some()
+    }
+
+    /// The S-unit label as a renderer should show it.
+    ///
+    /// Identical to [`s_unit`](Self::s_unit) when the radio published a
+    /// table, and prefixed `~` when it did not. One function so that every
+    /// renderer marks the same uncertainty the same way, rather than each
+    /// deciding for itself -- and so that a radio which gains a real table
+    /// loses the marker everywhere at once.
+    pub fn s_unit_display(&self) -> String {
+        if self.s_unit_is_measured() {
+            self.s_unit().to_string()
+        } else {
+            format!("~{}", self.s_unit())
+        }
+    }
+
     /// `true` when the reading is at the very top of its scale.
     ///
     /// Worth distinguishing: a pegged SWR meter and a high one call for
