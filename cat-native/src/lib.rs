@@ -1292,16 +1292,17 @@ mod tests {
         let scale = SUnitScale::TS570D;
         let wire = MeterDescriptorWire {
             kind: MeterKind::S,
-            raw_range: RawRange::new(0, 30),
+            raw_range: RawRange::new(0, 15),
             active_on_transmit: false,
             s_units: Some(scale),
         };
         let json = serde_json::to_string(&wire).unwrap();
         let back: MeterDescriptorWire = serde_json::from_str(&json).unwrap();
         assert_eq!(back, wire);
-        // And still labels raw 24 the way the radio does, not the way a
-        // generic formula would.
-        assert_eq!(back.s_units.unwrap().label(24), "S9+10");
+        // And still labels raw 10 the way the radio does, not the way a
+        // generic formula would. Measured against the panel: raw 9 is S9
+        // and every count above it is another ten dB.
+        assert_eq!(back.s_units.unwrap().label(10), "S9+10");
     }
 
     #[test]

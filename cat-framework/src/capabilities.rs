@@ -402,12 +402,38 @@ impl SUnitScale {
         Self { thresholds }
     }
 
-    /// The Kenwood TS-570D's table, as its TUI has always drawn it.
+    /// The Kenwood TS-570D's table, **measured against its own meter**.
     ///
-    /// Preserved exactly rather than approximated: this is what its
-    /// operators have been reading, and ADR 0011 rev 4 sets "the operator
-    /// sees no change" as the bar for migrating onto shared widgets.
-    pub const TS570D: Self = Self::new([2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 24, 28, u16::MAX]);
+    /// One raw count per S-unit up to S9, then ten dB a count above it.
+    /// Read off the radio on 2026-09-08 by an operator watching the panel
+    /// while the same signal was sampled over CAT:
+    ///
+    /// | raw | panel |
+    /// |---|---|
+    /// | 9 | S9 |
+    /// | 10 | S9+10 |
+    /// | 11 | S9+20 |
+    ///
+    /// Three points, one front-end step apart, on one signal. They fix the
+    /// top half; the bottom half follows from raw 0 being S0 and raw 9
+    /// being S9 — nine counts for nine S-units — which also puts full
+    /// scale (raw 15, per the manual's `SM` range of `0000~0015`) at
+    /// S9+60, the conventional top of an S-meter. A scale that lands on
+    /// both of those independently is unlikely to be a coincidence.
+    ///
+    /// The table this replaces was inherited from the old TUI and was out
+    /// by about five S-units: it put S9 at raw 20, which this radio never
+    /// reaches, so a signal the panel called S9+10 was drawn as S4 and a
+    /// ten dB change did not move the display at all. That is the
+    /// "S meter doesn't seem to match" reported from the bench, and ADR
+    /// 0011 rev 4's "the operator sees no change" was preserving a
+    /// mistake.
+    ///
+    /// Known limit: [`S_UNIT_LABELS`] stops at `S9+30`, so raw 12 to 15 —
+    /// S9+30 through S9+60 — all draw as `S9+30`. Under-reading the very
+    /// top by up to 30 dB, which is the conservative direction and a far
+    /// smaller error than the one it replaces.
+    pub const TS570D: Self = Self::new([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, u16::MAX]);
 
     /// The label for a raw reading.
     pub fn label(&self, raw: u16) -> &'static str {

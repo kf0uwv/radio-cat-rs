@@ -2394,44 +2394,52 @@ mod meter_tests {
             .expect("this fixture has an S meter")
     }
 
-    /// The table this console shipped with, before any of it moved into a
-    /// shared crate. Written out in full rather than referenced, so that a
+    /// The table this console draws, **measured against the radio's own
+    /// panel**. Written out in full rather than referenced, so that a
     /// change to `SUnitScale::TS570D` upstream shows up here as a failure
     /// rather than as agreement.
-    fn as_shipped(smeter: u16) -> &'static str {
+    ///
+    /// One raw count per S-unit to S9, ten dB a count above. Read off the
+    /// radio on 2026-09-08 with an operator watching the panel while the
+    /// same signal was sampled over CAT.
+    fn as_measured(smeter: u16) -> &'static str {
         match smeter {
-            0..=2 => "S0",
-            3..=4 => "S1",
-            5..=6 => "S2",
-            7..=8 => "S3",
-            9..=10 => "S4",
-            11..=12 => "S5",
-            13..=14 => "S6",
-            15..=16 => "S7",
-            17..=18 => "S8",
-            19..=20 => "S9",
-            21..=24 => "S9+10",
-            25..=28 => "S9+20",
+            0 => "S0",
+            1 => "S1",
+            2 => "S2",
+            3 => "S3",
+            4 => "S4",
+            5 => "S5",
+            6 => "S6",
+            7 => "S7",
+            8 => "S8",
+            9 => "S9",
+            10 => "S9+10",
+            11 => "S9+20",
             _ => "S9+30",
         }
     }
 
     #[test]
-    fn every_value_the_meter_can_report_still_reads_the_way_it_always_has() {
-        // The acceptance bar for moving onto shared widgets (radio-cat-rs
-        // ADR 0011 rev 4) is that the operator sees no change, and the
-        // layout rebuild does not lower it. For the S-unit readout that is
-        // checkable exhaustively, so it is: the meter reports 0-30 and this
-        // walks all 31.
+    fn every_value_the_meter_can_report_reads_the_way_the_panel_does() {
+        // Checkable exhaustively, so it is: the meter reports 0-15 and
+        // this walks all sixteen.
         //
         // It exercises the whole path -- capabilities to `MeterReading` to
-        // label -- so it fails if the radio stops publishing its table, not
-        // only if the table changes.
-        for raw in 0..=30u16 {
+        // label -- so it fails if the radio stops publishing its table,
+        // not only if the table changes.
+        //
+        // This used to assert the meter "still reads the way it always
+        // has", against ADR 0011 rev 4's "the operator sees no change"
+        // bar. That bar was holding a mistake in place: the inherited
+        // table put S9 at raw 20 on a meter that stops at 15, so it read
+        // about five S-units low. The operator should see a change here,
+        // and does.
+        for raw in 0..=15u16 {
             assert_eq!(
                 reading(raw).s_unit(),
-                as_shipped(raw),
-                "raw {raw} changed meaning"
+                as_measured(raw),
+                "raw {raw} disagrees with the panel"
             );
         }
     }

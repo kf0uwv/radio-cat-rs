@@ -502,10 +502,11 @@ mod tests {
 
     #[test]
     fn a_radios_own_s_unit_table_beats_the_generic_formula() {
-        // Raw 24 is where the TS-570D's table and the interpolated formula
-        // part company; a console that passes `None` silently loses its
-        // radio's calibration.
-        let bare = MeterReading::new(MeterKind::S, 24, RawRange::new(0, 30));
+        // Raw 10 is where the TS-570D's table and the interpolated
+        // formula part company; a console that passes `None` silently
+        // loses its radio's calibration. The radio calls it S9+10, an
+        // even spread across 0-15 calls it something else.
+        let bare = MeterReading::new(MeterKind::S, 10, RawRange::new(0, 15));
         let with_table = bare.with_s_units(cat_ui::SUnitScale::TS570D);
         assert_eq!(with_table.s_unit(), "S9+10");
         assert_ne!(

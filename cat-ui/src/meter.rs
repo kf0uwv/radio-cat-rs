@@ -176,17 +176,18 @@ mod tests {
         // it is scaled against.
         const TABLED: &[MeterDescriptor] = &[MeterDescriptor {
             kind: MeterKind::S,
-            raw_range: RawRange::new(0, 30),
+            raw_range: RawRange::new(0, 15),
             active_on_transmit: false,
             s_units: Some(SUnitScale::TS570D),
         }];
         let meters = MeterSet::new(TABLED);
-        let r = MeterReading::from_meters(&meters, MeterKind::S, 24).unwrap();
+        // Raw 10 is S9+10 on this radio, read off its own panel.
+        let r = MeterReading::from_meters(&meters, MeterKind::S, 10).unwrap();
         assert_eq!(r.s_unit(), "S9+10");
 
         // The same raw value, from a radio that published no table, falls
         // back to interpolation rather than borrowing another radio's law.
-        let untabled = MeterReading::new(MeterKind::S, 24, RawRange::new(0, 30));
+        let untabled = MeterReading::new(MeterKind::S, 10, RawRange::new(0, 15));
         assert_ne!(untabled.s_unit(), r.s_unit());
     }
 
