@@ -146,14 +146,30 @@ pub(crate) async fn dispatch<R: RigctlRadio>(radio: &mut R, line: &str) -> Strin
                 Err(_) => RPRT_ERR.to_string(),
             }
         }
-        "i" => match read_twice!(radio.get_rit_hz()) {
+        // `j`/`z`, per Hamlib's own table. These were `i` and `x` until
+        // 2026-09-09, which are not RIT and XIT at all: `i` is
+        // `get_split_freq` and `x` is `get_split_mode`. So a client asking
+        // for the split transmit frequency got an RIT offset in Hz and had
+        // no way to know -- and `x`, which Hamlib reads as two lines (mode
+        // then passband), got one, desyncing every reply after it on that
+        // connection. Both are worse than the refusal they replaced.
+        //
+        // Caught against the physical radio: `j` answered `RPRT -1` while
+        // `x` answered `0`, and one being implemented and the other not
+        // was impossible -- both accessors were right there.
+        "j" => match read_twice!(radio.get_rit_hz()) {
             Ok(hz) => format!("{hz}\n"),
             Err(_) => RPRT_ERR.to_string(),
         },
-        "x" => match read_twice!(radio.get_xit_hz()) {
+        "z" => match read_twice!(radio.get_xit_hz()) {
             Ok(hz) => format!("{hz}\n"),
             Err(_) => RPRT_ERR.to_string(),
         },
+        // `i`/`x` are deliberately not implemented. `RigctlRadio` has no
+        // split-frequency or split-mode accessor -- `get_split` answers
+        // only whether split is on -- so the honest answer is the refusal
+        // the fall-through gives, and a client that needs the TX frequency
+        // asks for a capability this bridge does not claim.
         "t" => match read_twice!(radio.get_transmitting()) {
             Ok(false) => "0\n".to_string(),
             Ok(true) => "1\n".to_string(),
@@ -571,12 +587,33 @@ mod tests {
         // Answering the read is strictly better than refusing both halves
         // of it.
         let mut radio = FakeRadio::new();
-        assert_eq!(run(dispatch(&mut radio, "i")), "0\n");
-        assert_eq!(run(dispatch(&mut radio, "x")), "0\n");
+        assert_eq!(run(dispatch(&mut radio, "j")), "0\n");
+        assert_eq!(run(dispatch(&mut radio, "z")), "0\n");
         radio.rit_hz = -500;
         radio.xit_hz = 250;
-        assert_eq!(run(dispatch(&mut radio, "i")), "-500\n");
-        assert_eq!(run(dispatch(&mut radio, "x")), "250\n");
+        assert_eq!(run(dispatch(&mut radio, "j")), "-500\n");
+        assert_eq!(run(dispatch(&mut radio, "z")), "250\n");
+    }
+
+    #[test]
+    fn the_letters_are_hamlibs_letters_and_not_ones_that_look_right() {
+        // `rigctl --help`: `J: set_rit / j: get_rit`, `Z: set_xit /
+        // z: get_xit`, `I: set_split_freq / i: get_split_freq`,
+        // `X: set_split_mode / x: get_split_mode`.
+        //
+        // RIT and XIT were on `i` and `x` for a day. Both are split
+        // commands, so a client asking for the split transmit frequency
+        // was handed an RIT offset in Hz -- a plausible-looking number,
+        // silently wrong -- and `x`, which Hamlib reads as two lines, got
+        // one and desynced every reply after it on that connection.
+        //
+        // This bridge has no split-frequency or split-mode accessor, so
+        // both must refuse rather than answer with something else.
+        let mut radio = FakeRadio::new();
+        radio.rit_hz = -500;
+        radio.xit_hz = 250;
+        assert_eq!(run(dispatch(&mut radio, "i")), RPRT_ERR);
+        assert_eq!(run(dispatch(&mut radio, "x")), RPRT_ERR);
     }
 
     #[test]
@@ -584,7 +621,7 @@ mod tests {
         // The default is "unsupported", not zero: a radio that cannot
         // answer and one answering "no offset" are different facts.
         let mut radio = FakeRadio::failing();
-        assert_eq!(run(dispatch(&mut radio, "i")), RPRT_ERR);
+        assert_eq!(run(dispatch(&mut radio, "j")), RPRT_ERR);
     }
 
     #[test]
