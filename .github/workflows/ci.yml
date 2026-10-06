@@ -86,6 +86,16 @@ jobs:
         # build, on every PR.
         run: cargo check -p cat-signal-rtlsdr --features device
 
+      - name: Install ALSA headers (for the optional audio device layer)
+        run: sudo apt-get install -y libasound2-dev
+
+      - name: Build the feature-gated audio device layer
+        # cat-signal-audio/Cargo.toml has said since ADR 0017's amendment
+        # that "the Linux CI job builds `--features device` explicitly";
+        # until 2026-10-06 it did not. Same reasoning as the RTL-SDR step
+        # above, and consuming apps ship this feature on.
+        run: cargo check -p cat-signal-audio --features device --all-targets
+
   windows-check:
     name: Windows (MSVC)
     runs-on: windows-latest
@@ -112,6 +122,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.93"
+          components: clippy
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
@@ -127,7 +138,18 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: cargo check (workspace)
-        run: cargo check --workspace
+        run: cargo check --workspace --all-targets
+
+      - name: Clippy (Windows-only code)
+        # The Linux job's clippy never sees a `cfg(windows)` line --
+        # worker_windows, tcp_windows, rigctl_windows and the Win32 serial
+        # backend are type-checked here and nowhere else.
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build the feature-gated audio device layer (WASAPI)
+        # Consuming apps ship `audio-device` on Windows too; this is the
+        # only place its Windows backend is compiled before a release.
+        run: cargo check -p cat-signal-audio --features device --all-targets
 
       - name: cargo test (workspace)
         run: cargo test --workspace
