@@ -10,7 +10,7 @@ PCM in and out, no device audio, no runtime, no radio.
 
 ## Current Phase
 
-Approved 2026-10-05 (Q1 prosign default + DecodeStyle; Q2 500 Hz; Q3 serde
+Complete 2026-10-06 — all 7 steps committed on `feat/cat-morse`. Approved 2026-10-05 (Q1 prosign default + DecodeStyle; Q2 500 Hz; Q3 serde
 default-off + CI step; Q4 spaces counted; Q5 ADR 0021, no agent file; Q6 no
 version bump). Implementing steps 1-7 on branch `feat/cat-morse`.
 

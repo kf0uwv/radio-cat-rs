@@ -76,3 +76,22 @@
   serialize as lists of pairs (Token is not a JSON key). Roundtrip tests
   now use the crate scorer for CER. 74 unit tests with `--features serde`
   (72 without) + 10 integration.
+- Step 7 done: ADR 0021 + index row; CLAUDE.md (crate count 19, diagram,
+  architecture list); README bullet; CI steps `cargo test -p cat-morse
+  --features serde` on Linux and windows-latest; crate-level doctest
+  showing the copy-practice loop.
+- Verification (2026-10-06):
+  - cargo test -p cat-morse: 72 unit + 10 integration + 1 doctest, pass
+  - cargo test -p cat-morse --features serde: 74 + 10 + 1, pass
+  - cargo test --workspace: 1059 passed, 0 failed
+  - cargo clippy -p cat-morse --all-targets --all-features -D warnings: clean
+  - cargo clippy --workspace --all-targets -D warnings: clean
+  - cargo fmt --all -- --check: clean
+  - cargo xwin check --target x86_64-pc-windows-msvc -p cat-morse
+    --all-features --all-targets: clean
+  - cargo tree -p cat-morse -e normal --all-features: serde + thiserror
+    only; no local crates, no monoio/tokio/rand
+  - No 1.75 toolchain locally; clippy `incompatible_msrv` (honours
+    rust-version 1.75) is clean.
+- Noted, not fixed (out of scope): README.md says "Nine crates" and "191
+  tests", both stale before this change.

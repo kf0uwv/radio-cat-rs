@@ -33,7 +33,41 @@
 //!
 //! # Determinism
 //!
-//! Everything seeded uses the in-crate [`rng::Rng`].
+//! Everything seeded uses the in-crate [`rng::Rng`], never `rand`.
+//! [`timing::key`] and [`scenario::generate`] are bit-identical on every
+//! platform for a given seed. Rendered audio ([`synth`]) is bit-identical
+//! on one platform and equal within float tolerance across platforms,
+//! because the tone uses the platform's `sin`/`cos`.
+//!
+//! # A copy-practice loop
+//!
+//! ```
+//! use std::time::Duration;
+//! use cat_morse::{align, decode_all, generate, timing, Callsign, Channel, DecoderConfig,
+//!     PitchMode, ScenarioConfig, ScenarioKind, ScoreOptions, Signal};
+//! use cat_morse::scenario::{Difficulty, Party};
+//!
+//! let script = generate(&ScenarioConfig {
+//!     kind: ScenarioKind::RagChew,
+//!     my_call: Callsign::parse("KF0UWV").unwrap(),
+//!     difficulty: Difficulty::beginner(),
+//!     seed: 7,
+//! }).unwrap();
+//! let line = script.transmissions.iter().find(|t| matches!(t.from, Party::Them(_))).unwrap();
+//! let sig = script.signal_for(line).unwrap();
+//! let keying = timing::key_text(&line.text, sig.speed, &sig.fist, sig.fist_seed).unwrap();
+//!
+//! let mut band = Channel::new(8000, 1);
+//! band.signals.push(Signal::new(keying, 700.0 + sig.pitch_offset_hz)
+//!     .starting_at(Duration::from_millis(300)));
+//! band.padding = Duration::from_millis(500);
+//! let pcm = band.render().unwrap(); // hand this to a sound card
+//!
+//! // The operator's copy would come from the keyboard; here the decoder copies.
+//! let copied = decode_all(DecoderConfig::new(8000, PitchMode::Auto { min_hz: 400.0, max_hz: 1000.0 }), &pcm).unwrap();
+//! let score = align(&line.text, &copied, &ScoreOptions::default()).unwrap().score();
+//! assert!(score.cer() < 0.1);
+//! ```
 
 pub mod codec;
 pub mod decoder;
