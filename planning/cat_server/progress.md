@@ -424,3 +424,36 @@ Nothing committed, per this session's standing rule. `ts570d`/`ft991a`/
 `cat-transport-tcp`/`cat-transport-udp` untouched (read-only reference, as
 instructed) aside from being added as dependencies in `cat-server`'s own
 `Cargo.toml`.
+
+## Task: fix the Windows build + release-app features (2026-10-06)
+
+Branch `fix/windows-build` (worktree `radio-cat-rs-winfix`), off main 40cfade.
+
+### Found
+- Two independent Windows breaks on main, not one. `e61bb49` (cat-server:
+  `submit_task` missing on `worker_windows::BrokerHandle`) masked an older
+  one from `da90709` (cat-rigctl Windows `run` generic over `W` with no
+  bound; `worker_windows` never made generic over the wire format; test
+  fake missing `RigctlRadio::unsupported`).
+- CI saw both: the Windows job was red on da90709 (direct push), PR #16's
+  head, the #16 merge and the 0.8.0 release. main has no branch protection,
+  so nothing required it green.
+- Windows `SerialPort` never overrode `Transport::modem_lines`, so task
+  jobs there would always have been told `None`.
+- Neither broker backend has a queue bypass for the PTT release; ts570d's
+  `PttDtr::release` goes through `submit_task` (queued).
+
+### Done (commits a6a6f20, 199238e, 4a3279a, a72726b, cd1a294)
+As planned in task_plan.md, plus the addendum. `TaskFn` is `+ Send`.
+
+### Verification
+- `cargo test --workspace`: 976 passed, 0 failed, 3 ignored
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean
+- `cargo fmt --all -- --check`: clean
+- `cargo xwin check --target x86_64-pc-windows-msvc --workspace --all-targets`: clean, 0 warnings
+- `cargo xwin clippy --target x86_64-pc-windows-msvc --workspace --all-targets -- -D warnings`: clean
+- `cargo xwin check --target x86_64-pc-windows-msvc -p cat-signal-audio --features device --all-targets`: clean
+- actionlint (docker, stdin) on ci.yml and release-app.yml: no findings
+- Windows tests type-check only here; they execute in CI's windows job.
+
+### Status: DONE, stopped. Not pushed, not merged.
