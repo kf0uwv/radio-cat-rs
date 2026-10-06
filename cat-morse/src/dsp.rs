@@ -36,30 +36,38 @@ pub fn goertzel_power(samples: &[f32], sample_rate: u32, freq_hz: f32) -> f32 {
     (2.0 * mag2 / (n as f64 * n as f64)) as f32
 }
 
-/// A precomputed Goertzel bin for repeated use on equal-length windows.
-#[allow(dead_code)] // first used by the decoder
-#[derive(Debug, Clone, Copy)]
+/// A precomputed, Hann-windowed Goertzel bin for repeated use on
+/// equal-length windows. The window keeps a strong signal a few hundred
+/// hertz away (QRM) from leaking into the bin: a rectangular window's
+/// sidelobes fall only 6 dB per octave, Hann's 18.
+#[derive(Debug, Clone)]
 pub(crate) struct GoertzelBin {
     coeff: f64,
     scale: f64,
+    weights: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl GoertzelBin {
     pub(crate) fn new(sample_rate: u32, freq_hz: f32, len: usize) -> Self {
         let w = 2.0 * PI * f64::from(freq_hz) / f64::from(sample_rate);
+        let weights: Vec<f64> = (0..len)
+            .map(|i| 0.5 - 0.5 * (2.0 * PI * (i as f64 + 0.5) / len as f64).cos())
+            .collect();
+        let sum: f64 = weights.iter().sum();
         GoertzelBin {
             coeff: 2.0 * w.cos(),
-            scale: 2.0 / (len as f64 * len as f64),
+            scale: 2.0 / (sum * sum).max(1e-30),
+            weights,
         }
     }
 
-    /// Power over `window` (whose length should be the `len` given to `new`),
-    /// read in two pieces so a ring buffer needs no copy.
+    /// Power over a window of exactly the `len` given to `new`, read in two
+    /// pieces so a ring buffer needs no copy. A sine of amplitude `A` on
+    /// the bin reads `A²/2`.
     pub(crate) fn power(&self, a: &[f32], b: &[f32]) -> f64 {
         let (mut s1, mut s2) = (0.0f64, 0.0f64);
-        for &x in a.iter().chain(b.iter()) {
-            let s0 = f64::from(x) + self.coeff * s1 - s2;
+        for (&x, &w) in a.iter().chain(b.iter()).zip(&self.weights) {
+            let s0 = f64::from(x) * w + self.coeff * s1 - s2;
             s2 = s1;
             s1 = s0;
         }
@@ -128,11 +136,14 @@ mod tests {
     }
 
     #[test]
-    fn bin_matches_free_function() {
+    fn hann_bin_reads_power_and_rejects_offset_tone() {
         let s = sine(8000, 600.0, 0.3, 96);
         let bin = GoertzelBin::new(8000, 600.0, 96);
         let p = bin.power(&s[..40], &s[40..]);
-        assert!((p as f32 - goertzel_power(&s, 8000, 600.0)).abs() < 1e-6);
+        assert!((p - 0.045).abs() < 0.002, "{p}");
+        // 400 Hz away is deep in the Hann skirt.
+        let q = sine(8000, 1000.0, 0.3, 96);
+        assert!(bin.power(&q, &[]) < 0.045 * 1e-4);
     }
 
     #[test]

@@ -35,3 +35,26 @@
   Test fixes during TDD: key-click test needed a dense (2 Hz) sideband
   sweep; discontinuity test uses 713 Hz because 700 Hz edges at 30 wpm all
   fall on zero crossings. 40 tests.
+- Step 4 done: `decoder` + tests/roundtrip.rs (10 integration tests).
+  TDD iterations (all logged here, none changed the approved design):
+  - noise collapsed decoding: floor tracker biased up by mark tails, and
+    squelch too close -> mean-of-key-up floor (running mean first 25
+    windows, then spike-rejecting), thresholds never below squelch margin,
+    default squelch 13 dB.
+  - first-mark and start-up garbage -> marks re-timed at half their own
+    peak with interpolation; 60 ms warm-up; blips < 0.3 dot dropped;
+    dit clamped to 5-60 wpm.
+  - Farnsworth letter gaps read as word gaps -> gap threshold computed
+    with the gap being judged included (lone first gap = letter gap).
+  - QRM leakage in digital silence -> Hann-windowed Goertzel bin and a
+    `min_level_dbfs` floor (-70 dBFS). Added a second QRM test on a noisy
+    band.
+  - running-gap timer used the previous mark's end -> ordering bug fixed.
+  Divergences from plan: `window` is `Option<Duration>` (None = adaptive,
+  half a dot, 8-40 ms) instead of a fixed 12 ms default; new config field
+  `min_level_dbfs`; auto-pitch lock holds until `reset()` (no automatic
+  re-acquire). Human-fist test bounds mean CER <= 1 % and worst <= 5 %
+  over 10 seeds (measured mean 0.52 % over 200 seeds; single seeds reach
+  ~3 % from genuinely ambiguous timing), instead of per-seed <= 2 %.
+  Noise test (+6 dB/500 Hz, CER <= 2 %) passed 100/100 seeds in a stress
+  run. 57 tests total.
