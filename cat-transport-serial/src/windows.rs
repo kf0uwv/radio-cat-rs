@@ -467,6 +467,15 @@ impl Transport for SerialPort {
         }
     }
 
+    /// `Some(self)`, exactly as `io_uring.rs`'s Linux `SerialPort` does:
+    /// this port really has RTS/DTR (see the [`ModemControlLines`] impl
+    /// below). Without this override the trait's `None` default hid them,
+    /// so a `cat-server` task job on Windows was always told the session
+    /// had no modem lines and DTR PTT was unreachable through the broker.
+    fn modem_lines(&self) -> Option<&dyn ModemControlLines> {
+        Some(self)
+    }
+
     /// `FlushFileBuffers(handle)`, called directly and synchronously inside
     /// this `async fn`'s body -- NOT routed through the worker thread. This
     /// is a deliberate, narrow exception to the read/write worker-thread
