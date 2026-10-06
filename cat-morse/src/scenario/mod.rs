@@ -559,4 +559,13 @@ mod tests {
         assert_eq!(s.me.zone, 14);
         assert_eq!(s.me.region, "GERMANY");
     }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn script_round_trips_through_json() {
+        let s = generate(&cfg(ScenarioKind::DxPileup { callers: 3 }, 4)).unwrap();
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Script = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+    }
 }

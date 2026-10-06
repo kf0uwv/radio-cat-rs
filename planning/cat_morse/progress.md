@@ -69,3 +69,10 @@
   only for entities with a known ISO prefix (DE FR IT ES JP AU CA).
   Unknown operator prefix -> region "DX", random zone. 16 scenario tests
   incl. 8 kinds x 1000 seeds all encode. 73 tests total.
+- Step 6 done: `score` + `serde` feature. Divergence: `Unit` is a type
+  alias for `codec::Token` (WordSpace = space; unknown copied chars are
+  `Token::Char(c)`) rather than a separate enum. Added `tokenize_copy`
+  (lenient), `align_units`, `Score::add`, `CharTally::accuracy`. BTreeMaps
+  serialize as lists of pairs (Token is not a JSON key). Roundtrip tests
+  now use the crate scorer for CER. 74 unit tests with `--features serde`
+  (72 without) + 10 integration.

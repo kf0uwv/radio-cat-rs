@@ -19,7 +19,8 @@ use std::time::Duration;
 use cat_morse::decoder::decoded_to_text;
 use cat_morse::timing::key_text;
 use cat_morse::{
-    decode_all, Awgn, Channel, Decoder, DecoderConfig, Fist, PitchMode, Signal, Speed,
+    align, decode_all, Awgn, Channel, Decoder, DecoderConfig, Fist, PitchMode, ScoreOptions,
+    Signal, Speed,
 };
 
 const SR: u32 = 8000;
@@ -36,20 +37,12 @@ fn as_decoded(text: &str) -> String {
     text.replace('=', "<BT>")
 }
 
-/// Character error rate by edit distance over chars (spaces included).
+/// Character error rate, by the crate's own scorer.
 fn cer(expected: &str, got: &str) -> f64 {
-    let a: Vec<char> = expected.chars().collect();
-    let b: Vec<char> = got.chars().collect();
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    for i in 1..=a.len() {
-        let mut cur = vec![i; b.len() + 1];
-        for j in 1..=b.len() {
-            let sub = prev[j - 1] + usize::from(a[i - 1] != b[j - 1]);
-            cur[j] = sub.min(prev[j] + 1).min(cur[j - 1] + 1);
-        }
-        prev = cur;
-    }
-    prev[b.len()] as f64 / a.len() as f64
+    align(expected, got, &ScoreOptions::default())
+        .unwrap()
+        .score()
+        .cer()
 }
 
 fn channel(text: &str, speed: Speed, fist: &Fist, seed: u64) -> Channel {

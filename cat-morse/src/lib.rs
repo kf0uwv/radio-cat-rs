@@ -22,6 +22,7 @@
 //! | [`timing`] | PARIS and Farnsworth speed, seeded operator fists, keying |
 //! | [`decoder`] | streaming tone decoder: fixed or auto pitch, adaptive speed |
 //! | [`scenario`] | seeded QSO scripts: rag-chew, contest, POTA, SOTA, pileup |
+//! | [`score`] | align sent vs copied, CER, per-character stats |
 //! | [`synth`] | click-free tone, and a band: noise, QSB, QRN, QRM, filter |
 //!
 //! # What this crate is not
@@ -39,6 +40,7 @@ pub mod decoder;
 mod dsp;
 pub mod rng;
 pub mod scenario;
+pub mod score;
 pub mod synth;
 pub mod timing;
 
@@ -47,6 +49,7 @@ pub use decoder::{decode_all, Decoded, Decoder, DecoderConfig, DecoderError, Pit
 pub use dsp::goertzel_power;
 pub use rng::Rng;
 pub use scenario::{generate, Callsign, ScenarioConfig, ScenarioError, ScenarioKind, Script};
+pub use score::{align, Alignment, CharStats, Score, ScoreOptions};
 pub use synth::{
     Awgn, Channel, ChannelRenderer, Qrn, Qsb, RxFilter, Signal, SynthError, ToneShape,
 };
