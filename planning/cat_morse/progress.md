@@ -104,3 +104,8 @@
   `(Channel, BandReport)`, `Keying::truncated`. QRN uses chance 1.0 on
   intermediate/advanced (the table gives a rate, not a probability).
   QRM is skipped for overs shorter than 1 s. 8 new tests (82 with serde).
+- Part B done: `score::align_unordered` -> `UnorderedAlignment { items,
+  matched, copied_words, extras }`, Hungarian assignment over integer
+  edit costs on an (n+m)² matrix with miss/extra dummies; pairings with
+  errors > half the expected item's length are scored as miss + extra.
+  `CharStats::record_unordered`. 5 new tests (85 / 87 with serde).

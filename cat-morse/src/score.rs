@@ -309,6 +309,186 @@ impl Alignment {
     }
 }
 
+/// The result of [`align_unordered`]: each expected item aligned against
+/// the copied word it was matched with (or against nothing), plus the
+/// copied words that matched nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct UnorderedAlignment {
+    /// One alignment per expected item, in the order given. An item that
+    /// was not copied is all deletions.
+    pub items: Vec<Alignment>,
+    /// For each expected item, the index into `copied_words` it matched.
+    pub matched: Vec<Option<usize>>,
+    /// The copied text split into words, as scored.
+    pub copied_words: Vec<String>,
+    /// Copied words that matched no expected item, each as an alignment
+    /// of pure insertions, in copied order.
+    pub extras: Vec<Alignment>,
+}
+
+impl UnorderedAlignment {
+    /// The totals across every item and every extra word. Word spaces
+    /// between items are not scored: order and separation are free.
+    pub fn score(&self) -> Score {
+        let mut total = Score::default();
+        for a in self.items.iter().chain(&self.extras) {
+            total.add(&a.score());
+        }
+        total
+    }
+}
+
+/// Order-free scoring, for a pileup: the operator types every call they
+/// heard, in any order, separated by spaces.
+///
+/// Each expected item (normally one callsign) is matched with at most one
+/// copied word by an optimal assignment — the Hungarian algorithm over
+/// integer edit costs, so the result is the minimum total error and is
+/// deterministic. A pairing whose edit errors exceed half the expected
+/// item's length is not a copy of it at all, and is scored as a miss plus
+/// an extra rather than as a run of substitutions that would charge the
+/// operator with confusions they never made. Unmatched expected items are
+/// all deletions; unmatched copied words are all insertions.
+///
+/// Every expected item must encode; the copy may contain anything.
+pub fn align_unordered(
+    expected: &[&str],
+    copied: &str,
+    opts: &ScoreOptions,
+) -> Result<UnorderedAlignment, CodecError> {
+    let exp: Vec<Vec<Unit>> = expected
+        .iter()
+        .map(|e| codec::tokenize(e).map(|t| prepare(t, opts)))
+        .collect::<Result<_, _>>()?;
+    let mut words: Vec<Vec<Unit>> = vec![Vec::new()];
+    for u in tokenize_copy(copied) {
+        if u == Token::WordSpace {
+            words.push(Vec::new());
+        } else if let Some(w) = words.last_mut() {
+            w.push(u);
+        }
+    }
+    words.retain(|w| !w.is_empty());
+    let words: Vec<Vec<Unit>> = words.into_iter().map(|w| prepare(w, opts)).collect();
+
+    let (n, m) = (exp.len(), words.len());
+    let size = n + m;
+    let mut pair_align: Vec<Vec<Option<Alignment>>> = vec![vec![None; m]; n];
+    let mut cost = vec![vec![0i64; size]; size];
+    for i in 0..size {
+        for j in 0..size {
+            cost[i][j] = match (i < n, j < m) {
+                (true, true) => {
+                    let a = align_units(&exp[i], &words[j], opts);
+                    let sc = a.score();
+                    let errors = (sc.substitutions + sc.deletions + sc.insertions) as i64;
+                    let plausible = 2 * errors <= exp[i].len() as i64;
+                    let unmatched = (exp[i].len() + words[j].len()) as i64;
+                    if plausible {
+                        pair_align[i][j] = Some(a);
+                        errors
+                    } else {
+                        unmatched
+                    }
+                }
+                (true, false) => exp[i].len() as i64,
+                (false, true) => words[j].len() as i64,
+                (false, false) => 0,
+            };
+        }
+    }
+    let assign = hungarian(&cost);
+
+    let mut items = Vec::with_capacity(n);
+    let mut matched = vec![None; n];
+    let mut used = vec![false; m];
+    for i in 0..n {
+        let j = assign[i];
+        match (j < m).then(|| pair_align[i][j].take()).flatten() {
+            Some(a) => {
+                matched[i] = Some(j);
+                used[j] = true;
+                items.push(a);
+            }
+            None => items.push(align_units(&exp[i], &[], opts)),
+        }
+    }
+    let extras = (0..m)
+        .filter(|&j| !used[j])
+        .map(|j| align_units(&[], &words[j], opts))
+        .collect();
+    Ok(UnorderedAlignment {
+        items,
+        matched,
+        copied_words: words.iter().map(|w| codec::tokens_to_text(w)).collect(),
+        extras,
+    })
+}
+
+/// Minimum-cost perfect assignment on a square matrix (Hungarian
+/// algorithm with potentials, O(n³)). Returns, for each row, its column.
+fn hungarian(cost: &[Vec<i64>]) -> Vec<usize> {
+    let n = cost.len();
+    const INF: i64 = i64::MAX / 4;
+    let mut u = vec![0i64; n + 1];
+    let mut v = vec![0i64; n + 1];
+    let mut p = vec![0usize; n + 1];
+    let mut way = vec![0usize; n + 1];
+    for i in 1..=n {
+        p[0] = i;
+        let mut j0 = 0usize;
+        let mut minv = vec![INF; n + 1];
+        let mut used = vec![false; n + 1];
+        loop {
+            used[j0] = true;
+            let i0 = p[j0];
+            let mut delta = INF;
+            let mut j1 = 0usize;
+            for j in 1..=n {
+                if !used[j] {
+                    let cur = cost[i0 - 1][j - 1] - u[i0] - v[j];
+                    if cur < minv[j] {
+                        minv[j] = cur;
+                        way[j] = j0;
+                    }
+                    if minv[j] < delta {
+                        delta = minv[j];
+                        j1 = j;
+                    }
+                }
+            }
+            for j in 0..=n {
+                if used[j] {
+                    u[p[j]] += delta;
+                    v[j] -= delta;
+                } else {
+                    minv[j] -= delta;
+                }
+            }
+            j0 = j1;
+            if p[j0] == 0 {
+                break;
+            }
+        }
+        loop {
+            let j1 = way[j0];
+            p[j0] = p[j1];
+            j0 = j1;
+            if j0 == 0 {
+                break;
+            }
+        }
+    }
+    let mut ans = vec![0usize; n];
+    for j in 1..=n {
+        if p[j] > 0 {
+            ans[p[j] - 1] = j - 1;
+        }
+    }
+    ans
+}
+
 #[cfg(feature = "serde")]
 mod pairs {
     //! A map written as a list of `[key, value]` pairs.
@@ -418,6 +598,13 @@ impl CharStats {
             if unit != Token::WordSpace {
                 f(self.units.entry(unit).or_default());
             }
+        }
+    }
+
+    /// Adds an order-free alignment (every item and every extra word).
+    pub fn record_unordered(&mut self, a: &UnorderedAlignment) {
+        for x in a.items.iter().chain(&a.extras) {
+            self.record(x);
         }
     }
 
@@ -609,6 +796,75 @@ mod tests {
         assert_eq!(weakest[0].0, c('T'));
         assert_eq!(weakest[1].0, c('Q'));
         assert!((weakest[1].1 - 0.75).abs() < 1e-9);
+    }
+
+    fn un(e: &[&str], g: &str) -> UnorderedAlignment {
+        align_unordered(e, g, &ScoreOptions::default()).unwrap()
+    }
+
+    #[test]
+    fn unordered_any_order_is_perfect() {
+        let calls = ["W1AW", "K0ABC", "DL1XYZ"];
+        let a = un(&calls, "dl1xyz  w1aw K0ABC");
+        let s = a.score();
+        assert_eq!(s.cer(), 0.0);
+        assert_eq!(s.expected, 15);
+        assert_eq!(a.matched, vec![Some(1), Some(2), Some(0)]);
+        assert!(a.extras.is_empty());
+    }
+
+    #[test]
+    fn unordered_typo_missing_and_extra() {
+        let calls = ["W1AW", "K0ABC", "DL1XYZ"];
+        // K0ABC copied as K0ABD; DL1XYZ missed; N2ZZZ never sent.
+        let a = un(&calls, "N2ZZZ K0ABD W1AW");
+        let s = a.score();
+        assert_eq!(s.substitutions, 1);
+        assert_eq!(s.deletions, 6);
+        assert_eq!(s.insertions, 5);
+        assert_eq!(a.matched, vec![Some(2), Some(1), None]);
+        assert_eq!(a.extras.len(), 1);
+        let mut st = CharStats::new();
+        st.record_unordered(&a);
+        assert_eq!(st.get(c('C')).unwrap().confused_as.get(&c('D')), Some(&1));
+        assert_eq!(st.get(c('Z')).unwrap().missed, 1);
+    }
+
+    #[test]
+    fn unordered_refuses_implausible_pairings() {
+        // Nothing alike: a miss plus an extra, not five substitutions.
+        let a = un(&["W1AW"], "K9XYZ");
+        assert_eq!(a.matched, vec![None]);
+        let s = a.score();
+        assert_eq!((s.substitutions, s.deletions, s.insertions), (0, 4, 5));
+        let mut st = CharStats::new();
+        st.record_unordered(&a);
+        assert!(st.get(c('W')).unwrap().confused_as.is_empty());
+    }
+
+    #[test]
+    fn unordered_duplicates_and_empties() {
+        let a = un(&["W1AW"], "W1AW W1AW");
+        let s = a.score();
+        assert_eq!((s.matches, s.insertions), (4, 4));
+        let a = un(&["W1AW", "K1ABC"], "");
+        assert_eq!(a.score().deletions, 9);
+        let a = un(&[], "W1AW");
+        assert_eq!(a.score().cer(), 1.0);
+        assert!(align_unordered(&["W1#W"], "x", &ScoreOptions::default()).is_err());
+    }
+
+    #[test]
+    fn unordered_is_deterministic_and_optimal() {
+        // Two candidates for one call: the closer one wins, every time.
+        let calls = ["K1ABC", "K1ABD"];
+        let a = un(&calls, "K1ABD K1ABC");
+        assert_eq!(a.matched, vec![Some(1), Some(0)]);
+        assert_eq!(a.score().cer(), 0.0);
+        for _ in 0..5 {
+            assert_eq!(un(&calls, "K1ABX K1ABC"), un(&calls, "K1ABX K1ABC"));
+        }
+        assert_eq!(un(&calls, "K1ABX K1ABC").score().substitutions, 1);
     }
 
     #[cfg(feature = "serde")]

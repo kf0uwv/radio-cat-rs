@@ -83,7 +83,9 @@ pub use decoder::{decode_all, Decoded, Decoder, DecoderConfig, DecoderError, Pit
 pub use dsp::goertzel_power;
 pub use rng::Rng;
 pub use scenario::{generate, Callsign, ScenarioConfig, ScenarioError, ScenarioKind, Script};
-pub use score::{align, Alignment, CharStats, Score, ScoreOptions};
+pub use score::{
+    align, align_unordered, Alignment, CharStats, Score, ScoreOptions, UnorderedAlignment,
+};
 pub use synth::{
     Awgn, Channel, ChannelRenderer, Qrn, Qsb, RxFilter, Signal, SynthError, ToneShape,
 };
