@@ -457,3 +457,11 @@ As planned in task_plan.md, plus the addendum. `TaskFn` is `+ Send`.
 - Windows tests type-check only here; they execute in CI's windows job.
 
 ### Status: DONE, stopped. Not pushed, not merged.
+
+## Review follow-ups (2026-10-06)
+- 1 (queue-skipping PTT release): STOPPED at design -- conflicts with v2's
+  "no Arc, no dup"; see task_plan.md. Reported to architect with a proposal.
+- 2 (RFC 2217 modem lines): done, cf86498, loopback test added (red first).
+- 3 (Windows rigctl read cache): recorded in task_plan.md as a follow-up.
+- 4 checks: test 977/0/3; clippy, fmt, xwin check, xwin clippy, xwin
+  cat-signal-audio device, actionlint -- all clean.
