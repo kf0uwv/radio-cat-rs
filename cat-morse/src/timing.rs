@@ -314,6 +314,26 @@ impl Keying {
         }
     }
 
+    /// The first `max` of this keying: a key-down segment running past
+    /// `max` is cut there (so the tone stops mid-element, as a signal
+    /// does when a receiver's over ends), and trailing key-up is dropped.
+    pub fn truncated(&self, max: Duration) -> Keying {
+        let mut out = Keying::new();
+        let mut t = Duration::ZERO;
+        for s in &self.segments {
+            if t >= max {
+                break;
+            }
+            let d = s.duration.min(max - t);
+            out.push(s.key_down, d);
+            t += s.duration;
+        }
+        if matches!(out.segments.last(), Some(s) if !s.key_down) {
+            out.segments.pop();
+        }
+        out
+    }
+
     /// Appends `other` after a key-up `gap`.
     pub fn append(&mut self, other: &Keying, gap: Duration) {
         self.push(false, gap);
@@ -520,6 +540,19 @@ mod tests {
         let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
         let ratio = mean(&dahs) / mean(&dits);
         assert!((ratio - 3.0).abs() < 0.05, "ratio {ratio}");
+    }
+
+    #[test]
+    fn truncated_cuts_inside_a_mark_and_drops_trailing_space() {
+        let k = key_text("TT", Speed::wpm(20.0).unwrap(), &Fist::perfect(), 0).unwrap();
+        // T (180) gap (180) T (180)
+        let a = k.truncated(MS(250));
+        assert_eq!(a.total(), MS(180));
+        let b = k.truncated(MS(400));
+        assert_eq!(b.total(), MS(400));
+        assert_eq!(b.segments().last().unwrap().duration, MS(40));
+        assert_eq!(k.truncated(MS(10_000)), k);
+        assert!(k.truncated(Duration::ZERO).is_empty());
     }
 
     #[test]

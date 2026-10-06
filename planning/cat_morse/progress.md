@@ -95,3 +95,12 @@
     rust-version 1.75) is clean.
 - Noted, not fixed (out of scope): README.md says "Nine crates" and "191
   tests", both stale before this change.
+
+## Session: 2026-10-06 (follow-up: band, unordered scoring, playback)
+
+- Part A done: `scenario::band` — `BandConditions` (+ `QsbOdds`,
+  `QrnOdds`, `QrmOdds`), `Difficulty::band` on all presets (values from
+  the app plan's table as small ranges), `band_channel` returning
+  `(Channel, BandReport)`, `Keying::truncated`. QRN uses chance 1.0 on
+  intermediate/advanced (the table gives a rate, not a probability).
+  QRM is skipped for overs shorter than 1 s. 8 new tests (82 with serde).

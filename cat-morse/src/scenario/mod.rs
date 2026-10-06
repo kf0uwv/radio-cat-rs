@@ -34,15 +34,20 @@
 //! | [`ScenarioKind::Sota`] | a summit activator (`W0C/FR-001`), optional S2S |
 //! | [`ScenarioKind::DxPileup`] | you run the DX; callers overlap at different offsets |
 //!
+//! [`band_channel`] wraps an over's signals in the band
+//! [`Difficulty::band`] describes: noise, fading, static and QRM.
+//!
 //! Any kind may include repeat requests (`QRZ?`, `AGN?`, `PSE RPT`) at
 //! the rate [`Difficulty::repeat_requests`] sets.
 
+mod band;
 mod callsign;
 mod data;
 mod qso;
 
 use std::time::Duration;
 
+pub use band::{band_channel, BandConditions, BandReport, QrmOdds, QrmReport, QrnOdds, QsbOdds};
 pub use callsign::Callsign;
 
 use crate::codec;
@@ -129,6 +134,8 @@ pub struct Difficulty {
     pub pitch_offset_hz: (f32, f32),
     /// Probability (0–1) of a repeat request at each opportunity.
     pub repeat_requests: f64,
+    /// The band the stations are copied through (see [`band_channel`]).
+    pub band: BandConditions,
 }
 
 impl Default for Difficulty {
@@ -147,6 +154,7 @@ impl Difficulty {
             strength_db: (-3.0, 0.0),
             pitch_offset_hz: (-30.0, 30.0),
             repeat_requests: 0.05,
+            band: BandConditions::beginner(),
         }
     }
 
@@ -159,6 +167,7 @@ impl Difficulty {
             strength_db: (-12.0, 0.0),
             pitch_offset_hz: (-100.0, 100.0),
             repeat_requests: 0.15,
+            band: BandConditions::intermediate(),
         }
     }
 
@@ -171,6 +180,7 @@ impl Difficulty {
             strength_db: (-20.0, 0.0),
             pitch_offset_hz: (-250.0, 250.0),
             repeat_requests: 0.25,
+            band: BandConditions::advanced(),
         }
     }
 
@@ -205,7 +215,7 @@ impl Difficulty {
                 "repeat_requests must be in [0, 1]",
             ));
         }
-        Ok(())
+        self.band.validate()
     }
 }
 

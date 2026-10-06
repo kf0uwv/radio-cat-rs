@@ -443,3 +443,66 @@ directed findings to live here.)
 | Error | Attempt | Resolution |
 |-------|---------|------------|
 | Write tool refused `findings.md` for a subagent ("return findings as text") | 1 | Did not work around it; findings delivered in the hand-off report instead. Architect to decide whether to create it. |
+
+---
+
+## Follow-up task (2026-10-06): band conditions, order-free scoring, playback
+
+Dispatched by the architect for `ts570d cw copy` (app plan:
+`../ts570d/planning/app/task_plan.md`, "Audio playback API" and Q1/Q2).
+Same branch `feat/cat-morse`; one commit per part.
+
+### Part A — `cat-morse`: band conditions in `Difficulty`
+- New `scenario::BandConditions { snr_db: Option<(f32,f32)>, qsb:
+  Option<QsbOdds>, qrn: Option<QrnOdds>, qrm: Option<QrmOdds>,
+  rx_bandwidth_hz: Option<f32> }` and field `Difficulty::band`.
+  Presets take the app plan's table: beginner 20 dB clean; intermediate
+  10 dB, QSB 0.4/6 dB/8 s, QRN 0.3/s −10 dB 40 ms, QRM 0.3 −6 dB
+  ±200–400 Hz; advanced 3 dB, QSB 0.7/12 dB/5 s, QRN 1/s −3 dB 60 ms,
+  QRM 0.6 −3 dB ±100–300 Hz (as small ranges around those values).
+- `scenario::band_channel(&Difficulty, signals, sample_rate, pitch_hz,
+  seed) -> Result<(Channel, BandReport), ScenarioError>`: seeded; adds
+  AWGN, per-signal QSB (unless already set), QRN, a QRM station (random
+  call, CQ/TEST text, own speed/fist) truncated to the over, and a CW
+  filter at the pitch. `Keying::truncated(max)` added to `timing`.
+- Tests: determinism per seed, clean preset adds nothing, odds respected
+  over many seeds, QRM within offset range and never past the over,
+  existing QSB kept, validation.
+
+### Part B — `cat-morse`: `score::align_unordered`
+- `align_unordered(expected: &[&str], copied: &str, opts) ->
+  Result<UnorderedAlignment, CodecError>`: copied split into words;
+  optimal assignment (Hungarian, integer costs, deterministic ties) of
+  expected items to copied words minimising total edit errors; a pairing
+  costing more than half the expected item's units is treated as no
+  match (so an unrelated call is a miss plus an extra, not a string of
+  bogus substitutions). Unmatched expected = all deletions; unmatched
+  copies = all insertions. `UnorderedAlignment::score()`, and
+  `CharStats::record_unordered`.
+- Tests: permuted copy scores 0; one typo; missing call; extra call;
+  duplicates; implausible pairing refused; determinism.
+
+### Part C — `cat-signal-audio`: playback
+- Ungated `sink.rs`: `PlaybackConfig`, `PlaybackFormat`, `PlaybackError`,
+  `PlaybackQueue` (bounded mono queue, non-blocking write with clamp,
+  callback-side `render(out, channels)` with silence on underrun and an
+  underrun counter, `clear`, terminal close), and pure output-format
+  negotiation (`OutputOffer` model + `choose_output`). Unit-tested.
+- Gated `playback.rs`: `AudioPlayback` (open/open_default/format/label/
+  write/queued/clear/underruns) over cpal 0.16 `build_output_stream`;
+  callback touches only the queue mutex, registers no waker;
+  `output_devices()` in `device.rs` (feature-off stub says what to
+  rebuild with).
+- Needs `cat_signal::DeviceKind::AudioOutput` (the enum is
+  `#[non_exhaustive]`, so additive). Heading "AUDIO OUTPUT", flag
+  `--audio-out` (the app's flag).
+- `examples/playback_smoke.rs` (required-features = device): 1 s tone
+  to the default output; report honestly whether it ran (audibility
+  cannot be verified here).
+- ADR 0017 amendment: the crate now has a speaker path.
+
+### Checks
+cargo test -p cat-morse (± serde), -p cat-signal-audio (± device),
+--workspace; clippy -D warnings (both crates, all features; workspace);
+fmt; `cargo xwin check --target x86_64-pc-windows-msvc` for cat-morse
+and cat-signal-audio --features device.
