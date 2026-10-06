@@ -506,3 +506,45 @@ cargo test -p cat-morse (± serde), -p cat-signal-audio (± device),
 --workspace; clippy -D warnings (both crates, all features; workspace);
 fmt; `cargo xwin check --target x86_64-pc-windows-msvc` for cat-morse
 and cat-signal-audio --features device.
+
+---
+
+## Review fixes (2026-10-06): `planning/code_review/findings.md` "feat/cat-morse review"
+
+Worktree `../radio-cat-rs-morsefix`, branch `fix/cat-morse-review` (from
+`feat/cat-morse`). TDD: a failing regression test reproducing each
+reviewer scenario first, then the fix. Commit per finding/tight group.
+
+1. Decoder floor robust to a tone during warm-up: a low-percentile floor
+   (min-tracking over the warm-up windows) instead of a mean; tests
+   `tone_from_t0_decodes_fully` (15/20/25/30 wpm) and
+   `joining_on_the_first_mark_decodes_fully`.
+2. Outlier rejection in mark/gap clustering: marks longer than ~8 dits of
+   the current estimate (and gaps beyond the word-gap cut) and sub-glitch
+   marks are kept out of the histories; a crash-length blip is dropped.
+   Tests: `long_carrier_does_not_poison_speed`, `one_second_mark_...`,
+   `crash_on_weak_signal_keeps_word_spaces`.
+3. Auto pitch lock statistic: compare the best bin against the bank's
+   low-percentile floor, excluding the best's ±2 neighbours; widen the
+   search bank by a margin beyond [min,max] for the statistic. Tests
+   `narrow_auto_range_locks`.
+4. `PlaybackQueue::render` uses `try_lock`; contention → silence, counted
+   (`busy_callbacks()`); `write` clamps into a local buffer before
+   locking; frames==0 render leaves `playing` alone. ADR 0017 §16 reworded.
+5. First ramp starts from silence: `Channel` places a signal's keying at
+   `start + rise/2` when `start < rise/2`… simplest consistent rule: the
+   channel clamps each signal's effective start to ≥ rise/2 (first sample
+   0). band_channel QRM start ≥ rise/2 likewise. Test `first_sample_is_silent`.
+6. Auto-pitch re-acquire after squelch closed for 2 s (re-run the bank;
+   relock on a new tone ≥ 30 Hz away). Test `auto_pitch_reacquires_new_station`.
+7. Pitch margin: decoder Fixed and Auto bounds within [100 Hz, Nyquist −
+   100 Hz]; band_channel QRM pitch likewise (offset flipped or QRM dropped).
+8. Speed floor: 3 wpm (matching decoder initial_wpm ≥ 3), Farnsworth
+   effective too.
+9. Decoder input clamped to ±4.0 per sample (above any real full-scale
+   audio) before detection.
+10. `Callsign` deserializes through `parse()`; `align_unordered` documents
+    O((n+m)³) and errors past n+m > 64 (new `UnorderedError`/`CodecError`?
+    — returns `Err` via a new `ScoreError`); doc the cap.
+11. Pinned-value tests: a keying (segments) and a script digest for fixed
+    seeds.

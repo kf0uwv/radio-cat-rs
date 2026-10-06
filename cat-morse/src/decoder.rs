@@ -22,17 +22,24 @@
 //!    narrow the bandwidth and reject noise, short enough to keep the
 //!    edges. The Hann window keeps a station a few hundred hertz away out.
 //! 2. **Envelope.** The bin's amplitude against two trackers — a noise
-//!    floor (followed only while key-up) and a peak (instant attack, slow
-//!    release, so QSB is followed). Thresholds are in *amplitude*, where a
+//!    floor (the 10th percentile of recent key-up windows, scaled to the
+//!    noise mean, so a keyed tone cannot drag it up) and a peak (instant
+//!    attack, slow release so QSB is followed, but never above the median
+//!    of the last few marks' peaks, so one crash cannot deafen it). Input
+//!    is clamped to ±4 first. Thresholds are in *amplitude*, where a
 //!    sliding window's response to a key edge is linear, so the 50 % point
 //!    falls on the true edge and mark lengths come out unbiased.
 //! 3. **Hysteresis and debounce.** Separate on/off thresholds, never less
 //!    than [`DecoderConfig::squelch_db`] above the floor, and a state change
 //!    must persist for about a fifth of a dot before it is taken. The
-//!    first ~60 ms only train the floor. Each finished mark is then
+//!    first 300 ms train the floor and peak from every window and are then
+//!    *replayed*, so a station keyed from the very first sample loses
+//!    nothing. Each finished mark is then
 //!    re-timed to where the envelope crossed half of *its own* peak
-//!    (interpolated between hops), and a blip under 0.3 dot is dropped as
-//!    noise.
+//!    (interpolated between hops). A blip under 0.3 dot, or a short mark
+//!    far louder than the station's recent marks (a crash), is dropped as
+//!    noise; a mark longer than three dahs (a tune-up carrier) ends the
+//!    word and is kept out of the speed estimate.
 //! 4. **Timing.** Marks are split into dits and dahs by two-cluster
 //!    k-means (in log time) over recent marks, so the speed estimate
 //!    follows the sender. Spaces are split the same way into letter and
@@ -44,8 +51,13 @@
 //!
 //! With [`PitchMode::Auto`], a bank of Goertzel bins 10 Hz apart finds the
 //! strongest steady tone first; audio heard before the lock is buffered
-//! and replayed, so nothing at the start is lost. The lock holds until
-//! [`Decoder::reset`].
+//! and replayed, so nothing at the start is lost. The lock is judged
+//! against the band's median *outside* the tone's own skirt, over a bank
+//! that extends 100 Hz beyond the configured range, so a narrow range
+//! locks too. After two seconds with nothing heard on the locked pitch,
+//! a steady tone 30 Hz or more away is re-acquired (the last two seconds
+//! are replayed through it). Pitches within [`PITCH_MARGIN_HZ`] of 0 Hz or
+//! Nyquist are rejected by validation.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -96,7 +108,7 @@ pub struct DecoderConfig {
     pub off_threshold: f32,
     /// The speed assumed before any marks have been heard (20 wpm).
     pub initial_wpm: f64,
-    /// Peak must stand this far above the floor, in dB, to decode (13).
+    /// Peak must stand this far above the floor, in dB, to decode (10).
     pub squelch_db: f32,
     /// Tones weaker than this (dBFS, amplitude re 1.0) are never decoded
     /// (−70). Without it, in digital silence the faintest leakage from a
@@ -117,7 +129,7 @@ impl DecoderConfig {
             on_threshold: 0.55,
             off_threshold: 0.40,
             initial_wpm: 20.0,
-            squelch_db: 13.0,
+            squelch_db: 10.0,
             min_level_dbfs: -70.0,
             style: DecodeStyle::default(),
         }
@@ -128,7 +140,9 @@ impl DecoderConfig {
             return Err(DecoderError::ZeroSampleRate);
         }
         let nyquist = self.sample_rate as f32 / 2.0;
-        let ok = |f: f32| f.is_finite() && f > 0.0 && f < nyquist;
+        // A pitch within PITCH_MARGIN_HZ of 0 or Nyquist has its own image
+        // inside the detector's bin and cannot be decoded.
+        let ok = |f: f32| f.is_finite() && f >= PITCH_MARGIN_HZ && f <= nyquist - PITCH_MARGIN_HZ;
         match self.pitch {
             PitchMode::Fixed(f) if !ok(f) => return Err(DecoderError::PitchOutOfRange(f)),
             PitchMode::Auto { min_hz, max_hz } => {
@@ -214,9 +228,8 @@ const MIN_WINDOW_S: f64 = 0.008;
 const MAX_WINDOW_S: f64 = 0.040;
 const HISTORY: usize = 24;
 const HIST_HOPS: usize = 512;
-/// Hops (of a full window) before the decoder may key: lets the noise
-/// floor settle so the first noise peak is not taken for a signal.
-const WARMUP_HOPS: u32 = 15;
+/// How close a decoder pitch may come to 0 Hz or to Nyquist.
+pub const PITCH_MARGIN_HZ: f32 = 100.0;
 /// Plausible dot lengths: 60 wpm to 5 wpm.
 const DIT_RANGE: (f64, f64) = (1.2 / 60.0, 1.2 / 5.0);
 const AUTO_BLOCK_S: f64 = 0.1;
@@ -279,6 +292,10 @@ struct Classifier {
     group: Vec<Element>,
     emitted_any: bool,
     last_was_space: bool,
+    /// Consecutive marks rejected as far too long for the current speed.
+    long_rejects: u32,
+    /// The next gap follows a rejected mark: classify it, don't learn it.
+    skip_gap_history: bool,
 }
 
 impl Classifier {
@@ -293,10 +310,39 @@ impl Classifier {
             group: Vec::new(),
             emitted_any: false,
             last_was_space: false,
+            long_rejects: 0,
+            skip_gap_history: false,
         }
     }
 
-    fn mark(&mut self, len: f64) {
+    /// Forgets the learned speed and spacing (a new station).
+    fn forget_timing(&mut self, initial_wpm: f64) {
+        self.dit = 1.2 / initial_wpm;
+        self.dah = 3.0 * self.dit;
+        self.marks.clear();
+        self.gaps.clear();
+        self.long_rejects = 0;
+        self.skip_gap_history = false;
+    }
+
+    /// Classifies one mark. A mark far longer than any dah at the current
+    /// speed (a tune-up carrier, a stuck key) is not an element: it ends
+    /// the word, is kept out of the speed estimate, and `false` is
+    /// returned. Three in a row are believed — the speed really changed.
+    fn mark(&mut self, len: f64, out: &mut Vec<Decoded>) -> bool {
+        if len > 3.0 * self.dah.max(3.0 * self.dit) && self.long_rejects < 2 {
+            self.long_rejects += 1;
+            self.flush_char(out);
+            self.word_space(out);
+            self.skip_gap_history = true;
+            return false;
+        }
+        if self.long_rejects >= 2 && len > 3.0 * self.dah {
+            // Believed: start the speed estimate again from here.
+            self.marks.clear();
+            self.gaps.clear();
+        }
+        self.long_rejects = 0;
         push_history(&mut self.marks, len);
         if let Some((d, a)) = two_means(&self.marks, 1.8) {
             self.dit = d;
@@ -326,6 +372,7 @@ impl Classifier {
         self.dit = self.dit.clamp(DIT_RANGE.0, DIT_RANGE.1);
         self.dah = self.dah.clamp(2.0 * self.dit, 5.0 * self.dit);
         self.group.push(el);
+        true
     }
 
     fn intra_threshold(&self) -> f64 {
@@ -392,6 +439,9 @@ impl Classifier {
         if len > self.word_threshold(Some(len)) {
             self.word_space(out);
         }
+        if std::mem::take(&mut self.skip_gap_history) {
+            return;
+        }
         // Long silences between transmissions would form a third cluster.
         let keep = match two_means(&self.gaps, 1.6) {
             Some((l, w)) => len < 3.0 * (l * w).sqrt(),
@@ -417,19 +467,40 @@ struct Detector {
     hop: usize,
     since_hop: usize,
     samples: u64,
+    /// Recent key-up amplitudes; the floor is their 10th percentile.
+    amps: VecDeque<f64>,
+    scratch: Vec<f64>,
+    floor_tick: u32,
     floor: f64,
     peak: f64,
     peak_decay: f64,
-    floor_alpha: f64,
-    floor_creep: f64,
-    floor_n: u32,
-    hops: u32,
+    /// Hops buffered during warm-up, replayed once the floor is known.
+    warmup: Option<Vec<(f64, f64)>>,
+    warmup_hops: usize,
+    /// Peaks of the last few accepted marks.
+    mark_peaks: VecDeque<f64>,
+    last_mark_peak: f64,
     on: bool,
     pending: usize,
     pending_t: f64,
     mark_start_raw: f64,
     last_end: Option<f64>,
     hist: VecDeque<(f64, f64)>,
+}
+
+/// The 10th percentile of a Rayleigh-distributed amplitude (band noise in
+/// one bin) is 0.366 of its mean, so p10 / 0.366 estimates the noise
+/// mean. A low percentile, unlike a mean, is not dragged up by a tone
+/// that is keyed for most of the window.
+const P10_TO_MEAN: f64 = 0.366;
+const FLOOR_HOPS: usize = 500;
+const WARMUP_S: f64 = 0.3;
+const MARK_PEAKS: usize = 5;
+
+fn median(v: &VecDeque<f64>) -> f64 {
+    let mut s: Vec<f64> = v.iter().copied().collect();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    s[s.len() / 2]
 }
 
 impl Detector {
@@ -455,14 +526,17 @@ impl Detector {
             hop,
             since_hop: 0,
             samples: 0,
+            amps: VecDeque::with_capacity(FLOOR_HOPS),
+            scratch: Vec::with_capacity(FLOOR_HOPS),
+            floor_tick: 0,
             floor: 0.0,
             peak: 0.0,
-            // Peak release 6 dB/s; floor time constant ~0.25 s.
+            // Peak release 6 dB/s.
             peak_decay: 10f64.powf(-6.0 * hop_s / 20.0),
-            floor_alpha: (hop_s / 0.25).min(1.0),
-            floor_creep: 10f64.powf(hop_s / 20.0),
-            floor_n: 0,
-            hops: 0,
+            warmup: Some(Vec::new()),
+            warmup_hops: ((WARMUP_S / hop_s).ceil() as usize).max(1),
+            mark_peaks: VecDeque::with_capacity(MARK_PEAKS),
+            last_mark_peak: 0.0,
             on: false,
             pending: 0,
             pending_t: 0.0,
@@ -487,9 +561,6 @@ impl Detector {
     }
 
     fn amplitude(&self) -> f64 {
-        if self.filled < self.len {
-            return 0.0;
-        }
         let n = self.len;
         let cap = self.ring.len();
         let start = (self.pos + cap - n) % cap;
@@ -502,8 +573,9 @@ impl Detector {
         (2.0 * p).sqrt()
     }
 
-    /// Feeds one sample; returns `Some(time_s)` at each hop.
-    fn push(&mut self, x: f32) -> Option<f64> {
+    /// Feeds one sample; returns `Some((time_s, amplitude))` at each hop
+    /// once a full window has been heard.
+    fn push(&mut self, x: f32) -> Option<(f64, f64)> {
         let cap = self.ring.len();
         self.ring[self.pos] = x;
         self.pos = (self.pos + 1) % cap;
@@ -514,7 +586,44 @@ impl Detector {
             return None;
         }
         self.since_hop = 0;
-        Some((self.samples as f64 - self.len.min(self.filled) as f64 / 2.0) / self.sample_rate)
+        if self.filled < self.len {
+            return None;
+        }
+        let t = (self.samples as f64 - self.len as f64 / 2.0) / self.sample_rate;
+        Some((t, self.amplitude()))
+    }
+
+    /// Adds a key-up amplitude to the floor estimate.
+    fn learn_floor(&mut self, amp: f64) {
+        if self.amps.len() == FLOOR_HOPS {
+            self.amps.pop_front();
+        }
+        self.amps.push_back(amp);
+        // Re-estimated every fourth window (and always while there are
+        // few): the 10th percentile moves slowly, the selection does not
+        // need to run 250 times a second.
+        self.floor_tick = self.floor_tick.wrapping_add(1);
+        if self.amps.len() > 64 && self.floor_tick % 4 != 0 {
+            return;
+        }
+        self.scratch.clear();
+        self.scratch.extend(self.amps.iter().copied());
+        let k = self.scratch.len() / 10;
+        let (_, p10, _) = self.scratch.select_nth_unstable_by(k, |a, b| {
+            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        self.floor = *p10 / P10_TO_MEAN;
+    }
+
+    /// The signal level thresholds are set against: the instant peak
+    /// tracker, but never above the median of the last few marks' peaks —
+    /// so one crash cannot deafen the decoder while it decays.
+    fn ref_peak(&self) -> f64 {
+        if self.mark_peaks.len() >= 3 {
+            self.peak.min(median(&self.mark_peaks))
+        } else {
+            self.peak
+        }
     }
 
     fn remember(&mut self, t: f64, amp: f64) {
@@ -530,7 +639,8 @@ impl Detector {
     /// linear interpolation between hops — the debounced times are late
     /// or early by up to the debounce and threshold offsets, and the
     /// first mark after silence is seen before the peak is known at all.
-    /// Returns the re-timed `(start, end)`.
+    /// Returns the re-timed `(start, end)`; the mark's peak is left in
+    /// `last_mark_peak`.
     fn close_mark(&mut self, end_raw: f64) -> (f64, f64) {
         let hop = self.hop as f64 / self.sample_rate;
         let window = self.len as f64 / self.sample_rate;
@@ -541,6 +651,7 @@ impl Detector {
             .filter(|(t, _)| *t >= start_raw && *t <= end_raw)
             .map(|(_, a)| *a)
             .fold(0.0, f64::max);
+        self.last_mark_peak = peak;
         let floor = self.floor.max(peak * 0.01);
         let level = floor + 0.5 * (peak - floor);
         let lerp = |(t0, a0): (f64, f64), (t1, a1): (f64, f64)| {
@@ -587,66 +698,109 @@ pub struct Decoder {
     squelch: f64,
     min_level: f64,
     auto: Option<AutoPitch>,
+    /// Samples fed so far, and when the decoder last heard its station.
+    total: u64,
+    last_activity: u64,
 }
+
+/// Bins this far either side of the strongest are its own skirt, not the
+/// band: left out of the reference the lock is judged against.
+const AUTO_SKIRT_BINS: usize = 3;
+/// The bank searches this far beyond the configured range so the lock
+/// statistic has band to compare against even when the range is narrow.
+const AUTO_MARGIN_HZ: f32 = 100.0;
+/// A locked pitch is given up for a new one after this long with nothing
+/// heard on it (the "squelch closed for a while" rule).
+const REACQUIRE_S: f64 = 2.0;
+/// A new pitch must be at least this far from the old to relock.
+const REACQUIRE_HZ: f32 = 30.0;
 
 /// Pitch search state for [`PitchMode::Auto`].
 #[derive(Debug, Clone)]
 struct AutoPitch {
     freqs: Vec<f32>,
+    /// Indices of `freqs` inside the configured range.
+    candidates: std::ops::Range<usize>,
     block: Vec<f32>,
     block_len: usize,
     smoothed: Vec<f64>,
-    buffer: Vec<f32>,
+    buffer: VecDeque<f32>,
     buffer_cap: usize,
 }
 
 impl AutoPitch {
     fn new(sample_rate: u32, min_hz: f32, max_hz: f32) -> Self {
+        let nyquist = sample_rate as f32 / 2.0;
+        let lo = (min_hz - AUTO_MARGIN_HZ).max(PITCH_MARGIN_HZ / 2.0);
+        let hi = (max_hz + AUTO_MARGIN_HZ).min(nyquist - PITCH_MARGIN_HZ / 2.0);
         let mut freqs = Vec::new();
-        let mut f = min_hz;
-        while f <= max_hz {
+        let mut first = None;
+        let mut last = 0;
+        let mut i = 0usize;
+        loop {
+            let f = lo + AUTO_STEP_HZ * i as f32;
+            if f > hi {
+                break;
+            }
+            if f >= min_hz - 0.01 && f <= max_hz + 0.01 {
+                first.get_or_insert(freqs.len());
+                last = freqs.len();
+            }
             freqs.push(f);
-            f += AUTO_STEP_HZ;
+            i += 1;
         }
+        let first = first.unwrap_or(0);
         let block_len = (AUTO_BLOCK_S * f64::from(sample_rate)).round() as usize;
         AutoPitch {
             smoothed: vec![0.0; freqs.len()],
+            candidates: first..last + 1,
             freqs,
             block: Vec::with_capacity(block_len),
             block_len,
-            buffer: Vec::new(),
+            buffer: VecDeque::new(),
             buffer_cap: (AUTO_BUFFER_S * f64::from(sample_rate)) as usize,
         }
     }
 
-    /// Adds samples; returns a pitch once one stands out.
+    /// Adds a sample; at the end of each block, returns the pitch of the
+    /// strongest steady tone in range if one stands out from the band.
     fn feed(&mut self, sample_rate: u32, x: f32) -> Option<f32> {
         if self.buffer.len() == self.buffer_cap {
-            self.buffer.drain(..self.block_len.min(self.buffer.len()));
+            self.buffer.pop_front();
         }
-        self.buffer.push(x);
+        self.buffer.push_back(x);
         self.block.push(x);
         if self.block.len() < self.block_len {
             return None;
         }
-        let powers: Vec<f64> = self
-            .freqs
-            .iter()
-            .map(|&f| f64::from(crate::dsp::goertzel_power(&self.block, sample_rate, f)))
-            .collect();
-        self.block.clear();
-        for (s, p) in self.smoothed.iter_mut().zip(&powers) {
-            *s = s.max(*p).max(0.5 * *s + 0.5 * p);
+        for (s, &f) in self.smoothed.iter_mut().zip(&self.freqs) {
+            let p = f64::from(crate::dsp::goertzel_power(&self.block, sample_rate, f));
+            // Peak hold that decays, so a station that has gone quiet
+            // stops winning within a second or two.
+            *s = p.max(0.7 * *s);
         }
-        let mut sorted = self.smoothed.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let median = sorted[sorted.len() / 2].max(1e-30);
-        let (best, &bp) = self
+        self.block.clear();
+        let cmp = |a: &f64, b: &f64| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
+        let best = self
+            .candidates
+            .clone()
+            .max_by(|&a, &b| cmp(&self.smoothed[a], &self.smoothed[b]))?;
+        let bp = self.smoothed[best];
+        // The reference is the band away from the tone's own skirt — not
+        // a median a narrow bank's neighbours would dominate.
+        let mut band: Vec<f64> = self
             .smoothed
             .iter()
             .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))?;
-        if 10.0 * (bp / median).log10() < AUTO_LOCK_DB {
+            .filter(|(i, _)| i.abs_diff(best) > AUTO_SKIRT_BINS)
+            .map(|(_, &p)| p)
+            .collect();
+        if band.is_empty() {
+            return None;
+        }
+        band.sort_by(cmp);
+        let reference = band[band.len() / 2].max(1e-30);
+        if 10.0 * (bp / reference).log10() < AUTO_LOCK_DB {
             return None;
         }
         // Parabolic interpolation between neighbouring bins (log power).
@@ -667,6 +821,11 @@ impl AutoPitch {
     }
 }
 
+/// Input samples are clamped to this before detection: well above any
+/// real full-scale audio, low enough that one absurd sample (1e30) cannot
+/// swamp the envelope.
+const INPUT_CLAMP: f32 = 4.0;
+
 impl Decoder {
     /// A decoder with `cfg`.
     pub fn new(cfg: DecoderConfig) -> Result<Self, DecoderError> {
@@ -685,6 +844,8 @@ impl Decoder {
             det,
             cls,
             auto,
+            total: 0,
+            last_activity: 0,
         })
     }
 
@@ -715,27 +876,65 @@ impl Decoder {
     /// Decodes a block of samples; returns whatever it completed.
     pub fn feed(&mut self, samples: &[f32]) -> Vec<Decoded> {
         let mut out = Vec::new();
+        let sr = self.cfg.sample_rate;
+        let reacquire = (REACQUIRE_S * f64::from(sr)) as u64;
         for &x in samples {
-            if self.det.is_none() {
-                let sr = self.cfg.sample_rate;
-                let auto = self.auto.as_mut().expect("auto mode without detector");
-                if let Some(p) = auto.feed(sr, x) {
-                    let buffered = std::mem::take(&mut auto.buffer);
-                    self.det = Some(Detector::new(&self.cfg, p, self.cls.dit));
-                    for &y in &buffered {
-                        self.step(y, &mut out);
+            let x = if x.is_finite() {
+                x.clamp(-INPUT_CLAMP, INPUT_CLAMP)
+            } else {
+                0.0
+            };
+            self.total += 1;
+            if let Some(auto) = self.auto.as_mut() {
+                let lock = auto.feed(sr, x);
+                match (self.det.as_ref(), lock) {
+                    (None, Some(p)) => {
+                        self.lock_on(p, &mut out);
+                        continue;
                     }
+                    (None, None) => continue,
+                    (Some(d), Some(p))
+                        if (p - d.pitch).abs() >= REACQUIRE_HZ
+                            && !d.on
+                            && self.total - self.last_activity > reacquire =>
+                    {
+                        self.lock_on(p, &mut out);
+                        continue;
+                    }
+                    _ => {}
                 }
-                continue;
             }
             self.step(x, &mut out);
         }
         out
     }
 
+    /// (Re)locks onto `pitch` and replays the buffered audio through it.
+    fn lock_on(&mut self, pitch: f32, out: &mut Vec<Decoded>) {
+        if self.det.is_some() {
+            // A different station: finish the last one's text, and let
+            // the new one's speed be learned afresh.
+            self.cls.flush_char(out);
+            self.cls.word_space(out);
+            self.cls.forget_timing(self.cfg.initial_wpm);
+        }
+        self.det = Some(Detector::new(&self.cfg, pitch, self.cls.dit));
+        let buffered: Vec<f32> = self
+            .auto
+            .as_ref()
+            .map(|a| a.buffer.iter().copied().collect())
+            .unwrap_or_default();
+        for y in buffered {
+            self.step(y, out);
+        }
+        self.last_activity = self.total;
+    }
+
     /// Ends the input: emits any letter still being formed.
     pub fn flush(&mut self) -> Vec<Decoded> {
         let mut out = Vec::new();
+        // A stream shorter than the warm-up is decoded with what it has.
+        self.finish_warmup(&mut out);
         let mut closed = None;
         if let Some(det) = &mut self.det {
             if det.on {
@@ -751,56 +950,68 @@ impl Decoder {
         out
     }
 
-    fn step(&mut self, x: f32, out: &mut Vec<Decoded>) {
-        let det = self.det.as_mut().expect("detector");
-        let Some(t) = det.push(x) else {
+    fn finish_warmup(&mut self, out: &mut Vec<Decoded>) {
+        let Some(det) = self.det.as_mut() else {
             return;
         };
-        let amp = det.amplitude();
+        let Some(buffered) = det.warmup.take() else {
+            return;
+        };
+        for (t, amp) in buffered {
+            self.hop(t, amp, out);
+        }
+    }
 
-        // Trackers.
+    fn step(&mut self, x: f32, out: &mut Vec<Decoded>) {
+        let det = self.det.as_mut().expect("detector");
+        let Some((t, amp)) = det.push(x) else {
+            return;
+        };
+        if let Some(buf) = det.warmup.as_mut() {
+            // Warm-up: learn the floor from *every* window — a low
+            // percentile is not fooled by a tone keyed from t = 0 — and
+            // the peak, then replay these hops once both are known, so a
+            // station that started with the stream loses nothing.
+            buf.push((t, amp));
+            let full = buf.len() >= det.warmup_hops;
+            det.peak = det.peak.max(amp);
+            det.learn_floor(amp);
+            if full {
+                self.finish_warmup(out);
+            }
+            return;
+        }
+        if !det.on {
+            det.learn_floor(amp);
+        }
+        self.hop(t, amp, out);
+    }
+
+    /// One envelope hop after warm-up: trackers, thresholds, debounce,
+    /// edges.
+    fn hop(&mut self, t: f64, amp: f64, out: &mut Vec<Decoded>) {
+        let det = self.det.as_mut().expect("detector");
         if amp > det.peak {
             det.peak = amp;
         } else {
             det.peak = (det.peak * det.peak_decay).max(det.floor);
         }
-        if det.filled >= det.len && !det.on {
-            // The noise floor: a mean of key-up amplitude. For its first
-            // 25 windows it is a plain running mean, so it is right within
-            // ~100 ms; after that it ignores spikes and mark tails (more
-            // than 2.5x the floor) and instead creeps up ~1 dB/s while
-            // everything is above it, so a rising band noise is followed.
-            // Digital silence leaves it at zero, which the clamps below
-            // handle.
-            if det.floor_n < 25 || amp < 2.5 * det.floor + 1e-12 {
-                det.floor_n += 1;
-                let a = det.floor_alpha.max(1.0 / det.floor_n as f64);
-                det.floor += a * (amp - det.floor);
-            } else {
-                det.floor *= det.floor_creep;
-            }
-        }
+        let peak = det.ref_peak();
         // Keep the floor within 40 dB of the peak so silence (a digital
         // zero) does not put the threshold at the very foot of a ramp.
         let floor = det
             .floor
-            .max(det.peak * 0.01)
+            .max(peak * 0.01)
             .max(self.min_level / self.squelch);
-        let span = det.peak - floor;
-        let open = det.peak > floor * self.squelch;
+        let span = (peak - floor).max(0.0);
+        let open = peak > floor * self.squelch;
         // Relative to the peak, and never less than the squelch margin
         // above the floor: before the first signal the "peak" is just the
         // loudest noise, and that must not key the decoder.
         let on_level = (floor + f64::from(self.cfg.on_threshold) * span).max(floor * self.squelch);
         let off_level =
             (floor + f64::from(self.cfg.off_threshold) * span).max(floor * self.squelch * 0.7);
-        // No keying until the floor has had a moment to settle.
-        if det.filled >= det.len {
-            det.hops = det.hops.saturating_add(1);
-        }
-        let warm = det.hops > WARMUP_HOPS;
-        let raw_on = warm
-            && open
+        let raw_on = open
             && if det.on {
                 amp > off_level
             } else {
@@ -833,6 +1044,9 @@ impl Decoder {
         }
 
         let on = det.on;
+        if on {
+            self.last_activity = self.total;
+        }
         if let Some(edges) = ended {
             self.mark_heard(edges, out);
         }
@@ -845,24 +1059,35 @@ impl Decoder {
 
     fn mark_heard(&mut self, (start, end): (f64, f64), out: &mut Vec<Decoded>) {
         let len = end - start;
+        let Some(det) = self.det.as_mut() else {
+            return;
+        };
+        let peak = det.last_mark_peak;
         // A blip much shorter than a dot is noise or a crash, not keying:
         // drop it without disturbing the gap it fell in or the speed
         // estimate.
         if len < 0.3 * self.cls.dit {
             return;
         }
-        let gap = self
-            .det
-            .as_ref()
-            .and_then(|d| d.last_end)
-            .map(|e| (start - e).max(0.0));
-        if let Some(d) = self.det.as_mut() {
-            d.last_end = Some(end);
+        // Short and far louder than this station's recent marks: a static
+        // crash, not an element. Same treatment. (Only short ones: a long
+        // loud mark is a stronger signal, and the noise blips heard before
+        // a station starts must not lock its first real marks out.)
+        if det.mark_peaks.len() >= 3 && len < self.cls.dit && peak > 3.0 * median(&det.mark_peaks) {
+            return;
         }
+        if det.mark_peaks.len() == MARK_PEAKS {
+            det.mark_peaks.pop_front();
+        }
+        det.mark_peaks.push_back(peak);
+        let gap = det.last_end.map(|e| (start - e).max(0.0));
+        det.last_end = Some(end);
         if let Some(g) = gap {
             self.cls.gap_ended(g, out);
         }
-        self.cls.mark(len);
+        if !self.cls.mark(len, out) {
+            return;
+        }
         let dit = self.cls.dit;
         let sr = self.cfg.sample_rate;
         if let Some(d) = self.det.as_mut() {

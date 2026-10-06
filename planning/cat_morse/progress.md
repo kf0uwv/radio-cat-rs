@@ -139,3 +139,29 @@
   clippy -D warnings clean (workspace; cat-morse all features;
   cat-signal-audio ± device); fmt clean; xwin msvc clean for
   cat-signal-audio --features device and cat-morse --all-features.
+
+## Session: 2026-10-06 (review fixes, worktree ../radio-cat-rs-morsefix)
+
+- Decoder group (findings 1, 2, 3, 6, 7-decoder, 9), tests in
+  `cat-morse/tests/review_regressions.rs` — written first and seen
+  failing for 1, 2, 3, 7, 9 (all 7 initial tests failed); 6's test
+  was written alongside the fix (re-acquire is new behaviour).
+  - Floor: 10th percentile of recent key-up windows / 0.366 (Rayleigh
+    p10→mean), 500-window history; 300 ms warm-up learns floor+peak from
+    every window and is replayed. Default squelch back to 10 dB: with an
+    unbiased floor, 13 dB failed 6/100 seeds at +6 dB; at 10 dB 0/100
+    fail (mean CER 0.01 %). At +3 dB mean CER is 12 % (the pre-fix
+    decoder: 73 %) — the advanced band is hard by design.
+  - Reference peak = min(instant peak, median of last 5 mark peaks);
+    short marks > 3x that median are dropped as crashes; marks longer
+    than 3 dahs end the word and stay out of the estimates (3 in a row
+    are believed as a speed change).
+  - Input clamped to ±4 (non-finite → 0).
+  - Auto pitch: bank extends 100 Hz beyond the range; lock vs the band
+    median outside ±3 bins of the best; peak-hold decays 0.7/block;
+    re-acquire a tone ≥ 30 Hz away after 2 s with nothing heard,
+    replaying the last 2 s. Added `auto_pitch_does_not_lock_on_band_noise`
+    after a 25th-percentile reference false-locked on noise.
+  - `PITCH_MARGIN_HZ` = 100 Hz for Fixed and Auto bounds.
+  - Architect accepted the API drift (TimingError::InvalidWpm,
+    Difficulty::wpm as (u32, u32)); recorded here as instructed.
