@@ -352,6 +352,15 @@ impl UnorderedAlignment {
 /// all deletions; unmatched copied words are all insertions.
 ///
 /// Every expected item must encode; the copy may contain anything.
+///
+/// # Cost
+///
+/// The optimal assignment is O((n+m)³) for `n` expected items and `m`
+/// copied words, plus `n·m` small alignments. A pileup is a dozen calls;
+/// operator input is unbounded, so past [`UNORDERED_OPTIMAL_MAX`] items
+/// and words together the assignment falls back to a deterministic greedy
+/// one (cheapest plausible pair first, ties by expected then copied
+/// index), which is O(n·m·log(n·m)).
 pub fn align_unordered(
     expected: &[&str],
     copied: &str,
@@ -398,7 +407,11 @@ pub fn align_unordered(
             };
         }
     }
-    let assign = hungarian(&cost);
+    let assign = if size <= UNORDERED_OPTIMAL_MAX {
+        hungarian(&cost)
+    } else {
+        greedy_assign(&cost, n, m)
+    };
 
     let mut items = Vec::with_capacity(n);
     let mut matched = vec![None; n];
@@ -424,6 +437,38 @@ pub fn align_unordered(
         copied_words: words.iter().map(|w| codec::tokens_to_text(w)).collect(),
         extras,
     })
+}
+
+/// Above this many expected items plus copied words, [`align_unordered`]
+/// assigns greedily instead of optimally.
+pub const UNORDERED_OPTIMAL_MAX: usize = 128;
+
+/// Greedy stand-in for [`hungarian`] on the same padded matrix: real pairs
+/// cheaper than leaving both unmatched, cheapest first. Rows left over get
+/// a dummy column (index ≥ `m`).
+fn greedy_assign(cost: &[Vec<i64>], n: usize, m: usize) -> Vec<usize> {
+    let mut pairs: Vec<(i64, usize, usize)> = Vec::new();
+    for (i, row) in cost.iter().enumerate().take(n) {
+        for (j, &c) in row.iter().enumerate().take(m) {
+            if c < row[m] + cost[n][j] {
+                pairs.push((c, i, j));
+            }
+        }
+    }
+    pairs.sort_unstable();
+    let mut row_of = vec![usize::MAX; n];
+    let mut used = vec![false; m];
+    for (_, i, j) in pairs {
+        if row_of[i] == usize::MAX && !used[j] {
+            row_of[i] = j;
+            used[j] = true;
+        }
+    }
+    row_of
+        .into_iter()
+        .enumerate()
+        .map(|(i, j)| if j == usize::MAX { m + i } else { j })
+        .collect()
 }
 
 /// Minimum-cost perfect assignment on a square matrix (Hungarian

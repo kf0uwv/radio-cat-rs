@@ -343,3 +343,117 @@ fn speeds_below_the_floor_are_rejected() {
     assert!(Speed::wpm(3.0).is_ok());
     assert!(Speed::farnsworth(18.0, 3.0).is_ok());
 }
+
+// Finding 10 ----------------------------------------------------------------
+
+#[cfg(feature = "serde")]
+#[test]
+fn callsign_deserializes_through_parse() {
+    use cat_morse::Callsign;
+    let ok: Callsign = serde_json::from_str("\"kf0uwv\"").unwrap();
+    assert_eq!(ok.as_str(), "KF0UWV");
+    assert!(serde_json::from_str::<Callsign>("\"NOTACALL\"").is_err());
+    assert!(serde_json::from_str::<Callsign>("\"K1//AB\"").is_err());
+    let back: Callsign = serde_json::from_str(&serde_json::to_string(&ok).unwrap()).unwrap();
+    assert_eq!(back, ok);
+}
+
+#[test]
+fn align_unordered_handles_a_huge_copy() {
+    use cat_morse::{align_unordered, ScoreOptions};
+    let calls: Vec<String> = (0..40)
+        .map(|i| format!("W{}A{}B", i % 10, (b'A' + (i / 10) as u8) as char))
+        .collect();
+    let expected: Vec<&str> = calls.iter().map(String::as_str).collect();
+    let mut copied: Vec<&str> = expected.clone();
+    copied.reverse();
+    let mut copied = copied.join(" ");
+    copied.push_str(&" XX".repeat(200));
+    let t = std::time::Instant::now();
+    let a = align_unordered(&expected, &copied, &ScoreOptions::default()).unwrap();
+    assert!(t.elapsed() < std::time::Duration::from_secs(5));
+    let s = a.score();
+    assert_eq!((s.substitutions, s.deletions), (0, 0));
+    assert_eq!(s.insertions, 400);
+    assert_eq!(
+        a,
+        align_unordered(&expected, &copied, &ScoreOptions::default()).unwrap()
+    );
+}
+
+// Finding 11 ----------------------------------------------------------------
+//
+// Recorded on Linux x86_64 when these tests were written. ADR 0021 promises
+// keying and scripts are bit-identical on every platform for a seed; the
+// Windows CI job runs these, so drift there fails here. A deliberate change
+// to Rng, timing or scenario generation must re-record them.
+
+fn fnv(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+#[test]
+fn keying_is_pinned_across_platforms() {
+    let k = key_text(
+        "CQ DE W1AW",
+        Speed::wpm(22.0).unwrap(),
+        &Fist::typical(),
+        42,
+    )
+    .unwrap();
+    let nanos: Vec<u128> = k.segments().iter().map(|s| s.duration.as_nanos()).collect();
+    let text = format!("{nanos:?}");
+    assert_eq!(&nanos[..4], PINNED_KEYING_HEAD, "{text}");
+    assert_eq!(fnv(&text), PINNED_KEYING_FNV, "FNV {:#x}", fnv(&text));
+}
+
+const PINNED_KEYING_HEAD: &[u128] = &[169_269_560, 50_109_755, 62_735_823, 50_499_321];
+const PINNED_KEYING_FNV: u64 = 0xcca7_8cdd_f630_a914;
+
+#[test]
+fn script_is_pinned_across_platforms() {
+    use cat_morse::scenario::{Difficulty, Party};
+    use cat_morse::{generate, Callsign, ScenarioConfig, ScenarioKind};
+    let s = generate(&ScenarioConfig {
+        kind: ScenarioKind::DxPileup { callers: 4 },
+        my_call: Callsign::parse("KF0UWV").unwrap(),
+        difficulty: Difficulty::advanced(),
+        seed: 7,
+    })
+    .unwrap();
+    let mut text = String::new();
+    for st in &s.stations {
+        let g = &st.signal;
+        text.push_str(&format!(
+            "{} {} {} {} {} {:?} {}|",
+            st.persona.call,
+            g.speed.char_wpm(),
+            g.pitch_offset_hz.to_bits(),
+            g.strength_db.to_bits(),
+            g.fist_seed,
+            g.fist.dash_ratio.to_bits(),
+            st.persona.qth
+        ));
+    }
+    for t in &s.transmissions {
+        let who = match t.from {
+            Party::You => "you".to_string(),
+            Party::Them(i) => i.to_string(),
+        };
+        text.push_str(&format!("{who}:{}:{:?}|", t.text, t.start));
+    }
+    assert_eq!(
+        s.stations[0].persona.call.as_str(),
+        PINNED_FIRST_CALL,
+        "{text}"
+    );
+    assert_eq!(fnv(&text), PINNED_SCRIPT_FNV, "FNV {:#x}", fnv(&text));
+}
+
+const PINNED_FIRST_CALL: &str = "G7UQZ";
+const PINNED_SCRIPT_FNV: u64 = 0x5d25_9067_61d0_4b40;

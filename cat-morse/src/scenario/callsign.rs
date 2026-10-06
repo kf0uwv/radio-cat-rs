@@ -23,9 +23,30 @@ use crate::rng::Rng;
 
 /// A syntactically valid amateur callsign, upper case, possibly with a
 /// `/`-separated prefix or suffix (`KF0UWV/P`, `VE3/W1XYZ`).
+///
+/// With the `serde` feature it serializes as its text, and deserializing
+/// goes through [`Callsign::parse`], so an invalid call cannot be smuggled
+/// in from a file.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "String", into = "String")
+)]
 pub struct Callsign(String);
+
+impl TryFrom<String> for Callsign {
+    type Error = ScenarioError;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Callsign::parse(&s)
+    }
+}
+
+impl From<Callsign> for String {
+    fn from(c: Callsign) -> String {
+        c.0
+    }
+}
 
 impl Callsign {
     /// Validates `s`: 3–14 characters of `A–Z`, `0–9` and `/`; at least

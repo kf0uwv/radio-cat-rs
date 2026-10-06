@@ -174,3 +174,12 @@
   as `render_tone`); band_channel pitch must be ≥100 Hz from 0/Nyquist,
   QRM side chosen to fit or QRM dropped; `timing::MIN_WPM = 3`,
   `MAX_WPM = 100`.
+- Findings 10, 11: `callsign_deserializes_through_parse` (failed first:
+  "kf0uwv" came back lower-case, invalid calls accepted) → serde
+  `try_from = "String"` via `parse`. `align_unordered_handles_a_huge_copy`
+  (40 calls + 240 words): documented O((n+m)³); past
+  `UNORDERED_OPTIMAL_MAX` = 128 a deterministic greedy assignment is used
+  (the test already passed with Hungarian at 280 — it now exercises the
+  fallback). Pinned tests `keying_is_pinned_across_platforms` and
+  `script_is_pinned_across_platforms` (FNV-1a over segment nanos / script
+  fields incl. f32/f64 bit patterns), recorded on Linux x86_64.
