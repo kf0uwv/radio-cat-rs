@@ -15,3 +15,14 @@
 | Timestamp | Error | Attempt | Resolution |
 |-----------|-------|---------|------------|
 | 2026-10-05 | Write tool refused findings.md ("subagents should return findings as text") | 1 | Reported to architect; findings content included in hand-off |
+
+## Session: 2026-10-05 (implementation, approved)
+
+- Branch `feat/cat-morse` off main.
+- Step 1 done: crate scaffold, `rng` (xoshiro256**, pinned to reference
+  output 0x99EC5F36CB75F2B4 for seed 0), `codec`. 15 tests. Commit 55742be.
+  Note: `codec::table()` returns an iterator (built once via `OnceLock`)
+  rather than a `&'static [..]` slice.
+- Step 2 done: `timing` (Speed, Farnsworth, Fist presets, Keying, key,
+  key_text). `key` returns `Result` (validates the Fist); `TimingError`
+  gained a `Codec` variant so `key_text` has one error type. 26 tests total.

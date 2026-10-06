@@ -19,6 +19,7 @@
 //! | Module | Does |
 //! |--------|------|
 //! | [`codec`] | text ↔ tokens ↔ dits and dahs, prosigns as `<AR>` |
+//! | [`timing`] | PARIS and Farnsworth speed, seeded operator fists, keying |
 //!
 //! # What this crate is not
 //!
@@ -32,6 +33,8 @@
 
 pub mod codec;
 pub mod rng;
+pub mod timing;
 
 pub use codec::{CodecError, DecodeStyle, Element, Prosign, Token};
 pub use rng::Rng;
+pub use timing::{Fist, Keying, Segment, Speed, TimingError};
