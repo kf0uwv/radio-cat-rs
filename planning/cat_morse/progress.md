@@ -165,3 +165,12 @@
   - `PITCH_MARGIN_HZ` = 100 Hz for Fixed and Auto bounds.
   - Architect accepted the API drift (TimingError::InvalidWpm,
     Difficulty::wpm as (u32, u32)); recorded here as instructed.
+- Findings 5, 7 (band), 8: tests `first_sample_is_silent`,
+  `band_channel_qrm_starts_from_silence`,
+  `band_channel_keeps_qrm_inside_the_passband`,
+  `speeds_below_the_floor_are_rejected` (failed first: compile error on
+  `MIN_WPM`, first sample 0.124). Fix: `Signal::effective_start()` =
+  max(start, rise/2) used by `end()` and the renderer (same half-rise lead
+  as `render_tone`); band_channel pitch must be ≥100 Hz from 0/Nyquist,
+  QRM side chosen to fit or QRM dropped; `timing::MIN_WPM = 3`,
+  `MAX_WPM = 100`.

@@ -101,7 +101,8 @@ pub struct Qsb {
 pub struct Signal {
     /// What is sent.
     pub keying: Keying,
-    /// When the first key-down edge happens, from the channel's start.
+    /// When the first key-down edge happens, from the channel's start
+    /// (never earlier than half a rise: see [`Signal::effective_start`]).
     pub start: Duration,
     /// Audio pitch.
     pub pitch_hz: f32,
@@ -145,9 +146,17 @@ impl Signal {
         self
     }
 
+    /// Where the first key-down edge actually goes: `start`, but never
+    /// earlier than half a rise time, so the first ramp begins from silence
+    /// at or after the channel's first sample (no click at t = 0). The same
+    /// half-rise lead [`render_tone`] uses.
+    pub fn effective_start(&self) -> Duration {
+        self.start.max(self.shape.rise / 2)
+    }
+
     /// When the last ramp has finished.
     pub fn end(&self) -> Duration {
-        self.start + self.keying.total() + self.shape.rise / 2
+        self.effective_start() + self.keying.total() + self.shape.rise / 2
     }
 }
 
@@ -283,7 +292,7 @@ impl SignalState {
         let rise = sig.shape.rise.as_secs_f64();
         let segs = sig.keying.segments();
         let mut marks = Vec::new();
-        let mut t = sig.start.as_secs_f64();
+        let mut t = sig.effective_start().as_secs_f64();
         for (i, s) in segs.iter().enumerate() {
             let len = s.duration.as_secs_f64();
             if s.key_down {

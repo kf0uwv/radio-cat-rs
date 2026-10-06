@@ -28,8 +28,8 @@ use crate::rng::Rng;
 /// Speed, or speed parameters that are not usable.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum TimingError {
-    /// Words per minute must be finite and in `(0, 100]`.
-    #[error("words per minute must be in (0, 100], got {0}")]
+    /// Words per minute must be finite and in `[MIN_WPM, MAX_WPM]` (3–100).
+    #[error("words per minute must be in [3, 100], got {0}")]
     InvalidWpm(f64),
     /// Farnsworth spacing slows the *effective* speed below the character
     /// speed; it cannot raise it.
@@ -52,8 +52,15 @@ pub struct Speed {
     effective_wpm: f64,
 }
 
+/// The slowest speed accepted, character or effective. Slower keying is
+/// not a Morse speed anyone sends, and near zero the gap arithmetic
+/// saturates. Matches the decoder's lowest `initial_wpm`.
+pub const MIN_WPM: f64 = 3.0;
+/// The fastest speed accepted.
+pub const MAX_WPM: f64 = 100.0;
+
 fn check_wpm(w: f64) -> Result<f64, TimingError> {
-    if w.is_finite() && w > 0.0 && w <= 100.0 {
+    if w.is_finite() && (MIN_WPM..=MAX_WPM).contains(&w) {
         Ok(w)
     } else {
         Err(TimingError::InvalidWpm(w))

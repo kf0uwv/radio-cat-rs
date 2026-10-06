@@ -268,3 +268,78 @@ fn auto_pitch_does_not_lock_on_band_noise() {
         assert_eq!(d.pitch_hz(), None, "seed {seed}");
     }
 }
+
+// Finding 5 -----------------------------------------------------------------
+
+#[test]
+fn first_sample_is_silent() {
+    let k = key_text("E", Speed::wpm(20.0).unwrap(), &Fist::perfect(), 0).unwrap();
+    let mut ch = Channel::new(48_000, 3);
+    ch.signals.push(Signal::new(k, 700.0));
+    let p = ch.render().unwrap();
+    assert_eq!(p[0], 0.0);
+    // The ramp starts from silence (the bug started it at half amplitude,
+    // 0.124 at sample 0).
+    assert!(p[..8].iter().all(|x| x.abs() < 1e-3), "{:?}", &p[..8]);
+}
+
+#[test]
+fn band_channel_qrm_starts_from_silence() {
+    use cat_morse::scenario::{band_channel, BandConditions, Difficulty, QrmOdds};
+    let mut d = Difficulty::intermediate();
+    d.band = BandConditions {
+        qrm: Some(QrmOdds {
+            chance: 1.0,
+            offset_hz: (200.0, 400.0),
+            level_db: (0.0, 0.0),
+        }),
+        ..BandConditions::clean()
+    };
+    let k = key_text("TEST TEST", Speed::wpm(20.0).unwrap(), &Fist::perfect(), 0).unwrap();
+    for seed in 0..40 {
+        let (ch, _) =
+            band_channel(&d, vec![Signal::new(k.clone(), 700.0)], 8000, 700.0, seed).unwrap();
+        assert_eq!(ch.render().unwrap()[0], 0.0, "seed {seed}");
+    }
+}
+
+// Finding 7 (band half) -------------------------------------------------------
+
+#[test]
+fn band_channel_keeps_qrm_inside_the_passband() {
+    use cat_morse::scenario::{band_channel, BandConditions, Difficulty, QrmOdds};
+    let mut d = Difficulty::intermediate();
+    d.band = BandConditions {
+        qrm: Some(QrmOdds {
+            chance: 1.0,
+            offset_hz: (200.0, 400.0),
+            level_db: (-6.0, -6.0),
+        }),
+        ..BandConditions::clean()
+    };
+    let k = key_text("TEST TEST", Speed::wpm(20.0).unwrap(), &Fist::perfect(), 0).unwrap();
+    for seed in 0..60 {
+        let (ch, r) =
+            band_channel(&d, vec![Signal::new(k.clone(), 3800.0)], 8000, 3800.0, seed).unwrap();
+        if let Some(q) = r.qrm {
+            let f = 3800.0 + q.offset_hz;
+            assert!((100.0..=3900.0).contains(&f), "seed {seed}: {f}");
+        }
+        ch.render().expect("renders");
+    }
+    assert!(band_channel(&d, vec![Signal::new(k, 3950.0)], 8000, 3950.0, 0).is_err());
+}
+
+// Finding 8 -----------------------------------------------------------------
+
+#[test]
+fn speeds_below_the_floor_are_rejected() {
+    use cat_morse::timing::MIN_WPM;
+    assert_eq!(MIN_WPM, 3.0);
+    assert!(Speed::wpm(2.9).is_err());
+    assert!(Speed::wpm(1e-6).is_err());
+    assert!(Speed::farnsworth(100.0, 1e-9).is_err());
+    assert!(Speed::farnsworth(20.0, 2.0).is_err());
+    assert!(Speed::wpm(3.0).is_ok());
+    assert!(Speed::farnsworth(18.0, 3.0).is_ok());
+}

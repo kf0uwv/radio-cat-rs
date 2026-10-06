@@ -253,8 +253,12 @@ pub fn band_channel(
 ) -> Result<(Channel, BandReport), ScenarioError> {
     let band = &difficulty.band;
     band.validate()?;
-    if !(pitch_hz.is_finite() && pitch_hz > 0.0) {
-        return Err(ScenarioError::InvalidSetting("pitch must be > 0 Hz"));
+    let margin = crate::decoder::PITCH_MARGIN_HZ;
+    let top = sample_rate as f32 / 2.0 - margin;
+    if !(pitch_hz.is_finite() && pitch_hz >= margin && pitch_hz <= top) {
+        return Err(ScenarioError::InvalidSetting(
+            "pitch must be at least 100 Hz from 0 Hz and from Nyquist",
+        ));
     }
     let root = Rng::new(seed).fork(STREAM_BAND);
     let mut rng_noise = root.fork(1);
@@ -331,9 +335,18 @@ pub fn band_channel(
                 _ => format!("CQ TEST {call} {call}"),
             };
             let magnitude = draw(&mut rng_qrm, q.offset_hz);
-            let below = rng_qrm.chance(0.5) && pitch_hz - magnitude > 150.0;
-            let offset = if below { -magnitude } else { magnitude };
+            // Either side, as long as it stays inside the passband the
+            // decoder accepts; if neither side fits there is no QRM.
+            let fits = |f: f32| f >= margin && f <= top;
+            let want_below = rng_qrm.chance(0.5);
+            let (lo, hi) = (pitch_hz - magnitude, pitch_hz + magnitude);
+            let offset = match (want_below, fits(lo), fits(hi)) {
+                (true, true, _) | (false, true, false) => Some(-magnitude),
+                (_, _, true) => Some(magnitude),
+                _ => None,
+            };
             let level = draw(&mut rng_qrm, q.level_db);
+            let offset = offset.unwrap_or(0.0);
             let wpm = f64::from(rng_qrm.range_u32(18, 30));
             let fist_seed = rng_qrm.next_u64();
             let max_ms = (over_end.as_millis() / 2) as u32;
@@ -341,7 +354,7 @@ pub fn band_channel(
             let keying = key_text(&text, Speed::wpm(wpm)?, &Fist::typical(), fist_seed)
                 .map_err(ScenarioError::from)?
                 .truncated(over_end - start);
-            if !keying.is_empty() {
+            if !keying.is_empty() && offset != 0.0 {
                 ch.signals.push(
                     Signal::new(keying, pitch_hz + offset)
                         .starting_at(start)
