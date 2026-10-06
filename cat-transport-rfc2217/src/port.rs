@@ -474,6 +474,14 @@ impl Transport for Rfc2217Port {
             .data
             .clear();
     }
+
+    /// `Some(self)`, as the serial backends do: this port's RTS/DTR are real
+    /// (driven at the device server by `SET-CONTROL`). Without this the
+    /// trait's `None` default hid them from `CatSession::modem_lines`, so a
+    /// broker task job could never key DTR over RFC 2217.
+    fn modem_lines(&self) -> Option<&dyn ModemControlLines> {
+        Some(self)
+    }
 }
 
 impl ModemControlLines for Rfc2217Port {

@@ -236,6 +236,22 @@ fn the_lines_are_reachable_through_the_framing_layer_too() {
 }
 
 #[test]
+fn a_session_over_the_port_reports_its_modem_lines() {
+    // `CatSession::modem_lines` is how a broker hands a session's lines to
+    // a task job (a DTR PTT key). The blanket forwarding impl above is not
+    // enough: without `Transport::modem_lines` the session reported `None`
+    // over RFC 2217, and DTR PTT through a broker was unreachable here.
+    let fake = spawn_server();
+    let session = SerialCatSession::new(connect(&fake, Rfc2217Config::default()));
+
+    let lines = CatSession::modem_lines(&session).expect("an RFC 2217 port has modem lines");
+    lines.set_dtr(true).expect("set_dtr through modem_lines");
+    eventually("DTR driven through modem_lines", || {
+        fake.observed.lock().unwrap().dtr.contains(&true)
+    });
+}
+
+#[test]
 fn a_255_byte_in_a_cat_response_is_not_mistaken_for_telnet() {
     // Not a real Kenwood response, but the transparency rule has to hold
     // for any byte or the framing layer above will see a truncated one.
