@@ -23,7 +23,9 @@ name: Reusable app release build
 #      root, mirroring `build-deb.sh`'s "stage, don't rebuild" convention.
 #   3. `Cargo.toml` at the repo root defining `main_binary` as a `[[bin]]`
 #      (directly or via a workspace member) buildable with
-#      `cargo build --release -p <main_binary>`.
+#      `cargo build --release -p <main_binary>` (plus
+#      `--features <linux_features|windows_features>` when the caller
+#      passes them; empty by default, which builds exactly as before).
 #
 # The calling job MUST set `permissions: contents: write` and pass
 # `secrets: inherit` (or an explicit `gh_token` secret) — see the ADR for
@@ -59,6 +61,28 @@ on:
           empty (the default) if there are none. These binaries are built
           so packaging scripts can stage them, but are not individually
           uploaded as raw release assets -- only main_binary is.
+        required: false
+        type: string
+        default: ""
+      linux_features:
+        description: >
+          Cargo features to enable when building main_binary on the Linux
+          runner, as `cargo build --features` takes them (comma- or
+          space-separated, e.g. "sdr-device,audio-device"). Applies to
+          main_binary only -- extra_binaries are other packages with their
+          own feature sets. Empty (the default) builds exactly as before
+          this input existed. Any system libraries the features need go in
+          apt_packages. Because build-deb.sh runs with --skip-build, the
+          .deb packages this featured binary.
+        required: false
+        type: string
+        default: ""
+      windows_features:
+        description: >
+          As linux_features, for the Windows runner. Separate because a
+          feature can need a library that has no Windows build here (e.g.
+          librtlsdr), so an app may want fewer features on Windows.
+          build-windows-package.ps1 packages whatever this step built.
         required: false
         type: string
         default: ""
@@ -126,9 +150,18 @@ jobs:
 
       - name: Build release binaries
         shell: bash
+        env:
+          # Through the environment, not interpolated into the script, so a
+          # caller's string is data and never shell syntax.
+          FEATURES: ${{ inputs.linux_features }}
         run: |
           set -euo pipefail
-          cargo build --release -p "${{ inputs.main_binary }}"
+          if [ -n "$FEATURES" ]; then
+            echo "Building ${{ inputs.main_binary }} with features: $FEATURES"
+            cargo build --release -p "${{ inputs.main_binary }}" --features "$FEATURES"
+          else
+            cargo build --release -p "${{ inputs.main_binary }}"
+          fi
           for entry in ${{ inputs.extra_binaries }}; do
             package="${entry%%:*}"
             bin="${entry##*:}"
@@ -181,9 +214,16 @@ jobs:
 
       - name: Build release binaries
         shell: bash
+        env:
+          FEATURES: ${{ inputs.windows_features }}
         run: |
           set -euo pipefail
-          cargo build --release -p "${{ inputs.main_binary }}"
+          if [ -n "$FEATURES" ]; then
+            echo "Building ${{ inputs.main_binary }} with features: $FEATURES"
+            cargo build --release -p "${{ inputs.main_binary }}" --features "$FEATURES"
+          else
+            cargo build --release -p "${{ inputs.main_binary }}"
+          fi
           for entry in ${{ inputs.extra_binaries }}; do
             package="${entry%%:*}"
             bin="${entry##*:}"
