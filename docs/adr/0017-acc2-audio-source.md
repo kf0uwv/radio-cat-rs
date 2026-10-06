@@ -591,3 +591,68 @@ rules, in full, and the reason each is not the alternative:
 - **Still nothing has met a real radio.** A sound card capturing a desktop's
   microphone proves the software path end to end and proves nothing about
   level, impedance, or which ACC2 pin is which. The done-when is unchanged.
+
+## Amendment (2026-10-06): a speaker path — `AudioPlayback`
+
+### 15. The crate now plays audio as well as capturing it
+
+`ts570d cw copy`, a Morse copy trainer, synthesizes its tones on the PC
+with `cat-morse` (ADR 0021) and needs to play them on a sound card.
+`cat-morse` may not open a device (ADR 0021 rule 2), so the sound-card
+half belongs here, as the device-side mirror of `AudioCapture`:
+`AudioPlayback::open("audio:<name>" | "audio:")`, `open_default`,
+`write` (mono `f32`, non-blocking, copied to every device channel and
+clamped to ±1), `queued`, `clear`, `underruns`, plus `output_devices()`.
+
+**This is a second transmit path, and it is to a speaker, not to a
+radio.** Like §7's `AudioTransmitter` it keys nothing. Unlike it, the
+audio goes to the operator's own ears. It never reaches ACC2.
+
+### 16. The same rules, applied to output
+
+- **The same feature, the same pin.** It is behind `device`, uses
+  `cpal` 0.16 and the `audio:` grammar of §12. The negotiation rule
+  mirrors §14: ask for the rate, keep the device's own channel count,
+  and if the rate is not offered, run at the device's default and say so
+  (`PlaybackFormat::rate_substituted`). There is still no resampler. The
+  caller renders at the negotiated rate.
+- **A thin gate, again (§10.1).** The queue (`sink::PlaybackQueue`), the
+  output-format choice (`sink::choose_output`, over a small model of
+  `cpal`'s offers), the error type and the settings are all outside the
+  feature and are unit-tested in the default build. The gate hides only
+  `cpal` calls.
+- **No cross-thread wake (§5).** The output callback locks the queue's
+  one mutex, copies, and returns. It registers no waker. The writer never
+  blocks either: `write` takes what fits and returns how much.
+- **Underrun is silence, never a stall.** A callback that finds the
+  queue short fills the rest with zeros. `underruns()` counts callbacks
+  that ran short *while playing*. Idle silence and the silence after
+  `clear()` are not counted. The natural end of the written audio counts
+  once unless it lands on a callback boundary, because the queue cannot
+  tell that apart from starvation. The rule is documented in `sink`.
+- **Enumeration says "cannot look" without the feature,** exactly as
+  §11 does for inputs. It is under the new `cat_signal::DeviceKind::AudioOutput`,
+  an additive variant of a `#[non_exhaustive]` enum, with the heading
+  "AUDIO OUTPUT" and the flag `--audio-out`.
+
+### 17. A lock around the sound host, found by the tests
+
+Running the capture tests and the playback tests in parallel deadlocked
+inside ALSA enumeration. Each suite passed on its own, and they hung
+together. An application that opens a capture on one thread and a
+playback on another would do the same. So every enumeration and every open
+in this crate now takes one process-wide mutex (`device::host_lock`).
+It is held only while talking to the host, never by a running stream's
+callback.
+
+### Consequences of this amendment
+
+- `cat-signal-audio` can now feed a speaker. On the development machine
+  `examples/playback_smoke` opened the PipeWire-routed `default` output at
+  48 kHz, 2 ch, f32. The device drained a one-second tone in about one
+  second of wall time, which shows the stream really ran. Nobody
+  listened during the agent's run, so whether it was *audible* is not
+  claimed.
+- CI now builds `--features device` for this crate on Linux (with
+  `libasound2-dev`) and on Windows (WASAPI needs no headers). §10.2
+  claimed the Linux job already did this; it did not, and now it does.

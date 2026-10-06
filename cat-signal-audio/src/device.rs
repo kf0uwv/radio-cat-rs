@@ -153,6 +153,43 @@ pub fn input_devices() -> DeviceList {
     )
 }
 
+/// Serialises every conversation with the sound host in this crate:
+/// enumerating, opening and starting devices.
+///
+/// Found by the playback tests: ALSA enumeration of inputs on one thread
+/// while outputs are enumerated on another deadlocked (both test suites
+/// pass alone and hang together). An application that opens a capture and
+/// a playback from two threads would hit the same thing, so the lock is in
+/// the library rather than in the tests. It is held only while opening —
+/// never by a running stream's callback.
+#[cfg(feature = "device")]
+pub(crate) fn host_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The sound-card outputs this machine has, for playback
+/// ([`AudioPlayback`](crate::AudioPlayback)). The same three outcomes as
+/// [`input_devices`], and every spec is what `AudioPlayback::open` takes.
+#[cfg(feature = "device")]
+pub fn output_devices() -> DeviceList {
+    crate::playback::enumerate()
+}
+
+/// The sound-card outputs this machine has.
+///
+/// This build has no sound-card support compiled in, so the answer is
+/// "cannot look" and names what to rebuild with — not an empty list.
+#[cfg(not(feature = "device"))]
+pub fn output_devices() -> DeviceList {
+    DeviceList::unavailable(
+        cat_signal::DeviceKind::AudioOutput,
+        "this build cannot see sound cards: rebuild cat-signal-audio with \
+         --features device (needs the platform's sound headers, ALSA on Linux)",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +242,16 @@ mod tests {
             AudioEndpoint::parse("  audio: HDA Intel  "),
             AudioEndpoint::Device("HDA Intel")
         );
+    }
+
+    #[cfg(not(feature = "device"))]
+    #[test]
+    fn without_the_feature_outputs_are_cannot_ask_too() {
+        use cat_signal::DeviceKind;
+        let list = output_devices();
+        assert_eq!(list.kind, DeviceKind::AudioOutput);
+        assert!(!list.is_available());
+        assert!(list.error.unwrap().contains("--features device"));
     }
 
     #[cfg(not(feature = "device"))]

@@ -109,3 +109,33 @@
   edit costs on an (n+m)² matrix with miss/extra dummies; pairings with
   errors > half the expected item's length are scored as miss + extra.
   `CharStats::record_unordered`. 5 new tests (85 / 87 with serde).
+- Part C done: `cat-signal-audio` playback. Ungated `sink.rs`
+  (PlaybackConfig/Format/Error, PlaybackQueue, OutputOffer +
+  choose_output; 10 tests); gated `playback.rs` (AudioPlayback, output
+  enumeration; 3 tests); `output_devices()` with a feature-off stub
+  (+1 test); `examples/playback_smoke.rs` (required-features device).
+  - Divergence: added `cat_signal::DeviceKind::AudioOutput` (heading
+    "AUDIO OUTPUT", flag `--audio-out`) — additive, enum is
+    `#[non_exhaustive]`.
+  - Divergence: `PlaybackConfig/Format/Error` are ungated (only
+    `AudioPlayback` is gated); `PlaybackError` derives Clone/PartialEq/Eq.
+  - Found: capture + playback device tests hung when run in parallel
+    (ALSA enumeration on two threads deadlocks; each passed alone; the
+    pre-existing suite passed in parallel). Fix: process-wide
+    `device::host_lock()` around every enumerate/open in capture.rs and
+    playback.rs (held only while opening).
+  - Underrun rule: counted only when a callback runs short after a full
+    one; the natural end of written audio counts once unless it falls on a
+    callback boundary (documented).
+  - Smoke test: opened `default` (PipeWire) 48 kHz 2 ch f32; 48 000
+    samples drained in ~1.2 s wall; underruns 1 (the end). Audibility not
+    verified.
+  - ADR 0017 amendment §15-17; README row updated. CI: Linux job installs
+    libasound2-dev and `cargo check -p cat-signal-audio --features device
+    --all-targets`; Windows job checks the same (ADR 0017 §10.2 claimed
+    this already existed; it did not).
+- Checks: cat-signal-audio 53+15+3+0 default, 61+15+7+3 device; cat-morse
+  85+10+1 (87 with serde); cat-signal 45; workspace 1084 passed 0 failed;
+  clippy -D warnings clean (workspace; cat-morse all features;
+  cat-signal-audio ± device); fmt clean; xwin msvc clean for
+  cat-signal-audio --features device and cat-morse --all-features.

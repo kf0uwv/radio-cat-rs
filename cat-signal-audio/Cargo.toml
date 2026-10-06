@@ -60,3 +60,8 @@ default-features = false
 # Runtime-agnostic test executor: this crate binds to no runtime, and
 # `#[monoio::test]` would make its tests Linux-only for no reason.
 futures = { workspace = true }
+
+[[example]]
+# Opens a real output device, so it only exists with the feature.
+name = "playback_smoke"
+required-features = ["device"]
