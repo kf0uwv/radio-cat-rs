@@ -75,7 +75,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cat_framework::CommandId;
+use cat_framework::{AsciiLineFormat, CatWireFormat, CommandId};
 use cat_transport_core::{completion, CatSession};
 
 use crate::block_on::block_on;
@@ -103,21 +103,23 @@ pub struct Job {
 /// Callers run `worker.run()` on a dedicated `std::thread` (there is no
 /// `monoio::spawn` on Windows) and distribute [`BrokerHandle`] clones to
 /// every client-facing thread that needs to submit work.
-pub struct BrokerWorker<C, S>
+pub struct BrokerWorker<C, S, F = AsciiLineFormat>
 where
     C: CommandId,
     S: CatSession,
     S::Error: std::error::Error + 'static,
+    F: CatWireFormat,
 {
-    broker: Broker<C, S>,
+    broker: Broker<C, S, F>,
     receiver: mpsc::Receiver<Job>,
 }
 
-impl<C, S> BrokerWorker<C, S>
+impl<C, S, F> BrokerWorker<C, S, F>
 where
     C: CommandId,
     S: CatSession,
     S::Error: std::error::Error + 'static,
+    F: CatWireFormat + Clone,
 {
     /// Run until every [`BrokerHandle`] (and clone) has been dropped and the
     /// job queue is drained. Blocking -- run this on a dedicated thread.
@@ -210,28 +212,30 @@ const _: () = {
 
 /// Build a [`BrokerWorker`]/[`BrokerHandle`] pair around `session`, using
 /// [`DEFAULT_REQUEST_TIMEOUT`](crate::broker::DEFAULT_REQUEST_TIMEOUT).
-pub fn build<C, S>(
+pub fn build<C, S, F>(
     session: S,
-    table: &'static cat_framework::CommandTable<C>,
-) -> (BrokerWorker<C, S>, BrokerHandle)
+    table: &'static cat_framework::CommandTable<C, F>,
+) -> (BrokerWorker<C, S, F>, BrokerHandle)
 where
     C: CommandId,
     S: CatSession,
     S::Error: std::error::Error + 'static,
+    F: CatWireFormat + Default + Clone,
 {
     build_with_timeout(session, table, DEFAULT_REQUEST_TIMEOUT)
 }
 
 /// Like [`build`], with an explicit per-request timeout.
-pub fn build_with_timeout<C, S>(
+pub fn build_with_timeout<C, S, F>(
     session: S,
-    table: &'static cat_framework::CommandTable<C>,
+    table: &'static cat_framework::CommandTable<C, F>,
     request_timeout: Duration,
-) -> (BrokerWorker<C, S>, BrokerHandle)
+) -> (BrokerWorker<C, S, F>, BrokerHandle)
 where
     C: CommandId,
     S: CatSession,
     S::Error: std::error::Error + 'static,
+    F: CatWireFormat + Default + Clone,
 {
     let broker = Broker::with_timeout(session, table, request_timeout);
     let (sender, receiver) = mpsc::channel();

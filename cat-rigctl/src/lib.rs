@@ -489,6 +489,12 @@ where
     S::Error: std::error::Error + 'static,
     R: RigctlRadio + 'static,
     F: Fn(BrokerCatSession) -> R + Clone + Send + 'static,
+    // As the Linux `run`: inferred from `table`. `Send`/`Sync` (which the
+    // Linux bound does not need) because the broker worker -- which holds
+    // the format and borrows `table` -- is moved onto its own OS thread
+    // here; `CommandId` already carries the same two bounds for `C`.
+    W: CatWireFormat + Default + Clone + Send + Sync + 'static,
+    W::Code: Sync,
 {
     run_with_native(
         session,
@@ -524,9 +530,13 @@ where
     F: Fn(BrokerCatSession) -> R + Clone + Send + 'static,
     N: native_bridge::NativeRadio + 'static,
     G: FnOnce(BrokerCatSession) -> N + Send + 'static,
+    // As the Linux `run_with_native`, plus the thread hand-off bounds
+    // explained on the Windows `run`.
+    W: CatWireFormat + Default + Clone + Send + Sync + 'static,
+    W::Code: Sync,
 {
     use std::net::{TcpListener, UdpSocket};
-    use std::sync::{mpsc, Arc, Mutex};
+    use std::sync::{mpsc, Mutex};
     use std::thread;
 
     use cat_server::ClientRegistry;

@@ -99,11 +99,8 @@ fn handle_connection<R, F>(
     let mut radio = make_radio(BrokerCatSession::new(handle, client_id));
     let mut splitter = LineSplitter::new();
 
-    loop {
-        let line = match read_line_blocking(&mut stream, &mut splitter) {
-            Ok(Some(line)) => line,
-            Ok(None) | Err(_) => break,
-        };
+    // A read error ends the session exactly as end-of-stream does.
+    while let Ok(Some(line)) = read_line_blocking(&mut stream, &mut splitter) {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -198,6 +195,10 @@ mod tests {
     impl RigctlRadio for FakeRadio {
         type Mode = FakeMode;
         type Error = cat_transport_core::TransportError;
+
+        fn unsupported() -> Self::Error {
+            cat_transport_core::TransportError::Other("unsupported".to_string())
+        }
 
         async fn get_vfo_a_hz(&mut self) -> Result<u64, Self::Error> {
             let mut response = Vec::new();
