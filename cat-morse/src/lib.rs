@@ -20,6 +20,7 @@
 //! |--------|------|
 //! | [`codec`] | text ↔ tokens ↔ dits and dahs, prosigns as `<AR>` |
 //! | [`timing`] | PARIS and Farnsworth speed, seeded operator fists, keying |
+//! | [`synth`] | click-free tone, and a band: noise, QSB, QRN, QRM, filter |
 //!
 //! # What this crate is not
 //!
@@ -32,9 +33,15 @@
 //! Everything seeded uses the in-crate [`rng::Rng`].
 
 pub mod codec;
+mod dsp;
 pub mod rng;
+pub mod synth;
 pub mod timing;
 
 pub use codec::{CodecError, DecodeStyle, Element, Prosign, Token};
+pub use dsp::goertzel_power;
 pub use rng::Rng;
+pub use synth::{
+    Awgn, Channel, ChannelRenderer, Qrn, Qsb, RxFilter, Signal, SynthError, ToneShape,
+};
 pub use timing::{Fist, Keying, Segment, Speed, TimingError};

@@ -26,3 +26,12 @@
 - Step 2 done: `timing` (Speed, Farnsworth, Fist presets, Keying, key,
   key_text). `key` returns `Result` (validates the Fist); `TimingError`
   gained a `Codec` variant so `key_text` has one error type. 26 tests total.
+- Step 3 done: `synth` + internal `dsp` (Goertzel, RBJ band-pass biquad).
+  `render_tone` output is `total + rise` long (keying offset by rise/2 so
+  ramps centred on edges are whole) — plan said `round(total·fs)`; changed
+  because centred ramps need the half-rise lead/tail. Channel SNR is
+  referenced to a 0 dB-level sine (`REFERENCE_AMPLITUDE` 0.25), so a
+  signal's own SNR = snr_db + level_db. Channel got a `padding` field.
+  Test fixes during TDD: key-click test needed a dense (2 Hz) sideband
+  sweep; discontinuity test uses 713 Hz because 700 Hz edges at 30 wpm all
+  fall on zero crossings. 40 tests.
