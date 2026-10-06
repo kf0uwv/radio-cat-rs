@@ -25,12 +25,15 @@
 //!
 //! An output callback runs on the driver's real-time thread and must
 //! return a full buffer *now*. [`PlaybackQueue::render`] takes what is
-//! queued and fills the rest with **silence**; it never blocks and never
-//! leaves the device without samples. The writer side,
-//! [`PlaybackQueue::write`], never blocks either: it accepts what fits and
-//! says how much that was, and the application decides whether to retry.
-//! One mutex is the only thing the two sides share; nothing registers a
-//! waker or wakes a task from the callback thread (ADR 0017 §5).
+//! queued and fills the rest with **silence**, and it never waits: it only
+//! *tries* the queue's mutex, and if a writer holds it at that instant the
+//! callback plays silence and counts it
+//! ([`PlaybackQueue::busy_callbacks`]). The writer clamps its block before
+//! locking, so the section it holds the lock for is one bounded copy. The
+//! writer side, [`PlaybackQueue::write`], never waits for the device
+//! either: it accepts what fits and says how much that was. One mutex is
+//! the only thing the two sides share; nothing registers a waker or wakes
+//! a task from the callback thread (ADR 0017 §5).
 //!
 //! # What an underrun is
 //!
@@ -120,6 +123,7 @@ pub struct PlaybackQueue {
     state: Mutex<QueueState>,
     capacity: usize,
     underruns: AtomicU64,
+    busy: AtomicU64,
 }
 
 fn lock(m: &Mutex<QueueState>) -> MutexGuard<'_, QueueState> {
@@ -140,6 +144,7 @@ impl PlaybackQueue {
             }),
             capacity,
             underruns: AtomicU64::new(0),
+            busy: AtomicU64::new(0),
         }
     }
 
@@ -158,21 +163,18 @@ impl PlaybackQueue {
     /// returns how many samples were taken. **Never blocks.** After the
     /// device has stopped, returns [`PlaybackError::Closed`].
     pub fn write(&self, mono: &[f32]) -> Result<usize, PlaybackError> {
+        // Clamp before taking the lock, so the section the output callback
+        // can collide with is a bounded copy and nothing more.
+        let clean: Vec<f32> = mono
+            .iter()
+            .map(|&x| if x.is_nan() { 0.0 } else { x.clamp(-1.0, 1.0) })
+            .collect();
         let mut st = lock(&self.state);
         if let Some(why) = &st.closed {
             return Err(PlaybackError::Closed(why.clone()));
         }
-        let room = self.capacity - st.samples.len();
-        let n = room.min(mono.len());
-        st.samples.extend(mono[..n].iter().map(
-            |&x| {
-                if x.is_nan() {
-                    0.0
-                } else {
-                    x.clamp(-1.0, 1.0)
-                }
-            },
-        ));
+        let n = (self.capacity - st.samples.len()).min(clean.len());
+        st.samples.extend(&clean[..n]);
         Ok(n)
     }
 
@@ -207,26 +209,50 @@ impl PlaybackQueue {
         lock(&self.state).closed.clone()
     }
 
+    /// Callbacks that found the queue's lock held (by a writer mid-copy)
+    /// and played silence rather than wait. Should stay at or near zero.
+    pub fn busy_callbacks(&self) -> u64 {
+        self.busy.load(Ordering::Relaxed)
+    }
+
     /// **The callback side.** Fills an interleaved buffer of `channels`
     /// channels: each queued mono sample goes to every channel of one
-    /// frame, and frames with nothing queued are silence. Never blocks.
+    /// frame, and frames with nothing queued are silence.
+    ///
+    /// **Never waits:** the lock is only *tried*. If anyone holds it — a
+    /// writer copying in a block — this callback plays silence, consumes
+    /// nothing, and is counted in [`busy_callbacks`](Self::busy_callbacks).
+    /// A zero-frame buffer changes nothing.
     pub fn render(&self, out: &mut [f32], channels: usize) {
         let channels = channels.max(1);
         let frames = out.len() / channels;
-        let mut st = lock(&self.state);
-        let available = st.samples.len();
-        let take = available.min(frames);
+        if frames == 0 {
+            out.fill(0.0);
+            return;
+        }
+        let mut st = match self.state.try_lock() {
+            Ok(st) => st,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                self.busy.fetch_add(1, Ordering::Relaxed);
+                out.fill(0.0);
+                return;
+            }
+        };
+        let take = st.samples.len().min(frames);
         for (frame, x) in out.chunks_exact_mut(channels).zip(st.samples.drain(..take)) {
             frame.fill(x);
         }
-        out[take * channels..].fill(0.0);
-        if take < frames && st.playing {
-            self.underruns.fetch_add(1, Ordering::Relaxed);
-        }
+        let was_playing = st.playing;
         // Ran dry or not, a callback that did not fill up leaves the queue
         // empty, so the next silent callback is idle rather than another
         // underrun.
-        st.playing = take > 0 && take == frames;
+        st.playing = take == frames;
+        drop(st);
+        out[take * channels..].fill(0.0);
+        if take < frames && was_playing {
+            self.underruns.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -381,6 +407,43 @@ mod tests {
             96_000
         );
         assert_eq!(PlaybackQueue::for_duration(48_000, 0).capacity(), 1);
+    }
+
+    #[test]
+    fn render_never_waits_on_a_held_lock() {
+        // Review finding 4: the callback must not block on a writer (or
+        // anyone) holding the queue's mutex.
+        use std::sync::{mpsc, Arc};
+        let q = Arc::new(PlaybackQueue::new(64));
+        q.write(&[0.5; 32]).unwrap();
+        let guard = lock(&q.state);
+        let (tx, rx) = mpsc::channel();
+        let q2 = Arc::clone(&q);
+        let h = std::thread::spawn(move || {
+            let mut out = [9.0f32; 8];
+            q2.render(&mut out, 2);
+            tx.send(out).unwrap();
+        });
+        let out = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("render returned while the lock was held");
+        drop(guard);
+        h.join().unwrap();
+        assert_eq!(out, [0.0; 8]);
+        assert_eq!(q.busy_callbacks(), 1);
+        // Nothing was consumed: the audio is still there for the next one.
+        assert_eq!(q.queued(), 32);
+    }
+
+    #[test]
+    fn an_empty_callback_does_not_reset_playing() {
+        let q = PlaybackQueue::new(16);
+        q.write(&[0.5; 6]).unwrap();
+        let mut out = [0.0f32; 4];
+        q.render(&mut out, 1); // full: playing
+        q.render(&mut [], 1); // zero frames: changes nothing
+        q.render(&mut out, 1); // 2 left: an underrun
+        assert_eq!(q.underruns(), 1);
     }
 
     fn offer(channels: u16, min: u32, max: u32, rank: u8) -> OutputOffer {

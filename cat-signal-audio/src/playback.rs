@@ -22,7 +22,8 @@
 //!
 //! Everything with an invariant lives in [`sink`](crate::sink) and is
 //! tested without a sound card; this module is the `cpal` calls around it.
-//! The output callback locks the queue's one mutex, copies, and returns.
+//! The output callback *tries* the queue's one mutex, copies, and returns;
+//! it never waits on it.
 
 use std::sync::Arc;
 
@@ -139,6 +140,12 @@ impl AudioPlayback {
     /// Callbacks that ran short while playing (see [`crate::sink`]).
     pub fn underruns(&self) -> u64 {
         self.queue.underruns()
+    }
+
+    /// Callbacks that found a write in progress and played silence rather
+    /// than wait for it (see [`crate::sink`]).
+    pub fn busy_callbacks(&self) -> u64 {
+        self.queue.busy_callbacks()
     }
 }
 

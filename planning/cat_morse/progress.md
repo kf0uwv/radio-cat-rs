@@ -183,3 +183,10 @@
   fallback). Pinned tests `keying_is_pinned_across_platforms` and
   `script_is_pinned_across_platforms` (FNV-1a over segment nanos / script
   fields incl. f32/f64 bit patterns), recorded on Linux x86_64.
+- Finding 4 (+ the `playing` nit): `render_never_waits_on_a_held_lock`
+  (holds the lock on one thread, renders on another with a 2 s timeout)
+  and `an_empty_callback_does_not_reset_playing`. `render` now uses
+  `try_lock` (busy → silence, nothing consumed, `busy_callbacks()`
+  counted; also on `AudioPlayback`), a zero-frame buffer is a no-op,
+  `write` clamps into a local buffer before locking. ADR 0017 §16
+  corrected.

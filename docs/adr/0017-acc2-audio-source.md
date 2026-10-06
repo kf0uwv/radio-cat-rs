@@ -621,9 +621,15 @@ audio goes to the operator's own ears. It never reaches ACC2.
   `cpal`'s offers), the error type and the settings are all outside the
   feature and are unit-tested in the default build. The gate hides only
   `cpal` calls.
-- **No cross-thread wake (§5).** The output callback locks the queue's
-  one mutex, copies, and returns. It registers no waker. The writer never
-  blocks either: `write` takes what fits and returns how much.
+- **No cross-thread wake (§5), and no waiting.** The output callback
+  only *tries* the queue's one mutex. If a writer holds it at that
+  instant, the callback plays silence, consumes nothing, and counts it
+  (`busy_callbacks()`). Otherwise it copies and returns. It registers no
+  waker. The writer clamps its block before taking the lock, so the
+  section it holds is one bounded copy. `write` never waits for the
+  device either: it takes what fits and returns how much. (Corrected
+  2026-10-06 after review: the first version locked unconditionally, so a
+  preempted writer could stall the real-time callback.)
 - **Underrun is silence, never a stall.** A callback that finds the
   queue short fills the rest with zeros. `underruns()` counts callbacks
   that ran short *while playing*. Idle silence and the silence after
