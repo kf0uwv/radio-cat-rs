@@ -416,3 +416,42 @@ like `broker.rs`; Windows `run`/`run_with_native` take the Linux bound
 `W: CatWireFormat + Default + Clone + 'static` (+ whatever `Send` the
 OS-thread hand-off of the worker forces, nothing more); test fake gains
 `unsupported`; imports used/gated so Windows is warning-free.
+
+## Follow-ups from architect review of fix/windows-build (2026-10-06)
+
+### 1. Skip-the-queue PTT release -- STOPPED at design, per instruction
+The architect's requirement: a release must take effect promptly even while
+the worker is mid-exchange (stuck in a read until timeout). v2 above says
+"un-key BYPASSES it" but gives no mechanism, and its only mechanism-level
+statement is "No `Arc`, no `dup`, no fd smuggled past the broker".
+
+What the code makes true: during an in-flight exchange the worker's
+`dispatch` future holds `&mut Broker` -> `&mut CatClient` -> `&mut S`. No
+other code can borrow the session (and so its modem lines) until that
+future yields the borrow at the end of the exchange; racing an "urgent"
+channel inside the worker does not help, because the urgent branch still
+needs `&S` while `&mut S` is live. Promptness therefore *requires* a
+line-control capability whose ownership is independent of the session
+borrow -- an owned duplicate of the port handle (`dup`/`DuplicateHandle`),
+or shared (`Arc`) ownership of the port's handle -- obtained by the broker
+from the transport at build time. That is exactly what v2 ruled out, and it
+needs a new accessor in `cat-transport-core` plus implementations in
+`cat-transport-serial` (Linux + Windows) and `cat-transport-rfc2217` -- outside
+this agent's crate. Conflict with the binding plan: reported, not built.
+
+### 2. RFC2217 hides its modem lines -- do now
+`Rfc2217Port` implements `ModemControlLines` but not `Transport::modem_lines`,
+so through `SerialCatSession` (and so a broker task) it reports `None`.
+Test first (tests/loopback.rs: `CatSession::modem_lines` on a session over a
+port is `Some` and drives DTR at the fake peer), then the one-line override.
+
+### 3. Tracked follow-up (NOT fixing now): Windows rigctl skips the read cache
+`cat-rigctl`'s Linux `run_with_native` wraps each rigctl radio in
+`cached::Cached` (reads served from the native pump's state); the Windows
+`run_with_native` does not, and `cached` is `cfg(target_os = "linux")`. So on
+Windows every rigctl read goes to the wire and competes with the pump.
+Owner: cat_rigctl. Needs `cached` made platform-neutral (it holds an
+`Arc<NativeShared>` already) and the Windows wiring to match Linux.
+
+### 4. Re-run every check (Linux test/clippy/fmt, xwin check/clippy incl.
+cat-signal-audio device, actionlint).
