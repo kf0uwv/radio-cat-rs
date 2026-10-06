@@ -190,3 +190,8 @@
   counted; also on `AudioPlayback`), a zero-frame buffer is a no-op,
   `write` clamps into a local buffer before locking. ADR 0017 §16
   corrected.
+- Review-fix checks (worktree): cat-morse 85+17+10+1 (serde 87+18+10+1);
+  cat-signal-audio 55+15+0+3 (device 63+15+7+3); workspace 1103 passed,
+  0 failed; clippy -D warnings clean (workspace; cat-morse all features;
+  cat-signal-audio device); fmt clean; xwin msvc clean for cat-morse
+  --all-features and cat-signal-audio --features device.
