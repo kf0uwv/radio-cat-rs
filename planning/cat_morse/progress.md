@@ -58,3 +58,14 @@
   ~3 % from genuinely ambiguous timing), instead of per-seed <= 2 %.
   Noise test (+6 dB/500 Hz, CER <= 2 %) passed 100/100 seeds in a stress
   run. 57 tests total.
+- Step 5 done: `scenario` (mod/callsign/data/qso). API additions vs plan:
+  `Persona` (call, name, qth, region, zone, rig, power, antenna,
+  reference) shared by `Station` and `Script::me`; `Difficulty` presets
+  `beginner`/`intermediate`/`advanced`; `Difficulty::wpm` is whole wpm
+  `(u32, u32)`; `ScenarioKind::Contest { exchange, cut_numbers }`.
+  Pileup: you run the DX; callers re-call each round with `WithPrevious`
+  overlap. SOTA activators in W associations get the matching state.
+  POTA refs ISO form (`US-0477`, 5 digits for some US parks); DX parks
+  only for entities with a known ISO prefix (DE FR IT ES JP AU CA).
+  Unknown operator prefix -> region "DX", random zone. 16 scenario tests
+  incl. 8 kinds x 1000 seeds all encode. 73 tests total.
