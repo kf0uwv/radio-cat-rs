@@ -329,3 +329,90 @@ cost four theories**. Reject at the type or config level.
 - Verification must add: `T 0` **while a CAT read is in flight**; wall-clock
   un-key latency under pump load with a stated maximum; client disconnect
   while keyed.
+
+## Task: fix the Windows build of cat-server, and give release-app.yml features (2026-10-06)
+
+Worktree `radio-cat-rs-winfix`, branch `fix/windows-build` off `main`
+(40cfade). Architect-dispatched; one task, report back.
+
+### Root cause
+`e61bb49` added `BrokerCatSession::submit_task`, calling
+`crate::BrokerHandle::submit_task`. `f57b43b` had added `Work::Task` /
+`submit_task` to the **Linux** broker (`broker.rs`) only. On Windows,
+`crate::BrokerHandle` is `worker_windows::BrokerHandle`, which has no
+`submit_task` -> E0599 at `broker_session.rs:63`. `cargo xwin check
+--workspace --all-targets` on main shows that is the only error.
+
+### Design: the same capability, the same semantics, on OS threads
+- `worker_windows::Job` carries `pub work: Work` (shared `crate::broker::Work`)
+  instead of `pub payload`, mirroring Linux exactly.
+- `worker_windows::BrokerWorker::run` matches `Work::Wire` (dispatch via
+  `block_on`, as today) and `Work::Task` (call the closure with
+  `self.broker.session_modem_lines()`, encode `Err` with the `b"ERR "`
+  convention) -- factor the task-result encoding into one shared
+  `pub(crate) fn` in `broker.rs` so the two backends cannot drift.
+- `worker_windows::BrokerHandle::submit_task(&self, ClientId, TaskFn) ->
+  Option<Vec<u8>>`, identical signature to Linux; enqueues on the same
+  ordered `mpsc` queue (the assert path IS ordered). The doc carries the same
+  "do not route the release through here" warning.
+- **`TaskFn` gains `+ Send`, on every platform.** Forced on Windows: the job
+  crosses a real `std::sync::mpsc` to the worker thread, and the Windows
+  `BrokerHandle` must stay `Send` (it is moved into one OS thread per
+  connection by `tcp_windows`/`udp_windows`/`cat-rigctl`). Applied on Linux
+  too rather than cfg-splitting the alias, so a closure that compiles on
+  Linux compiles on Windows -- the class of bug being fixed here. The one
+  consumer (`ts570d/server/src/ptt_dtr.rs::line_task`) captures only a
+  `bool`, so it is unaffected.
+- `cat-transport-serial/src/windows.rs`: `impl Transport for SerialPort`
+  overrides `modem_lines() -> Some(self)`, as `io_uring.rs` does. Without it
+  a task on Windows is always told `None` and DTR PTT is unreachable --
+  the capability would exist in name only.
+
+### Ordering asymmetry (assert ordered, release must not queue)
+Neither backend implements a queue bypass inside the broker: Linux's
+`submit_task` and `BrokerCatSession::handle()` both enqueue on the ordered
+queue. Windows will match that exactly (no invented semantics). Flag to the
+architect that the bypass recorded in v2 above does not exist on either
+platform, and that ts570d's `PttDtr::release` routes through `submit_task`.
+
+### Tests (cfg(all(test, target_os = "windows")), mirroring broker.rs's four)
+a task runs and returns its own reply; a task is serialised between wire
+jobs; a failing task uses the ERR convention; a session without modem lines
+is told `None`. Plus a compile-time assertion that the Windows
+`BrokerHandle` is `Send + Sync` (the property `+ Send` on `TaskFn` protects).
+
+### CI gap
+Windows CI job was red on main since da90709 (2026-09-06) and on PR #16;
+nothing gates merges on it (main has no branch protection). Report; fix CI
+if a workflow change can close it.
+
+### release-app.yml
+Add `linux_features` / `windows_features` string inputs (default ""), applied
+to `main_binary`'s build only, passed via `env:` (not interpolated into the
+script). Empty -> today's exact command. `--skip-build` packaging then stages
+the featured binary because it is the one in `target/release`.
+
+### Checks
+`cargo test --workspace`; `cargo clippy --workspace --all-targets -D
+warnings`; `cargo fmt --check`; `cargo xwin check --target
+x86_64-pc-windows-msvc --workspace --all-targets`; the same with `-p
+cat-signal-audio --features device`; actionlint if present.
+
+### Addendum (same day, before touching cat-rigctl): a second, older break
+With `submit_task` fixed, `cargo xwin check` reaches `cat-rigctl` and fails
+there -- the errors CI logged on `da90709` (2026-09-06, pushed straight to
+main), masked on every later run because `cat-server` now fails first:
+- `cat-rigctl`'s Windows `run`/`run_with_native` gained a `W` wire-format
+  type parameter (ADR 0009 / CI-V) with no `CatWireFormat` bound, and call
+  `cat_server::build(session, table)` -- but `worker_windows::{build,
+  build_with_timeout, BrokerWorker}` were never made generic over the wire
+  format, so they only accept `CommandTable<C, AsciiLineFormat>`.
+- `rigctl_windows.rs`'s test `FakeRadio` lacks `RigctlRadio::unsupported`.
+- `use std::sync::Arc` / `use cat_framework::wire_format::CatWireFormat` are
+  unused on Windows.
+Fix, mirroring Linux exactly: `worker_windows::{BrokerWorker, build,
+build_with_timeout}` gain `F: CatWireFormat` (default `AsciiLineFormat`)
+like `broker.rs`; Windows `run`/`run_with_native` take the Linux bound
+`W: CatWireFormat + Default + Clone + 'static` (+ whatever `Send` the
+OS-thread hand-off of the worker forces, nothing more); test fake gains
+`unsupported`; imports used/gated so Windows is warning-free.

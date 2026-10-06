@@ -49,8 +49,8 @@
 //! expected to differ per platform (each consuming application already
 //! needs its own Windows entry point regardless, since `#[monoio::main]`
 //! cannot exist there). [`BrokerHandle::submit`] -- the actual per-request
-//! hot path a client-facing listener calls -- stays `pub async fn` with an
-//! **identical** signature to the Linux backend.
+//! hot path a client-facing listener calls -- and [`BrokerHandle::submit_task`]
+//! stay `pub async fn` with signatures **identical** to the Linux backend.
 //!
 //! # Test scope: Windows-only, unlike this crate's transport-level siblings
 //!
@@ -79,7 +79,7 @@ use cat_framework::CommandId;
 use cat_transport_core::{completion, CatSession};
 
 use crate::block_on::block_on;
-use crate::broker::{outcome_to_wire, Broker, DEFAULT_REQUEST_TIMEOUT};
+use crate::broker::{outcome_to_wire, run_task, Broker, TaskFn, Work, DEFAULT_REQUEST_TIMEOUT};
 use crate::registry::ClientId;
 
 /// One unit of work submitted to a [`BrokerWorker`]. Same fields/purpose as
@@ -91,8 +91,9 @@ pub struct Job {
     pub client_id: ClientId,
     /// Monotonically-assigned id for this request, for tracking/logging.
     pub request_id: u64,
-    /// Raw wire-format request bytes.
-    pub payload: Vec<u8>,
+    /// What the worker should do with the session -- the same shared
+    /// [`Work`] the Linux backend's `Job` carries.
+    pub work: Work,
     reply: completion::CompletionTx<Vec<u8>>,
 }
 
@@ -122,8 +123,15 @@ where
     /// job queue is drained. Blocking -- run this on a dedicated thread.
     pub fn run(mut self) {
         while let Ok(job) = self.receiver.recv() {
-            let result = block_on(self.broker.dispatch(&job.payload));
-            let wire = outcome_to_wire(result);
+            let wire = match job.work {
+                Work::Wire(payload) => outcome_to_wire(block_on(self.broker.dispatch(&payload))),
+                // Runs here, on the worker thread, between whatever wire
+                // jobs precede and follow it in the queue -- the one
+                // service the broker sells a task. The modem-line borrow is
+                // made from the session this thread owns, for the duration
+                // of the call only (see `TaskFn`).
+                Work::Task(run) => run_task(run, self.broker.session_modem_lines()),
+            };
             // A disconnected requester (dropped its `CompletionRx` before
             // the reply was ready) is not an error here, mirroring
             // `crate::broker::BrokerWorker::run`'s identical contract.
@@ -153,18 +161,52 @@ impl BrokerHandle {
     /// "submit and `.await` the reply" work unchanged on either platform.
     /// Returns `None` only if the [`BrokerWorker`] itself has shut down.
     pub async fn submit(&self, client_id: ClientId, payload: Vec<u8>) -> Option<Vec<u8>> {
+        self.enqueue(client_id, Work::Wire(payload)).await
+    }
+
+    /// Submit a caller-supplied task to run with exclusive access to the wire.
+    ///
+    /// Identical signature and semantics to
+    /// `crate::broker::BrokerHandle::submit_task`. The closure is handed the
+    /// session's modem-control lines (`None` if the transport has none) and
+    /// runs on the worker thread, in queue order, so it cannot interleave
+    /// with a CAT exchange. A failing task's reply uses the `b"ERR "`
+    /// convention. Returns `None` only if the [`BrokerWorker`] has shut down.
+    ///
+    /// Use for **asserting** a PTT line, where ordering against CAT matters:
+    /// do not key before the command that set the mode has landed. Do **not**
+    /// route the *release* through here -- an un-key must not queue behind a
+    /// CAT exchange that may take seconds, and a line change cannot corrupt a
+    /// frame in flight because `EscapeCommFunction` never touches the byte
+    /// stream.
+    pub async fn submit_task(&self, client_id: ClientId, run: TaskFn) -> Option<Vec<u8>> {
+        self.enqueue(client_id, Work::Task(run)).await
+    }
+
+    /// Tag `work` with a request id, put it on the single ordered queue, and
+    /// await its reply.
+    async fn enqueue(&self, client_id: ClientId, work: Work) -> Option<Vec<u8>> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let (reply, rx) = completion::channel();
         let job = Job {
             client_id,
             request_id,
-            payload,
+            work,
             reply,
         };
         self.sender.send(job).ok()?;
         rx.await.ok()
     }
 }
+
+// The property `TaskFn: Send` exists to protect: a `BrokerHandle` carrying
+// task jobs must still be movable into the per-connection OS threads
+// `tcp_windows`/`udp_windows`/`cat-rigctl` spawn. Checked on every platform,
+// since this module always compiles.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<BrokerHandle>();
+};
 
 /// Build a [`BrokerWorker`]/[`BrokerHandle`] pair around `session`, using
 /// [`DEFAULT_REQUEST_TIMEOUT`](crate::broker::DEFAULT_REQUEST_TIMEOUT).
@@ -246,6 +288,107 @@ mod tests {
         assert_eq!(response, Some(b"FA00014250000;".to_vec()));
     }
 
+    // -----------------------------------------------------------------
+    // Task jobs -- mirrors `crate::broker`'s four task-job tests.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn a_task_job_runs_on_the_worker_and_returns_its_own_reply() {
+        let (worker, handle) = broker_with_script([]);
+        std::thread::spawn(move || worker.run());
+
+        let out = block_on(handle.submit_task(
+            ClientId::from_raw(7),
+            Box::new(|_lines| Ok(b"TASK-RAN".to_vec())),
+        ));
+        assert_eq!(out.as_deref(), Some(&b"TASK-RAN"[..]));
+    }
+
+    #[test]
+    fn a_task_runs_on_the_worker_thread_not_the_submitter() {
+        // Windows-specific: the closure must cross to the worker's OS
+        // thread, which is what makes it serialised against CAT traffic.
+        let (worker, handle) = broker_with_script([]);
+        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_id = worker_thread.thread().id();
+
+        let ran_on = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let slot = std::sync::Arc::clone(&ran_on);
+        block_on(handle.submit_task(
+            ClientId::from_raw(1),
+            Box::new(move |_| {
+                *slot.lock().unwrap() = Some(std::thread::current().id());
+                Ok(Vec::new())
+            }),
+        ))
+        .expect("worker alive");
+
+        assert_eq!(*ran_on.lock().unwrap(), Some(worker_id));
+        assert_ne!(Some(std::thread::current().id()), Some(worker_id));
+    }
+
+    #[test]
+    fn a_task_is_serialised_between_wire_jobs() {
+        // The one service the broker provides a task: it cannot interleave
+        // with a CAT exchange on the same wire.
+        let (worker, handle) = broker_with_script([
+            Exchange::new("FA;", "FA00014250000;"),
+            Exchange::new("FA;", "FA00014250000;"),
+        ]);
+        std::thread::spawn(move || worker.run());
+
+        let first = block_on(handle.submit(ClientId::from_raw(1), b"FA;".to_vec()));
+        let task =
+            block_on(handle.submit_task(ClientId::from_raw(1), Box::new(|_| Ok(b"MID".to_vec()))));
+        let second = block_on(handle.submit(ClientId::from_raw(1), b"FA;".to_vec()));
+
+        assert_eq!(first.as_deref(), Some(&b"FA00014250000;"[..]));
+        assert_eq!(task.as_deref(), Some(&b"MID"[..]));
+        assert_eq!(second.as_deref(), Some(&b"FA00014250000;"[..]));
+    }
+
+    #[test]
+    fn a_failing_task_uses_the_err_convention() {
+        // A caller must not be able to misparse a task failure as a CAT frame.
+        let (worker, handle) = broker_with_script([]);
+        std::thread::spawn(move || worker.run());
+
+        let out = block_on(handle.submit_task(
+            ClientId::from_raw(1),
+            Box::new(|_| Err("line control unavailable".to_string())),
+        ))
+        .expect("worker alive");
+        assert!(out.starts_with(b"ERR "), "got {out:?}");
+    }
+
+    #[test]
+    fn a_task_is_told_when_the_session_has_no_modem_lines() {
+        // A socket session has no RTS/DTR. The task must be told `None`
+        // rather than handed something that cannot work.
+        let (worker, handle) = broker_with_script([]);
+        std::thread::spawn(move || worker.run());
+
+        let out = block_on(handle.submit_task(
+            ClientId::from_raw(1),
+            Box::new(|lines| {
+                Ok(if lines.is_some() {
+                    b"SOME".to_vec()
+                } else {
+                    b"NONE".to_vec()
+                })
+            }),
+        ));
+        assert_eq!(out.as_deref(), Some(&b"NONE"[..]));
+    }
+
+    #[test]
+    fn a_task_submitted_after_shutdown_reports_none() {
+        let (worker, handle) = broker_with_script([]);
+        drop(worker);
+        let out = block_on(handle.submit_task(ClientId::from_raw(1), Box::new(|_| Ok(Vec::new()))));
+        assert_eq!(out, None);
+    }
+
     #[test]
     fn worker_malformed_request_gets_error_wire_response() {
         let (worker, handle) = broker_with_script([]);
@@ -311,7 +454,7 @@ mod tests {
             .send(Job {
                 client_id: ClientId::from_raw(1),
                 request_id: 0,
-                payload: b"FA;".to_vec(),
+                work: Work::Wire(b"FA;".to_vec()),
                 reply,
             })
             .expect("worker should still be alive");

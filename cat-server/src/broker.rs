@@ -206,6 +206,16 @@ where
         }
     }
 
+    /// The underlying session's modem-control lines, if it has any.
+    ///
+    /// The broker does not use these itself — it hands them to a
+    /// [`Work::Task`] closure. Exposed here so that borrow is created by the
+    /// component that owns the session, for the duration of the call, rather
+    /// than captured by a caller and outliving the port.
+    pub fn session_modem_lines(&self) -> Option<&dyn ModemControlLines> {
+        self.client.session().modem_lines()
+    }
+
     /// Validate and execute one raw wire request against the physical
     /// session.
     ///
@@ -221,16 +231,6 @@ where
     /// session (malformed-request rejection at the broker boundary).
     /// Bounded by `request_timeout` regardless of whether the underlying
     /// session enforces one of its own.
-    /// The underlying session's modem-control lines, if it has any.
-    ///
-    /// The broker does not use these itself — it hands them to a
-    /// [`Work::Task`] closure. Exposed here so that borrow is created by the
-    /// component that owns the session, for the duration of the call, rather
-    /// than captured by a caller and outliving the port.
-    pub fn session_modem_lines(&self) -> Option<&dyn ModemControlLines> {
-        self.client.session().modem_lines()
-    }
-
     pub async fn dispatch(
         &mut self,
         request: &[u8],
@@ -420,8 +420,34 @@ pub struct Job {
 ///
 /// `Result` rather than panicking: `panic = "abort"` is set in consumers'
 /// release profiles, so `catch_unwind` is inert where it would matter most.
+///
+/// `Send` on every platform. The Windows backend (`crate::worker_windows`)
+/// hands the job to its worker over a real `std::sync::mpsc` on another OS
+/// thread, so there it is required; here on Linux it is not, but splitting
+/// the alias per platform would let a closure that compiles on Linux fail
+/// to compile on Windows -- exactly how this capability first shipped
+/// Linux-only. A task that needs `Rc` state on Linux should hand back bytes
+/// and let its caller update that state after the `.await`.
 pub type TaskFn =
-    Box<dyn for<'a> FnOnce(Option<&'a dyn ModemControlLines>) -> Result<Vec<u8>, String>>;
+    Box<dyn for<'a> FnOnce(Option<&'a dyn ModemControlLines>) -> Result<Vec<u8>, String> + Send>;
+
+/// Run one [`Work::Task`] closure against `lines` and encode its result for
+/// the reply slot.
+///
+/// Shared by both worker backends (`BrokerWorker::run` here and
+/// `crate::worker_windows`) so the task reply convention cannot drift
+/// between platforms. Failure uses the same `b"ERR "` convention the wire
+/// path uses, so a caller cannot misparse a task failure as a CAT frame.
+pub(crate) fn run_task(run: TaskFn, lines: Option<&dyn ModemControlLines>) -> Vec<u8> {
+    match run(lines) {
+        Ok(bytes) => bytes,
+        Err(message) => {
+            let mut v = b"ERR ".to_vec();
+            v.extend_from_slice(message.as_bytes());
+            v
+        }
+    }
+}
 
 /// What a [`Job`] asks the worker to do.
 pub enum Work {
@@ -468,16 +494,7 @@ where
         while let Some(job) = self.receiver.recv().await {
             let wire = match job.work {
                 Work::Wire(payload) => outcome_to_wire(self.broker.dispatch(&payload).await),
-                Work::Task(run) => match run(self.broker.session_modem_lines()) {
-                    Ok(bytes) => bytes,
-                    // Same `b"ERR "` convention the wire path uses, so a
-                    // caller cannot misparse a task failure as a CAT frame.
-                    Err(message) => {
-                        let mut v = b"ERR ".to_vec();
-                        v.extend_from_slice(message.as_bytes());
-                        v
-                    }
-                },
+                Work::Task(run) => run_task(run, self.broker.session_modem_lines()),
             };
             // A disconnected requester (dropped its `OneshotReceiver`
             // before the reply was ready) is not an error here — the
@@ -499,13 +516,6 @@ pub struct BrokerHandle {
 }
 
 impl BrokerHandle {
-    /// Submit one raw wire-format request from `client_id` and await the
-    /// raw wire-format response bytes.
-    ///
-    /// Returns `None` only if the [`BrokerWorker`] itself has shut down
-    /// (every handle dropped, or the worker task ended) — a listener
-    /// should treat that as "the broker is gone" and stop serving new
-    /// requests.
     /// Submit a caller-supplied task to run with exclusive access to the wire.
     ///
     /// The closure is handed the session's modem-control lines (`None` if the
@@ -534,6 +544,13 @@ impl BrokerHandle {
         reply_rx.recv().await
     }
 
+    /// Submit one raw wire-format request from `client_id` and await the
+    /// raw wire-format response bytes.
+    ///
+    /// Returns `None` only if the [`BrokerWorker`] itself has shut down
+    /// (every handle dropped, or the worker task ended) — a listener
+    /// should treat that as "the broker is gone" and stop serving new
+    /// requests.
     pub async fn submit(&self, client_id: ClientId, payload: Vec<u8>) -> Option<Vec<u8>> {
         let request_id = self.next_request_id.get();
         self.next_request_id.set(request_id.wrapping_add(1));
