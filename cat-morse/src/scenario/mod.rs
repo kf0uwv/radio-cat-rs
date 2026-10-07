@@ -49,7 +49,10 @@ mod world;
 
 use std::time::Duration;
 
-pub use band::{band_channel, BandConditions, BandReport, QrmOdds, QrmReport, QrnOdds, QsbOdds};
+pub use band::{
+    band_channel, band_channel_for, BandConditions, BandReport, QrmOdds, QrmReport, QrnOdds,
+    QsbOdds,
+};
 pub use callsign::Callsign;
 
 use crate::codec;
@@ -144,6 +147,52 @@ pub struct Difficulty {
     pub repeat_requests: f64,
     /// The band the stations are copied through (see [`band_channel`]).
     pub band: BandConditions,
+    /// The HF band the QSOs are on, if it matters: low bands are mostly
+    /// heard close to home, high bands reach out to long-haul DX. `None`
+    /// draws stations with a plain lean toward the operator's continent.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub hf_band: Option<HfBand>,
+}
+
+/// An HF amateur band, for how far away the stations heard on it tend to
+/// be. A coarse path model, not a propagation forecast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum HfBand {
+    /// 160 m.
+    M160,
+    /// 80 m.
+    M80,
+    /// 40 m.
+    M40,
+    /// 30 m.
+    M30,
+    /// 20 m.
+    M20,
+    /// 17 m.
+    M17,
+    /// 15 m.
+    M15,
+    /// 12 m.
+    M12,
+    /// 10 m.
+    M10,
+}
+
+impl HfBand {
+    /// Relative weights for a station on the operator's own continent and
+    /// one farther away, before the station's activity.
+    pub(crate) const fn path_weights(self) -> (u32, u32) {
+        match self {
+            HfBand::M160 => (12, 1),
+            HfBand::M80 => (8, 1),
+            HfBand::M40 => (4, 1),
+            HfBand::M30 => (3, 1),
+            HfBand::M20 => (2, 1),
+            HfBand::M17 => (1, 1),
+            HfBand::M15 | HfBand::M12 | HfBand::M10 => (1, 2),
+        }
+    }
 }
 
 impl Default for Difficulty {
@@ -163,6 +212,7 @@ impl Difficulty {
             pitch_offset_hz: (-30.0, 30.0),
             repeat_requests: 0.05,
             band: BandConditions::beginner(),
+            hf_band: None,
         }
     }
 
@@ -176,6 +226,7 @@ impl Difficulty {
             pitch_offset_hz: (-100.0, 100.0),
             repeat_requests: 0.15,
             band: BandConditions::intermediate(),
+            hf_band: None,
         }
     }
 
@@ -189,6 +240,7 @@ impl Difficulty {
             pitch_offset_hz: (-250.0, 250.0),
             repeat_requests: 0.25,
             band: BandConditions::advanced(),
+            hf_band: None,
         }
     }
 
@@ -652,6 +704,34 @@ mod tests {
             entities.insert(h.entity.dxcc);
         }
         assert!(entities.len() >= 4, "{entities:?}");
+    }
+
+    #[test]
+    fn a_top_band_contest_is_mostly_on_your_own_continent() {
+        let eu_share = |band: Option<HfBand>| {
+            let (mut eu, mut all) = (0, 0);
+            for seed in 0..40 {
+                let mut c = cfg(
+                    ScenarioKind::Contest {
+                        exchange: ContestExchange::CqZone,
+                        cut_numbers: false,
+                    },
+                    seed,
+                );
+                c.my_call = Callsign::parse("DL1ABC").unwrap();
+                c.difficulty.hf_band = band;
+                for st in generate(&c).unwrap().stations {
+                    if let Some(h) = callsign::home_of(&st.persona.call) {
+                        all += 1;
+                        if h.entity.continent == world::Continent::Eu {
+                            eu += 1;
+                        }
+                    }
+                }
+            }
+            eu as f64 / all as f64
+        };
+        assert!(eu_share(Some(HfBand::M160)) > eu_share(Some(HfBand::M10)));
     }
 
     #[test]

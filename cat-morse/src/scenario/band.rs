@@ -22,7 +22,7 @@
 
 use std::time::Duration;
 
-use super::callsign::{call_from, Callsign, Home};
+use super::callsign::{call_from, home_of, Callsign, Home};
 use super::{Difficulty, ScenarioError};
 use crate::rng::Rng;
 use crate::synth::{Awgn, Channel, Qrn, Qsb, RxFilter, Signal};
@@ -243,8 +243,26 @@ fn draw(rng: &mut Rng, (lo, hi): (f32, f32)) -> f32 {
 /// half of the over and is cut off where the over ends, so it never makes
 /// the audio longer. Set [`Channel::padding`] and [`Channel::gain`] on the
 /// result as usual.
+///
+/// The QRM station is drawn as if heard by an operator in the US; use
+/// [`band_channel_for`] to place it around the operator.
 pub fn band_channel(
     difficulty: &Difficulty,
+    signals: Vec<Signal>,
+    sample_rate: u32,
+    pitch_hz: f32,
+    seed: u64,
+) -> Result<(Channel, BandReport), ScenarioError> {
+    band_channel_for(difficulty, None, signals, sample_rate, pitch_hz, seed)
+}
+
+/// [`band_channel`] for an operator signing `my_call`: the QRM station is
+/// usually from the operator's own country, otherwise DX drawn as the
+/// scenario's stations are (by activity, nearness and
+/// [`Difficulty::hf_band`]). `None` is an operator in the US.
+pub fn band_channel_for(
+    difficulty: &Difficulty,
+    my_call: Option<&Callsign>,
     signals: Vec<Signal>,
     sample_rate: u32,
     pitch_hz: f32,
@@ -321,10 +339,11 @@ pub fn band_channel(
     if let Some(q) = band.qrm {
         let hit = rng_qrm.chance(q.chance);
         if hit && over_end >= Duration::from_secs(1) {
+            let me = my_call.and_then(home_of);
             let home = if rng_qrm.chance(0.7) {
-                Home::random_us(&mut rng_qrm)
+                Home::random_local(&mut rng_qrm, me)
             } else {
-                Home::random_dx(&mut rng_qrm, None)
+                Home::random_dx(&mut rng_qrm, me, difficulty.hf_band)
             };
             let call_text = call_from(&mut rng_qrm, &home);
             let call = Callsign::parse(&call_text).expect("generated calls are well formed");
@@ -399,6 +418,32 @@ mod tests {
             band,
             ..Difficulty::intermediate()
         }
+    }
+
+    #[test]
+    fn qrm_comes_from_around_the_operator() {
+        let mut d = with_band(BandConditions::advanced());
+        if let Some(q) = &mut d.band.qrm {
+            q.chance = 1.0;
+        }
+        let dl = Callsign::parse("DL1ABC").unwrap();
+        let mut german = 0;
+        let n = 300;
+        for seed in 0..n {
+            let (_, r) = band_channel_for(&d, Some(&dl), over(), 8000, 700.0, seed).unwrap();
+            let q = r.qrm.expect("QRM on every over");
+            if super::super::callsign::home_of(&q.call).map(|h| h.entity.dxcc) == Some(230) {
+                german += 1;
+            }
+        }
+        // Mostly the operator's own country, as the local side of a band is.
+        assert!(german as f64 > 0.5 * n as f64, "{german}");
+        // Without an operator, band_channel is unchanged.
+        let a = band_channel(&d, over(), 8000, 700.0, 4).unwrap().1;
+        let b = band_channel_for(&d, None, over(), 8000, 700.0, 4)
+            .unwrap()
+            .1;
+        assert_eq!(a, b);
     }
 
     #[test]

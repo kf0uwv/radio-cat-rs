@@ -21,7 +21,7 @@ use super::data::{LETTERS, RESERVED_CALLS, SUFFIX_FIRST};
 use super::world::{
     by_dxcc, Activity, CallFormat, DigitRule, Entity, Region, EXACT_SUFFIX, USA, WORLD,
 };
-use super::ScenarioError;
+use super::{HfBand, ScenarioError};
 use crate::rng::Rng;
 
 /// A syntactically valid amateur callsign, upper case, possibly with a
@@ -146,24 +146,31 @@ impl Home {
     /// A DX station for an operator at `me` (the US when unknown): any
     /// other entity, drawn by how active it is, and [`NEAR_BOOST`] times as
     /// often from the operator's own continent.
-    pub(crate) fn random_dx(rng: &mut Rng, me: Option<Home>) -> Home {
+    pub(crate) fn random_dx(rng: &mut Rng, me: Option<Home>, band: Option<HfBand>) -> Home {
         let home = me.map_or_else(|| by_dxcc(USA), |h| h.entity);
-        Home::random_caller(rng, me, home.dxcc)
+        Home::random_caller(rng, me, home.dxcc, band)
     }
 
     /// A station in a pileup heard by an operator at `me` (the US when
     /// unknown): drawn by activity, [`NEAR_BOOST`] times as often from the
-    /// operator's continent, and never from entity `not` (the DX being
-    /// called is not called by its own countrymen).
-    pub(crate) fn random_caller(rng: &mut Rng, me: Option<Home>, not: u16) -> Home {
+    /// operator's continent (or as `band`'s path model says), and never
+    /// from entity `not` (the DX being called is not called by its own
+    /// countrymen).
+    pub(crate) fn random_caller(
+        rng: &mut Rng,
+        me: Option<Home>,
+        not: u16,
+        band: Option<HfBand>,
+    ) -> Home {
         let near = me.map_or_else(|| by_dxcc(USA), |h| h.entity).continent;
+        let (near_w, far_w) = band.map_or((NEAR_BOOST, 1), HfBand::path_weights);
         let weight = |e: &&'static Entity| {
             if e.dxcc == not {
                 0
             } else if e.continent == near {
-                e.activity.weight() * NEAR_BOOST
+                e.activity.weight() * near_w
             } else {
-                e.activity.weight()
+                e.activity.weight() * far_w
             }
         };
         let all: Vec<&'static Entity> = WORLD.iter().collect();
@@ -394,7 +401,7 @@ pub(crate) fn station_call(rng: &mut Rng, home: &Home) -> String {
         }
     }
     if roll < P_PORTABLE + P_ABROAD {
-        let licensed = Home::random_dx(rng, Some(*home));
+        let licensed = Home::random_dx(rng, Some(*home), None);
         let licence = call_from(rng, &licensed);
         if let Some(d) = designator(rng, home) {
             let s = format!("{d}/{licence}");
@@ -781,7 +788,7 @@ mod tests {
     #[test]
     fn dx_is_weighted_by_activity_and_every_entity_is_heard() {
         let n = 100_000;
-        let counts = tally(n, 11, |r| Home::random_dx(r, None));
+        let counts = tally(n, 11, |r| Home::random_dx(r, None, None));
         let share = |a: Activity| -> f64 {
             let hits: usize = WORLD
                 .iter()
@@ -813,7 +820,7 @@ mod tests {
     fn dx_leans_toward_the_operator_s_continent() {
         let n = 20_000;
         let continent_share = |me: Option<Home>, c: Continent| {
-            let counts = tally(n, 5, |r| Home::random_dx(r, me));
+            let counts = tally(n, 5, |r| Home::random_dx(r, me, None));
             let hits: usize = counts
                 .iter()
                 .filter(|(d, _)| by_dxcc(**d).continent == c)
@@ -826,7 +833,37 @@ mod tests {
         assert!(continent_share(ja, Continent::As) > 1.5 * continent_share(None, Continent::As));
         assert!(continent_share(dl, Continent::Eu) > continent_share(None, Continent::Eu));
         // An operator's own entity is local, not DX.
-        assert!(!tally(n, 5, |r| Home::random_dx(r, dl)).contains_key(&230));
+        assert!(!tally(n, 5, |r| Home::random_dx(r, dl, None)).contains_key(&230));
+    }
+
+    #[test]
+    fn low_bands_stay_close_and_high_bands_reach_out() {
+        use crate::scenario::HfBand;
+        let dl = h("DL1ABC");
+        let eu = |band: Option<HfBand>| {
+            let n = 20_000;
+            let counts = tally(n, 8, |r| Home::random_dx(r, dl, band));
+            let hits: usize = counts
+                .iter()
+                .filter(|(d, _)| by_dxcc(**d).continent == Continent::Eu)
+                .map(|(_, k)| k)
+                .sum();
+            hits as f64 / n as f64
+        };
+        let (b160, b40, b20, b10) = (
+            eu(Some(HfBand::M160)),
+            eu(Some(HfBand::M40)),
+            eu(Some(HfBand::M20)),
+            eu(Some(HfBand::M10)),
+        );
+        assert!(b160 > 0.8, "{b160}");
+        assert!(
+            b160 > b40 && b40 > b20 && b20 > b10,
+            "{b160} {b40} {b20} {b10}"
+        );
+        // No band: the plain near-continent lean.
+        let none = eu(None);
+        assert!(b40 > none && none > b10, "{none}");
     }
 
     #[test]
@@ -872,7 +909,7 @@ mod tests {
             let home = if i % 2 == 0 {
                 Home::random_us(&mut rng)
             } else {
-                Home::random_dx(&mut rng, None)
+                Home::random_dx(&mut rng, None, None)
             };
             let s = station_call(&mut rng, &home);
             let c = Callsign::parse(&s).unwrap_or_else(|_| panic!("{s}"));

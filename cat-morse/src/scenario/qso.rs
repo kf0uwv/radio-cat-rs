@@ -250,7 +250,7 @@ impl Builder<'_> {
             None => {
                 let me = home_of(&self.cfg.my_call);
                 if self.st_rng.chance(dx_share) {
-                    Home::random_dx(&mut self.st_rng, me)
+                    Home::random_dx(&mut self.st_rng, me, self.cfg.difficulty.hf_band)
                 } else {
                     Home::random_local(&mut self.st_rng, me)
                 }
@@ -281,7 +281,11 @@ impl Builder<'_> {
             ) {
                 break c;
             }
-            home = Home::random_dx(&mut self.st_rng, home_of(&self.cfg.my_call));
+            home = Home::random_dx(
+                &mut self.st_rng,
+                home_of(&self.cfg.my_call),
+                self.cfg.difficulty.hf_band,
+            );
         };
         let p = persona(&mut self.st_rng, call, Some(home), false);
         let signal = self.signal()?;
@@ -676,7 +680,8 @@ impl Builder<'_> {
         let not = my_home.map_or(0, |h| h.entity.dxcc);
         let mut waiting: Vec<usize> = Vec::new();
         for _ in 0..callers {
-            let h = Home::random_caller(&mut self.st_rng, my_home, not);
+            let h =
+                Home::random_caller(&mut self.st_rng, my_home, not, self.cfg.difficulty.hf_band);
             waiting.push(self.place(h, true)?);
         }
         self.say(Party::You, format!("CQ CQ DE {me} {me} K"));
@@ -726,7 +731,12 @@ impl Builder<'_> {
         let dx = self.place(dx_home, false)?;
         let mut waiting: Vec<usize> = Vec::new();
         for _ in 0..callers {
-            let h = Home::random_caller(&mut self.st_rng, my_home, dx_home.entity.dxcc);
+            let h = Home::random_caller(
+                &mut self.st_rng,
+                my_home,
+                dx_home.entity.dxcc,
+                self.cfg.difficulty.hf_band,
+            );
             waiting.push(self.place(h, true)?);
         }
         let d = Party::Them(dx);

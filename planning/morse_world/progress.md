@@ -35,3 +35,5 @@
   scoring tests. --all-features 119 lib + 18 + 10 + 1 = 148; default 117 + 17 + 10 + 1; clippy, fmt clean.
 - Task 7 done: DxChase kind, world-wide callers for DxPileup.
   --all-features 121 lib + 18 + 10 + 1 = 150; default 119 + 17 + 10 + 1; clippy, fmt clean.
+- Task 8 done: HfBand path model, Difficulty::hf_band, band_channel_for. --all-features
+  124 lib + 18 + 10 + 1 = 153; default 122 + 17 + 10 + 1; clippy, fmt clean; workspace check clean.

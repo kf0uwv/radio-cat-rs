@@ -152,3 +152,14 @@
 - Operator-as-DX pileup: callers are now drawn by `random_caller` (the world, never the
   operator's entity) instead of 65% local — a rare-DX operator (e.g. FT5ZM) gets a world pileup.
 - Pinned pileup script re-baselined (first call now LA8ZUG/P, a portable call).
+
+## Task 8 — HF band path model and band noise from the operator's home (2026-10-07)
+- Public additions (additive; downstream builds Difficulty from presets, never by literal):
+  `HfBand` (M160..M10), `Difficulty::hf_band: Option<HfBand>` (serde default; presets None),
+  `band_channel_for(difficulty, my_call, ...)`. `band_channel` delegates with `None` and
+  is byte-for-byte unchanged (pinned script unchanged; test asserts equal reports).
+- Path weights (near continent : far): 160 12:1, 80 8:1, 40 4:1, 30 3:1, 20 2:1, 17 1:1,
+  15/12/10 1:2. `None` keeps NEAR_BOOST 3:1. Coarse model: no time of day, season or
+  solar cycle; judgement values.
+- QRM station: 70% local to the operator (random_local), else DX by activity, nearness and
+  hf_band. cw-trainer/ts570d must call `band_channel_for` with the operator's call to benefit.
