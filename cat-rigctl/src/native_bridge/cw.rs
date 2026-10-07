@@ -244,7 +244,12 @@ struct Arm {
 #[derive(Debug, Clone)]
 struct Job {
     id: u32,
+    /// Operator text and appended ID together, for estimates.
     text: String,
+    /// What the operator asked to send.
+    operator: String,
+    /// `DE <CALL>`, when owed: always a chunk of its own, never split.
+    id_text: Option<String>,
     total: u32,
     sent: u32,
     started: Instant,
@@ -379,6 +384,18 @@ impl CwSupervisor {
             ));
         }
 
+        let id_len = 3 + callsign.chars().count();
+        if id_len > usize::from(send.max_chunk_chars) {
+            return Err(refusal(
+                ErrorCode::Forbidden,
+                &format!(
+                    "\"DE {callsign}\" is {id_len} characters; this radio sends at most {} at once, \
+                     and the ID is never split",
+                    send.max_chunk_chars
+                ),
+            ));
+        }
+
         let cap = key_down_cap_s
             .map(|s| Duration::from_secs(u64::from(s)))
             .unwrap_or(self.config.key_down_cap)
@@ -437,8 +454,8 @@ impl CwSupervisor {
         if words.is_empty() {
             return Err(refusal(ErrorCode::OutOfRange, "nothing to send"));
         }
-        let mut full = words.join(" ");
-        if let Some(c) = send.rejected_char(&full) {
+        let operator = words.join(" ");
+        if let Some(c) = send.rejected_char(&operator) {
             return Err(refusal(
                 ErrorCode::OutOfRange,
                 &format!("this keyer cannot send {c:?}"),
@@ -447,10 +464,11 @@ impl CwSupervisor {
         let id_due = arm.last_id.map_or(true, |t| {
             now.saturating_duration_since(t) >= self.config.id_interval
         });
-        if id_due {
-            full.push_str(" DE ");
-            full.push_str(&arm.callsign);
-        }
+        let id_text = id_due.then(|| format!("DE {}", arm.callsign));
+        let full = match &id_text {
+            Some(id) => format!("{operator} {id}"),
+            None => operator.clone(),
+        };
         let est = estimate(&full, arm.wpm);
         if est > arm.cap {
             return Err(refusal(
@@ -471,6 +489,8 @@ impl CwSupervisor {
             id,
             total: full.chars().count() as u32,
             text: full,
+            operator,
+            id_text,
             sent: 0,
             started: now,
             deadline: now + self.watchdog_for(est),
@@ -927,22 +947,25 @@ impl CwSupervisor {
                     return;
                 }
                 job.deadline = job.started + est + est / 5 + self.config.watchdog_margin;
-                let text = job.text.clone();
+                let (operator, id_text) = (job.operator.clone(), job.id_text.clone());
                 if let Some(arm) = &mut self.arm {
                     arm.wpm = wpm;
                 }
-                self.plan_chunks(&text, wpm);
+                self.plan_chunks(&operator, id_text, wpm);
             }
             _ => {}
         }
     }
 
-    fn plan_chunks(&mut self, text: &str, wpm: u16) {
+    fn plan_chunks(&mut self, operator: &str, id_text: Option<String>, wpm: u16) {
         let Some(send) = self.send_text else {
             return;
         };
         let bound = (send.abort == CwAbort::DrainOnly).then_some(self.config.drain_bound);
-        let pieces = chunks(text, send.max_chunk_chars, bound, wpm);
+        let mut pieces = chunks(operator, send.max_chunk_chars, bound, wpm);
+        // Whole and alone: a split or merged ID is not a clean ID, and
+        // `arm` already checked it fits one chunk.
+        pieces.extend(id_text);
         let n = pieces.len();
         for (i, piece) in pieces.into_iter().enumerate() {
             if send.pacing == CwPacing::BufferFlag {
@@ -1176,17 +1199,21 @@ pub fn estimate(text: &str, wpm: u16) -> Duration {
     }
 }
 
-/// Split `text` into chunks of at most `max_chars`, at word boundaries.
+/// Split operator `text` into chunks of at most `max_chars` that each key
+/// within `max_duration` (the drain bound).
 ///
-/// `max_duration` (the drain bound) limits how many words are *joined*;
-/// it never splits a word, because a word keyed in two pieces with a gap
-/// between is neither good copy nor a legal ID. Only `max_chars` -- the
-/// radio's own hard limit -- splits a word, and only a word that cannot
-/// fit at all.
+/// Word boundaries are preferred, but the bound wins: abort latency on a
+/// `DrainOnly` radio is the safety property, and a 24-character string
+/// with no spaces would otherwise sit in the radio for ~25 s at 10 wpm. A
+/// single character always goes, even one longer than the bound -- there
+/// is nothing smaller to send.
+///
+/// The server's own `DE <call>` never comes through here: it is its own
+/// chunk (see [`CwSupervisor::send`]).
 pub fn chunks(text: &str, max_chars: u16, max_duration: Option<Duration>, wpm: u16) -> Vec<String> {
     let max = usize::from(max_chars.max(1));
-    let fits_hard = |s: &str| s.chars().count() <= max;
-    let fits = |s: &str| fits_hard(s) && max_duration.map_or(true, |d| estimate(s, wpm) <= d);
+    let fits =
+        |s: &str| s.chars().count() <= max && max_duration.map_or(true, |d| estimate(s, wpm) <= d);
 
     let mut out = Vec::new();
     let mut current = String::new();
@@ -1199,16 +1226,19 @@ pub fn chunks(text: &str, max_chars: u16, max_duration: Option<Duration>, wpm: u
             }
             out.push(std::mem::take(&mut current));
         }
-        if fits_hard(word) {
+        if fits(word) {
             current = word.to_string();
             continue;
         }
         let mut piece = String::new();
         for c in word.chars() {
-            if piece.chars().count() == max {
-                out.push(std::mem::take(&mut piece));
+            let mut longer = piece.clone();
+            longer.push(c);
+            if piece.is_empty() || fits(&longer) {
+                piece = longer;
+            } else {
+                out.push(std::mem::replace(&mut piece, c.to_string()));
             }
-            piece.push(c);
         }
         current = piece;
     }

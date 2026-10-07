@@ -317,14 +317,34 @@ keying after abort. Without it the TS-570D at 10 wpm would drain a full
 24-character buffer for ~29 s after the operator hit abort. The cost —
 a slightly longer gap at chunk boundaries — is a bench question (§9).
 
-**As built (T5, 2026-10-07):** the drain bound applies to `DrainOnly`
-radios only (a `RadioStop` radio stops at once), and it governs how many
-words are *joined*, never whether a word is split: a callsign keyed as
-`N0CA` / `LL` with a gap between is neither good copy nor a legal ID. Only
-the radio's own `max_chunk_chars` splits a word. The worst-case drain is
-therefore `max(drain_bound, longest single word)` -- for a callsign at
-10 wpm, around 9 s. The bench measurements in §9 should confirm whether
-the inter-chunk gap makes a smaller bound worth its cost.
+**As built (T5, revised per architect 2026-10-07):** abort latency is
+the safety property, so operator text is split at the drain bound
+whatever its word boundaries (word boundaries are preferred when they
+fit); only a single character is never split, being the smallest thing
+there is to send. The server's own `DE <CALL>` is kept whole and is
+always its own final chunk, never shared with operator text; `arm`
+refuses a callsign whose ID would not fit one radio chunk. The drain
+bound applies to `DrainOnly` radios only -- a `RadioStop` radio stops at
+once.
+
+**Worst-case drain after an abort, `DrainOnly` radio:**
+`max(drain_bound, longest character, ID)` at the radio's slowest keyer
+speed. For the TS-570D (slowest 10 wpm, 120 ms a unit):
+
+| What is in the radio | Units | At 10 wpm |
+|---|---|---|
+| Operator text chunk | ≤ 25 | ≤ 3 s (the bound) |
+| Longest single character (`0`) | 19 | 2.28 s |
+| ID, typical six-character call (`DE N0CALL`) | 91 | 10.92 s |
+| **ID, longest valid call** (`DE` + nine `0`s + a 13-unit letter) | **229** | **27.48 s** |
+
+So the stated worst case is **27.48 s**, reached only while the ID chunk
+is keying, and only for a pathological callsign; a typical call bounds it
+at about 11 s. Generally: 229 × 1.2 / slowest-wpm seconds. Add one
+in-flight CAT exchange and one CW tick (§5). Pinned by
+`the_worst_case_id_drain_is_the_number_in_the_adr`. The bench (§9) may
+show `RX;` stops a TS-570D `KY` sentence, which would make it `RadioStop`
+and remove the drain entirely.
 
 ### 5. Abort does not wait behind a send
 

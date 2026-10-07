@@ -690,42 +690,122 @@ fn a_client_may_lower_the_cap_but_not_raise_it() {
     assert_eq!(code(b.sup.send(OWNER, &long, b.now)), ErrorCode::OutOfRange);
 }
 
-/// The drain bound joins words; it never splits one. A callsign keyed as
-/// "N0CA" and "LL" with a gap between is neither good copy nor a legal
-/// ID, so a single word may run past the bound -- only the radio's own
-/// chunk limit splits a word.
+/// The ID the server appends: its own chunk, whole, never shared.
+const ID: &str = "DE N0CALL";
+
+fn assert_id_alone(chunks: &[String]) {
+    let ids: Vec<_> = chunks.iter().filter(|c| c.contains("DE N0")).collect();
+    assert_eq!(ids, vec![ID], "the ID is one whole chunk: {chunks:?}");
+    assert_eq!(chunks.last().map(String::as_str), Some(ID), "{chunks:?}");
+}
+
+/// Abort latency is the safety property (architect, 2026-10-07): operator
+/// text is split at the drain bound whatever its word boundaries.
 #[test]
 fn a_drain_only_radio_never_holds_more_than_the_drain_bound() {
     let mut b = Bench::new(KENWOOD);
     b.radio.wpm = Some(10);
     b.arm().unwrap();
-    b.sup.send(OWNER, "CQ CQ DE N0CALL", b.now).unwrap();
+    b.sup.send(OWNER, "CQ CQ DE K9X", b.now).unwrap();
     b.run_for(Duration::from_secs(60));
     let chunks = b.radio.sent();
-    assert!(chunks.len() > 1);
-    for c in &chunks {
+    let (id, operator) = chunks.split_last().unwrap();
+    assert_eq!(id, ID);
+    for c in operator {
         assert!(c.len() <= 24, "{c:?}");
         assert!(
-            !c.contains(' ') || estimate(c, 10) <= CwConfig::default().drain_bound,
-            "{c:?} joins words past the bound: {:?}",
+            estimate(c, 10) <= CwConfig::default().drain_bound,
+            "{c:?} takes {:?}",
             estimate(c, 10)
         );
     }
-    assert!(chunks.contains(&"N0CALL".to_string()), "{chunks:?}");
-    assert_eq!(chunks.concat().replace(' ', ""), "CQCQDEN0CALLDEN0CALL");
+    assert_eq!(operator.concat().replace(' ', ""), "CQCQDEK9X");
 }
 
 #[test]
-fn chunks_break_at_words_and_only_split_a_word_that_cannot_fit() {
+fn long_text_with_no_spaces_is_chunked_within_the_bound() {
+    let mut b = Bench::new(KENWOOD);
+    b.radio.wpm = Some(10);
+    b.arm().unwrap();
+    // A full TS-570D buffer with nowhere to break: ~25 s in one chunk if
+    // word boundaries ruled.
+    let text = "ABCDEFGHIJKLMNOPQRSTUVWX";
+    b.sup.send(OWNER, text, b.now).unwrap();
+    b.run_for(Duration::from_secs(60));
+    let chunks = b.radio.sent();
+    let (id, operator) = chunks.split_last().unwrap();
+    assert_eq!(id, ID);
+    assert!(operator.len() > 1);
+    for c in operator {
+        assert!(
+            estimate(c, 10) <= CwConfig::default().drain_bound,
+            "{c:?} takes {:?}",
+            estimate(c, 10)
+        );
+    }
+    assert_eq!(operator.concat(), text);
+}
+
+#[test]
+fn the_id_is_never_split_and_never_mixed_with_operator_text() {
+    // Slow: the ID alone runs past the drain bound, and is still whole.
+    let mut b = Bench::new(KENWOOD);
+    b.radio.wpm = Some(10);
+    b.arm().unwrap();
+    assert!(estimate(ID, 10) > CwConfig::default().drain_bound);
+    b.sup.send(OWNER, "TEST", b.now).unwrap();
+    b.run_for(Duration::from_secs(60));
+    assert_id_alone(&b.radio.sent());
+
+    // Fast, with room to spare: still not joined to the operator's text.
+    let mut b = Bench::new(ICOM);
+    b.radio.wpm = Some(30);
+    b.arm().unwrap();
+    b.sup.send(OWNER, "CQ CQ", b.now).unwrap();
+    b.run_for(Duration::from_secs(60));
+    assert_eq!(b.radio.sent(), vec!["CQ CQ", ID]);
+
+    // Operator text that happens to contain the call is the operator's.
+    let mut b = Bench::new(ICOM);
+    b.arm().unwrap();
+    b.sup.send(OWNER, "N0CALL TEST", b.now).unwrap();
+    b.run_for(Duration::from_secs(60));
+    assert_eq!(b.radio.sent(), vec!["N0CALL TEST", ID]);
+}
+
+#[test]
+fn a_callsign_whose_id_cannot_fit_one_chunk_cannot_be_armed() {
+    let tiny = CwCapability {
+        send_text: Some(CwSendText {
+            max_chunk_chars: 8,
+            ..KENWOOD.send_text.unwrap()
+        }),
+        ..KENWOOD
+    };
+    let mut b = Bench::new(tiny);
+    assert_eq!(
+        code(b.sup.arm(OWNER, "N0CALL", None, b.now)),
+        ErrorCode::Forbidden
+    );
+    assert!(b.sup.arm(OWNER, "K9X", None, b.now).is_ok());
+}
+
+#[test]
+fn chunks_prefer_word_boundaries_but_split_at_the_bound() {
     let c = chunks("CQ CQ DE N0CALL", 24, None, 20);
     assert_eq!(c, vec!["CQ CQ DE N0CALL"]);
     let c = chunks("ABCDEFGHIJ KLM", 6, None, 20);
     assert_eq!(c, vec!["ABCDEF", "GHIJ", "KLM"]);
     let c = chunks("AA BB CC", 5, None, 20);
     assert_eq!(c, vec!["AA BB", "CC"]);
-    // A duration bound joins fewer words, but leaves each word whole.
-    let c = chunks("CQ CQ DE N0CALL", 24, Some(Duration::from_secs(3)), 10);
-    assert_eq!(c, vec!["CQ", "CQ", "DE", "N0CALL"]);
+    let bound = Duration::from_secs(3);
+    let c = chunks("CQ CQ DE N0CALL", 24, Some(bound), 10);
+    assert!(c.iter().all(|p| estimate(p, 10) <= bound), "{c:?}");
+    assert_eq!(c.concat().replace(' ', ""), "CQCQDEN0CALL");
+    // One character always goes, even one longer than the bound: there is
+    // nothing smaller to send.
+    let c = chunks("0", 24, Some(Duration::from_millis(1)), 10);
+    assert_eq!(c, vec!["0"]);
 }
 
 #[test]
@@ -735,7 +815,7 @@ fn a_radio_stop_radio_sends_full_chunks() {
     b.arm().unwrap();
     b.sup.send(OWNER, "CQ CQ CQ", b.now).unwrap();
     b.run_for(Duration::from_secs(60));
-    assert_eq!(b.radio.sent(), vec!["CQ CQ CQ DE N0CALL"]);
+    assert_eq!(b.radio.sent(), vec!["CQ CQ CQ", ID]);
 }
 
 #[test]
@@ -1019,7 +1099,9 @@ fn an_id_cut_off_by_an_abort_after_the_first_chunk_is_still_owed() {
     b.arm().unwrap();
     b.sup.send(OWNER, "CQ CQ", b.now).unwrap();
     b.drive();
-    assert_eq!(b.radio.sent(), vec!["CQ"], "only the first chunk is out");
+    let out = b.radio.sent();
+    assert_eq!(out.len(), 1, "only the first chunk is out: {out:?}");
+    assert!(!out[0].contains("DE"));
     b.sup.abort(b.now);
     b.run_for(Duration::from_secs(10));
     b.radio.busy_polls = 0;
@@ -1032,4 +1114,21 @@ fn an_id_cut_off_by_an_abort_after_the_first_chunk_is_still_owed() {
         "{:?}",
         b.radio.sent()
     );
+}
+
+/// Pins the number ADR 0023 §4 states for the worst-case drain after an
+/// abort on a `DrainOnly` radio: the ID chunk at the slowest wpm.
+///
+/// The longest valid ID is `DE` plus ten characters with at least one
+/// letter: nine `0`s (19 units each) and a 13-unit letter, 229 units in
+/// all. At the TS-570D's slowest keyer speed (10 wpm, 120 ms a unit)
+/// that is 27.48 s.
+#[test]
+fn the_worst_case_id_drain_is_the_number_in_the_adr() {
+    assert_eq!(estimate("DE 000000000Q", 10), Duration::from_millis(27_480));
+    // A typical six-character call, and the longest single character
+    // operator text can leave in the radio.
+    assert_eq!(estimate("DE N0CALL", 10), Duration::from_millis(10_920));
+    assert_eq!(estimate("0", 10), Duration::from_millis(2_280));
+    assert!(estimate("0", 10) <= CwConfig::default().drain_bound);
 }

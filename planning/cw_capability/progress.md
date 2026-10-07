@@ -63,3 +63,8 @@ not start before that.
   disarm) -- 7 killed at first, the ID one survived; added a test, now
   killed. Workspace 1208/0/3; clippy, fmt,
   xwin clean.
+- T5 revision (architect rejected "never split a word"): operator text
+  splits at the drain bound; `DE <CALL>` is one whole final chunk, never
+  mixed; arm refuses an ID that cannot fit one chunk. Red: 6 failing.
+  Green: 46 supervisor tests; workspace 1212/0/3; clippy, fmt, xwin
+  clean. Worst-case TS-570D drain stated in ADR §4: 27.48 s.
