@@ -476,6 +476,15 @@ impl Transport for SerialPort {
         Some(self)
     }
 
+    /// An owned `dup` of the port's fd (ADR 0021). `None` only if the
+    /// duplicate cannot be made (e.g. `EMFILE`); the broker then falls back
+    /// to its ordered queue.
+    fn release_lines(&self) -> Option<Box<dyn ModemControlLines + Send + Sync>> {
+        self.duplicate_lines()
+            .ok()
+            .map(|lines| Box::new(lines) as Box<dyn ModemControlLines + Send + Sync>)
+    }
+
     /// Read and discard until the line has been quiet for one short interval.
     ///
     /// Uses a raw non-blocking `read(2)` rather than `self.stream.readv().await`.
@@ -587,6 +596,58 @@ impl ModemControlLines for SerialPort {
 
     fn read_dcd(&self) -> Result<bool, TransportError> {
         modem_bit_get(self.stream.as_raw_fd(), TIOCM_CAR)
+    }
+}
+
+impl SerialPort {
+    /// Duplicate the port's fd into an owned, close-on-exec handle on the
+    /// same open device, for [`Transport::release_lines`].
+    pub(crate) fn duplicate_lines(&self) -> std::io::Result<DuplicatedLines> {
+        // SAFETY: `self.stream`'s fd is open for as long as `&self` lives,
+        // which covers this call. `try_clone_to_owned` is
+        // `fcntl(F_DUPFD_CLOEXEC)`: the result is a new fd we own.
+        let borrowed = unsafe { BorrowedFd::borrow_raw(self.stream.as_raw_fd()) };
+        Ok(DuplicatedLines {
+            fd: borrowed.try_clone_to_owned()?,
+        })
+    }
+}
+
+/// An owned duplicate of a [`SerialPort`]'s fd, used only to drive its
+/// modem lines (ADR 0021).
+///
+/// Holds its own reference to the open tty, so -- unlike a captured raw fd
+/// -- its number cannot be closed under it and reused by another device.
+/// Dropping it closes the duplicate. Same ioctls as the primary.
+pub(crate) struct DuplicatedLines {
+    fd: OwnedFd,
+}
+
+impl AsRawFd for DuplicatedLines {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
+}
+
+impl ModemControlLines for DuplicatedLines {
+    fn set_rts(&self, asserted: bool) -> Result<(), TransportError> {
+        modem_bits_set(self.fd.as_raw_fd(), TIOCM_RTS, asserted)
+    }
+
+    fn set_dtr(&self, asserted: bool) -> Result<(), TransportError> {
+        modem_bits_set(self.fd.as_raw_fd(), TIOCM_DTR, asserted)
+    }
+
+    fn read_cts(&self) -> Result<bool, TransportError> {
+        modem_bit_get(self.fd.as_raw_fd(), TIOCM_CTS)
+    }
+
+    fn read_dsr(&self) -> Result<bool, TransportError> {
+        modem_bit_get(self.fd.as_raw_fd(), TIOCM_DSR)
+    }
+
+    fn read_dcd(&self) -> Result<bool, TransportError> {
+        modem_bit_get(self.fd.as_raw_fd(), TIOCM_CAR)
     }
 }
 
@@ -897,6 +958,75 @@ mod tests {
             assert_enotty_bool(port.read_cts(), "read_cts()");
             assert_enotty_bool(port.read_dsr(), "read_dsr()");
             assert_enotty_bool(port.read_dcd(), "read_dcd()");
+        });
+    }
+
+    /// `(st_dev, st_rdev)` of an open fd -- which device it is, independent
+    /// of its number.
+    fn device_of(fd: RawFd) -> (u64, u64) {
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: `fd` is open for the duration of the call; `&mut st` is a
+        // valid `*mut stat`.
+        let rc = unsafe { libc::fstat(fd, &mut st) };
+        assert_eq!(rc, 0, "fstat({fd}) failed");
+        (st.st_dev, st.st_rdev)
+    }
+
+    /// The error a modem ioctl on a PTY gives: ENOTTY. Anything else --
+    /// above all EBADF -- would mean the fd is not the open device.
+    fn assert_reached_the_pty(result: Result<(), TransportError>, what: &str) {
+        match result {
+            Err(TransportError::Io(e)) => assert_eq!(
+                e.raw_os_error(),
+                Some(libc::ENOTTY),
+                "{what}: expected ENOTTY (the device answered), got {e:?}"
+            ),
+            other => panic!("{what}: expected ENOTTY, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn release_lines_are_a_distinct_fd_on_the_same_device() {
+        // ADR 0021: an owned duplicate, not the primary's number.
+        let pair = TestPtyPair::new();
+        let slave = pair.slave_path().to_string();
+
+        make_runtime().block_on(async {
+            let port =
+                SerialPort::open(&slave, SerialConfig::default()).expect("SerialPort::open failed");
+            let lines = port.duplicate_lines().expect("dup");
+
+            assert_ne!(lines.as_raw_fd(), port.stream.as_raw_fd());
+            assert_eq!(
+                device_of(lines.as_raw_fd()),
+                device_of(port.stream.as_raw_fd())
+            );
+            // Close-on-exec, so a child process cannot inherit a line that
+            // keys the transmitter.
+            let flags = unsafe { libc::fcntl(lines.as_raw_fd(), libc::F_GETFD) };
+            assert!(flags & libc::FD_CLOEXEC != 0, "duplicate must be CLOEXEC");
+        });
+    }
+
+    #[test]
+    fn release_lines_reach_the_device_with_the_primary_open_and_after_it_closes() {
+        let pair = TestPtyPair::new();
+        let slave = pair.slave_path().to_string();
+
+        make_runtime().block_on(async {
+            let port =
+                SerialPort::open(&slave, SerialConfig::default()).expect("SerialPort::open failed");
+            let lines = Transport::release_lines(&port).expect("a serial port has release lines");
+
+            // Primary still open: both reach the same device.
+            assert_reached_the_pty(lines.set_dtr(false), "release set_dtr, primary open");
+            assert_reached_the_pty(port.set_dtr(false), "primary set_dtr");
+
+            // Primary closed: the duplicate still holds the device (never
+            // EBADF, never someone else's fd).
+            drop(port);
+            assert_reached_the_pty(lines.set_dtr(false), "release set_dtr, primary closed");
+            assert_reached_the_pty(lines.set_rts(true), "release set_rts, primary closed");
         });
     }
 
