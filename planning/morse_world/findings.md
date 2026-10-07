@@ -139,3 +139,16 @@
 - Name pool of a visitor follows the operating entity, not the licence (simplification).
 - Scoring unchanged and strict, pinned by tests: dropping `EA8/` costs 4 deletions; in a
   pileup the bare base still pairs with its slash call and is charged the same 4.
+
+## Task 7 — rare-DX pileups, both roles (2026-10-07)
+- New public variant `ScenarioKind::DxChase { callers: 1..=12 }` (additive; ts570d only
+  constructs ScenarioKind, never matches it exhaustively, so it still compiles; it will need
+  a `Kind` of its own to offer the chase in the trainer — a ts570d follow-up).
+- Chase: the DX is drawn by `random_rare` (Rare 5 : Uncommon 1, never the operator's entity),
+  calls `CQ <dx> UP n`; every round all other callers and you call over one another; the DX
+  works 1-3 others (`<call> 5NN`, `TU 5NN`, `TU UP`), then you (`<me> 5NN`, optional partial
+  `KF0?`), ending `TU <dx> UP`. Callers come from `random_caller`: activity-weighted, near
+  continent boosted, never the DX's own entity.
+- Operator-as-DX pileup: callers are now drawn by `random_caller` (the world, never the
+  operator's entity) instead of 65% local — a rare-DX operator (e.g. FT5ZM) gets a world pileup.
+- Pinned pileup script re-baselined (first call now LA8ZUG/P, a portable call).

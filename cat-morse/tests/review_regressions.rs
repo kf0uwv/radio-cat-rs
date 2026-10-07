@@ -455,5 +455,5 @@ fn script_is_pinned_across_platforms() {
     assert_eq!(fnv(&text), PINNED_SCRIPT_FNV, "FNV {:#x}", fnv(&text));
 }
 
-const PINNED_FIRST_CALL: &str = "DL8ZUG";
-const PINNED_SCRIPT_FNV: u64 = 0x97a5_74db_d520_a84d;
+const PINNED_FIRST_CALL: &str = "LA8ZUG/P";
+const PINNED_SCRIPT_FNV: u64 = 0x0d0f_f91d_7069_04b6;

@@ -18,7 +18,9 @@
 use std::fmt;
 
 use super::data::{LETTERS, RESERVED_CALLS, SUFFIX_FIRST};
-use super::world::{by_dxcc, CallFormat, DigitRule, Entity, Region, EXACT_SUFFIX, USA, WORLD};
+use super::world::{
+    by_dxcc, Activity, CallFormat, DigitRule, Entity, Region, EXACT_SUFFIX, USA, WORLD,
+};
 use super::ScenarioError;
 use crate::rng::Rng;
 
@@ -146,14 +148,38 @@ impl Home {
     /// often from the operator's own continent.
     pub(crate) fn random_dx(rng: &mut Rng, me: Option<Home>) -> Home {
         let home = me.map_or_else(|| by_dxcc(USA), |h| h.entity);
+        Home::random_caller(rng, me, home.dxcc)
+    }
+
+    /// A station in a pileup heard by an operator at `me` (the US when
+    /// unknown): drawn by activity, [`NEAR_BOOST`] times as often from the
+    /// operator's continent, and never from entity `not` (the DX being
+    /// called is not called by its own countrymen).
+    pub(crate) fn random_caller(rng: &mut Rng, me: Option<Home>, not: u16) -> Home {
+        let near = me.map_or_else(|| by_dxcc(USA), |h| h.entity).continent;
         let weight = |e: &&'static Entity| {
-            if e.dxcc == home.dxcc {
+            if e.dxcc == not {
                 0
-            } else if e.continent == home.continent {
+            } else if e.continent == near {
                 e.activity.weight() * NEAR_BOOST
             } else {
                 e.activity.weight()
             }
+        };
+        let all: Vec<&'static Entity> = WORLD.iter().collect();
+        let e = *pick_weighted(rng, &all, weight);
+        Home::random_in(rng, e)
+    }
+
+    /// A DX worth chasing for an operator at `me`: a rare entity, or now
+    /// and then an uncommon one; never the operator's own.
+    pub(crate) fn random_rare(rng: &mut Rng, me: Option<Home>) -> Home {
+        let own = me.map(|h| h.entity.dxcc);
+        let weight = |e: &&'static Entity| match e.activity {
+            _ if Some(e.dxcc) == own => 0,
+            Activity::Rare => 5,
+            Activity::Uncommon => 1,
+            _ => 0,
         };
         let all: Vec<&'static Entity> = WORLD.iter().collect();
         let e = *pick_weighted(rng, &all, weight);
@@ -422,7 +448,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::scenario::world::{Activity, Continent};
+    use crate::scenario::world::Continent;
 
     #[test]
     fn parse_accepts_real_shapes() {

@@ -32,7 +32,8 @@
 //! | [`ScenarioKind::Contest`] | search and pounce: `CQ TEST`, `5NN` + zone or serial |
 //! | [`ScenarioKind::Pota`] | a park activator (`US-1234`), state exchange, optional P2P |
 //! | [`ScenarioKind::Sota`] | a summit activator (`W0C/FR-001`), optional S2S |
-//! | [`ScenarioKind::DxPileup`] | you run the DX; callers overlap at different offsets |
+//! | [`ScenarioKind::DxPileup`] | you run the DX; callers from everywhere overlap at different offsets |
+//! | [`ScenarioKind::DxChase`] | you chase a rare DX through its pileup: it runs split, works others, then you |
 //!
 //! [`band_channel`] wraps an over's signals in the band
 //! [`Difficulty::band`] describes: noise, fading, static and QRM.
@@ -114,6 +115,12 @@ pub enum ScenarioKind {
     /// Running a pileup as the DX station.
     DxPileup {
         /// How many stations call (1–12).
+        callers: u8,
+    },
+    /// Chasing a rare DX station: it calls CQ split, works some of the
+    /// other callers, and then you.
+    DxChase {
+        /// How many other stations are in the pileup (1–12).
         callers: u8,
     },
 }
@@ -349,7 +356,7 @@ impl Script {
 /// Generates the script for `cfg`.
 pub fn generate(cfg: &ScenarioConfig) -> Result<Script, ScenarioError> {
     cfg.difficulty.validate()?;
-    if let ScenarioKind::DxPileup { callers } = cfg.kind {
+    if let ScenarioKind::DxPileup { callers } | ScenarioKind::DxChase { callers } = cfg.kind {
         if !(1..=12).contains(&callers) {
             return Err(ScenarioError::InvalidSetting(
                 "a pileup needs 1 to 12 callers",
@@ -393,6 +400,7 @@ mod tests {
                 summit_to_summit: true,
             },
             ScenarioKind::DxPileup { callers: 6 },
+            ScenarioKind::DxChase { callers: 6 },
         ]
     }
 
@@ -541,7 +549,9 @@ mod tests {
             Callsign::parse("NOTACALL"),
             Err(ScenarioError::InvalidCallsign(_))
         ));
-        let mut c = cfg(ScenarioKind::DxPileup { callers: 0 }, 0);
+        let mut c = cfg(ScenarioKind::DxChase { callers: 13 }, 0);
+        assert!(generate(&c).is_err());
+        c.kind = ScenarioKind::DxPileup { callers: 0 };
         assert!(generate(&c).is_err());
         c.kind = ScenarioKind::RagChew;
         c.difficulty.wpm = (30, 20);
@@ -589,6 +599,59 @@ mod tests {
 
     fn has_no_home(c: &Callsign) -> bool {
         callsign::home_of(c).is_none()
+    }
+
+    #[test]
+    fn chasing_a_rare_dx_through_the_pileup() {
+        use super::world::Activity;
+        for seed in 0..60 {
+            let s = generate(&cfg(ScenarioKind::DxChase { callers: 5 }, seed)).unwrap();
+            let dx = &s.stations[0].persona.call;
+            let home = callsign::home_of(dx).unwrap_or_else(|| panic!("{dx}"));
+            assert!(
+                matches!(home.entity.activity, Activity::Rare | Activity::Uncommon),
+                "{dx} is not rare"
+            );
+            let dx_says = |needle: &str| {
+                s.transmissions
+                    .iter()
+                    .any(|t| t.from == Party::Them(0) && t.text.contains(needle))
+            };
+            // The DX runs split and, in the end, works you.
+            assert!(dx_says("UP"), "{seed}");
+            assert!(dx_says("KF0UWV 5NN"), "{seed}");
+            assert!(s
+                .transmissions
+                .iter()
+                .any(|t| t.from == Party::You && t.text.contains("TU")));
+            // The other chasers call over one another.
+            let overlapped = s
+                .transmissions
+                .iter()
+                .filter(|t| matches!(t.from, Party::Them(i) if i > 0))
+                .filter(|t| matches!(t.start, Start::WithPrevious { .. }))
+                .count();
+            assert!(overlapped >= 1, "{seed}");
+            // And none of them is the DX's own entity.
+            for st in &s.stations[1..] {
+                let h = callsign::home_of(&st.persona.call);
+                assert_ne!(h.map(|h| h.entity.dxcc), Some(home.entity.dxcc));
+            }
+        }
+    }
+
+    #[test]
+    fn a_rare_dx_operator_s_pileup_comes_from_everywhere() {
+        let mut c = cfg(ScenarioKind::DxPileup { callers: 12 }, 3);
+        c.my_call = Callsign::parse("FT5ZM").unwrap();
+        let s = generate(&c).unwrap();
+        let mut entities = std::collections::HashSet::new();
+        for st in &s.stations {
+            let h = callsign::home_of(&st.persona.call).unwrap();
+            assert_ne!(h.entity.name, "AMSTERDAM ST PAUL");
+            entities.insert(h.entity.dxcc);
+        }
+        assert!(entities.len() >= 4, "{entities:?}");
     }
 
     #[test]

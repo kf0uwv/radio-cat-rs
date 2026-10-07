@@ -33,3 +33,5 @@
   task_plan task 8 now also covers the band-noise US-centred draw.
 - Task 6 done: station_call portable/abroad/out-of-area forms, /MM rag-chews, strict slash
   scoring tests. --all-features 119 lib + 18 + 10 + 1 = 148; default 117 + 17 + 10 + 1; clippy, fmt clean.
+- Task 7 done: DxChase kind, world-wide callers for DxPileup.
+  --all-features 121 lib + 18 + 10 + 1 = 150; default 119 + 17 + 10 + 1; clippy, fmt clean.

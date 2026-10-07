@@ -67,6 +67,7 @@ pub(super) fn build(cfg: &ScenarioConfig, rng: &mut Rng) -> Result<Script, Scena
         ScenarioKind::Pota { park_to_park } => b.pota(park_to_park, &mut me_rng)?,
         ScenarioKind::Sota { summit_to_summit } => b.sota(summit_to_summit, &mut me_rng)?,
         ScenarioKind::DxPileup { callers } => b.pileup(callers)?,
+        ScenarioKind::DxChase { callers } => b.chase(callers)?,
     }
     Ok(Script {
         kind: cfg.kind,
@@ -244,7 +245,7 @@ impl Builder<'_> {
         // A station drawn at random may be portable or abroad; one placed
         // for an activation keeps a plain call (the activation adds `/P`).
         let random = home.is_none();
-        let mut home = match home {
+        let home = match home {
             Some(h) => h,
             None => {
                 let me = home_of(&self.cfg.my_call);
@@ -255,6 +256,12 @@ impl Builder<'_> {
                 }
             }
         };
+        self.place(home, random)
+    }
+
+    /// Adds a station at `home`, its call sometimes portable or abroad if
+    /// `decorate`; returns its index.
+    fn place(&mut self, mut home: Home, decorate: bool) -> Result<usize, ScenarioError> {
         let taken = self.taken();
         // A home with no call left (a one-call entity already on the air)
         // gives way to another DX home.
@@ -263,7 +270,7 @@ impl Builder<'_> {
             if let Some(c) = fresh_call(
                 &mut self.st_rng,
                 &mut |r| {
-                    if random {
+                    if decorate {
                         station_call(r, &h)
                     } else {
                         call_from(r, &h)
@@ -628,32 +635,54 @@ impl Builder<'_> {
         Ok(())
     }
 
+    /// The part of `base` that came through a pileup: `DL1?` or `?ABC`.
+    fn partial(&mut self, base: &str) -> String {
+        if self.text.chance(0.5) {
+            let digit = base.find(|ch: char| ch.is_ascii_digit()).unwrap_or(1);
+            format!("{}?", &base[..=digit])
+        } else {
+            format!("?{}", &base[base.len().saturating_sub(3)..])
+        }
+    }
+
+    /// Everyone in `waiting` calls at once, staggered; `you` joins in last.
+    fn all_call(&mut self, waiting: &[usize], you: Option<&str>) {
+        for (k, &i) in waiting.iter().enumerate() {
+            let c = self.call_of(i);
+            let text = if self.text.chance(0.4) {
+                format!("{c} {c}")
+            } else {
+                c
+            };
+            let start = if k == 0 {
+                self.gap()
+            } else {
+                Start::WithPrevious {
+                    delay: Duration::from_millis(u64::from(self.timing.range_u32(0, 700))),
+                }
+            };
+            self.push(Party::Them(i), text, start);
+        }
+        if let Some(me) = you {
+            self.say(Party::You, me.to_string());
+        }
+    }
+
     fn pileup(&mut self, callers: u8) -> Result<(), ScenarioError> {
         let me = self.me_call();
         let my_zone = self.me.zone.to_string();
+        // You are the DX: the callers are the world, never your own entity.
+        let my_home = home_of(&self.cfg.my_call);
+        let not = my_home.map_or(0, |h| h.entity.dxcc);
         let mut waiting: Vec<usize> = Vec::new();
         for _ in 0..callers {
-            waiting.push(self.add_station(None, 0.35)?);
+            let h = Home::random_caller(&mut self.st_rng, my_home, not);
+            waiting.push(self.place(h, true)?);
         }
         self.say(Party::You, format!("CQ CQ DE {me} {me} K"));
         while !waiting.is_empty() {
             // Everyone still waiting calls at once, staggered.
-            for (k, &i) in waiting.iter().enumerate() {
-                let c = self.call_of(i);
-                let text = if self.text.chance(0.4) {
-                    format!("{c} {c}")
-                } else {
-                    c
-                };
-                let start = if k == 0 {
-                    self.gap()
-                } else {
-                    Start::WithPrevious {
-                        delay: Duration::from_millis(u64::from(self.timing.range_u32(0, 700))),
-                    }
-                };
-                self.push(Party::Them(i), text, start);
-            }
+            self.all_call(&waiting.clone(), None);
             let pick = self.text.range_u32(0, (waiting.len() - 1) as u32) as usize;
             let them = waiting.remove(pick);
             let t = Party::Them(them);
@@ -661,12 +690,7 @@ impl Builder<'_> {
             if self.repeat() || waiting.len() >= 4 {
                 // Only part of it came through.
                 let base = self.stations[them].persona.call.base().to_string();
-                let partial = if self.text.chance(0.5) {
-                    let digit = base.find(|ch: char| ch.is_ascii_digit()).unwrap_or(1);
-                    format!("{}?", &base[..=digit])
-                } else {
-                    format!("?{}", &base[base.len().saturating_sub(3)..])
-                };
+                let partial = self.partial(&base);
                 self.say(Party::You, partial);
                 self.say(t, format!("{c} {c}"));
             }
@@ -690,6 +714,58 @@ impl Builder<'_> {
             self.say(Party::You, next);
         }
         Ok(())
+    }
+
+    /// You chase a rare DX: it calls CQ split, works a few of the other
+    /// callers (everyone, you included, calling over one another), then
+    /// comes back to you.
+    fn chase(&mut self, callers: u8) -> Result<(), ScenarioError> {
+        let me = self.me_call();
+        let my_home = home_of(&self.cfg.my_call);
+        let dx_home = Home::random_rare(&mut self.st_rng, my_home);
+        let dx = self.place(dx_home, false)?;
+        let mut waiting: Vec<usize> = Vec::new();
+        for _ in 0..callers {
+            let h = Home::random_caller(&mut self.st_rng, my_home, dx_home.entity.dxcc);
+            waiting.push(self.place(h, true)?);
+        }
+        let d = Party::Them(dx);
+        let dc = self.call_of(dx);
+        let up = self.text.range_u32(1, 5);
+        let cq = match self.text.range_u32(0, 2) {
+            0 => format!("CQ {dc} UP {up}"),
+            1 => format!("CQ DE {dc} {dc} UP"),
+            _ => format!("{dc} UP {up}"),
+        };
+        self.say(d, cq);
+        // You get through after the DX has worked this many others.
+        let before = self.text.range_u32(1, u32::from(callers).min(3)) as usize;
+        let mut worked = 0;
+        loop {
+            self.all_call(&waiting.clone(), Some(&me));
+            if worked == before || waiting.is_empty() {
+                if self.repeat() {
+                    let base = self.cfg.my_call.base().to_string();
+                    let partial = self.partial(&base);
+                    self.say(d, partial);
+                    self.say(Party::You, format!("{me} {me}"));
+                }
+                self.say(d, format!("{me} 5NN"));
+                let tu = *self.text.pick(&["TU 5NN", "5NN TU", "R 5NN TU"]);
+                self.say(Party::You, tu.to_string());
+                self.say(d, format!("TU {dc} UP"));
+                return Ok(());
+            }
+            let pick = self.text.range_u32(0, (waiting.len() - 1) as u32) as usize;
+            let them = waiting.remove(pick);
+            let c = self.call_of(them);
+            self.say(d, format!("{c} 5NN"));
+            let tu = *self.text.pick(&["TU 5NN", "5NN TU", "R 5NN"]);
+            self.say(Party::Them(them), tu.to_string());
+            let next = *self.text.pick(&["TU UP", "TU", "UP"]);
+            self.say(d, next.to_string());
+            worked += 1;
+        }
     }
 }
 

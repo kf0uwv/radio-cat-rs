@@ -1,6 +1,6 @@
 # morse_world — task plan: "simulate many calls from all over the world"
 
-Status: APPROVED 2026-10-07 (architect). Tasks 1-6 done; task 7 in progress. Branch `feat/morse-world-calls` off
+Status: APPROVED 2026-10-07 (architect). Tasks 1-7 done; awaiting go for task 8. Branch `feat/morse-world-calls` off
 `feat/cat-morse` (PR #17), worktree `../radio-cat-rs-world`. Scope confined to
 `cat-morse/src/scenario/` (+ this planning dir). No changes to score.rs/codec.rs unless an
 open question is answered that way. Parallel agent on `feat/cw-capability` — no overlap expected.
@@ -73,7 +73,7 @@ pub(crate) struct Region { digit: Option<u8>, code: &'static str, cq: u8, itu: u
 4. [x] Activity weighting + operator-home continent bias; distribution tests.
 5. [x] Regional name pools + towns; persona uses them.
 6. [x] Portable/slash call generation (`EA8/`, `/P`, `/M`, `/MM`) + score tests pinning slash handling.
-7. [ ] Rare-DX pileup scenario using Rare/Dxpedition entities.
+7. [x] Rare-DX pileup scenario using Rare/Dxpedition entities.
 8. [ ] (approved) `Difficulty.hf_band` propagation weighting. Also fold in: band-noise (QRM)
        stations still use a US-centred `random_dx(None)` draw — give the band model the
        operator's home (or the hf_band path model) so QRM follows the same weighting.
