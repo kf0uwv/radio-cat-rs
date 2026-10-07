@@ -181,6 +181,11 @@ macro_rules! ent {
     };
 }
 
+/// Prefixes that name their entity only with a suffix of exactly this
+/// many letters: Guantanamo Bay is `KG4` + two letters (`KG4AB`); a `KG4`
+/// call with a one- or three-letter suffix is an ordinary US call.
+pub(crate) const EXACT_SUFFIX: &[(&str, usize)] = &[("KG4", 2)];
+
 /// DXCC number of the United States.
 pub(crate) const USA: u16 = 291;
 

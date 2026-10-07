@@ -18,7 +18,7 @@
 use std::fmt;
 
 use super::data::{LETTERS, RESERVED_CALLS, SUFFIX_FIRST};
-use super::world::{by_dxcc, CallFormat, DigitRule, Entity, Region, USA, WORLD};
+use super::world::{by_dxcc, CallFormat, DigitRule, Entity, Region, EXACT_SUFFIX, USA, WORLD};
 use super::ScenarioError;
 use crate::rng::Rng;
 
@@ -152,7 +152,11 @@ fn entity_of(piece: &str) -> Option<&'static Entity> {
     let mut best: Option<(&'static Entity, usize)> = None;
     for e in WORLD.iter().filter(|e| e.tag.is_none()) {
         for p in e.prefixes {
-            if piece.starts_with(p) && best.map_or(true, |(_, l)| p.len() > l) {
+            let fits = EXACT_SUFFIX
+                .iter()
+                .find(|(q, _)| q == p)
+                .map_or(true, |(_, n)| piece.len() == p.len() + n);
+            if fits && piece.starts_with(p) && best.map_or(true, |(_, l)| p.len() > l) {
                 best = Some((e, p.len()));
             }
         }
@@ -489,6 +493,14 @@ mod tests {
         assert_eq!(name("WP4ABC"), "PUERTO RICO");
         assert_eq!(name("KP2AB"), "US VIRGIN IS");
         assert_eq!(name("KG4AB"), "GUANTANAMO BAY");
+        // Only a 2x2 KG4 call is Guantanamo; 1- and 3-letter suffixes are US.
+        let us4 = |c: &str| {
+            let home = h(c).unwrap();
+            (home.entity.dxcc, home.region.map(|r| r.digit))
+        };
+        assert_eq!(us4("KG4A"), (USA, Some(4)));
+        assert_eq!(us4("KG4ABC"), (USA, Some(4)));
+        assert_eq!(us4("KG4ABC/P"), (USA, Some(4)));
         assert_eq!(name("4U1UN"), "UN HQ");
         assert_eq!(name("CY0ABC"), "SABLE IS");
         assert_eq!(name("VE3ABC"), "CANADA");

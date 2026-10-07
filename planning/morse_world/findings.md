@@ -66,8 +66,7 @@
     and zones (CQ 16/17/18/19/23, ITU 19-35) are one default per entity until task 3.
   - Franz Josef Land `R1FJ`/`RI1FJ`/`UA1FJ`, Malyj Vysotskij `R1MV`, Antarctica
     `KC4AA`/`KC4US`/`RI1AN`/`8J1R`/`CE9`: literal prefixes, partial.
-  - Guantanamo `KG4` matches all KG4 calls, but only KG4 2x2 calls are Guantanamo;
-    US 2x3 KG4xxx calls are mis-homed by `home_of` (generation avoids them).
+  - Guantanamo: fixed (fix 2) — `KG4` + exactly two letters (EXACT_SUFFIX rule); KG4 1x/x3 suffixes are US.
   - Turkey continent set EU (cty.dat's choice as remembered; DXCC lists it
     under Asia). Cyprus and UK bases set AS.
   - Some single-digit choices are "most common" rather than exhaustive
