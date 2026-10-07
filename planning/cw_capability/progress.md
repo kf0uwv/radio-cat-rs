@@ -44,3 +44,8 @@ not start before that.
 - T2 done: wire types (tests first: 31 compile errors red; 10 `cw_wire`
   tests green). Workspace 1149 passed / 0 failed / 3 ignored; clippy,
   fmt, xwin msvc clean. PROTOCOL_VERSION still 2, existing pin unchanged.
+- T3 done: per-connection CW rules + `RadioHost::serves_cw` gate (default
+  false; Welcome hides cw, CW commands Unsupported, AbortCw acked but not
+  applied). Red: 6 compile errors; one test had a miscounted callsign
+  (VE3/N0CALL is 10, not 11) -- fixed the test. Green: 20 `cw_wire` + 2
+  `cw_gate` socket tests; workspace 1161/0/3; clippy, fmt, xwin clean.

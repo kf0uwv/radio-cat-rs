@@ -10,7 +10,7 @@ standalone trainer (new repo) works against any radio-cat-rs radio's
 
 ## Current Phase
 
-**T1, T2 done; T3 next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
+**T1-T3 done; T4 next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
 `feat/cw-capability` off `feat/cat-morse`). ADR 0023 Accepted 2026-10-07;
 open questions answered (see "Decisions" at the end). One task at a time;
 report after each. Do not push.
@@ -77,7 +77,7 @@ report after each. Do not push.
   Production `RadioState` builders (native_bridge, cat-ui demo) publish
   `cw: None` until T6.
 
-### T3 — `cat-native`: `NativeSession` validation (status: pending)
+### T3 — `cat-native`: `NativeSession` validation (status: done 2026-10-07)
 - Per-connection rules that need no radio: no `cw` capability →
   `Unsupported`; wpm out of range / not writable → `OutOfRange` /
   `Unsupported`; `ArmCwTransmit` without acknowledgement or with a bad
@@ -86,6 +86,21 @@ report after each. Do not push.
   even unarmed and even with no `cw` capability (harmless no-op).
 - Owner/arming checks are *not* here (cross-connection) — T5/T6.
 - Tests: table-driven over a stub radio with and without `cw`.
+- **Gate (architect, 2026-10-07): no CW command may reach a host until
+  the full supervisor exists.** Mechanism: `RadioHost::serves_cw()`
+  (default `false`) → `NativeSession::set_serves_cw`. While `false`:
+  `Welcome` publishes `cw: None` (honest: this server offers none);
+  every CW command but `AbortCw` is `Unsupported`; `AbortCw` is `Ack`ed
+  but **not applied** (`NativeSession::reaches_host` → `false`, checked
+  in `serve_one`). Nothing in this repo returns `true` until T6, and T6
+  only once arm/clamp/read-back/cap/ID are all enforced.
+- Rules when serving: `SetKeyerSpeed` needs `keyer_wpm` + writable
+  (`Unsupported`) and in range (`OutOfRange`); Arm/Send/Disarm need
+  `send_text` (`Unsupported`); Arm needs the acknowledgement and a
+  callsign of 3-10 `[A-Za-z0-9/]` with a letter and a digit, sendable in
+  `charset` (`Forbidden`), `key_down_cap_s != 0` (`OutOfRange`; above
+  60 is clamped by the supervisor, not refused); Send needs non-blank
+  text ≤ `MAX_CW_TEXT_CHARS` (256) within `charset` (`OutOfRange`).
 
 ### T4 — `cat-native`: connection identity for hosts (status: pending)
 - `ConsoleId` assigned in `serve`; `RadioHost::apply_as` (default →
@@ -104,6 +119,8 @@ report after each. Do not push.
   `Detached(id)`, `Tick(now)`, radio results), outputs are actions
   (`ReadPower`, `SetPower(raw)`, `SetBreakIn`, `Ready?`, `SendChunk`,
   `Stop`, `Restore(snapshot)`, `Publish(CwState)`).
+- T6 must not make `NativeShared::serves_cw()` return `true` until every
+  gate rule is live and tested (architect, 2026-10-07).
 - Encodes ADR §3-§5: single owner; mode must already be CW (refuse, never
   switch); snapshot → clamp → read-back → refuse on mismatch; server
   **appends `DE <CALL>`** to the first job and to any job once 10 min of

@@ -115,6 +115,18 @@ pub trait RadioHost: Send + Sync + 'static {
     /// the other program holding the dongle.
     fn apply(&self, command: &Command) -> Result<(), String>;
 
+    /// Whether this host runs ADR 0023's CW supervisor: arm preconditions,
+    /// power clamp and read-back, key-down cap and callsign ID.
+    ///
+    /// `false` -- the default -- and this server offers no CW: the
+    /// handshake publishes none, and no CW command is ever passed to
+    /// [`RadioHost::apply`]. Return `true` only once every one of those
+    /// rules is enforced, because from then on `apply` receives commands
+    /// that key a transmitter.
+    fn serves_cw(&self) -> bool {
+        false
+    }
+
     /// What signal hardware this machine can see, if this host offers
     /// device selection at all.
     ///
@@ -223,6 +235,7 @@ fn serve_one<H: RadioHost>(mut stream: TcpStream, host: Arc<H>) -> std::io::Resu
     // arranging.
     session.set_layout(host.layout());
     session.set_theme(host.theme());
+    session.set_serves_cw(host.serves_cw());
     let mut pending: Vec<u8> = Vec::new();
     let mut buf = [0u8; 8192];
     let mut last_display = Instant::now();
@@ -284,9 +297,13 @@ fn serve_one<H: RadioHost>(mut stream: TcpStream, host: Arc<H>) -> std::io::Resu
                         // Only apply what the session accepted. A command
                         // it refused never reaches the radio, which is the
                         // point of validating against capabilities.
-                        if let (ClientMessage::Command(command), ServerMessage::Ack) =
-                            (&message, &reply)
-                        {
+                        let applies = match (&message, &reply) {
+                            (ClientMessage::Command(command), ServerMessage::Ack) => {
+                                session.reaches_host(command).then_some(command)
+                            }
+                            _ => None,
+                        };
+                        if let Some(command) = applies {
                             match host.apply(command) {
                                 Ok(()) => reply,
                                 Err(message) => ServerMessage::Error {

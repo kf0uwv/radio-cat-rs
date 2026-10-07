@@ -92,6 +92,14 @@ use serde::{Deserialize, Serialize};
 /// depend on anyone remembering it.
 pub const PROTOCOL_VERSION: u16 = 2;
 
+/// Longest text one [`Command::SendCwText`] may carry (ADR 0023 §3.5).
+pub const MAX_CW_TEXT_CHARS: usize = 256;
+
+/// The ceiling on one CW send's key-down time, in seconds (ADR 0023
+/// decision 5). [`Command::ArmCwTransmit`]'s `key_down_cap_s` may lower
+/// it for an arm, never raise it.
+pub const MAX_KEY_DOWN_CAP_S: u16 = 60;
+
 /// Largest control payload accepted, to bound what a peer can make the
 /// other side allocate before it has proved anything.
 pub const MAX_CONTROL_BYTES: usize = 1 << 20;
@@ -810,6 +818,14 @@ pub struct NativeSession {
     /// matters to a console: one means "plug something in", the other
     /// means "ask this server's operator, it cannot help you from here".
     devices: Option<Vec<cat_signal::DeviceList>>,
+    /// Whether the host behind this session runs ADR 0023's CW supervisor.
+    ///
+    /// `false` until a host says otherwise, and while `false` this server
+    /// offers no CW at all: `Welcome` carries `cw: None`, CW commands are
+    /// `Unsupported`, and `AbortCw` is acknowledged without reaching the
+    /// host. A command that could key a transmitter must never reach a
+    /// host that cannot bound it.
+    serves_cw: bool,
 }
 
 impl NativeSession {
@@ -834,6 +850,24 @@ impl NativeSession {
             devices: None,
             layout: None,
             theme: None,
+            serves_cw: false,
+        }
+    }
+
+    /// Say whether the host runs a CW supervisor. See the field.
+    pub fn set_serves_cw(&mut self, serves_cw: bool) {
+        self.serves_cw = serves_cw;
+    }
+
+    /// Whether an accepted `command` should be handed to the host.
+    ///
+    /// Narrower than [`NativeSession::validate`], never wider: the one
+    /// command it holds back is an `AbortCw` to a host with no CW
+    /// supervisor, which has nothing to stop and must not be asked.
+    pub fn reaches_host(&self, command: &Command) -> bool {
+        match command {
+            Command::AbortCw => self.serves_cw && self.capabilities.cw.is_some(),
+            _ => true,
         }
     }
 
@@ -948,6 +982,14 @@ impl NativeSession {
                         layout: self.layout.clone(),
                         theme: self.theme,
                         installation: self.installation.clone(),
+                        // A radio that can do CW behind a host that cannot
+                        // supervise it offers none (ADR 0023).
+                        cw: self
+                            .capabilities
+                            .cw
+                            .as_ref()
+                            .filter(|_| self.serves_cw)
+                            .map(CwCapabilityWire::from),
                         ..CapabilitiesWire::from(self.capabilities)
                     }),
                 }
@@ -1095,17 +1137,96 @@ impl NativeSession {
             // cards -- capabilities describe the radio *model*, and these
             // are facts about one machine. The host answers, or declines.
             Command::ReadDevices | Command::AttachDevice { .. } => Ok(()),
-            // ADR 0023: on the wire, not yet served. Refused here, before
-            // any host sees them, until the session rules (T3) and the
-            // server's CW supervisor (T5/T6) exist -- a command that could
-            // key a transmitter must not reach a host that cannot bound it.
+            // Never refused: stopping a transmitter is always allowed,
+            // armed or not, by anyone. `reaches_host` decides whether
+            // there is anything to stop.
+            Command::AbortCw => Ok(()),
             Command::SetKeyerSpeed { .. }
             | Command::ArmCwTransmit { .. }
             | Command::SendCwText { .. }
-            | Command::AbortCw
-            | Command::DisarmCw => Err(unsupported(
-                "this server does not offer CW control".to_string(),
-            )),
+            | Command::DisarmCw => self.validate_cw(command),
+        }
+    }
+
+    /// ADR 0023's per-connection rules: everything decidable from the
+    /// capability set and the command alone. Who owns the arm, the mode,
+    /// the power read-back and the ID are the server supervisor's.
+    fn validate_cw(&self, command: &Command) -> Result<(), ServerMessage> {
+        let cw = match self.capabilities.cw {
+            Some(cw) if self.serves_cw => cw,
+            _ => {
+                return Err(unsupported(
+                    "this server does not offer CW control".to_string(),
+                ))
+            }
+        };
+        if let Command::SetKeyerSpeed { wpm } = command {
+            let range = match cw.keyer_wpm {
+                Some(range) if cw.keyer_wpm_writable => range,
+                _ => {
+                    return Err(unsupported(
+                        "this radio's keyer speed cannot be set over CAT".to_string(),
+                    ))
+                }
+            };
+            if !range.contains(*wpm) {
+                return Err(out_of_range(format!(
+                    "{wpm} wpm is outside {}-{} wpm",
+                    range.min, range.max
+                )));
+            }
+            return Ok(());
+        }
+        let Some(send) = cw.send_text else {
+            return Err(unsupported(
+                "this radio cannot send CW text over CAT".to_string(),
+            ));
+        };
+        match command {
+            Command::ArmCwTransmit {
+                callsign,
+                dummy_load_acknowledged,
+                key_down_cap_s,
+            } => {
+                if !dummy_load_acknowledged {
+                    return Err(forbidden(
+                        "arming needs the operator's dummy-load acknowledgement".to_string(),
+                    ));
+                }
+                if !is_callsign(callsign) {
+                    return Err(forbidden(format!(
+                        "{callsign:?} is not a callsign: 3-10 of A-Z 0-9 /, \
+                         with at least one letter and one digit"
+                    )));
+                }
+                if let Some(c) = send.rejected_char(callsign) {
+                    return Err(forbidden(format!(
+                        "this keyer cannot send {c:?}, so {callsign} could not be identified"
+                    )));
+                }
+                if *key_down_cap_s == Some(0) {
+                    return Err(out_of_range(
+                        "a key-down cap of 0 s would refuse every send".to_string(),
+                    ));
+                }
+                Ok(())
+            }
+            Command::SendCwText { text } => {
+                if text.trim().is_empty() {
+                    return Err(out_of_range("nothing to send".to_string()));
+                }
+                let len = text.chars().count();
+                if len > MAX_CW_TEXT_CHARS {
+                    return Err(out_of_range(format!(
+                        "{len} characters; one send is at most {MAX_CW_TEXT_CHARS}"
+                    )));
+                }
+                if let Some(c) = send.rejected_char(text) {
+                    return Err(out_of_range(format!("this keyer cannot send {c:?}")));
+                }
+                Ok(())
+            }
+            _ => Ok(()),
         }
     }
 
@@ -1124,6 +1245,21 @@ impl NativeSession {
             &encode_spectrum_payload(frame),
         ))
     }
+}
+
+fn forbidden(message: String) -> ServerMessage {
+    ServerMessage::Error {
+        code: ErrorCode::Forbidden,
+        message,
+    }
+}
+
+/// 3-10 of `[A-Za-z0-9/]`, with at least one letter and one digit.
+fn is_callsign(call: &str) -> bool {
+    (3..=10).contains(&call.len())
+        && call.chars().all(|c| c.is_ascii_alphanumeric() || c == '/')
+        && call.chars().any(|c| c.is_ascii_alphabetic())
+        && call.chars().any(|c| c.is_ascii_digit())
 }
 
 fn unsupported(message: String) -> ServerMessage {
@@ -2264,35 +2400,234 @@ mod cw_wire {
         );
     }
 
+    fn arm(callsign: &str, ack: bool, cap: Option<u16>) -> Command {
+        Command::ArmCwTransmit {
+            callsign: callsign.to_string(),
+            dummy_load_acknowledged: ack,
+            key_down_cap_s: cap,
+        }
+    }
+
+    fn send(text: &str) -> Command {
+        Command::SendCwText {
+            text: text.to_string(),
+        }
+    }
+
+    fn all_cw() -> Vec<Command> {
+        vec![
+            Command::SetKeyerSpeed { wpm: 20 },
+            arm("N0CALL", true, None),
+            send("CQ"),
+            Command::AbortCw,
+            Command::DisarmCw,
+        ]
+    }
+
+    fn serving(radio: &'static RadioCapabilities) -> NativeSession {
+        let mut s = NativeSession::new(radio);
+        s.set_serves_cw(true);
+        s
+    }
+
+    fn code(r: Result<(), ServerMessage>) -> Option<ErrorCode> {
+        match r {
+            Ok(()) => None,
+            Err(ServerMessage::Error { code, .. }) => Some(code),
+            Err(other) => panic!("not an error: {other:?}"),
+        }
+    }
+
+    fn handshake(session: &mut NativeSession) -> ServerMessage {
+        session.handle(ClientMessage::Hello {
+            version: PROTOCOL_VERSION,
+            spectrum: false,
+            audio: false,
+            max_fps: None,
+        })
+    }
+
+    #[test]
+    fn a_host_without_a_cw_supervisor_offers_no_cw_even_on_a_cw_radio() {
+        // The architect's gate: nothing may key a radio until the full
+        // supervisor exists. A host says it does; the default is no.
+        let mut session = NativeSession::new(cw_radio());
+        match handshake(&mut session) {
+            ServerMessage::Welcome { capabilities, .. } => assert_eq!(capabilities.cw, None),
+            other => panic!("{other:?}"),
+        }
+        let mut served = serving(cw_radio());
+        match handshake(&mut served) {
+            ServerMessage::Welcome { capabilities, .. } => assert!(capabilities.cw.is_some()),
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
     fn until_the_supervisor_exists_no_cw_command_reaches_a_host() {
-        // T2 adds the commands to the wire only. Validation (T3) and the
-        // server-side supervisor (T5/T6) land later; until then a CW
-        // command must be refused before `RadioHost::apply`, even on a
-        // radio that describes CW, so nothing can key a transmitter.
         for radio in [cw_radio(), &crate::testing::STUB_RADIO] {
             let session = NativeSession::new(radio);
-            for command in [
-                Command::SetKeyerSpeed { wpm: 20 },
-                Command::ArmCwTransmit {
-                    callsign: "N0CALL".to_string(),
-                    dummy_load_acknowledged: true,
-                    key_down_cap_s: None,
-                },
-                Command::SendCwText {
-                    text: "CQ".to_string(),
-                },
-                Command::AbortCw,
-                Command::DisarmCw,
-            ] {
-                match session.validate(&command) {
-                    Err(ServerMessage::Error {
-                        code: ErrorCode::Unsupported,
-                        ..
-                    }) => {}
-                    other => panic!("{command:?} was not refused: {other:?}"),
+            for command in all_cw() {
+                let reaches = session.reaches_host(&command);
+                match (&command, code(session.validate(&command))) {
+                    // Abort is never refused -- but with nothing to stop,
+                    // it is answered here and goes no further.
+                    (Command::AbortCw, None) => assert!(!reaches),
+                    (_, Some(ErrorCode::Unsupported)) => {}
+                    (c, other) => panic!("{c:?} was not refused: {other:?}"),
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_radio_without_cw_refuses_everything_but_abort_even_when_served() {
+        let session = serving(&crate::testing::STUB_RADIO);
+        for command in all_cw() {
+            let got = code(session.validate(&command));
+            if command == Command::AbortCw {
+                assert_eq!(got, None);
+            } else {
+                assert_eq!(got, Some(ErrorCode::Unsupported), "{command:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn abort_is_never_refused_and_always_reaches_a_serving_host() {
+        let session = serving(cw_radio());
+        assert_eq!(code(session.validate(&Command::AbortCw)), None);
+        assert!(session.reaches_host(&Command::AbortCw));
+        // Other commands reach a serving host exactly when they validate;
+        // `reaches_host` is only ever narrower, never a way around them.
+        assert!(session.reaches_host(&send("CQ")));
+    }
+
+    #[test]
+    fn keyer_speed_is_checked_against_the_radio() {
+        let session = serving(cw_radio());
+        let at = |wpm| code(session.validate(&Command::SetKeyerSpeed { wpm }));
+        assert_eq!(at(10), None);
+        assert_eq!(at(60), None);
+        assert_eq!(at(9), Some(ErrorCode::OutOfRange));
+        assert_eq!(at(61), Some(ErrorCode::OutOfRange));
+
+        let read_only: &'static RadioCapabilities = Box::leak(Box::new(RadioCapabilities {
+            cw: Some(CwCapability {
+                keyer_wpm_writable: false,
+                ..CW
+            }),
+            ..crate::testing::STUB_RADIO
+        }));
+        assert_eq!(
+            code(serving(read_only).validate(&Command::SetKeyerSpeed { wpm: 20 })),
+            Some(ErrorCode::Unsupported)
+        );
+    }
+
+    #[test]
+    fn transmit_commands_need_a_radio_that_can_send() {
+        let no_send: &'static RadioCapabilities = Box::leak(Box::new(RadioCapabilities {
+            cw: Some(CwCapability {
+                send_text: None,
+                tx_gate: None,
+                ..CW
+            }),
+            ..crate::testing::STUB_RADIO
+        }));
+        let session = serving(no_send);
+        for command in [arm("N0CALL", true, None), send("CQ"), Command::DisarmCw] {
+            assert_eq!(
+                code(session.validate(&command)),
+                Some(ErrorCode::Unsupported),
+                "{command:?}"
+            );
+        }
+        // Read-only CW still has settings to set.
+        assert_eq!(
+            code(session.validate(&Command::SetKeyerSpeed { wpm: 20 })),
+            None
+        );
+        assert_eq!(code(session.validate(&Command::AbortCw)), None);
+    }
+
+    #[test]
+    fn arming_needs_the_acknowledgement_and_a_real_callsign() {
+        let session = serving(cw_radio());
+        let at = |c: &str, ack: bool| code(session.validate(&arm(c, ack, None)));
+        assert_eq!(at("N0CALL", true), None);
+        assert_eq!(at("n0call", true), None, "case is the operator's");
+        assert_eq!(at("VE3/N0CALL", true), None, "10 chars: at the limit");
+        assert_eq!(at("W1/K9X", true), None);
+        assert_eq!(at("N0CALL", false), Some(ErrorCode::Forbidden));
+        for bad in [
+            "",
+            "N0",
+            "NOCALL",
+            "123456",
+            "N0 CALL",
+            "N0-CALL",
+            "N0CALLXXXXX",
+        ] {
+            assert_eq!(at(bad, true), Some(ErrorCode::Forbidden), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_callsign_the_keyer_cannot_send_cannot_be_armed() {
+        // The server sends `DE <call>` itself (decision 4); a call with a
+        // character outside the charset could never be identified.
+        let no_slash: &'static RadioCapabilities = Box::leak(Box::new(RadioCapabilities {
+            cw: Some(CwCapability {
+                send_text: Some(CwSendText {
+                    charset: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                    ..CW.send_text.unwrap()
+                }),
+                ..CW
+            }),
+            ..crate::testing::STUB_RADIO
+        }));
+        let session = serving(no_slash);
+        assert_eq!(
+            code(session.validate(&arm("W1/K9X", true, None))),
+            Some(ErrorCode::Forbidden)
+        );
+        assert_eq!(code(session.validate(&arm("K9X", true, None))), None);
+    }
+
+    #[test]
+    fn a_client_may_lower_the_key_down_cap_but_zero_is_not_a_cap() {
+        let session = serving(cw_radio());
+        let at = |cap| code(session.validate(&arm("N0CALL", true, cap)));
+        assert_eq!(at(Some(10)), None);
+        assert_eq!(at(Some(MAX_KEY_DOWN_CAP_S)), None);
+        // Above the ceiling: accepted, and the supervisor holds it at
+        // the ceiling. A client cannot raise it, and need not be refused
+        // for asking.
+        assert_eq!(at(Some(600)), None);
+        assert_eq!(at(Some(0)), Some(ErrorCode::OutOfRange));
+    }
+
+    #[test]
+    fn sent_text_must_be_sendable_and_bounded() {
+        let session = serving(cw_radio());
+        let at = |t: &str| code(session.validate(&send(t)));
+        assert_eq!(at("CQ CQ DE N0CALL"), None);
+        assert_eq!(at("cq de n0call"), None);
+        assert_eq!(at(""), Some(ErrorCode::OutOfRange));
+        assert_eq!(at("   "), Some(ErrorCode::OutOfRange));
+        assert_eq!(at("HI!"), Some(ErrorCode::OutOfRange));
+        let longest = "E".repeat(MAX_CW_TEXT_CHARS);
+        assert_eq!(at(&longest), None);
+        assert_eq!(at(&format!("{longest}E")), Some(ErrorCode::OutOfRange));
+    }
+
+    #[test]
+    fn a_refused_send_names_the_character() {
+        let session = serving(cw_radio());
+        match session.validate(&send("HI!")) {
+            Err(ServerMessage::Error { message, .. }) => assert!(message.contains('!')),
+            other => panic!("{other:?}"),
         }
     }
 }

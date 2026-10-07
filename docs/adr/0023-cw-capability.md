@@ -370,7 +370,15 @@ gating, chunking, watchdog and restore are written **once**, as a pure
 module (no I/O, injected clock — testable on every platform), driven by
 the pump.
 
-`cat_native::server::RadioHost` gains connection identity without
+`cat_native::server::RadioHost` gains `serves_cw() -> bool`, defaulted
+`false`. Until a host returns `true` -- which it may only do once arm
+preconditions, power clamp and read-back, key-down cap and ID are all
+enforced -- the handshake publishes `cw: None`, every CW command except
+`AbortCw` is `Unsupported`, and `AbortCw` is acknowledged without reaching
+the host (`NativeSession::reaches_host`). A partly built supervisor can
+therefore never be handed a send.
+
+`RadioHost` also gains connection identity without
 breaking implementors: `serve` assigns each connection a `ConsoleId`, and
 two defaulted methods — `apply_as(ConsoleId, &Command) -> Result<(),
 HostRefusal>` (defaults to `apply`, mapping to `OutOfRange` as today) and
