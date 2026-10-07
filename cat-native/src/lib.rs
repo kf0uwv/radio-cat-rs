@@ -44,7 +44,7 @@ pub mod server;
 pub mod testing;
 
 pub use client::{Client, ClientError, CommandSink, Connection, Event, Streams};
-pub use server::{serve, serve_at, RadioHost};
+pub use server::{serve, serve_at, ConsoleId, HostRefusal, RadioHost};
 
 // The vocabulary this protocol's own types are written in.
 //

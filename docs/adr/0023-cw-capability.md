@@ -378,7 +378,11 @@ enforced -- the handshake publishes `cw: None`, every CW command except
 the host (`NativeSession::reaches_host`). A partly built supervisor can
 therefore never be handed a send.
 
-`RadioHost` also gains connection identity without
+`RadioHost` also gains connection identity (as built: `ConsoleId`, a
+process-unique opaque id; `HostRefusal { code, message }`, `From<String>`
+→ `OutOfRange`; and, beyond the sketch below, defaulted
+`console_attached_as(id, peer)` for the arm log and `state_as(id)` so
+`ArmedState::mine` can be filled per reader) without
 breaking implementors: `serve` assigns each connection a `ConsoleId`, and
 two defaulted methods — `apply_as(ConsoleId, &Command) -> Result<(),
 HostRefusal>` (defaults to `apply`, mapping to `OutOfRange` as today) and

@@ -10,7 +10,7 @@ standalone trainer (new repo) works against any radio-cat-rs radio's
 
 ## Current Phase
 
-**T1-T3 done; T4 next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
+**T1-T4 done; T5 next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
 `feat/cw-capability` off `feat/cat-morse`). ADR 0023 Accepted 2026-10-07;
 open questions answered (see "Decisions" at the end). One task at a time;
 report after each. Do not push.
@@ -102,7 +102,7 @@ report after each. Do not push.
   60 is clamped by the supervisor, not refused); Send needs non-blank
   text ≤ `MAX_CW_TEXT_CHARS` (256) within `charset` (`OutOfRange`).
 
-### T4 — `cat-native`: connection identity for hosts (status: pending)
+### T4 — `cat-native`: connection identity for hosts (status: done 2026-10-07)
 - `ConsoleId` assigned in `serve`; `RadioHost::apply_as` (default →
   `apply`, refusal mapped to `OutOfRange` as today) and
   `console_detached_as` (default → `console_detached`); `HostRefusal {
@@ -112,6 +112,13 @@ report after each. Do not push.
   `testing::serve_stub` pattern); default impls preserve current behaviour
   for an implementor that overrides neither.
 - Windows: `serve` is `std::net` + threads on both platforms — no gating.
+- Detail (2026-10-07): `ConsoleId` is an opaque `Copy` id from a
+  process-wide counter (unique across listeners). Also defaulted:
+  `console_attached_as(id, peer: SocketAddr)` (arm log needs the peer,
+  ADR §3.1) and `state_as(id)` → `state()` (so T6 can fill
+  `ArmedState.mine` per connection). `HostRefusal { code: ErrorCode,
+  message }` with `From<String>` → `OutOfRange`. Hosts in this repo keep
+  the defaults; nothing opts into CW.
 
 ### T5 — `cat-rigctl`: pure `CwSupervisor` (status: pending)
 - New `native_bridge::cw` module. I/O-free state machine; inputs are

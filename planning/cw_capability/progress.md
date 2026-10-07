@@ -49,3 +49,8 @@ not start before that.
   applied). Red: 6 compile errors; one test had a miscounted callsign
   (VE3/N0CALL is 10, not 11) -- fixed the test. Green: 20 `cw_wire` + 2
   `cw_gate` socket tests; workspace 1161/0/3; clippy, fmt, xwin clean.
+- T4 done: `ConsoleId`, `HostRefusal`, defaulted `apply_as` /
+  `console_attached_as(id, peer)` / `console_detached_as` / `state_as`;
+  `serve` routes every call through them. Red: 6 compile errors. Green:
+  5 `console_identity` socket tests (20/20 repeat runs), workspace
+  1166/0/3; clippy, fmt, xwin clean. No host overrides `serves_cw`.
