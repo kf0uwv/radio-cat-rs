@@ -118,12 +118,13 @@ impl Home {
         self.region.map_or(self.entity.cq, |r| r.cq)
     }
 
-    /// A home in `entity`, in a random region if it has any.
+    /// A home in `entity`, in one of its call areas (if it has any) drawn
+    /// by how busy each is.
     pub(crate) fn random_in(rng: &mut Rng, entity: &'static Entity) -> Home {
         let region = if entity.regions.is_empty() {
             None
         } else {
-            Some(rng.pick(entity.regions))
+            Some(pick_weighted(rng, entity.regions, |r| r.weight))
         };
         Home { entity, region }
     }
@@ -133,13 +134,36 @@ impl Home {
         Home::random_in(rng, by_dxcc(USA))
     }
 
-    /// A home anywhere outside the US.
-    pub(crate) fn random_dx(rng: &mut Rng) -> Home {
-        let dx: Vec<&'static Entity> = WORLD.iter().filter(|e| e.dxcc != USA).collect();
-        let e = *rng.pick(&dx);
+    /// A station local to an operator at `me`: in the same entity, or the
+    /// US when the operator's home is unknown.
+    pub(crate) fn random_local(rng: &mut Rng, me: Option<Home>) -> Home {
+        let entity = me.map_or_else(|| by_dxcc(USA), |h| h.entity);
+        Home::random_in(rng, entity)
+    }
+
+    /// A DX station for an operator at `me` (the US when unknown): any
+    /// other entity, drawn by how active it is, and [`NEAR_BOOST`] times as
+    /// often from the operator's own continent.
+    pub(crate) fn random_dx(rng: &mut Rng, me: Option<Home>) -> Home {
+        let home = me.map_or_else(|| by_dxcc(USA), |h| h.entity);
+        let weight = |e: &&'static Entity| {
+            if e.dxcc == home.dxcc {
+                0
+            } else if e.continent == home.continent {
+                e.activity.weight() * NEAR_BOOST
+            } else {
+                e.activity.weight()
+            }
+        };
+        let all: Vec<&'static Entity> = WORLD.iter().collect();
+        let e = *pick_weighted(rng, &all, weight);
         Home::random_in(rng, e)
     }
 }
+
+/// How much likelier a DX station is from the operator's own continent:
+/// short paths are louder, and neighbours are on at the same hours.
+const NEAR_BOOST: u32 = 3;
 
 /// `/`-pieces that say how a station operates, not where.
 const MODIFIERS: &[&str] = &["P", "M", "A", "B", "QRP"];
@@ -316,7 +340,10 @@ pub(crate) fn fresh_call(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
+    use crate::scenario::world::{Activity, Continent};
 
     #[test]
     fn parse_accepts_real_shapes() {
@@ -635,6 +662,100 @@ mod tests {
         assert_eq!(zones("PY8ABC"), (11, 13));
         // A call area off the table leaves the entity's default zone.
         assert!(h("VE0ABC").unwrap().region.is_none());
+    }
+
+    fn tally(n: usize, seed: u64, mut draw: impl FnMut(&mut Rng) -> Home) -> HashMap<u16, usize> {
+        let mut rng = Rng::new(seed);
+        let mut counts = HashMap::new();
+        for _ in 0..n {
+            *counts.entry(draw(&mut rng).entity.dxcc).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    #[test]
+    fn dx_is_weighted_by_activity_and_every_entity_is_heard() {
+        let n = 100_000;
+        let counts = tally(n, 11, |r| Home::random_dx(r, None));
+        let share = |a: Activity| -> f64 {
+            let hits: usize = WORLD
+                .iter()
+                .filter(|e| e.activity == a)
+                .map(|e| counts.get(&e.dxcc).copied().unwrap_or(0))
+                .sum();
+            hits as f64 / n as f64
+        };
+        assert!(share(Activity::Common) > 0.3, "{}", share(Activity::Common));
+        assert!(share(Activity::Rare) < 0.05, "{}", share(Activity::Rare));
+        // The busiest common entity far outdraws the busiest rare one.
+        let top = |a: Activity| {
+            WORLD
+                .iter()
+                .filter(|e| e.activity == a && e.dxcc != USA)
+                .map(|e| counts.get(&e.dxcc).copied().unwrap_or(0))
+                .max()
+                .unwrap()
+        };
+        assert!(top(Activity::Common) > 20 * top(Activity::Rare));
+        // The US is the local side of a draw, never DX for a US operator.
+        assert!(!counts.contains_key(&USA));
+        for e in WORLD.iter().filter(|e| e.dxcc != USA) {
+            assert!(counts.contains_key(&e.dxcc), "{e:?} never drawn");
+        }
+    }
+
+    #[test]
+    fn dx_leans_toward_the_operator_s_continent() {
+        let n = 20_000;
+        let continent_share = |me: Option<Home>, c: Continent| {
+            let counts = tally(n, 5, |r| Home::random_dx(r, me));
+            let hits: usize = counts
+                .iter()
+                .filter(|(d, _)| by_dxcc(**d).continent == c)
+                .map(|(_, k)| k)
+                .sum();
+            hits as f64 / n as f64
+        };
+        let ja = h("JA1ABC");
+        let dl = h("DL1ABC");
+        assert!(continent_share(ja, Continent::As) > 1.5 * continent_share(None, Continent::As));
+        assert!(continent_share(dl, Continent::Eu) > continent_share(None, Continent::Eu));
+        // An operator's own entity is local, not DX.
+        assert!(!tally(n, 5, |r| Home::random_dx(r, dl)).contains_key(&230));
+    }
+
+    #[test]
+    fn local_stations_come_from_the_operator_s_entity() {
+        let dl = h("DL1ABC");
+        let counts = tally(1000, 3, |r| Home::random_local(r, dl));
+        assert_eq!(counts.keys().copied().collect::<Vec<_>>(), vec![230]);
+        let none = tally(1000, 3, |r| Home::random_local(r, None));
+        assert_eq!(none.keys().copied().collect::<Vec<_>>(), vec![USA]);
+    }
+
+    #[test]
+    fn busy_call_areas_outdraw_empty_ones() {
+        let mut rng = Rng::new(9);
+        let ve = by_dxcc(1);
+        let mut areas: HashMap<(u8, &str), usize> = HashMap::new();
+        for _ in 0..20_000 {
+            let r = Home::random_in(&mut rng, ve).region.unwrap();
+            *areas.entry((r.digit, r.prefixes[0])).or_insert(0) += 1;
+        }
+        let ve3 = areas[&(3, "VE")];
+        let vy0 = areas.get(&(0, "VY")).copied().unwrap_or(0);
+        assert!(ve3 > 10 * vy0.max(1), "VE3 {ve3} VY0 {vy0}");
+        let mut rng = Rng::new(9);
+        let ja1 = (0..10_000)
+            .filter(|_| {
+                Home::random_in(&mut rng, by_dxcc(339))
+                    .region
+                    .unwrap()
+                    .digit
+                    == 1
+            })
+            .count();
+        assert!(ja1 > 2_000, "{ja1}");
     }
 
     #[test]

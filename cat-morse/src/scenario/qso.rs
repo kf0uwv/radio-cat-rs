@@ -246,10 +246,11 @@ impl Builder<'_> {
         let mut home = match home {
             Some(h) => h,
             None => {
+                let me = home_of(&self.cfg.my_call);
                 if self.st_rng.chance(dx_share) {
-                    Home::random_dx(&mut self.st_rng)
+                    Home::random_dx(&mut self.st_rng, me)
                 } else {
-                    Home::random_us(&mut self.st_rng)
+                    Home::random_local(&mut self.st_rng, me)
                 }
             }
         };
@@ -266,7 +267,7 @@ impl Builder<'_> {
             ) {
                 break c;
             }
-            home = Home::random_dx(&mut self.st_rng);
+            home = Home::random_dx(&mut self.st_rng, home_of(&self.cfg.my_call));
         };
         let p = persona(&mut self.st_rng, call, Some(home), false);
         let signal = self.signal()?;

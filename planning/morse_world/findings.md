@@ -98,3 +98,19 @@
     reads 7K3ABC as area 3. Argentina LU areas left out: digit-to-province mapping not
     known with confidence.
   - Regions are drawn uniformly (VY0 as often as VE3) until task 4's weighting.
+
+## Task 4 — activity, home continent, area weighting (2026-10-07)
+- `Activity` per entity: Common 100 / Regular 25 / Uncommon 5 / Rare 1 (14 Common, 54 Regular,
+  77 Rare, rest Uncommon). Tiers are judgement, not measured spot data — a later pass could
+  calibrate from public spot/log statistics (e.g. Club Log most-wanted) if wanted.
+- `random_dx(me)`: weight = activity x NEAR_BOOST (3) on the operator's continent; the
+  operator's own entity is never DX. `random_local(me)`: the operator's entity (US if unknown).
+  `add_station` uses local/DX by the existing `dx_share`, so a DL operator now hears mostly DL
+  locals (was: US) — intended.
+- Call-area weights: US (W4 20 ... W1/W3/W9 8), VE3 40 vs VY0/VY1/VO2/VE8 1, JA1 30, UA3 30,
+  UA9 20, VK2/VK3 25, PY2 30, etc.
+- Band QRM stations keep a US-centred draw (`random_dx(None)`), since the band model has no
+  operator call.
+- Distribution tests are seeded (fixed `Rng::new(n)`), so deterministic: Common share > 30%,
+  Rare < 5%, every non-US entity drawn in 100k, JA operator's Asia share > 1.5x neutral,
+  VE3 > 10x VY0, JA1 > 20%.

@@ -324,7 +324,7 @@ pub fn band_channel(
             let home = if rng_qrm.chance(0.7) {
                 Home::random_us(&mut rng_qrm)
             } else {
-                Home::random_dx(&mut rng_qrm)
+                Home::random_dx(&mut rng_qrm, None)
             };
             let call_text = call_from(&mut rng_qrm, &home);
             let call = Callsign::parse(&call_text).expect("generated calls are well formed");

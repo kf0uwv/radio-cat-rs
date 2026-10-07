@@ -26,3 +26,5 @@
 - Fix 2: Guantanamo = KG4 + exactly 2 letters (EXACT_SUFFIX); KG4A/KG4ABC are US area 4.
 - Task 3 done: region prefixes, 8 entities' call areas with zones, persona region rule.
   --all-features 110 lib + 18 + 10 + 1 doc = 139 pass; default 108 + 17 + 10 + 1; clippy, fmt clean.
+- Task 4 done: Activity tiers, NEAR_BOOST continent bias, random_local, weighted call areas.
+  --all-features 114 lib + 18 + 10 + 1 doc = 143 pass; default 112 + 17 + 10 + 1; clippy, fmt clean.
