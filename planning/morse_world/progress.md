@@ -38,3 +38,9 @@
 - Task 8 done: HfBand path model, Difficulty::hf_band, band_channel_for. --all-features
   124 lib + 18 + 10 + 1 = 153; default 122 + 17 + 10 + 1; clippy, fmt clean; workspace check clean.
 - Task 9 done: WORLD static (size fix), table-size guard test, module docs, ADR 0021 amendment.
+- Review fixes (planning/code_review 2026-10-07), one commit each, test first:
+  1 modifiers only after the base (M/ MM/ B/ are prefixes); 2 base = longest digit-bearing
+  non-modifier piece, call over bare prefix on ties; 3 digit-led prefixes take the next digit
+  as area; 4 CT9, FTnY/ZS7/R1AN, 4U1VIC, China 3H-3U/XS, KG4 as a designator; 5 DxChase
+  fallback avoids the DX's entity. --all-features 130 lib + 18 + 10 + 1 = 159; default
+  128 + 17 + 10 + 1; clippy, fmt clean.

@@ -42,6 +42,8 @@ struct Builder<'a> {
     stations: Vec<Station>,
     tx: Vec<Transmission>,
     st_rng: Rng,
+    /// An entity no further station may come from (the DX being chased).
+    avoid: Option<u16>,
     text: Rng,
     timing: Rng,
 }
@@ -55,6 +57,7 @@ pub(super) fn build(cfg: &ScenarioConfig, rng: &mut Rng) -> Result<Script, Scena
         stations: Vec::new(),
         tx: Vec::new(),
         st_rng: rng.fork(STREAM_STATIONS),
+        avoid: None,
         text: rng.fork(STREAM_TEXT),
         timing: rng.fork(STREAM_TIMING),
     };
@@ -281,11 +284,10 @@ impl Builder<'_> {
             ) {
                 break c;
             }
-            home = Home::random_dx(
-                &mut self.st_rng,
-                home_of(&self.cfg.my_call),
-                self.cfg.difficulty.hf_band,
-            );
+            let me = home_of(&self.cfg.my_call);
+            let own = me.map_or(USA, |h| h.entity.dxcc);
+            let not: Vec<u16> = std::iter::once(own).chain(self.avoid).collect();
+            home = Home::random_caller(&mut self.st_rng, me, &not, self.cfg.difficulty.hf_band);
         };
         let p = persona(&mut self.st_rng, call, Some(home), false);
         let signal = self.signal()?;
@@ -677,11 +679,11 @@ impl Builder<'_> {
         let my_zone = self.me.zone.to_string();
         // You are the DX: the callers are the world, never your own entity.
         let my_home = home_of(&self.cfg.my_call);
-        let not = my_home.map_or(0, |h| h.entity.dxcc);
+        let not = [my_home.map_or(0, |h| h.entity.dxcc)];
         let mut waiting: Vec<usize> = Vec::new();
         for _ in 0..callers {
             let h =
-                Home::random_caller(&mut self.st_rng, my_home, not, self.cfg.difficulty.hf_band);
+                Home::random_caller(&mut self.st_rng, my_home, &not, self.cfg.difficulty.hf_band);
             waiting.push(self.place(h, true)?);
         }
         self.say(Party::You, format!("CQ CQ DE {me} {me} K"));
@@ -729,12 +731,14 @@ impl Builder<'_> {
         let my_home = home_of(&self.cfg.my_call);
         let dx_home = Home::random_rare(&mut self.st_rng, my_home);
         let dx = self.place(dx_home, false)?;
+        // From here on no station, even a fallback, is the DX's countryman.
+        self.avoid = Some(dx_home.entity.dxcc);
         let mut waiting: Vec<usize> = Vec::new();
         for _ in 0..callers {
             let h = Home::random_caller(
                 &mut self.st_rng,
                 my_home,
-                dx_home.entity.dxcc,
+                &[dx_home.entity.dxcc],
                 self.cfg.difficulty.hf_band,
             );
             waiting.push(self.place(h, true)?);

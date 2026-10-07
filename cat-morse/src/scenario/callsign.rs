@@ -176,24 +176,24 @@ impl Home {
     /// often from the operator's own continent.
     pub(crate) fn random_dx(rng: &mut Rng, me: Option<Home>, band: Option<HfBand>) -> Home {
         let home = me.map_or_else(|| by_dxcc(USA), |h| h.entity);
-        Home::random_caller(rng, me, home.dxcc, band)
+        Home::random_caller(rng, me, &[home.dxcc], band)
     }
 
     /// A station in a pileup heard by an operator at `me` (the US when
     /// unknown): drawn by activity, [`NEAR_BOOST`] times as often from the
     /// operator's continent (or as `band`'s path model says), and never
-    /// from entity `not` (the DX being called is not called by its own
-    /// countrymen).
+    /// from an entity in `not` (the DX being called is not called by its
+    /// own countrymen).
     pub(crate) fn random_caller(
         rng: &mut Rng,
         me: Option<Home>,
-        not: u16,
+        not: &[u16],
         band: Option<HfBand>,
     ) -> Home {
         let near = me.map_or_else(|| by_dxcc(USA), |h| h.entity).continent;
         let (near_w, far_w) = band.map_or((NEAR_BOOST, 1), HfBand::path_weights);
         let weight = |e: &&'static Entity| {
-            if e.dxcc == not {
+            if not.contains(&e.dxcc) {
                 0
             } else if e.continent == near {
                 e.activity.weight() * near_w
@@ -1000,6 +1000,16 @@ mod tests {
         // A numeral in a prefix is an ordinary character.
         let s = align("3D2AB/R", "3D2AB/P", &o).unwrap().score();
         assert_eq!((s.matches, s.substitutions), (6, 1));
+    }
+
+    #[test]
+    fn a_caller_can_avoid_several_entities() {
+        // A chase's fallback must avoid both the operator's entity and the
+        // chased DX's.
+        let dl = h("DL1ABC");
+        let counts = tally(20_000, 6, |r| Home::random_caller(r, dl, &[230, 223], None));
+        assert!(!counts.contains_key(&230) && !counts.contains_key(&223));
+        assert!(counts.len() > 100);
     }
 
     #[test]
