@@ -147,9 +147,10 @@ const MODIFIERS: &[&str] = &["P", "M", "A", "B", "QRP"];
 const NO_ENTITY: &[&str] = &["MM", "AM"];
 
 /// The entity whose prefix is the longest one `piece` starts with.
+/// Tagged entities (`3D2AB/R`) are found by their tag, not here.
 fn entity_of(piece: &str) -> Option<&'static Entity> {
     let mut best: Option<(&'static Entity, usize)> = None;
-    for e in WORLD {
+    for e in WORLD.iter().filter(|e| e.tag.is_none()) {
         for p in e.prefixes {
             if piece.starts_with(p) && best.map_or(true, |(_, l)| p.len() > l) {
                 best = Some((e, p.len()));
@@ -163,8 +164,19 @@ fn first_digit(piece: &str) -> Option<u8> {
     piece.bytes().find(u8::is_ascii_digit).map(|b| b - b'0')
 }
 
+/// The tagged entity `tag` names for a call whose base is `base`.
+fn tagged(base: &str, tag: &str) -> Option<&'static Entity> {
+    WORLD
+        .iter()
+        .find(|e| e.tag == Some(tag) && e.prefixes.iter().any(|p| base.starts_with(p)))
+}
+
 /// Infers where `call` is from by its prefix, longest match first (`HB9`
 /// before `H`, `9A` before `9`).
+///
+/// An entity that shares its parent's block is named by a tag: `3D2AB/R`
+/// is Rotuma, `SV2ASP/A` Mount Athos. A tag is checked before the piece is
+/// read as a modifier, so `/A` only means "alternate address" off that block.
 ///
 /// A location designator wins over the home call: `EA8/DL1ABC` is in the
 /// Canaries, `W1ABC/KH6` in Hawaii, `W1ABC/4` in US call area 4. Operating
@@ -175,7 +187,16 @@ pub(crate) fn home_of(call: &Callsign) -> Option<Home> {
     let base = call.base();
     let mut designator: Option<&str> = None;
     for piece in call.as_str().split('/') {
-        if std::ptr::eq(piece, base) || MODIFIERS.contains(&piece) {
+        if std::ptr::eq(piece, base) {
+            continue;
+        }
+        if let Some(entity) = tagged(base, piece) {
+            return Some(Home {
+                entity,
+                region: None,
+            });
+        }
+        if MODIFIERS.contains(&piece) {
             continue;
         }
         if NO_ENTITY.contains(&piece) {
@@ -228,23 +249,49 @@ fn call_in_format(rng: &mut Rng, f: &CallFormat, home: &Home) -> String {
             .to_string(),
     };
     let n = rng.range_u32(f.suffix.0, f.suffix.1);
-    format!("{p}{digit}{}", letters(rng, n))
+    let mut s = format!("{p}{digit}{}", letters(rng, n));
+    if let Some(tag) = home.entity.tag {
+        s.push('/');
+        s.push_str(tag);
+    }
+    s
 }
+
+/// Draws for [`call_from`] before it settles for a near miss.
+const CALL_TRIES: usize = 64;
 
 /// A call of a real format for `home`'s entity (and call area).
+///
+/// Formats are drawn from whole blocks, and a few blocks have carve-outs
+/// that belong to another entity (`KH7K` Kure inside Hawaii's `KH7`,
+/// `KC4AA` Antarctica inside the US `KC`). A draw that lands in one is
+/// redrawn, so the call's home is `home`.
 pub(crate) fn call_from(rng: &mut Rng, home: &Home) -> String {
-    let f = pick_weighted(rng, home.entity.formats, |f| f.weight);
-    call_in_format(rng, f, home)
+    let mut s = String::new();
+    for _ in 0..CALL_TRIES {
+        let f = pick_weighted(rng, home.entity.formats, |f| f.weight);
+        s = call_in_format(rng, f, home);
+        let back = Callsign::parse(&s).ok().and_then(|c| home_of(&c));
+        if back == Some(*home) {
+            break;
+        }
+    }
+    s
 }
 
-/// A fresh call not equal to `my_call` or any in `taken`, nor reserved.
+/// Draws [`fresh_call`] makes before deciding a home has no call left.
+const FRESH_TRIES: usize = 256;
+
+/// A fresh call not equal to `my_call` or any in `taken`, nor reserved;
+/// `None` if `make` keeps producing taken calls (a one-call entity such as
+/// `4U1UN` that is already on the air).
 pub(crate) fn fresh_call(
     rng: &mut Rng,
     make: &mut dyn FnMut(&mut Rng) -> String,
     my_call: &Callsign,
     taken: &[Callsign],
-) -> Callsign {
-    loop {
+) -> Option<Callsign> {
+    for _ in 0..FRESH_TRIES {
         let s = make(rng);
         if RESERVED_CALLS.contains(&s.as_str()) {
             continue;
@@ -253,8 +300,9 @@ pub(crate) fn fresh_call(
         if c.base() == my_call.base() || taken.iter().any(|t| t.base() == c.base()) {
             continue;
         }
-        return c;
+        return Some(c);
     }
+    None
 }
 
 #[cfg(test)]
@@ -324,20 +372,40 @@ mod tests {
         }
     }
 
+    /// Every format of every entity mostly lands in its own entity (a
+    /// block's carve-outs are rare), and `call_from` always does.
     #[test]
     fn every_format_round_trips_to_its_entity_and_region() {
         let mut rng = Rng::new(7);
         for e in WORLD {
             for f in e.formats {
+                let mut hits = 0;
                 for _ in 0..50 {
                     let home = Home::random_in(&mut rng, e);
                     let s = call_in_format(&mut rng, f, &home);
                     let c = Callsign::parse(&s).unwrap_or_else(|_| panic!("{s}"));
-                    let back = home_of(&c).unwrap_or_else(|| panic!("{s} has no home"));
-                    assert_eq!(back, home, "{s}");
+                    if home_of(&c) == Some(home) {
+                        hits += 1;
+                    }
                 }
+                assert!(hits >= 45, "{e:?}: {hits}/50 of {:?}", f.prefixes);
+            }
+            for _ in 0..50 {
+                let home = Home::random_in(&mut rng, e);
+                let s = call_from(&mut rng, &home);
+                let c = Callsign::parse(&s).unwrap_or_else(|_| panic!("{s}"));
+                assert_eq!(home_of(&c), Some(home), "{s}");
             }
         }
+    }
+
+    #[test]
+    fn a_one_call_entity_runs_out_instead_of_spinning() {
+        let mut rng = Rng::new(1);
+        let me = Callsign::parse("KF0UWV").unwrap();
+        let mut make = |_: &mut Rng| "W1AB".to_string();
+        let first = fresh_call(&mut rng, &mut make, &me, &[]).unwrap();
+        assert!(fresh_call(&mut rng, &mut make, &me, &[first]).is_none());
     }
 
     #[test]

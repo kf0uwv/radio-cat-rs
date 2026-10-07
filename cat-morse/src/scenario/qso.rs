@@ -236,7 +236,7 @@ impl Builder<'_> {
 
     /// Adds a station from `home` (or a random US/DX home), returns its index.
     fn add_station(&mut self, home: Option<Home>, dx_share: f64) -> Result<usize, ScenarioError> {
-        let home = match home {
+        let mut home = match home {
             Some(h) => h,
             None => {
                 if self.st_rng.chance(dx_share) {
@@ -247,12 +247,20 @@ impl Builder<'_> {
             }
         };
         let taken = self.taken();
-        let call = fresh_call(
-            &mut self.st_rng,
-            &mut |r| call_from(r, &home),
-            &self.cfg.my_call,
-            &taken,
-        );
+        // A home with no call left (a one-call entity already on the air)
+        // gives way to another DX home.
+        let call = loop {
+            let h = home;
+            if let Some(c) = fresh_call(
+                &mut self.st_rng,
+                &mut |r| call_from(r, &h),
+                &self.cfg.my_call,
+                &taken,
+            ) {
+                break c;
+            }
+            home = Home::random_dx(&mut self.st_rng);
+        };
         let p = persona(&mut self.st_rng, call, Some(home), false);
         let signal = self.signal()?;
         self.stations.push(Station { persona: p, signal });

@@ -87,6 +87,11 @@ pub(crate) struct Entity {
     pub prefixes: &'static [&'static str],
     pub formats: &'static [CallFormat],
     pub regions: &'static [Region],
+    /// For an entity that shares its parent's prefix block and is told
+    /// apart by a `/`-suffix on the call (`3D2AB/R` for Rotuma, `SV2ASP/A`
+    /// for Mount Athos): that suffix. Its `prefixes` then only qualify the
+    /// tag and take no part in plain longest-prefix matching.
+    pub tag: Option<&'static str>,
     pub iso: Option<&'static str>,
     pub towns: &'static [&'static str],
 }
@@ -132,6 +137,48 @@ pub(crate) fn by_dxcc(dxcc: u16) -> &'static Entity {
         .iter()
         .find(|e| e.dxcc == dxcc)
         .unwrap_or_else(|| panic!("no DXCC entity {dxcc}"))
+}
+
+/// A call format, for the compact table rows below.
+const fn cf(
+    prefixes: &'static [&'static str],
+    digit: DigitRule,
+    suffix: (u32, u32),
+    weight: u32,
+) -> CallFormat {
+    CallFormat {
+        prefixes,
+        digit,
+        suffix,
+        weight,
+    }
+}
+
+/// One table row: an entity with no call-area regions. A macro keeps the
+/// ~340 rows to a few lines each (rustfmt leaves brace-delimited macro
+/// calls alone).
+macro_rules! ent {
+    (
+        dxcc: $dxcc:expr, name: $name:expr, continent: $cont:ident, cq: $cq:expr, itu: $itu:expr,
+        prefixes: [$($p:expr),* $(,)?],
+        formats: [$($f:expr),* $(,)?],
+        tag: $tag:expr, iso: $iso:expr,
+        towns: [$($t:expr),* $(,)?] $(,)?
+    ) => {
+        Entity {
+            dxcc: $dxcc,
+            name: $name,
+            continent: Continent::$cont,
+            cq: $cq,
+            itu: $itu,
+            prefixes: &[$($p),*],
+            formats: &[$($f),*],
+            regions: &[],
+            tag: $tag,
+            iso: $iso,
+            towns: &[$($t),*],
+        }
+    };
 }
 
 /// DXCC number of the United States.
@@ -335,501 +382,258 @@ pub(crate) const WORLD: &[Entity] = &[
         prefixes: US_MATCH,
         formats: US_FORMATS,
         regions: US_REGIONS,
+        tag: None,
         iso: Some("US"),
         towns: &[],
     },
-    Entity {
-        dxcc: 223,
-        name: "ENGLAND",
-        continent: Continent::Eu,
-        cq: 14,
-        itu: 27,
-        prefixes: &["G", "M"],
-        formats: &[CallFormat {
-            prefixes: &["G", "M"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (3, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["LONDON", "BRISTOL", "YORK", "LEEDS"],
+    // Europe ------------------------------------------------------------------------------------
+    ent! {
+        dxcc: 497, name: "CROATIA", continent: Eu, cq: 15, itu: 28,
+        prefixes: ["9A"],
+        formats: [cf(&["9A"], DigitRule::OneOf(D1_9), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["ZAGREB", "SPLIT"],
     },
-    Entity {
-        dxcc: 230,
-        name: "GERMANY",
-        continent: Continent::Eu,
-        cq: 14,
-        itu: 28,
-        prefixes: &["DL", "DK", "DJ", "DF"],
-        formats: &[CallFormat {
-            prefixes: &["DL", "DK", "DJ", "DF"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: Some("DE"),
-        towns: &["BERLIN", "MUNICH", "HAMBURG", "BONN"],
+    ent! {
+        dxcc: 272, name: "PORTUGAL", continent: Eu, cq: 14, itu: 37,
+        prefixes: ["CT", "CQ", "CR", "CS"],
+        formats: [cf(&["CT", "CS"], DigitRule::OneOf(&[1, 2, 7]), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["LISBOA", "PORTO"],
     },
-    Entity {
-        dxcc: 227,
-        name: "FRANCE",
-        continent: Continent::Eu,
-        cq: 14,
-        itu: 27,
-        prefixes: &["F"],
-        formats: &[CallFormat {
-            prefixes: &["F"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (3, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: Some("FR"),
-        towns: &["PARIS", "LYON", "NANTES"],
+    ent! {
+        dxcc: 230, name: "GERMANY", continent: Eu, cq: 14, itu: 28,
+        prefixes: ["DA", "DB", "DC", "DD", "DE", "DF", "DG", "DH", "DI", "DJ", "DK", "DL", "DM",
+            "DN", "DO", "DP", "DQ", "DR"],
+        formats: [
+            cf(&["DL", "DK", "DJ", "DF", "DH", "DG", "DO", "DB", "DC", "DD", "DM"], DigitRule::OneOf(D1_9), (2, 3), 1),
+        ],
+        tag: None, iso: Some("DE"),
+        towns: ["BERLIN", "MUNICH", "HAMBURG", "BONN"],
     },
-    Entity {
-        dxcc: 248,
-        name: "ITALY",
-        continent: Continent::Eu,
-        cq: 15,
-        itu: 28,
-        prefixes: &["I", "IK", "IZ"],
-        formats: &[CallFormat {
-            prefixes: &["I", "IK", "IZ"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: Some("IT"),
-        towns: &["ROMA", "MILANO", "TORINO"],
+    ent! {
+        dxcc: 281, name: "SPAIN", continent: Eu, cq: 14, itu: 37,
+        prefixes: ["EA", "EB", "EC", "ED", "EE", "EF", "EG", "EH", "AM", "AN", "AO"],
+        formats: [cf(&["EA", "EB", "EC", "ED"], DigitRule::OneOf(&[1, 2, 3, 4, 5, 7]), (2, 3), 1)],
+        tag: None, iso: Some("ES"),
+        towns: ["MADRID", "SEVILLA", "VALENCIA"],
     },
-    Entity {
-        dxcc: 281,
-        name: "SPAIN",
-        continent: Continent::Eu,
-        cq: 14,
-        itu: 37,
-        prefixes: &["EA"],
-        formats: &[CallFormat {
-            prefixes: &["EA"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: Some("ES"),
-        towns: &["MADRID", "SEVILLA", "VALENCIA"],
+    ent! {
+        dxcc: 245, name: "IRELAND", continent: Eu, cq: 14, itu: 27,
+        prefixes: ["EI", "EJ"],
+        formats: [cf(&["EI", "EJ"], DigitRule::OneOf(&[2, 3, 4, 5, 6, 7, 8, 9]), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["DUBLIN", "CORK"],
     },
-    Entity {
-        dxcc: 209,
-        name: "BELGIUM",
-        continent: Continent::Eu,
-        cq: 14,
-        itu: 27,
-        prefixes: &["ON"],
-        formats: &[CallFormat {
-            prefixes: &["ON"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["GENT", "BRUGGE"],
+    ent! {
+        dxcc: 227, name: "FRANCE", continent: Eu, cq: 14, itu: 27,
+        prefixes: ["F"],
+        formats: [cf(&["F"], DigitRule::OneOf(D1_9), (2, 3), 1)],
+        tag: None, iso: Some("FR"),
+        towns: ["PARIS", "LYON", "NANTES"],
     },
-    Entity {
-        dxcc: 263,
-        name: "NETHERLANDS",
-        continent: Continent::Eu,
-        cq: 14,
-        itu: 27,
-        prefixes: &["PA", "PD"],
-        formats: &[CallFormat {
-            prefixes: &["PA", "PD"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["UTRECHT", "DELFT"],
+    ent! {
+        dxcc: 223, name: "ENGLAND", continent: Eu, cq: 14, itu: 27,
+        prefixes: ["G", "M", "2E"],
+        formats: [
+            cf(&["G"], DigitRule::OneOf(&[0, 1, 2, 3, 4, 5, 6, 7, 8]), (2, 3), 4),
+            cf(&["M"], DigitRule::OneOf(&[0, 1, 3, 5, 6, 7]), (3, 3), 3),
+            cf(&["2E"], DigitRule::OneOf(&[0, 1]), (3, 3), 1),
+        ],
+        tag: None, iso: None,
+        towns: ["LONDON", "BRISTOL", "YORK", "LEEDS"],
     },
-    Entity {
-        dxcc: 224,
-        name: "FINLAND",
-        continent: Continent::Eu,
-        cq: 15,
-        itu: 18,
-        prefixes: &["OH"],
-        formats: &[CallFormat {
-            prefixes: &["OH"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["HELSINKI", "OULU"],
+    ent! {
+        dxcc: 279, name: "SCOTLAND", continent: Eu, cq: 14, itu: 27,
+        prefixes: ["GM", "MM", "2M", "GS", "MS"],
+        formats: [cf(&["GM", "MM"], DigitRule::OneOf(&[0, 1, 2, 3, 4, 5, 6, 7, 8]), (3, 3), 1)],
+        tag: None, iso: None,
+        towns: ["EDINBURGH", "GLASGOW"],
     },
-    Entity {
-        dxcc: 284,
-        name: "SWEDEN",
-        continent: Continent::Eu,
-        cq: 14,
-        itu: 18,
-        prefixes: &["SM"],
-        formats: &[CallFormat {
-            prefixes: &["SM"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["STOCKHOLM", "LUND"],
+    ent! {
+        dxcc: 239, name: "HUNGARY", continent: Eu, cq: 15, itu: 28,
+        prefixes: ["HA", "HG"],
+        formats: [cf(&["HA", "HG"], DigitRule::OneOf(D1_9), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["BUDAPEST", "PECS"],
     },
-    Entity {
-        dxcc: 266,
-        name: "NORWAY",
-        continent: Continent::Eu,
-        cq: 14,
-        itu: 18,
-        prefixes: &["LA"],
-        formats: &[CallFormat {
-            prefixes: &["LA"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["OSLO", "BERGEN"],
+    ent! {
+        dxcc: 287, name: "SWITZERLAND", continent: Eu, cq: 14, itu: 28,
+        prefixes: ["HB", "HE"],
+        formats: [cf(&["HB9"], DigitRule::InPrefix, (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["BERN", "ZURICH"],
     },
-    Entity {
-        dxcc: 503,
-        name: "CZECH REP",
-        continent: Continent::Eu,
-        cq: 15,
-        itu: 28,
-        prefixes: &["OK"],
-        formats: &[CallFormat {
-            prefixes: &["OK"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["PRAHA", "BRNO"],
+    ent! {
+        dxcc: 248, name: "ITALY", continent: Eu, cq: 15, itu: 28,
+        prefixes: ["I"],
+        formats: [cf(&["I", "IK", "IZ", "IW", "IU"], DigitRule::OneOf(D1_9), (2, 3), 1)],
+        tag: None, iso: Some("IT"),
+        towns: ["ROMA", "MILANO", "TORINO"],
     },
-    Entity {
-        dxcc: 269,
-        name: "POLAND",
-        continent: Continent::Eu,
-        cq: 15,
-        itu: 28,
-        prefixes: &["SP"],
-        formats: &[CallFormat {
-            prefixes: &["SP"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["KRAKOW", "GDANSK"],
+    ent! {
+        dxcc: 266, name: "NORWAY", continent: Eu, cq: 14, itu: 18,
+        prefixes: ["LA", "LB", "LC", "LD", "LE", "LF", "LG", "LH", "LI", "LJ", "LK", "LL", "LM",
+            "LN"],
+        formats: [cf(&["LA", "LB"], DigitRule::OneOf(D1_9), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["OSLO", "BERGEN"],
     },
-    Entity {
-        dxcc: 239,
-        name: "HUNGARY",
-        continent: Continent::Eu,
-        cq: 15,
-        itu: 28,
-        prefixes: &["HA"],
-        formats: &[CallFormat {
-            prefixes: &["HA"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["BUDAPEST", "PECS"],
+    ent! {
+        dxcc: 206, name: "AUSTRIA", continent: Eu, cq: 15, itu: 28,
+        prefixes: ["OE"],
+        formats: [cf(&["OE"], DigitRule::OneOf(D1_9), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["WIEN", "GRAZ"],
     },
-    Entity {
-        dxcc: 499,
-        name: "SLOVENIA",
-        continent: Continent::Eu,
-        cq: 15,
-        itu: 28,
-        prefixes: &["S5"],
-        formats: &[CallFormat {
-            prefixes: &["S5"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["LJUBLJANA"],
+    ent! {
+        dxcc: 224, name: "FINLAND", continent: Eu, cq: 15, itu: 18,
+        prefixes: ["OH", "OF", "OG", "OI", "OJ"],
+        formats: [cf(&["OH"], DigitRule::OneOf(D1_9), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["HELSINKI", "OULU"],
     },
-    Entity {
-        dxcc: 497,
-        name: "CROATIA",
-        continent: Continent::Eu,
-        cq: 15,
-        itu: 28,
-        prefixes: &["9A"],
-        formats: &[CallFormat {
-            prefixes: &["9A"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["ZAGREB", "SPLIT"],
+    ent! {
+        dxcc: 503, name: "CZECH REP", continent: Eu, cq: 15, itu: 28,
+        prefixes: ["OK", "OL"],
+        formats: [cf(&["OK", "OL"], DigitRule::OneOf(D1_9), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["PRAHA", "BRNO"],
     },
-    Entity {
-        dxcc: 245,
-        name: "IRELAND",
-        continent: Continent::Eu,
-        cq: 14,
-        itu: 27,
-        prefixes: &["EI"],
-        formats: &[CallFormat {
-            prefixes: &["EI"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["DUBLIN", "CORK"],
+    ent! {
+        dxcc: 209, name: "BELGIUM", continent: Eu, cq: 14, itu: 27,
+        prefixes: ["ON", "OO", "OP", "OQ", "OR", "OS", "OT"],
+        formats: [cf(&["ON", "OO", "OP", "OT"], DigitRule::OneOf(D1_9), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["GENT", "BRUGGE"],
     },
-    Entity {
-        dxcc: 279,
-        name: "SCOTLAND",
-        continent: Continent::Eu,
-        cq: 14,
-        itu: 27,
-        prefixes: &["GM", "MM"],
-        formats: &[CallFormat {
-            prefixes: &["GM", "MM"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (3, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["EDINBURGH", "GLASGOW"],
+    ent! {
+        dxcc: 263, name: "NETHERLANDS", continent: Eu, cq: 14, itu: 27,
+        prefixes: ["PA", "PB", "PC", "PD", "PE", "PF", "PG", "PH", "PI"],
+        formats: [cf(&["PA", "PD", "PE", "PH"], DigitRule::OneOf(D1_9), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["UTRECHT", "DELFT"],
     },
-    Entity {
-        dxcc: 206,
-        name: "AUSTRIA",
-        continent: Continent::Eu,
-        cq: 15,
-        itu: 28,
-        prefixes: &["OE"],
-        formats: &[CallFormat {
-            prefixes: &["OE"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["WIEN", "GRAZ"],
+    ent! {
+        dxcc: 499, name: "SLOVENIA", continent: Eu, cq: 15, itu: 28,
+        prefixes: ["S5"],
+        formats: [cf(&["S5"], DigitRule::OneOf(D1_9), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["LJUBLJANA"],
     },
-    Entity {
-        dxcc: 287,
-        name: "SWITZERLAND",
-        continent: Continent::Eu,
-        cq: 14,
-        itu: 28,
-        prefixes: &["HB9"],
-        formats: &[CallFormat {
-            prefixes: &["HB9"],
-            digit: DigitRule::InPrefix,
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["BERN", "ZURICH"],
+    ent! {
+        dxcc: 284, name: "SWEDEN", continent: Eu, cq: 14, itu: 18,
+        prefixes: ["SA", "SB", "SC", "SD", "SE", "SF", "SG", "SH", "SI", "SJ", "SK", "SL", "SM",
+            "7S", "8S"],
+        formats: [cf(&["SM", "SA", "SK"], DigitRule::OneOf(&[0, 1, 2, 3, 4, 5, 6, 7]), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["STOCKHOLM", "LUND"],
     },
-    Entity {
-        dxcc: 272,
-        name: "PORTUGAL",
-        continent: Continent::Eu,
-        cq: 14,
-        itu: 37,
-        prefixes: &["CT"],
-        formats: &[CallFormat {
-            prefixes: &["CT"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["LISBOA", "PORTO"],
+    ent! {
+        dxcc: 269, name: "POLAND", continent: Eu, cq: 15, itu: 28,
+        prefixes: ["SN", "SO", "SP", "SQ", "SR", "3Z", "HF"],
+        formats: [cf(&["SP", "SQ", "SO"], DigitRule::OneOf(D1_9), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["KRAKOW", "GDANSK"],
     },
-    Entity {
-        dxcc: 339,
-        name: "JAPAN",
-        continent: Continent::As,
-        cq: 25,
-        itu: 45,
-        prefixes: &["JA", "JH", "JR", "JE"],
-        formats: &[CallFormat {
-            prefixes: &["JA", "JH", "JR", "JE"],
-            digit: DigitRule::OneOf(D0_9),
-            suffix: (3, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: Some("JP"),
-        towns: &["TOKYO", "OSAKA", "SAPPORO"],
+    ent! {
+        dxcc: 54, name: "EUROPEAN RUSSIA", continent: Eu, cq: 16, itu: 29,
+        prefixes: ["R1", "R3", "R4", "R6", "R7", "RA1", "RA3", "RA4", "RA6", "RA7", "RB1", "RB3",
+            "RB4", "RB6", "RB7", "RC1", "RC3", "RC4", "RC6", "RC7", "RD1", "RD3", "RD4", "RD6",
+            "RD7", "RE1", "RE3", "RE4", "RE6", "RE7", "RF1", "RF3", "RF4", "RF6", "RF7", "RG1",
+            "RG3", "RG4", "RG6", "RG7", "RH1", "RH3", "RH4", "RH6", "RH7", "RI1", "RI3", "RI4",
+            "RI6", "RI7", "RJ1", "RJ3", "RJ4", "RJ6", "RJ7", "RK1", "RK3", "RK4", "RK6", "RK7",
+            "RL1", "RL3", "RL4", "RL6", "RL7", "RM1", "RM3", "RM4", "RM6", "RM7", "RN1", "RN3",
+            "RN4", "RN6", "RN7", "RO1", "RO3", "RO4", "RO6", "RO7", "RP1", "RP3", "RP4", "RP6",
+            "RP7", "RQ1", "RQ3", "RQ4", "RQ6", "RQ7", "RR1", "RR3", "RR4", "RR6", "RR7", "RS1",
+            "RS3", "RS4", "RS6", "RS7", "RT1", "RT3", "RT4", "RT6", "RT7", "RU1", "RU3", "RU4",
+            "RU6", "RU7", "RV1", "RV3", "RV4", "RV6", "RV7", "RW1", "RW3", "RW4", "RW6", "RW7",
+            "RX1", "RX3", "RX4", "RX6", "RX7", "RY1", "RY3", "RY4", "RY6", "RY7", "RZ1", "RZ3",
+            "RZ4", "RZ6", "RZ7", "UA1", "UA3", "UA4", "UA6", "UA7", "UB1", "UB3", "UB4", "UB6",
+            "UB7", "UC1", "UC3", "UC4", "UC6", "UC7", "UD1", "UD3", "UD4", "UD6", "UD7", "UE1",
+            "UE3", "UE4", "UE6", "UE7", "UF1", "UF3", "UF4", "UF6", "UF7", "UG1", "UG3", "UG4",
+            "UG6", "UG7", "UH1", "UH3", "UH4", "UH6", "UH7", "UI1", "UI3", "UI4", "UI6", "UI7"],
+        formats: [
+            cf(&["UA", "RA", "RW", "RN", "RV", "RU", "RX", "RZ", "R", "UB"], DigitRule::OneOf(&[1, 3, 4, 6, 7]), (2, 3), 1),
+        ],
+        tag: None, iso: None,
+        towns: ["MOSKVA", "KAZAN"],
     },
-    Entity {
-        dxcc: 150,
-        name: "AUSTRALIA",
-        continent: Continent::Oc,
-        cq: 30,
-        itu: 59,
-        prefixes: &["VK"],
-        formats: &[CallFormat {
-            prefixes: &["VK"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: Some("AU"),
-        towns: &["SYDNEY", "PERTH", "HOBART"],
+    // North America -----------------------------------------------------------------------------
+    ent! {
+        dxcc: 1, name: "CANADA", continent: Na, cq: 4, itu: 4,
+        prefixes: ["VE", "VA", "VO", "VY", "VB", "VC", "VD", "VG", "VX", "XJ", "XK", "XL", "XM",
+            "XN", "XO", "CF", "CG", "CH", "CI", "CJ", "CK", "CY"],
+        formats: [
+            cf(&["VE"], DigitRule::OneOf(D1_9), (2, 3), 6),
+            cf(&["VA"], DigitRule::OneOf(&[1, 2, 3, 4, 5, 6, 7]), (2, 3), 3),
+            cf(&["VO"], DigitRule::OneOf(&[1, 2]), (1, 3), 1),
+            cf(&["VY"], DigitRule::OneOf(&[1, 2]), (1, 3), 1),
+        ],
+        tag: None, iso: Some("CA"),
+        towns: ["TORONTO", "OTTAWA", "CALGARY"],
     },
-    Entity {
-        dxcc: 170,
-        name: "NEW ZEALAND",
-        continent: Continent::Oc,
-        cq: 32,
-        itu: 60,
-        prefixes: &["ZL"],
-        formats: &[CallFormat {
-            prefixes: &["ZL"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["AUCKLAND", "NELSON"],
+    ent! {
+        dxcc: 50, name: "MEXICO", continent: Na, cq: 6, itu: 10,
+        prefixes: ["XA", "XB", "XC", "XD", "XE", "XF", "XG", "XH", "XI", "4A", "4B", "4C", "6D",
+            "6E", "6F", "6G", "6H", "6I", "6J"],
+        formats: [cf(&["XE", "XF"], DigitRule::OneOf(&[1, 2, 3]), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["PUEBLA", "MERIDA"],
     },
-    Entity {
-        dxcc: 1,
-        name: "CANADA",
-        continent: Continent::Na,
-        cq: 4,
-        itu: 4,
-        prefixes: &["VE", "VA"],
-        formats: &[CallFormat {
-            prefixes: &["VE", "VA"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: Some("CA"),
-        towns: &["TORONTO", "OTTAWA", "CALGARY"],
+    // South America -----------------------------------------------------------------------------
+    ent! {
+        dxcc: 100, name: "ARGENTINA", continent: Sa, cq: 13, itu: 14,
+        prefixes: ["LU", "LO", "LP", "LQ", "LR", "LS", "LT", "LV", "LW", "AY", "AZ", "L2", "L3",
+            "L4", "L5", "L6", "L7", "L8", "L9"],
+        formats: [cf(&["LU", "LW"], DigitRule::OneOf(D1_9), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["CORDOBA", "MENDOZA"],
     },
-    Entity {
-        dxcc: 50,
-        name: "MEXICO",
-        continent: Continent::Na,
-        cq: 6,
-        itu: 10,
-        prefixes: &["XE"],
-        formats: &[CallFormat {
-            prefixes: &["XE"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["PUEBLA", "MERIDA"],
+    ent! {
+        dxcc: 108, name: "BRAZIL", continent: Sa, cq: 11, itu: 15,
+        prefixes: ["PP", "PQ", "PR", "PS", "PT", "PU", "PV", "PW", "PX", "PY", "ZV", "ZW", "ZX",
+            "ZY", "ZZ"],
+        formats: [cf(&["PY", "PU", "PP", "PT", "PR"], DigitRule::OneOf(D1_9), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["RIO", "RECIFE"],
     },
-    Entity {
-        dxcc: 100,
-        name: "ARGENTINA",
-        continent: Continent::Sa,
-        cq: 13,
-        itu: 14,
-        prefixes: &["LU"],
-        formats: &[CallFormat {
-            prefixes: &["LU"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["CORDOBA", "MENDOZA"],
+    // Africa ------------------------------------------------------------------------------------
+    ent! {
+        dxcc: 462, name: "SOUTH AFRICA", continent: Af, cq: 38, itu: 57,
+        prefixes: ["ZS", "ZR", "ZT", "ZU", "S8"],
+        formats: [cf(&["ZS", "ZR"], DigitRule::OneOf(&[1, 2, 3, 4, 5, 6]), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["DURBAN", "PRETORIA"],
     },
-    Entity {
-        dxcc: 108,
-        name: "BRAZIL",
-        continent: Continent::Sa,
-        cq: 11,
-        itu: 15,
-        prefixes: &["PY"],
-        formats: &[CallFormat {
-            prefixes: &["PY"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["RIO", "RECIFE"],
+    // Asia --------------------------------------------------------------------------------------
+    ent! {
+        dxcc: 339, name: "JAPAN", continent: As, cq: 25, itu: 45,
+        prefixes: ["JA", "JB", "JC", "JD", "JE", "JF", "JG", "JH", "JI", "JJ", "JK", "JL", "JM",
+            "JN", "JO", "JP", "JQ", "JR", "JS", "7J", "7K", "7L", "7M", "7N", "8J", "8K", "8L",
+            "8M", "8N"],
+        formats: [
+            cf(&["JA", "JE", "JF", "JG", "JH", "JI", "JJ", "JK", "JL", "JM", "JN", "JO", "JP", "JQ", "JR"], DigitRule::OneOf(D0_9), (3, 3), 8),
+            cf(&["7K", "7L", "7M", "7N"], DigitRule::OneOf(D0_9), (3, 3), 2),
+            cf(&["JA"], DigitRule::OneOf(D0_9), (2, 2), 1),
+        ],
+        tag: None, iso: Some("JP"),
+        towns: ["TOKYO", "OSAKA", "SAPPORO"],
     },
-    Entity {
-        dxcc: 462,
-        name: "SOUTH AFRICA",
-        continent: Continent::Af,
-        cq: 38,
-        itu: 57,
-        prefixes: &["ZS"],
-        formats: &[CallFormat {
-            prefixes: &["ZS"],
-            digit: DigitRule::OneOf(D1_9),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["DURBAN", "PRETORIA"],
+    // Oceania -----------------------------------------------------------------------------------
+    ent! {
+        dxcc: 150, name: "AUSTRALIA", continent: Oc, cq: 30, itu: 59,
+        prefixes: ["VK", "AX", "VH", "VI", "VJ", "VL", "VM", "VN", "VZ"],
+        formats: [cf(&["VK"], DigitRule::OneOf(&[1, 2, 3, 4, 5, 6, 7, 8]), (2, 3), 1)],
+        tag: None, iso: Some("AU"),
+        towns: ["SYDNEY", "PERTH", "HOBART"],
     },
-    Entity {
-        dxcc: 54,
-        name: "RUSSIA",
-        continent: Continent::Eu,
-        cq: 16,
-        itu: 29,
-        prefixes: &["UA", "RA", "RW"],
-        formats: &[CallFormat {
-            prefixes: &["UA", "RA", "RW"],
-            digit: DigitRule::OneOf(&[1, 3, 4, 6]),
-            suffix: (2, 3),
-            weight: 1,
-        }],
-        regions: &[],
-        iso: None,
-        towns: &["MOSKVA", "KAZAN"],
+    ent! {
+        dxcc: 170, name: "NEW ZEALAND", continent: Oc, cq: 32, itu: 60,
+        prefixes: ["ZL", "ZK", "ZM"],
+        formats: [cf(&["ZL", "ZM"], DigitRule::OneOf(&[1, 2, 3, 4]), (2, 3), 1)],
+        tag: None, iso: None,
+        towns: ["AUCKLAND", "NELSON"],
     },
 ];
 
@@ -850,7 +654,7 @@ mod tests {
     #[test]
     fn no_prefix_belongs_to_two_entities() {
         let mut owner: HashMap<&str, u16> = HashMap::new();
-        for e in WORLD {
+        for e in WORLD.iter().filter(|e| e.tag.is_none()) {
             for p in e.prefixes {
                 if let Some(o) = owner.insert(p, e.dxcc) {
                     panic!("{p} in both {o} and {}", e.dxcc);
@@ -879,7 +683,11 @@ mod tests {
             for f in e.formats {
                 assert!(f.weight > 0, "{e:?}");
                 assert!(!f.prefixes.is_empty(), "{e:?}");
-                assert!(f.suffix.0 >= 1 && f.suffix.0 <= f.suffix.1, "{e:?}");
+                assert!(f.suffix.0 <= f.suffix.1 && f.suffix.1 <= 3, "{e:?}");
+                // A bare prefix is a whole call only for a one-off station.
+                if f.suffix.0 == 0 {
+                    assert!(matches!(f.digit, DigitRule::InPrefix), "{e:?}");
+                }
                 match f.digit {
                     DigitRule::FromRegion => assert!(!e.regions.is_empty(), "{e:?}"),
                     DigitRule::OneOf(d) => assert!(!d.is_empty() && d.iter().all(|d| *d <= 9)),
@@ -900,6 +708,24 @@ mod tests {
                 assert!(digits.insert(r.digit), "{e:?} {r:?}");
                 assert!(!r.subdivisions.is_empty(), "{e:?} {r:?}");
                 assert!(r.subdivisions.iter().all(|(_, t)| !t.is_empty()));
+            }
+        }
+    }
+
+    #[test]
+    fn tags_qualify_a_parent_block() {
+        for e in WORLD.iter().filter(|e| e.tag.is_some()) {
+            assert!(!e.prefixes.is_empty(), "{e:?}");
+            for f in e.formats {
+                for p in f.prefixes {
+                    assert!(e.prefixes.iter().any(|q| p.starts_with(q)), "{e:?} {p}");
+                }
+            }
+        }
+        let mut pairs = HashSet::new();
+        for e in WORLD.iter().filter(|e| e.tag.is_some()) {
+            for p in e.prefixes {
+                assert!(pairs.insert((*p, e.tag)), "{e:?}");
             }
         }
     }
