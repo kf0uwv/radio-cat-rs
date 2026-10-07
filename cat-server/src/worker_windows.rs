@@ -156,6 +156,8 @@ pub struct BrokerHandle {
     sender: mpsc::Sender<Job>,
     next_request_id: Arc<AtomicU64>,
     release: ReleaseLines,
+    /// See [`BrokerHandle::gated`].
+    gate: Option<crate::broker::SubmitGate>,
 }
 
 impl BrokerHandle {
@@ -167,7 +169,20 @@ impl BrokerHandle {
     /// "submit and `.await` the reply" work unchanged on either platform.
     /// Returns `None` only if the [`BrokerWorker`] itself has shut down.
     pub async fn submit(&self, client_id: ClientId, payload: Vec<u8>) -> Option<Vec<u8>> {
+        if let Some(reason) = self.gate.as_ref().and_then(|gate| gate()) {
+            // Answered here, never queued: the radio does not see it.
+            return Some(format!("ERR {reason}").into_bytes());
+        }
         self.enqueue(client_id, Work::Wire(payload)).await
+    }
+
+    /// As the Linux [`crate::broker::BrokerHandle::gated`]: a clone whose
+    /// `submit` is refused while `gate` says so.
+    pub fn gated(&self, gate: crate::broker::SubmitGate) -> Self {
+        Self {
+            gate: Some(gate),
+            ..self.clone()
+        }
     }
 
     /// Submit a caller-supplied task to run with exclusive access to the wire.
@@ -274,6 +289,7 @@ where
         sender,
         next_request_id: Arc::new(AtomicU64::new(0)),
         release,
+        gate: None,
     };
     (worker, handle)
 }
@@ -312,6 +328,26 @@ mod tests {
         script: I,
     ) -> (BrokerWorker<FakeCommand, ScriptedCatSession>, BrokerHandle) {
         build(ScriptedCatSession::with_unordered_script(script), &TABLE)
+    }
+
+    #[test]
+    fn a_gated_handle_refuses_without_touching_the_radio() {
+        let (worker, handle) = broker_with_script([Exchange::new("FA;", "FA00014250000;")]);
+        std::thread::spawn(move || worker.run());
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let flag = Arc::clone(&closed);
+        let raw = handle.gated(Arc::new(move || {
+            flag.load(std::sync::atomic::Ordering::SeqCst)
+                .then(|| "a console holds the CW transmit arm".to_string())
+        }));
+        let refused = block_on(raw.submit(ClientId::from_raw(1), b"TX;".to_vec()));
+        assert_eq!(
+            refused,
+            Some(b"ERR a console holds the CW transmit arm".to_vec())
+        );
+        closed.store(false, std::sync::atomic::Ordering::SeqCst);
+        let answered = block_on(raw.submit(ClientId::from_raw(1), b"FA;".to_vec()));
+        assert_eq!(answered, Some(b"FA00014250000;".to_vec()));
     }
 
     #[test]

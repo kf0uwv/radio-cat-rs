@@ -36,7 +36,12 @@ wait for the queue).
 7. **Mode:** arm and send are refused unless the radio is already in a CW
    mode. The server never switches modes.
 8. **rigctl PTT while armed:** while a console holds the CW arm, rigctl
-   `T 1` is refused.
+   `T 1` is refused. *Amended after the safety review (2026-10-07):* the
+   raw TCP/UDP CAT listeners are refused too -- every frame, answered
+   `ERR …` without reaching the radio -- from the arm request until the
+   restore is verified, on both platforms. Raw CAT can key (`TX;`) or undo
+   the clamp (`PC100;`) in each radio's own words; refusing all of it is
+   the only radio-agnostic rule.
 9. **Versioning:** workspace 0.9.0 for the `RadioCapabilities.cw` field;
    `PROTOCOL_VERSION` stays 2; `ErrorCode::Forbidden` is accepted.
 10. **Dependency:** the new edge `cat-rigctl → cat-morse` is accepted.
@@ -299,7 +304,9 @@ only a human can supply.
 8. *Abort* — §5. Always accepted, from any console, armed or not.
 9. *One owner* — rigctl never gains `send_morse`/`stop_morse`: rigctl has
    no arming, and a second way in would be a way around every rule above.
-   While a console holds the CW arm, rigctl `T 1` is refused.
+   While CW is live (arm requested → restore verified), rigctl `T 1` is
+   refused (`PttGate`) and the raw TCP/UDP CAT listeners refuse every
+   frame (`BrokerHandle::gated`, via `cat_rigctl::raw_cat_handle`).
 
 **Client (the trainer, not this library):** the dummy-load acknowledgement
 screen every session (never remembered), callsign entry, mapping prosigns

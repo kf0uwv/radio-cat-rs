@@ -517,7 +517,14 @@ pub struct BrokerHandle {
     sender: Sender<Job>,
     next_request_id: Rc<Cell<u64>>,
     release: ReleaseLines,
+    /// See [`BrokerHandle::gated`].
+    gate: Option<SubmitGate>,
 }
+
+/// Decides, per frame, whether a gated handle may reach the radio:
+/// `Some(reason)` refuses. Called on every [`BrokerHandle::submit`], so it
+/// must be cheap and must not block.
+pub type SubmitGate = std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 impl BrokerHandle {
     /// Submit a caller-supplied task to run with exclusive access to the wire.
@@ -534,6 +541,21 @@ impl BrokerHandle {
     /// CAT exchange that may take seconds, and a line change cannot corrupt a
     /// frame in flight because `TIOCMSET` never touches the byte stream.
     /// Release with [`Self::release_now_bypassing_queue`].
+    /// A clone whose [`Self::submit`] is refused, with `ERR <reason>`,
+    /// whenever `gate` says so -- without the frame being queued or the
+    /// radio seeing it. The original handle, and its other clones, are
+    /// unaffected.
+    ///
+    /// For listeners that must fall silent while something else owns the
+    /// transmitter: ADR 0023 gates the raw TCP/UDP CAT listeners this way
+    /// while a console holds the CW transmit arm.
+    pub fn gated(&self, gate: SubmitGate) -> Self {
+        Self {
+            gate: Some(gate),
+            ..self.clone()
+        }
+    }
+
     pub async fn submit_task(&self, client_id: ClientId, run: TaskFn) -> Option<Vec<u8>> {
         let request_id = self.next_request_id.get();
         self.next_request_id.set(request_id.wrapping_add(1));
@@ -585,6 +607,10 @@ impl BrokerHandle {
     /// should treat that as "the broker is gone" and stop serving new
     /// requests.
     pub async fn submit(&self, client_id: ClientId, payload: Vec<u8>) -> Option<Vec<u8>> {
+        if let Some(reason) = self.gate.as_ref().and_then(|gate| gate()) {
+            // Answered here, never queued: the radio does not see it.
+            return Some(format!("ERR {reason}").into_bytes());
+        }
         let request_id = self.next_request_id.get();
         self.next_request_id.set(request_id.wrapping_add(1));
 
@@ -641,6 +667,7 @@ where
         sender,
         next_request_id: Rc::new(Cell::new(0)),
         release,
+        gate: None,
     };
     (worker, handle)
 }
@@ -806,6 +833,53 @@ mod tests {
     // -------------------------------------------------------------------
     // Happy path
     // -------------------------------------------------------------------
+
+    #[monoio::test(driver = "legacy", timer_enabled = true)]
+    async fn a_gated_handle_refuses_without_touching_the_radio() {
+        // ADR 0023: while a console holds the CW arm, the raw listeners'
+        // handle refuses every frame. The script is empty: reaching the
+        // radio at all would fail this test.
+        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (worker, handle) = build(
+            ScriptedCatSession::with_script([Exchange::new("FA;", "FA00014250000;")]),
+            &TABLE,
+        );
+        monoio::spawn(worker.run());
+        let flag = std::sync::Arc::clone(&closed);
+        let raw = handle.gated(std::sync::Arc::new(move || {
+            flag.load(std::sync::atomic::Ordering::SeqCst)
+                .then(|| "a console holds the CW transmit arm".to_string())
+        }));
+
+        let refused = raw
+            .submit(ClientId::from_raw(1), b"TX;".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(refused, b"ERR a console holds the CW transmit arm".to_vec());
+
+        // Opened again: the next frame goes to the radio as before.
+        closed.store(false, std::sync::atomic::Ordering::SeqCst);
+        let answered = raw
+            .submit(ClientId::from_raw(1), b"FA;".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(answered, b"FA00014250000;".to_vec());
+    }
+
+    #[monoio::test(driver = "legacy", timer_enabled = true)]
+    async fn gating_a_clone_leaves_the_original_handle_open() {
+        let (worker, handle) = build(
+            ScriptedCatSession::with_script([Exchange::new("FA;", "FA00014250000;")]),
+            &TABLE,
+        );
+        monoio::spawn(worker.run());
+        let _raw = handle.gated(std::sync::Arc::new(|| Some("closed".to_string())));
+        let answered = handle
+            .submit(ClientId::from_raw(2), b"FA;".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(answered, b"FA00014250000;".to_vec());
+    }
 
     #[monoio::test(driver = "legacy", timer_enabled = true)]
     async fn a_task_job_runs_on_the_worker_and_returns_its_own_reply() {

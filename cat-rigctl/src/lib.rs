@@ -263,6 +263,28 @@ pub struct ServerConfig {
     pub stop: StopHandle,
 }
 
+/// The handle a raw TCP/UDP CAT listener uses: refused, frame by frame,
+/// from the moment a console asks to arm CW until the radio's restore is
+/// verified (ADR 0023 §3.9, decision 8). Raw CAT can key the radio
+/// (`TX;`) or undo the clamp (`PC100;`) in its own words, so the only
+/// radio-agnostic rule is to refuse all of it while CW is live.
+pub fn raw_cat_handle(
+    handle: &cat_server::BrokerHandle,
+    cw: Option<&Arc<native_bridge::NativeShared>>,
+) -> cat_server::BrokerHandle {
+    match cw {
+        Some(shared) => {
+            let shared = Arc::clone(shared);
+            handle.gated(Arc::new(move || {
+                shared.cw_blocks_external_ptt().then(|| {
+                    "raw CAT is refused while a console holds the CW transmit arm".to_string()
+                })
+            }))
+        }
+        None => handle.clone(),
+    }
+}
+
 /// A way to end a running server from anywhere: a signal handler, a
 /// console thread, a test. Clone it freely; every clone stops the same
 /// server.
@@ -394,7 +416,8 @@ where
     if let Some(port) = config.raw_tcp_port {
         let listener = TcpListener::bind(("0.0.0.0", port))?;
         info!("Raw CAT TCP listener bound on 0.0.0.0:{port}");
-        let handle = handle.clone();
+        // Silent while a console holds the CW arm (ADR 0023).
+        let handle = raw_cat_handle(&handle, native_shared.as_ref());
         let registry = Rc::new(RefCell::new(ClientRegistry::new()));
         tasks.push(monoio::spawn(async move {
             let result = cat_server::tcp::serve(listener, handle, registry).await;
@@ -408,7 +431,8 @@ where
     if let Some(port) = config.raw_udp_port {
         let socket = UdpSocket::bind(("0.0.0.0", port))?;
         info!("Raw CAT UDP listener bound on 0.0.0.0:{port}");
-        let handle = handle.clone();
+        // Silent while a console holds the CW arm (ADR 0023).
+        let handle = raw_cat_handle(&handle, native_shared.as_ref());
         let registry = Rc::new(RefCell::new(ClientRegistry::new()));
         tasks.push(monoio::spawn(async move {
             let result = cat_server::udp::serve(socket, handle, registry).await;
@@ -635,7 +659,8 @@ where
     if let Some(port) = config.raw_tcp_port {
         let listener = TcpListener::bind(("0.0.0.0", port))?;
         info!("Raw CAT TCP listener bound on 0.0.0.0:{port}");
-        let handle = handle.clone();
+        // Silent while a console holds the CW arm (ADR 0023).
+        let handle = raw_cat_handle(&handle, native_shared.as_ref());
         let registry = Arc::new(Mutex::new(ClientRegistry::new()));
         let done_tx = done_tx.clone();
         listener_count += 1;
@@ -651,7 +676,8 @@ where
     if let Some(port) = config.raw_udp_port {
         let socket = UdpSocket::bind(("0.0.0.0", port))?;
         info!("Raw CAT UDP listener bound on 0.0.0.0:{port}");
-        let handle = handle.clone();
+        // Silent while a console holds the CW arm (ADR 0023).
+        let handle = raw_cat_handle(&handle, native_shared.as_ref());
         let registry = Arc::new(Mutex::new(ClientRegistry::new()));
         let done_tx = done_tx.clone();
         listener_count += 1;

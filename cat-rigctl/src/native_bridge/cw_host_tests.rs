@@ -866,3 +866,51 @@ async fn stopping_the_server_mid_arm_restores_the_radio_before_it_returns() {
     );
     assert!(shared.cw_settled());
 }
+
+#[cfg(target_os = "linux")]
+#[monoio::test(driver = "legacy", timer_enabled = true)]
+async fn raw_cat_is_refused_from_arm_until_restore() {
+    use cat_framework::{CommandDefinition, CommandForm, CommandOperation, CommandTable};
+    use cat_transport_core::test_support::{Exchange, ScriptedCatSession};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Id {
+        Frequency,
+    }
+    static DEFINITIONS: &[CommandDefinition<Id>] = &[CommandDefinition {
+        id: Id::Frequency,
+        code: "FA",
+        name: "Frequency",
+        description: "Test frequency",
+        query_forms: &[CommandForm::fixed(CommandOperation::Query, 0)],
+        set_forms: &[CommandForm::fixed(CommandOperation::Set, 11)],
+        action_forms: &[],
+        response_forms: &[],
+        readable: true,
+        writable: true,
+    }];
+    static TABLE: CommandTable<Id> = CommandTable::new(DEFINITIONS);
+
+    let (worker, handle) = cat_server::build(
+        ScriptedCatSession::with_script([Exchange::new("FA;", "FA00007030000;")]),
+        &TABLE,
+    );
+    monoio::spawn(worker.run());
+
+    let mut rig = Rig::new(&CW_RADIO, true);
+    let raw = crate::raw_cat_handle(&handle, Some(&rig.shared));
+    let client = cat_server::ClientId::from_raw(9);
+
+    rig.arm().unwrap();
+    // A frame the radio would answer: refused by the gate, not by the
+    // command table. The script has one exchange; if this reached the
+    // radio, the read after disarm would find nothing left.
+    let refused = raw.submit(client, b"FA;".to_vec()).await.unwrap();
+    let refused = String::from_utf8_lossy(&refused).to_string();
+    assert!(refused.contains("CW transmit arm"), "{refused}");
+
+    rig.on_listener(|s| s.apply_as(OWNER, &Command::DisarmCw))
+        .unwrap();
+    let answered = raw.submit(client, b"FA;".to_vec()).await.unwrap();
+    assert_eq!(answered, b"FA00007030000;".to_vec());
+}
