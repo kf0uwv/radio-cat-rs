@@ -57,11 +57,15 @@ pub(crate) struct CallFormat {
     pub weight: u32,
 }
 
-/// A call area inside an entity: the digit its calls carry, its zones,
-/// and its subdivisions (state/province code as sent in an exchange, with
-/// a few towns each).
+/// A call area inside an entity: the digit its calls carry (and, where
+/// the letters matter too, the prefixes — Canada's VE1 and VO1 are
+/// different areas), its zones, and its subdivisions with a few towns
+/// each. A two-letter subdivision code (a US state, a Canadian province)
+/// is what an exchange sends; a longer one only names the area.
 pub(crate) struct Region {
     pub digit: u8,
+    /// Prefixes this area's calls use; empty for any of the entity's.
+    pub prefixes: &'static [&'static str],
     pub cq: u8,
     #[cfg_attr(not(test), allow(dead_code))] // read by tests; exchanges using it come later
     pub itu: u8,
@@ -107,11 +111,12 @@ impl fmt::Debug for Entity {
         write!(f, "Entity({} {})", self.dxcc, self.name)
     }
 }
-/// Regions compare by digit and zones: within one entity the digit is
-/// unique (checked by a test), and `Home` compares the entity too.
+/// Regions compare by digit, prefixes and zones: within one entity that
+/// is unique (checked by a test), and `Home` compares the entity too.
 impl PartialEq for Region {
     fn eq(&self, other: &Self) -> bool {
-        (self.digit, self.cq, self.itu) == (other.digit, other.cq, other.itu)
+        (self.digit, self.prefixes, self.cq, self.itu)
+            == (other.digit, other.prefixes, other.cq, other.itu)
     }
 }
 impl Eq for Region {}
@@ -122,11 +127,15 @@ impl fmt::Debug for Region {
 }
 
 impl Entity {
-    /// The region whose calls carry `digit`, if the entity has regions.
-    pub(crate) fn region(&self, digit: u8) -> Option<&'static Region> {
+    /// The call area of a call starting `piece` and carrying `digit`, if
+    /// the entity has call areas.
+    pub(crate) fn region(&self, piece: &str, digit: u8) -> Option<&'static Region> {
         // Regions live in `'static` tables, but `&self` may not; look the
         // entity up again to hand out a `'static` borrow.
-        by_dxcc(self.dxcc).regions.iter().find(|r| r.digit == digit)
+        by_dxcc(self.dxcc).regions.iter().find(|r| {
+            r.digit == digit
+                && (r.prefixes.is_empty() || r.prefixes.iter().any(|p| piece.starts_with(p)))
+        })
     }
 }
 
@@ -154,7 +163,24 @@ const fn cf(
     }
 }
 
-/// One table row: an entity with no call-area regions. A macro keeps the
+/// A call area, for the compact table rows below.
+const fn rg(
+    digit: u8,
+    prefixes: &'static [&'static str],
+    cq: u8,
+    itu: u8,
+    subdivisions: &'static [(&'static str, &'static [&'static str])],
+) -> Region {
+    Region {
+        digit,
+        prefixes,
+        cq,
+        itu,
+        subdivisions,
+    }
+}
+
+/// One table row: an entity, with call areas if it has any. A macro keeps the
 /// ~340 rows to a few lines each (rustfmt leaves brace-delimited macro
 /// calls alone).
 macro_rules! ent {
@@ -162,6 +188,7 @@ macro_rules! ent {
         dxcc: $dxcc:expr, name: $name:expr, continent: $cont:ident, cq: $cq:expr, itu: $itu:expr,
         prefixes: [$($p:expr),* $(,)?],
         formats: [$($f:expr),* $(,)?],
+        $(regions: [$($r:expr),* $(,)?],)?
         tag: $tag:expr, iso: $iso:expr,
         towns: [$($t:expr),* $(,)?] $(,)?
     ) => {
@@ -173,7 +200,7 @@ macro_rules! ent {
             itu: $itu,
             prefixes: &[$($p),*],
             formats: &[$($f),*],
-            regions: &[],
+            regions: &[$($($r),*)?],
             tag: $tag,
             iso: $iso,
             towns: &[$($t),*],
@@ -256,6 +283,7 @@ const US_FORMATS: &[CallFormat] = &[
 /// postal codes, as sent in a POTA exchange) with a few towns, and zones.
 pub(crate) const US_REGIONS: &[Region] = &[
     Region {
+        prefixes: &[],
         digit: 1,
         cq: 5,
         itu: 8,
@@ -269,6 +297,7 @@ pub(crate) const US_REGIONS: &[Region] = &[
         ],
     },
     Region {
+        prefixes: &[],
         digit: 2,
         cq: 5,
         itu: 8,
@@ -278,6 +307,7 @@ pub(crate) const US_REGIONS: &[Region] = &[
         ],
     },
     Region {
+        prefixes: &[],
         digit: 3,
         cq: 5,
         itu: 8,
@@ -288,6 +318,7 @@ pub(crate) const US_REGIONS: &[Region] = &[
         ],
     },
     Region {
+        prefixes: &[],
         digit: 4,
         cq: 5,
         itu: 8,
@@ -303,6 +334,7 @@ pub(crate) const US_REGIONS: &[Region] = &[
         ],
     },
     Region {
+        prefixes: &[],
         digit: 5,
         cq: 4,
         itu: 7,
@@ -316,6 +348,7 @@ pub(crate) const US_REGIONS: &[Region] = &[
         ],
     },
     Region {
+        prefixes: &[],
         digit: 6,
         cq: 3,
         itu: 6,
@@ -325,6 +358,7 @@ pub(crate) const US_REGIONS: &[Region] = &[
         )],
     },
     Region {
+        prefixes: &[],
         digit: 7,
         cq: 3,
         itu: 6,
@@ -340,6 +374,7 @@ pub(crate) const US_REGIONS: &[Region] = &[
         ],
     },
     Region {
+        prefixes: &[],
         digit: 8,
         cq: 4,
         itu: 8,
@@ -350,6 +385,7 @@ pub(crate) const US_REGIONS: &[Region] = &[
         ],
     },
     Region {
+        prefixes: &[],
         digit: 9,
         cq: 4,
         itu: 8,
@@ -360,6 +396,7 @@ pub(crate) const US_REGIONS: &[Region] = &[
         ],
     },
     Region {
+        prefixes: &[],
         digit: 0,
         cq: 4,
         itu: 7,
@@ -834,7 +871,14 @@ pub(crate) const WORLD: &[Entity] = &[
             "UG6", "UG7", "UH1", "UH3", "UH4", "UH6", "UH7", "UI1", "UI3", "UI4", "UI6", "UI7"],
         formats: [
             cf(&["UA", "RA", "RW", "RN", "RV", "RU", "RX", "RZ", "R", "UB"],
-                DigitRule::OneOf(&[1, 3, 4, 6, 7]), (2, 3), 1),
+                DigitRule::FromRegion, (2, 3), 1),
+        ],
+        regions: [
+            rg(1, &[], 16, 29, &[("NORTHWEST", &["SANKT PETERBURG", "PSKOV", "ARKHANGELSK"])]),
+            rg(3, &[], 16, 29, &[("CENTRAL", &["MOSKVA", "TULA", "VORONEZH"])]),
+            rg(4, &[], 16, 29, &[("VOLGA", &["KAZAN", "SAMARA", "SARATOV"])]),
+            rg(6, &[], 16, 29, &[("SOUTH", &["KRASNODAR", "ROSTOV", "STAVROPOL"])]),
+            rg(7, &[], 16, 29, &[("NORTH CAUCASUS", &["MAKHACHKALA", "NALCHIK"])]),
         ],
         tag: None, iso: None,
         towns: ["MOSKVA", "KAZAN"],
@@ -916,11 +960,22 @@ pub(crate) const WORLD: &[Entity] = &[
         dxcc: 1, name: "CANADA", continent: Na, cq: 4, itu: 4,
         prefixes: ["VE", "VA", "VO", "VY", "VB", "VC", "VD", "VG", "VX", "XJ", "XK", "XL", "XM",
             "XN", "XO", "CF", "CG", "CH", "CI", "CJ", "CK", "CY"],
-        formats: [
-            cf(&["VE"], DigitRule::OneOf(D1_9), (2, 3), 6),
-            cf(&["VA"], DigitRule::OneOf(&[1, 2, 3, 4, 5, 6, 7]), (2, 3), 3),
-            cf(&["VO"], DigitRule::OneOf(&[1, 2]), (1, 3), 1),
-            cf(&["VY"], DigitRule::OneOf(&[1, 2]), (1, 3), 1),
+        formats: [cf(&["VE", "VA"], DigitRule::FromRegion, (2, 3), 1)],
+        regions: [
+            rg(1, &["VE", "VA"], 5, 9, &[("NS", &["HALIFAX", "SYDNEY"])]),
+            rg(2, &["VE", "VA"], 5, 4, &[("QC", &["MONTREAL", "QUEBEC"])]),
+            rg(3, &["VE", "VA"], 4, 4, &[("ON", &["TORONTO", "OTTAWA", "LONDON"])]),
+            rg(4, &["VE", "VA"], 4, 3, &[("MB", &["WINNIPEG", "BRANDON"])]),
+            rg(5, &["VE", "VA"], 4, 3, &[("SK", &["REGINA", "SASKATOON"])]),
+            rg(6, &["VE", "VA"], 4, 2, &[("AB", &["CALGARY", "EDMONTON"])]),
+            rg(7, &["VE", "VA"], 3, 2, &[("BC", &["VANCOUVER", "VICTORIA", "KELOWNA"])]),
+            rg(8, &["VE"], 1, 2, &[("NT", &["YELLOWKNIFE"])]),
+            rg(9, &["VE"], 5, 9, &[("NB", &["FREDERICTON", "MONCTON"])]),
+            rg(1, &["VO"], 5, 9, &[("NL", &["ST JOHNS", "GANDER"])]),
+            rg(2, &["VO"], 2, 9, &[("NL", &["HAPPY VALLEY"])]),
+            rg(0, &["VY"], 2, 4, &[("NU", &["IQALUIT"])]),
+            rg(1, &["VY"], 1, 2, &[("YT", &["WHITEHORSE"])]),
+            rg(2, &["VY"], 5, 9, &[("PE", &["CHARLOTTETOWN"])]),
         ],
         tag: None, iso: Some("CA"),
         towns: ["TORONTO", "OTTAWA", "CALGARY"],
@@ -1387,7 +1442,18 @@ pub(crate) const WORLD: &[Entity] = &[
         dxcc: 108, name: "BRAZIL", continent: Sa, cq: 11, itu: 15,
         prefixes: ["PP", "PQ", "PR", "PS", "PT", "PU", "PV", "PW", "PX", "PY", "ZV", "ZW", "ZX",
             "ZY", "ZZ"],
-        formats: [cf(&["PY", "PU", "PP", "PT", "PR"], DigitRule::OneOf(D1_9), (2, 3), 1)],
+        formats: [cf(&["PY", "PU", "PP", "PT", "PR"], DigitRule::FromRegion, (2, 3), 1)],
+        regions: [
+            rg(1, &[], 11, 15, &[("RIO DE JANEIRO", &["RIO", "NITEROI"])]),
+            rg(2, &[], 11, 15, &[("SAO PAULO", &["SAO PAULO", "CAMPINAS"])]),
+            rg(3, &[], 11, 15, &[("RIO GRANDE DO SUL", &["PORTO ALEGRE"])]),
+            rg(4, &[], 11, 15, &[("MINAS GERAIS", &["BELO HORIZONTE"])]),
+            rg(5, &[], 11, 15, &[("PARANA", &["CURITIBA", "FLORIANOPOLIS"])]),
+            rg(6, &[], 11, 13, &[("BAHIA", &["SALVADOR"])]),
+            rg(7, &[], 11, 13, &[("NORDESTE", &["RECIFE", "FORTALEZA", "NATAL"])]),
+            rg(8, &[], 11, 13, &[("NORTE", &["BELEM", "SAO LUIS"])]),
+            rg(9, &[], 11, 15, &[("CENTRO OESTE", &["BRASILIA", "GOIANIA"])]),
+        ],
         tag: None, iso: None,
         towns: ["RIO", "RECIFE"],
     },
@@ -2013,7 +2079,19 @@ pub(crate) const WORLD: &[Entity] = &[
     ent! {
         dxcc: 318, name: "CHINA", continent: As, cq: 24, itu: 44,
         prefixes: ["B"],
-        formats: [cf(&["BA", "BD", "BG", "BH", "BI", "BY"], DigitRule::OneOf(D0_9), (2, 3), 1)],
+        formats: [cf(&["BA", "BD", "BG", "BH", "BI", "BY"], DigitRule::FromRegion, (2, 3), 1)],
+        regions: [
+            rg(1, &[], 24, 44, &[("BEIJING", &["BEIJING"])]),
+            rg(2, &[], 24, 33, &[("NORTHEAST", &["HARBIN", "SHENYANG", "CHANGCHUN"])]),
+            rg(3, &[], 24, 44, &[("NORTH", &["TIANJIN", "SHIJIAZHUANG", "TAIYUAN"])]),
+            rg(4, &[], 24, 44, &[("EAST", &["SHANGHAI", "NANJING", "JINAN"])]),
+            rg(5, &[], 24, 44, &[("SOUTHEAST", &["HANGZHOU", "FUZHOU", "NANCHANG"])]),
+            rg(6, &[], 24, 44, &[("CENTRAL", &["WUHAN", "ZHENGZHOU", "HEFEI"])]),
+            rg(7, &[], 24, 44, &[("SOUTH", &["GUANGZHOU", "CHANGSHA", "NANNING"])]),
+            rg(8, &[], 24, 43, &[("SOUTHWEST", &["CHENGDU", "CHONGQING", "KUNMING"])]),
+            rg(9, &[], 23, 43, &[("NORTHWEST", &["LANZHOU", "XINING", "YINCHUAN"])]),
+            rg(0, &[], 23, 42, &[("WEST", &["URUMQI", "LHASA"])]),
+        ],
         tag: None, iso: None,
         towns: ["BEIJING", "SHANGHAI", "CHENGDU"],
     },
@@ -2048,9 +2126,20 @@ pub(crate) const WORLD: &[Entity] = &[
             "8M", "8N"],
         formats: [
             cf(&["JA", "JE", "JF", "JG", "JH", "JI", "JJ", "JK", "JL", "JM", "JN", "JO", "JP",
-                "JQ", "JR"], DigitRule::OneOf(D0_9), (3, 3), 8),
-            cf(&["7K", "7L", "7M", "7N"], DigitRule::OneOf(D0_9), (3, 3), 2),
-            cf(&["JA"], DigitRule::OneOf(D0_9), (2, 2), 1),
+                "JQ", "JR"], DigitRule::FromRegion, (3, 3), 8),
+            cf(&["JA"], DigitRule::FromRegion, (2, 2), 1),
+        ],
+        regions: [
+            rg(1, &[], 25, 45, &[("KANTO", &["TOKYO", "YOKOHAMA", "CHIBA"])]),
+            rg(2, &[], 25, 45, &[("TOKAI", &["NAGOYA", "SHIZUOKA"])]),
+            rg(3, &[], 25, 45, &[("KANSAI", &["OSAKA", "KYOTO", "KOBE"])]),
+            rg(4, &[], 25, 45, &[("CHUGOKU", &["HIROSHIMA", "OKAYAMA"])]),
+            rg(5, &[], 25, 45, &[("SHIKOKU", &["MATSUYAMA", "TAKAMATSU"])]),
+            rg(6, &[], 25, 45, &[("KYUSHU", &["FUKUOKA", "KAGOSHIMA", "NAHA"])]),
+            rg(7, &[], 25, 45, &[("TOHOKU", &["SENDAI", "AOMORI"])]),
+            rg(8, &[], 25, 45, &[("HOKKAIDO", &["SAPPORO", "HAKODATE"])]),
+            rg(9, &[], 25, 45, &[("HOKURIKU", &["KANAZAWA", "TOYAMA"])]),
+            rg(0, &[], 25, 45, &[("SHINETSU", &["NAGANO", "NIIGATA"])]),
         ],
         tag: None, iso: Some("JP"),
         towns: ["TOKYO", "OSAKA", "SAPPORO"],
@@ -2404,7 +2493,12 @@ pub(crate) const WORLD: &[Entity] = &[
             "UF8", "UF9", "UF0", "UG8", "UG9", "UG0", "UH8", "UH9", "UH0", "UI8", "UI9", "UI0"],
         formats: [
             cf(&["UA", "RA", "RW", "RV", "RU", "RX", "RZ", "R", "UB"],
-                DigitRule::OneOf(&[8, 9, 0]), (2, 3), 1),
+                DigitRule::FromRegion, (2, 3), 1),
+        ],
+        regions: [
+            rg(9, &[], 17, 30, &[("URAL", &["YEKATERINBURG", "CHELYABINSK", "PERM"])]),
+            rg(8, &[], 18, 31, &[("SIBERIA", &["NOVOSIBIRSK", "TOMSK", "BARNAUL"])]),
+            rg(0, &[], 19, 34, &[("FAR EAST", &["VLADIVOSTOK", "KHABAROVSK"])]),
         ],
         tag: None, iso: None,
         towns: ["NOVOSIBIRSK", "OMSK", "VLADIVOSTOK"],
@@ -2413,7 +2507,17 @@ pub(crate) const WORLD: &[Entity] = &[
     ent! {
         dxcc: 150, name: "AUSTRALIA", continent: Oc, cq: 30, itu: 59,
         prefixes: ["VK", "AX", "VH", "VI", "VJ", "VL", "VM", "VN", "VZ"],
-        formats: [cf(&["VK"], DigitRule::OneOf(&[1, 2, 3, 4, 5, 6, 7, 8]), (2, 3), 1)],
+        formats: [cf(&["VK"], DigitRule::FromRegion, (2, 3), 1)],
+        regions: [
+            rg(1, &[], 30, 59, &[("CAPITAL TERRITORY", &["CANBERRA"])]),
+            rg(2, &[], 30, 59, &[("NEW SOUTH WALES", &["SYDNEY", "NEWCASTLE"])]),
+            rg(3, &[], 30, 59, &[("VICTORIA", &["MELBOURNE", "GEELONG"])]),
+            rg(4, &[], 30, 55, &[("QUEENSLAND", &["BRISBANE", "CAIRNS"])]),
+            rg(5, &[], 30, 58, &[("SOUTH AUSTRALIA", &["ADELAIDE"])]),
+            rg(6, &[], 29, 58, &[("WESTERN AUSTRALIA", &["PERTH", "BUNBURY"])]),
+            rg(7, &[], 30, 59, &[("TASMANIA", &["HOBART", "LAUNCESTON"])]),
+            rg(8, &[], 29, 55, &[("NORTHERN TERRITORY", &["DARWIN", "ALICE SPRINGS"])]),
+        ],
         tag: None, iso: Some("AU"),
         towns: ["SYDNEY", "PERTH", "HOBART"],
     },
@@ -2469,7 +2573,13 @@ pub(crate) const WORLD: &[Entity] = &[
     ent! {
         dxcc: 170, name: "NEW ZEALAND", continent: Oc, cq: 32, itu: 60,
         prefixes: ["ZL", "ZK", "ZM"],
-        formats: [cf(&["ZL", "ZM"], DigitRule::OneOf(&[1, 2, 3, 4]), (2, 3), 1)],
+        formats: [cf(&["ZL", "ZM"], DigitRule::FromRegion, (2, 3), 1)],
+        regions: [
+            rg(1, &[], 32, 60, &[("AUCKLAND", &["AUCKLAND", "WHANGAREI"])]),
+            rg(2, &[], 32, 60, &[("WELLINGTON", &["WELLINGTON", "NAPIER"])]),
+            rg(3, &[], 32, 60, &[("CANTERBURY", &["CHRISTCHURCH", "NELSON"])]),
+            rg(4, &[], 32, 60, &[("OTAGO", &["DUNEDIN", "INVERCARGILL"])]),
+        ],
         tag: None, iso: None,
         towns: ["AUCKLAND", "NELSON"],
     },
@@ -2935,9 +3045,21 @@ mod tests {
             if e.regions.is_empty() {
                 assert!(!e.towns.is_empty(), "{e:?}");
             }
-            let mut digits = HashSet::new();
-            for r in e.regions {
-                assert!(digits.insert(r.digit), "{e:?} {r:?}");
+            for (i, r) in e.regions.iter().enumerate() {
+                // No call can fall in two areas: same digit means disjoint,
+                // non-empty prefix sets.
+                for q in &e.regions[..i] {
+                    if q.digit == r.digit {
+                        assert!(!r.prefixes.is_empty() && !q.prefixes.is_empty(), "{e:?}");
+                        assert!(
+                            r.prefixes.iter().all(|p| !q.prefixes.contains(p)),
+                            "{e:?} {r:?}"
+                        );
+                    }
+                }
+                for p in r.prefixes {
+                    assert!(e.prefixes.iter().any(|m| p.starts_with(m)), "{e:?} {p}");
+                }
                 assert!(!r.subdivisions.is_empty(), "{e:?} {r:?}");
                 assert!(r.subdivisions.iter().all(|(_, t)| !t.is_empty()));
             }
@@ -2977,9 +3099,9 @@ mod tests {
     #[test]
     fn region_lookup_by_digit() {
         let us = by_dxcc(USA);
-        assert_eq!(us.region(6).unwrap().cq, 3);
-        assert_eq!(us.region(1).unwrap().cq, 5);
-        assert!(by_dxcc(230).region(1).is_none());
+        assert_eq!(us.region("W6", 6).unwrap().cq, 3);
+        assert_eq!(us.region("K1", 1).unwrap().cq, 5);
+        assert!(by_dxcc(230).region("DL1", 1).is_none());
     }
 
     #[test]

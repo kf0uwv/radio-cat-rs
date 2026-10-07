@@ -1,6 +1,6 @@
 # morse_world — task plan: "simulate many calls from all over the world"
 
-Status: APPROVED 2026-10-07 (architect). Tasks 1-2 done; awaiting go for task 3. Branch `feat/morse-world-calls` off
+Status: APPROVED 2026-10-07 (architect). Tasks 1-3 done; awaiting go for task 4. Branch `feat/morse-world-calls` off
 `feat/cat-morse` (PR #17), worktree `../radio-cat-rs-world`. Scope confined to
 `cat-morse/src/scenario/` (+ this planning dir). No changes to score.rs/codec.rs unless an
 open question is answered that way. Parallel agent on `feat/cw-capability` — no overlap expected.
@@ -69,7 +69,7 @@ pub(crate) struct Region { digit: Option<u8>, code: &'static str, cq: u8, itu: u
        `home_of` with slash precedence. Existing tests stay green (re-baseline seeds if needed).
 2. [x] Round-trip + invariant tests, then fill the full DXCC list (~340) in batches by continent
        (EU, NA, SA, AF, AS, OC, AN) — one commit per continent.
-3. [ ] Regions: JA, VE, UA/R, VK, ZL, PY, LU, BY; region-correct zones in contest exchange.
+3. [x] Regions: JA, VE, UA/R, VK, ZL, PY, LU, BY; region-correct zones in contest exchange.
 4. [ ] Activity weighting + operator-home continent bias; distribution tests.
 5. [ ] Regional name pools + towns; persona uses them.
 6. [ ] Portable/slash call generation (`EA8/`, `/P`, `/M`, `/MM`) + score tests pinning slash handling.

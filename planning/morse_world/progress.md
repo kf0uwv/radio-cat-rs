@@ -22,3 +22,7 @@
   Pinned pileup script re-baselined each commit. Per-continent home tests added.
   Final: --all-features 108 lib + 18 + 10 + 1 doc = 137 pass; default 106 + 17 + 10 + 1;
   clippy clean; fmt clean. Uncertainties recorded in findings.md.
+- Fix 1: Malyj Vysotskij (151) is deleted per ADIF 3.1.5; removed; count pinned at 340.
+- Fix 2: Guantanamo = KG4 + exactly 2 letters (EXACT_SUFFIX); KG4A/KG4ABC are US area 4.
+- Task 3 done: region prefixes, 8 entities' call areas with zones, persona region rule.
+  --all-features 110 lib + 18 + 10 + 1 doc = 139 pass; default 108 + 17 + 10 + 1; clippy, fmt clean.

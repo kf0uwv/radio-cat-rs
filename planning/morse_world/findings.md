@@ -78,3 +78,23 @@
   with `add_station` moving to another DX home when a one-call entity (4U1UN,
   4U1ITU, BS7H) is exhausted.
 - world.rs ≈ 3000 lines source; rodata well under the 100 KB budget (no size test yet — task 9).
+
+## Task 3 — call areas with their own zones (2026-10-07)
+- Regions now carry optional `prefixes` (Canada: VE1 NS vs VO1 NL vs VY1 YT), looked up by
+  prefix + digit; `FromRegion` formats draw the area's own letters.
+- Areas added: Canada (14), Japan (0-9), European Russia (1/3/4/6/7), Asiatic Russia
+  (9/8/0), China (BY0-9), Australia (VK1-8), New Zealand (ZL1-4), Brazil (PY1-9); US had 10.
+- Persona region: a two-letter subdivision code (US state, Canadian province) is sent;
+  any longer area name leaves the region as the entity name (JA, UA, VK, ...).
+- Uncertain, flagged:
+  - Canada ITU: VE2 QC = 4 (eastern Quebec is 9), VE8 NT = 2 (geographic; may be 4 in
+    cty.dat), VY0 NU = 4 (spans 2/4/75). CQ values are the usual ones.
+  - Russia: one zone per digit is coarse — real zones follow the oblast (suffix letter).
+    UA0 taken as Far East CQ 19 / ITU 34 (Krasnoyarsk/Irkutsk are CQ 18 / ITU 32);
+    UA8 as Siberia CQ 18 / ITU 31; Volga (4) ITU 29 (parts are 30).
+  - China BY9 taken as CQ 23 / ITU 43 (Shaanxi is CQ 24); BY2 ITU 33.
+  - Brazil PY9 (Centro-Oeste) ITU 15 (Mato Grosso is 12); PY8 ITU 13 (Amazonas is 12).
+  - Japan 7K-7N (always Kanto, digits 1-4) are no longer generated; `home_of` still
+    reads 7K3ABC as area 3. Argentina LU areas left out: digit-to-province mapping not
+    known with confidence.
+  - Regions are drawn uniformly (VY0 as often as VE3) until task 4's weighting.

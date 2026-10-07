@@ -208,12 +208,13 @@ pub(crate) fn home_of(call: &Callsign) -> Option<Home> {
         }
         designator = Some(piece);
     }
-    let (entity, digit_from) = match designator {
-        Some(d) if d.bytes().all(|b| b.is_ascii_digit()) => (entity_of(base)?, d),
-        Some(d) => (entity_of(d)?, d),
-        None => (entity_of(base)?, base),
+    // The piece naming the call area's prefix, and the one carrying its digit.
+    let (entity, prefix_from, digit_from) = match designator {
+        Some(d) if d.bytes().all(|b| b.is_ascii_digit()) => (entity_of(base)?, base, d),
+        Some(d) => (entity_of(d)?, d, d),
+        None => (entity_of(base)?, base, base),
     };
-    let region = first_digit(digit_from).and_then(|d| entity.region(d));
+    let region = first_digit(digit_from).and_then(|d| entity.region(prefix_from, d));
     Some(Home { entity, region })
 }
 
@@ -242,15 +243,19 @@ fn pick_weighted<'a, T>(rng: &mut Rng, items: &'a [T], weight: impl Fn(&T) -> u3
 
 /// A call of format `f`, from `home`.
 fn call_in_format(rng: &mut Rng, f: &CallFormat, home: &Home) -> String {
-    let p = rng.pick(f.prefixes);
-    let digit = match f.digit {
-        DigitRule::InPrefix => String::new(),
-        DigitRule::OneOf(d) => rng.pick(d).to_string(),
-        DigitRule::FromRegion => home
-            .region
-            .unwrap_or_else(|| rng.pick(home.entity.regions))
-            .digit
-            .to_string(),
+    let (p, digit) = match f.digit {
+        DigitRule::InPrefix => (*rng.pick(f.prefixes), String::new()),
+        DigitRule::OneOf(d) => (*rng.pick(f.prefixes), rng.pick(d).to_string()),
+        DigitRule::FromRegion => {
+            let r = home.region.unwrap_or_else(|| rng.pick(home.entity.regions));
+            // An area with its own letters (VO1, VY2) draws from them.
+            let prefixes = if r.prefixes.is_empty() {
+                f.prefixes
+            } else {
+                r.prefixes
+            };
+            (*rng.pick(prefixes), r.digit.to_string())
+        }
     };
     let n = rng.range_u32(f.suffix.0, f.suffix.1);
     let mut s = format!("{p}{digit}{}", letters(rng, n));
@@ -597,6 +602,39 @@ mod tests {
         assert_eq!(name("CE9AB"), "ANTARCTICA");
         assert_eq!(name("RI1ANA"), "ANTARCTICA");
         assert_eq!(name("3Y0AB/P"), "PETER I IS");
+    }
+
+    #[test]
+    fn call_areas_carry_their_own_zones() {
+        let zones = |c: &str| {
+            let home = h(c).unwrap_or_else(|| panic!("{c}"));
+            let r = home
+                .region
+                .unwrap_or_else(|| panic!("{c} has no call area"));
+            (home.cq(), r.itu)
+        };
+        // Canada: the letters matter as well as the digit (VE1 vs VO1).
+        assert_eq!(zones("VE1ABC"), (5, 9));
+        assert_eq!(zones("VO1ABC"), (5, 9));
+        assert_eq!(zones("VO2AB"), (2, 9));
+        assert_eq!(zones("VE3ABC"), (4, 4));
+        assert_eq!(zones("VA3ABC"), (4, 4));
+        assert_eq!(zones("VE7ABC"), (3, 2));
+        assert_eq!(zones("VY1AB"), (1, 2));
+        assert_eq!(zones("VE3/W1XYZ"), (4, 4));
+        assert_eq!(zones("JA1ABC"), (25, 45));
+        assert_eq!(zones("UA3ABC"), (16, 29));
+        assert_eq!(zones("UA9ABC"), (17, 30));
+        assert_eq!(zones("UA0ABC"), (19, 34));
+        assert_eq!(zones("BY1ABC"), (24, 44));
+        assert_eq!(zones("BY0ABC"), (23, 42));
+        assert_eq!(zones("VK6ABC"), (29, 58));
+        assert_eq!(zones("VK4ABC"), (30, 55));
+        assert_eq!(zones("ZL3ABC"), (32, 60));
+        assert_eq!(zones("PY2ABC"), (11, 15));
+        assert_eq!(zones("PY8ABC"), (11, 13));
+        // A call area off the table leaves the entity's default zone.
+        assert!(h("VE0ABC").unwrap().region.is_none());
     }
 
     #[test]

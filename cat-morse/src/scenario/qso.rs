@@ -87,10 +87,17 @@ fn persona(rng: &mut Rng, call: Callsign, home: Option<Home>, portable: bool) ->
                 NAMES_DX
             };
             let (qth, region) = match home.region {
-                // A call area: a state/province within it, as an exchange sends it.
+                // A call area: a town in one of its subdivisions; the region
+                // is a state/province code an exchange sends (two letters),
+                // else the entity.
                 Some(r) => {
                     let (code, towns) = rng.pick(r.subdivisions);
-                    (pick_str(rng, towns), (*code).to_string())
+                    let region = if code.len() == 2 {
+                        (*code).to_string()
+                    } else {
+                        home.entity.name.to_string()
+                    };
+                    (pick_str(rng, towns), region)
                 }
                 None => (
                     pick_str(rng, home.entity.towns),
@@ -152,7 +159,7 @@ fn sota_home(assoc: &str, rng: &mut Rng) -> Home {
         let entity = by_dxcc(USA);
         Home {
             entity,
-            region: entity.region(d),
+            region: entity.region("W", d),
         }
     };
     let dx = |dxcc: u16| Home {

@@ -571,6 +571,24 @@ mod tests {
         assert_eq!(s.me.region, "GERMANY");
     }
 
+    #[test]
+    fn call_area_operators_get_their_area_zone_and_region() {
+        let me = |call: &str| {
+            let mut c = cfg(ScenarioKind::RagChew, 2);
+            c.my_call = Callsign::parse(call).unwrap();
+            generate(&c).unwrap().me
+        };
+        // A Canadian sends a two-letter province, as a POTA exchange does.
+        let ve = me("VE7ABC");
+        assert_eq!((ve.zone, ve.region.as_str()), (3, "BC"));
+        assert_eq!(me("VE3ABC").zone, 4);
+        // Elsewhere the region is the entity; the zone is the call area's.
+        let ja = me("JA8ABC");
+        assert_eq!((ja.zone, ja.region.as_str()), (25, "JAPAN"));
+        let ua = me("UA0ABC");
+        assert_eq!((ua.zone, ua.region.as_str()), (19, "ASIATIC RUSSIA"));
+    }
+
     #[cfg(feature = "serde")]
     #[test]
     fn script_round_trips_through_json() {
