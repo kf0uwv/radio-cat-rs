@@ -465,3 +465,13 @@ As planned in task_plan.md, plus the addendum. `TaskFn` is `+ Send`.
 - 3 (Windows rigctl read cache): recorded in task_plan.md as a follow-up.
 - 4 checks: test 977/0/3; clippy, fmt, xwin check, xwin clippy, xwin
   cat-signal-audio device, actionlint -- all clean.
+
+## Release-only modem lines / queue-bypassing PTT release (2026-10-06)
+User-approved (ADR 0021). Commits adedf61 (decision + ADR), a256759 (core
+accessor), 8e1b2c8 (serial dup / DuplicateHandle), 1de6aef (RFC 2217),
+c386ef9 (cat-server ReleaseLines + release_now_bypassing_queue).
+Red-first evidence: queue-only stub -> "release took 399.6ms".
+Checks: test 993/0/3; clippy, fmt, xwin check (0 warnings), xwin clippy,
+xwin cat-signal-audio device, actionlint -- all clean. Windows tests
+type-check here; they run in CI's windows job.
+Status: DONE, stopped. Not pushed, not merged. ts570d untouched.
