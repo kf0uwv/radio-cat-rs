@@ -252,6 +252,45 @@ fn a_session_over_the_port_reports_its_modem_lines() {
 }
 
 #[test]
+fn release_lines_drive_dtr_with_the_port_still_open() {
+    // ADR 0021: a broker takes these once and uses them to un-key while its
+    // worker holds the session. They must reach the peer while the reader
+    // is parked and the primary port is in use, and dropping them must not
+    // disconnect the port.
+    let fake = spawn_server();
+    let port = connect(&fake, Rfc2217Config::default());
+
+    port.set_dtr(true).expect("key through the port");
+    let release = port
+        .release_lines()
+        .expect("an RFC 2217 port has release lines");
+    release
+        .set_dtr(false)
+        .expect("release through the duplicate");
+    eventually("DTR keyed then released via release lines", || {
+        fake.observed.lock().unwrap().dtr == vec![false, true, false]
+    });
+
+    drop(release);
+    port.set_dtr(true)
+        .expect("the port still works after the release lines drop");
+    eventually("the port still reaches the peer", || {
+        fake.observed.lock().unwrap().dtr == vec![false, true, false, true]
+    });
+}
+
+#[test]
+fn release_lines_report_an_error_once_the_port_has_disconnected() {
+    // Dropping the port disconnects (see its Drop). Release lines that
+    // outlive it must say so, not pretend.
+    let fake = spawn_server();
+    let port = connect(&fake, Rfc2217Config::default());
+    let release = port.release_lines().expect("release lines");
+    drop(port);
+    assert!(release.set_dtr(false).is_err());
+}
+
+#[test]
 fn a_255_byte_in_a_cat_response_is_not_mistaken_for_telnet() {
     // Not a real Kenwood response, but the transparency rule has to hold
     // for any byte or the framing layer above will see a truncated one.
