@@ -467,7 +467,7 @@ As planned in task_plan.md, plus the addendum. `TaskFn` is `+ Send`.
   cat-signal-audio device, actionlint -- all clean.
 
 ## Release-only modem lines / queue-bypassing PTT release (2026-10-06)
-User-approved (ADR 0021). Commits adedf61 (decision + ADR), a256759 (core
+User-approved (ADR 0022). Commits adedf61 (decision + ADR), a256759 (core
 accessor), 8e1b2c8 (serial dup / DuplicateHandle), 1de6aef (RFC 2217),
 c386ef9 (cat-server ReleaseLines + release_now_bypassing_queue).
 Red-first evidence: queue-only stub -> "release took 399.6ms".
@@ -475,3 +475,9 @@ Checks: test 993/0/3; clippy, fmt, xwin check (0 warnings), xwin clippy,
 xwin cat-signal-audio device, actionlint -- all clean. Windows tests
 type-check here; they run in CI's windows job.
 Status: DONE, stopped. Not pushed, not merged. ts570d untouched.
+
+## ADR renumbered 0021 -> 0022 (2026-10-06)
+feat/cat-morse already holds `docs/adr/0021-cat-morse.md`. The release-lines
+ADR is now `0022-queue-bypassing-ptt-release.md`; every file reference is
+updated. Commit messages adedf61..c386ef9 still say "ADR 0021" (history is
+not rewritten) -- read those as ADR 0022.

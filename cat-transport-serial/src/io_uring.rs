@@ -476,7 +476,7 @@ impl Transport for SerialPort {
         Some(self)
     }
 
-    /// An owned `dup` of the port's fd (ADR 0021). `None` only if the
+    /// An owned `dup` of the port's fd (ADR 0022). `None` only if the
     /// duplicate cannot be made (e.g. `EMFILE`); the broker then falls back
     /// to its ordered queue.
     fn release_lines(&self) -> Option<Box<dyn ModemControlLines + Send + Sync>> {
@@ -614,7 +614,7 @@ impl SerialPort {
 }
 
 /// An owned duplicate of a [`SerialPort`]'s fd, used only to drive its
-/// modem lines (ADR 0021).
+/// modem lines (ADR 0022).
 ///
 /// Holds its own reference to the open tty, so -- unlike a captured raw fd
 /// -- its number cannot be closed under it and reused by another device.
@@ -987,7 +987,7 @@ mod tests {
 
     #[test]
     fn release_lines_are_a_distinct_fd_on_the_same_device() {
-        // ADR 0021: an owned duplicate, not the primary's number.
+        // ADR 0022: an owned duplicate, not the primary's number.
         let pair = TestPtyPair::new();
         let slave = pair.slave_path().to_string();
 

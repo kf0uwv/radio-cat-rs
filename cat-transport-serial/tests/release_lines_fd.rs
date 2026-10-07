@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Release lines (ADR 0021) must not leak a file descriptor.
+//! Release lines (ADR 0022) must not leak a file descriptor.
 //!
 //! Its own test binary, with exactly one test, because it counts
 //! `/proc/self/fd`: any other test running in parallel in the same process

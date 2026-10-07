@@ -253,7 +253,7 @@ fn a_session_over_the_port_reports_its_modem_lines() {
 
 #[test]
 fn release_lines_drive_dtr_with_the_port_still_open() {
-    // ADR 0021: a broker takes these once and uses them to un-key while its
+    // ADR 0022: a broker takes these once and uses them to un-key while its
     // worker holds the session. They must reach the peer while the reader
     // is parked and the primary port is in use, and dropping them must not
     // disconnect the port.

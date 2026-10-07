@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn a_scripted_session_has_no_release_lines() {
         // The default: an in-memory session has no wire to duplicate, so a
-        // broker over it must fall back to its ordered queue (ADR 0021).
+        // broker over it must fall back to its ordered queue (ADR 0022).
         let session = ScriptedCatSession::with_script([]);
         assert!(session.release_lines().is_none());
         assert!(session.modem_lines().is_none());

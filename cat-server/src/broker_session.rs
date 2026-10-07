@@ -66,7 +66,7 @@ impl BrokerCatSession {
 
     /// **De-key now**, skipping the broker's ordered queue and any CAT
     /// exchange in flight. See
-    /// [`crate::BrokerHandle::release_now_bypassing_queue`] (ADR 0021).
+    /// [`crate::BrokerHandle::release_now_bypassing_queue`] (ADR 0022).
     ///
     /// **Only de-keying / safe-state actions may use this.** Assert PTT with
     /// [`Self::submit_task`]. If the session has no release lines this falls

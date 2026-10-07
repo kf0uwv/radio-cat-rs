@@ -324,7 +324,7 @@ impl Rfc2217Port {
     }
 }
 
-/// Release lines for an [`Rfc2217Port`] (ADR 0021): a second owner of the
+/// Release lines for an [`Rfc2217Port`] (ADR 0022): a second owner of the
 /// port's shared state, so a broker can un-key while its worker holds the
 /// port mid-exchange.
 ///

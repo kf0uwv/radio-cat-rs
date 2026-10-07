@@ -113,7 +113,7 @@ where
 {
     broker: Broker<C, S, F>,
     receiver: mpsc::Receiver<Job>,
-    /// Closes the release lines (ADR 0021) when the worker is dropped.
+    /// Closes the release lines (ADR 0022) when the worker is dropped.
     _release: ReleaseLinesCloser,
 }
 
@@ -261,7 +261,7 @@ where
     F: CatWireFormat + Default + Clone,
 {
     // Before the session moves into the broker: afterwards it is reachable
-    // only through the worker thread's exclusive borrow (ADR 0021).
+    // only through the worker thread's exclusive borrow (ADR 0022).
     let release = ReleaseLines::from_session(&session);
     let broker = Broker::with_timeout(session, table, request_timeout);
     let (sender, receiver) = mpsc::channel();

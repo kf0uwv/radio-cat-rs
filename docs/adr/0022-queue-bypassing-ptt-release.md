@@ -1,4 +1,4 @@
-# 21. A PTT release that does not wait for the queue: owned release-only modem lines
+# 22. A PTT release that does not wait for the queue: owned release-only modem lines
 
 Date: 2026-10-06
 

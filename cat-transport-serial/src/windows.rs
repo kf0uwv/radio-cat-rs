@@ -476,7 +476,7 @@ impl Transport for SerialPort {
         Some(self)
     }
 
-    /// An owned `DuplicateHandle` of the port's handle (ADR 0021). `None`
+    /// An owned `DuplicateHandle` of the port's handle (ADR 0022). `None`
     /// only if the duplicate cannot be made; the broker then falls back to
     /// its ordered queue.
     fn release_lines(&self) -> Option<Box<dyn ModemControlLines + Send + Sync>> {
@@ -572,7 +572,7 @@ impl ModemControlLines for SerialPort {
 }
 
 /// An owned duplicate of a [`SerialPort`]'s handle, used only to drive its
-/// modem lines (ADR 0021).
+/// modem lines (ADR 0022).
 ///
 /// `DuplicateHandle` (via `BorrowedHandle::try_clone_to_owned`, same access,
 /// not inheritable): it holds its own reference to the open COM port, so

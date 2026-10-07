@@ -61,7 +61,7 @@ pub trait Transport {
     }
 
     /// An **owned duplicate** of this transport's modem lines, independent of
-    /// any borrow of the transport, for de-keying only (ADR 0021).
+    /// any borrow of the transport, for de-keying only (ADR 0022).
     ///
     /// Defaulted to `None`. A transport with real lines returns something
     /// that holds its own reference to the device (a `dup`'d fd, a

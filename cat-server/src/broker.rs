@@ -480,7 +480,7 @@ where
 {
     broker: Broker<C, S, F>,
     receiver: Receiver<Job>,
-    /// Closes the release lines (ADR 0021) when the worker is dropped.
+    /// Closes the release lines (ADR 0022) when the worker is dropped.
     _release: ReleaseLinesCloser,
 }
 
@@ -552,7 +552,7 @@ impl BrokerHandle {
     /// **De-key now**: run `run` immediately, on the calling thread, against
     /// the broker's release lines -- an owned duplicate of the session's
     /// modem lines -- **skipping the ordered queue** and any CAT exchange
-    /// in flight (ADR 0021).
+    /// in flight (ADR 0022).
     ///
     /// **Only de-keying / safe-state actions may use this** (releasing PTT,
     /// dropping a keying line). It deliberately gives up ordering against
@@ -628,7 +628,7 @@ where
     S::Error: std::error::Error + 'static,
 {
     // Before the session moves into the broker: afterwards it is reachable
-    // only through the worker's exclusive borrow (ADR 0021).
+    // only through the worker's exclusive borrow (ADR 0022).
     let release = ReleaseLines::from_session(&session);
     let broker = Broker::with_timeout(session, table, request_timeout);
     let (sender, receiver) = local_channel::channel();

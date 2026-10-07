@@ -275,7 +275,7 @@ The closure never holds it, so it cannot outlive it. No `Arc`, no `dup`, no
 fd smuggled past the broker.
 
 > **Superseded for the PTT *release* path only (2026-10-06, user-approved):**
-> see "Decision: release-only modem lines" below and ADR 0021. The assert
+> see "Decision: release-only modem lines" below and ADR 0022. The assert
 > path (`submit_task`) keeps the borrow-only design.
 
 Also killed: my option (D), "return an error rather than touch a closed fd".
@@ -463,7 +463,7 @@ cat-signal-audio device, actionlint).
 ## Decision: release-only modem lines (2026-10-06) -- USER-APPROVED
 
 Supersedes v2's "No `Arc`, no `dup`" for one purpose: de-keying. Recorded in
-`docs/adr/0021-queue-bypassing-ptt-release.md` (and an amendment note on
+`docs/adr/0022-queue-bypassing-ptt-release.md` (and an amendment note on
 ADR 0003).
 
 ### Rationale

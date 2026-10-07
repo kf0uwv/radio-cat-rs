@@ -79,7 +79,7 @@ static DEFINITIONS: &[CommandDefinition<FakeCommand>] = &[
 pub static TABLE: CommandTable<FakeCommand> = CommandTable::new(DEFINITIONS);
 
 // ---------------------------------------------------------------------
-// Release-lines fixtures (ADR 0021), shared by the Linux and Windows
+// Release-lines fixtures (ADR 0022), shared by the Linux and Windows
 // broker tests so both backends are held to the same script.
 // ---------------------------------------------------------------------
 

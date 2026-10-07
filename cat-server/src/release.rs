@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! The broker's release lines: an owned duplicate of the session's modem
-//! lines, used only to de-key without waiting for the queue (ADR 0021).
+//! lines, used only to de-key without waiting for the queue (ADR 0022).
 //!
 //! One definition, shared by the Linux (`crate::broker`) and Windows
 //! (`crate::worker_windows`) backends so the bypass cannot behave
@@ -91,7 +91,7 @@ impl ReleaseLines {
                 drop(guard);
                 if self.should_warn_of_fallback() {
                     tracing::warn!(
-                        "PTT release: this session has no release lines (ADR 0021), so the \
+                        "PTT release: this session has no release lines (ADR 0022), so the \
                          release is going through the broker's ordered queue and may wait \
                          behind a CAT exchange"
                     );
