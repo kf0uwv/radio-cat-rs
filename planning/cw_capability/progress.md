@@ -110,3 +110,19 @@ not start before that.
   clean.
 - T8 done: ADR radio-repo checklist; abort-latency bound in the
   supervisor's crate docs. Final commit: workspace 0.9.0 + Cargo.lock.
+
+## 2026-10-07 — safety review fixes (planning/code_review/findings.md)
+
+1. e4cec18 ready ≠ idle: keyed_until estimate gates every next chunk,
+   completion, drain and restore; buffer-space fake + 14-chunk scenario.
+2. e4af570 raw CAT gated: BrokerHandle::gated (Linux + Windows),
+   raw_cat_handle in run_with_native.
+3. dd5c9ec keyer speed: refused while live (incl. queued-before-arm);
+   CheckSpeed before each chunk re-plans at a new speed.
+4. 193aa79 owed ID: CwState.id_owed + IdOwed notice; never auto-sent.
+5. 6e9af7d fail closed on poison; serves_cw re-read per message.
+6. this commit's predecessor: 4:1 dash estimate. Radio-declared weighting
+   not added (would be another capability field) -- conservative always.
+Mutation checks along the way caught two vacuous tests (raw-CAT probe
+hit the command table; drip test decoded zeros), both fixed.
+Workspace 1283/0/3; clippy, fmt, xwin clean.
