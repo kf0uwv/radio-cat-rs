@@ -22,8 +22,7 @@
 
 use std::time::Duration;
 
-use super::callsign::{dx_call, us_call, Callsign};
-use super::data::DX;
+use super::callsign::{call_from, Callsign, Home};
 use super::{Difficulty, ScenarioError};
 use crate::rng::Rng;
 use crate::synth::{Awgn, Channel, Qrn, Qsb, RxFilter, Signal};
@@ -322,12 +321,12 @@ pub fn band_channel(
     if let Some(q) = band.qrm {
         let hit = rng_qrm.chance(q.chance);
         if hit && over_end >= Duration::from_secs(1) {
-            let call_text = if rng_qrm.chance(0.7) {
-                us_call(&mut rng_qrm, None)
+            let home = if rng_qrm.chance(0.7) {
+                Home::random_us(&mut rng_qrm)
             } else {
-                let e = rng_qrm.pick(DX);
-                dx_call(&mut rng_qrm, e)
+                Home::random_dx(&mut rng_qrm)
             };
+            let call_text = call_from(&mut rng_qrm, &home);
             let call = Callsign::parse(&call_text).expect("generated calls are well formed");
             let text = match rng_qrm.range_u32(0, 2) {
                 0 => format!("CQ CQ DE {call} {call} K"),

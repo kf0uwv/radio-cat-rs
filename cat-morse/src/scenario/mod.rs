@@ -44,6 +44,7 @@ mod band;
 mod callsign;
 mod data;
 mod qso;
+mod world;
 
 use std::time::Duration;
 

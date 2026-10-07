@@ -17,7 +17,8 @@
 
 use std::fmt;
 
-use super::data::{CallArea, DxEntity, DX, LETTERS, RESERVED_CALLS, SUFFIX_FIRST, US_AREAS};
+use super::data::{LETTERS, RESERVED_CALLS, SUFFIX_FIRST};
+use super::world::{by_dxcc, CallFormat, DigitRule, Entity, Region, USA, WORLD};
 use super::ScenarioError;
 use crate::rng::Rng;
 
@@ -103,81 +104,92 @@ impl fmt::Display for Callsign {
     }
 }
 
-/// Where a callsign is from, as far as a QSO needs to know.
+/// Where a callsign is from, as far as a QSO needs to know: its DXCC
+/// entity and, where the entity has call areas, which one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Home {
-    Us(&'static CallArea),
-    Dx(&'static DxEntity),
+pub(crate) struct Home {
+    pub entity: &'static Entity,
+    pub region: Option<&'static Region>,
 }
 
-#[cfg(test)]
 impl Home {
-    fn zone(&self) -> u8 {
-        match self {
-            Home::Us(a) => a.zone,
-            Home::Dx(e) => e.zone,
-        }
+    /// CQ zone: the region's if known, else the entity's.
+    pub(crate) fn cq(&self) -> u8 {
+        self.region.map_or(self.entity.cq, |r| r.cq)
+    }
+
+    /// A home in `entity`, in a random region if it has any.
+    pub(crate) fn random_in(rng: &mut Rng, entity: &'static Entity) -> Home {
+        let region = if entity.regions.is_empty() {
+            None
+        } else {
+            Some(rng.pick(entity.regions))
+        };
+        Home { entity, region }
+    }
+
+    /// A home somewhere in the US.
+    pub(crate) fn random_us(rng: &mut Rng) -> Home {
+        Home::random_in(rng, by_dxcc(USA))
+    }
+
+    /// A home anywhere outside the US.
+    pub(crate) fn random_dx(rng: &mut Rng) -> Home {
+        let dx: Vec<&'static Entity> = WORLD.iter().filter(|e| e.dxcc != USA).collect();
+        let e = *rng.pick(&dx);
+        Home::random_in(rng, e)
     }
 }
 
-impl PartialEq for CallArea {
-    fn eq(&self, other: &Self) -> bool {
-        self.digit == other.digit
-    }
-}
-impl Eq for CallArea {}
-impl fmt::Debug for CallArea {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "CallArea({})", self.digit)
-    }
-}
-impl PartialEq for DxEntity {
-    fn eq(&self, other: &Self) -> bool {
-        self.country == other.country
-    }
-}
-impl Eq for DxEntity {}
-impl fmt::Debug for DxEntity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "DxEntity({})", self.country)
-    }
-}
+/// `/`-pieces that say how a station operates, not where.
+const MODIFIERS: &[&str] = &["P", "M", "A", "B", "QRP"];
+/// `/`-pieces that put a station in no DXCC entity at all.
+const NO_ENTITY: &[&str] = &["MM", "AM"];
 
-fn is_us_prefix(p: &str) -> bool {
-    let b = p.as_bytes();
-    match b {
-        [k] => matches!(k, b'K' | b'N' | b'W'),
-        [a, c] => {
-            (matches!(a, b'K' | b'N' | b'W') && c.is_ascii_uppercase())
-                || (*a == b'A' && (b'A'..=b'L').contains(c))
-        }
-        _ => false,
-    }
-}
-
-/// Infers where `call` is from by its prefix. Unknown prefixes return
-/// `None`; the caller picks a generic home.
-pub(crate) fn home_of(call: &Callsign) -> Option<Home> {
-    let base = call.base();
-    let digit_at = base.find(|c: char| c.is_ascii_digit())?;
-    // Longest DX prefix match first (HB9 before H, 9A before 9).
-    let mut best: Option<(&'static DxEntity, usize)> = None;
-    for e in DX {
+/// The entity whose prefix is the longest one `piece` starts with.
+fn entity_of(piece: &str) -> Option<&'static Entity> {
+    let mut best: Option<(&'static Entity, usize)> = None;
+    for e in WORLD {
         for p in e.prefixes {
-            if base.starts_with(p) && best.map_or(true, |(_, l)| p.len() > l) {
+            if piece.starts_with(p) && best.map_or(true, |(_, l)| p.len() > l) {
                 best = Some((e, p.len()));
             }
         }
     }
-    if let Some((e, _)) = best {
-        return Some(Home::Dx(e));
+    best.map(|(e, _)| e)
+}
+
+fn first_digit(piece: &str) -> Option<u8> {
+    piece.bytes().find(u8::is_ascii_digit).map(|b| b - b'0')
+}
+
+/// Infers where `call` is from by its prefix, longest match first (`HB9`
+/// before `H`, `9A` before `9`).
+///
+/// A location designator wins over the home call: `EA8/DL1ABC` is in the
+/// Canaries, `W1ABC/KH6` in Hawaii, `W1ABC/4` in US call area 4. Operating
+/// modifiers (`/P`, `/M`, `/A`, `/QRP`) are ignored; `/MM` and `/AM` are in
+/// no entity. Unknown prefixes return `None`; the caller picks a generic
+/// home.
+pub(crate) fn home_of(call: &Callsign) -> Option<Home> {
+    let base = call.base();
+    let mut designator: Option<&str> = None;
+    for piece in call.as_str().split('/') {
+        if std::ptr::eq(piece, base) || MODIFIERS.contains(&piece) {
+            continue;
+        }
+        if NO_ENTITY.contains(&piece) {
+            return None;
+        }
+        designator = Some(piece);
     }
-    let prefix = &base[..digit_at];
-    if is_us_prefix(prefix) {
-        let d = base.as_bytes()[digit_at] - b'0';
-        return US_AREAS.iter().find(|a| a.digit == d).map(Home::Us);
-    }
-    None
+    let (entity, digit_from) = match designator {
+        Some(d) if d.bytes().all(|b| b.is_ascii_digit()) => (entity_of(base)?, d),
+        Some(d) => (entity_of(d)?, d),
+        None => (entity_of(base)?, base),
+    };
+    let region = first_digit(digit_from).and_then(|d| entity.region(d));
+    Some(Home { entity, region })
 }
 
 fn letters(rng: &mut Rng, n: u32) -> String {
@@ -189,46 +201,40 @@ fn letters(rng: &mut Rng, n: u32) -> String {
     s
 }
 
-/// A US call of a real format: 1x2, 2x1, 2x2, 1x3 or 2x3, weighted
-/// towards the common 1x3 and 2x3. Occasionally Alaska or Hawaii.
-pub(crate) fn us_call(rng: &mut Rng, area: Option<&CallArea>) -> String {
-    let one = [b'K', b'N', b'W'];
-    let two_first = [b'K', b'N', b'W', b'A'];
-    let digit = area.map_or_else(|| rng.range_u32(0, 9), |a| u32::from(a.digit));
-    let two = |rng: &mut Rng, kw_only: bool| -> String {
-        let first = if kw_only {
-            *rng.pick(b"KW")
-        } else {
-            *rng.pick(&two_first)
-        };
-        let second = if first == b'A' {
-            b'A' + rng.range_u32(0, 11) as u8
-        } else {
-            *rng.pick(LETTERS)
-        };
-        format!("{}{}", first as char, second as char)
-    };
-    let roll = rng.range_u32(0, 99);
-    let (prefix, n) = match roll {
-        0..=9 => ((*rng.pick(&one) as char).to_string(), 2),
-        10..=14 => (two(rng, false), 1),
-        15..=29 => (two(rng, false), 2),
-        30..=64 => ((*rng.pick(&one) as char).to_string(), 3),
-        _ => (two(rng, true), 3),
-    };
-    format!("{prefix}{digit}{}", letters(rng, n))
+/// One of `items`, drawn in proportion to `weight`.
+fn pick_weighted<'a, T>(rng: &mut Rng, items: &'a [T], weight: impl Fn(&T) -> u32) -> &'a T {
+    let total: u32 = items.iter().map(&weight).sum();
+    let mut roll = rng.range_u32(0, total - 1);
+    for it in items {
+        let w = weight(it);
+        if roll < w {
+            return it;
+        }
+        roll -= w;
+    }
+    items.last().expect("non-empty")
 }
 
-/// A call from DX entity `e`.
-pub(crate) fn dx_call(rng: &mut Rng, e: &DxEntity) -> String {
-    let p = rng.pick(e.prefixes);
-    let digit = if e.add_digit {
-        rng.range_u32(1, 9).to_string()
-    } else {
-        String::new()
+/// A call of format `f`, from `home`.
+fn call_in_format(rng: &mut Rng, f: &CallFormat, home: &Home) -> String {
+    let p = rng.pick(f.prefixes);
+    let digit = match f.digit {
+        DigitRule::InPrefix => String::new(),
+        DigitRule::OneOf(d) => rng.pick(d).to_string(),
+        DigitRule::FromRegion => home
+            .region
+            .unwrap_or_else(|| rng.pick(home.entity.regions))
+            .digit
+            .to_string(),
     };
-    let n = rng.range_u32(e.suffix_len.0, e.suffix_len.1);
+    let n = rng.range_u32(f.suffix.0, f.suffix.1);
     format!("{p}{digit}{}", letters(rng, n))
+}
+
+/// A call of a real format for `home`'s entity (and call area).
+pub(crate) fn call_from(rng: &mut Rng, home: &Home) -> String {
+    let f = pick_weighted(rng, home.entity.formats, |f| f.weight);
+    call_in_format(rng, f, home)
 }
 
 /// A fresh call not equal to `my_call` or any in `taken`, nor reserved.
@@ -281,11 +287,27 @@ mod tests {
         }
     }
 
+    /// A lower-48 US prefix: `K`/`N`/`W`, or two letters of those plus
+    /// any letter but `H`/`L`/`P`, or `AA`–`AK` less `AH`.
+    fn is_us_prefix(p: &str) -> bool {
+        match p.as_bytes() {
+            [k] => matches!(k, b'K' | b'N' | b'W'),
+            [a, c] => {
+                (matches!(a, b'K' | b'N' | b'W')
+                    && c.is_ascii_uppercase()
+                    && !matches!(c, b'H' | b'L' | b'P'))
+                    || (*a == b'A' && (b'A'..=b'K').contains(c) && *c != b'H')
+            }
+            _ => false,
+        }
+    }
+
     #[test]
     fn us_calls_follow_fcc_formats() {
         let mut rng = Rng::new(1);
         for _ in 0..2000 {
-            let s = us_call(&mut rng, None);
+            let home = Home::random_us(&mut rng);
+            let s = call_from(&mut rng, &home);
             let d = s.find(|c: char| c.is_ascii_digit()).unwrap();
             let (pre, suf) = (&s[..d], &s[d + 1..]);
             assert!(is_us_prefix(pre), "{s}");
@@ -297,18 +319,89 @@ mod tests {
                 "{s}"
             );
             assert!(!suf.starts_with('Q') && !suf.starts_with('X'), "{s}");
+            assert_eq!(s.as_bytes()[d] - b'0', home.region.unwrap().digit, "{s}");
             assert!(Callsign::parse(&s).is_ok());
         }
     }
 
     #[test]
+    fn every_format_round_trips_to_its_entity_and_region() {
+        let mut rng = Rng::new(7);
+        for e in WORLD {
+            for f in e.formats {
+                for _ in 0..50 {
+                    let home = Home::random_in(&mut rng, e);
+                    let s = call_in_format(&mut rng, f, &home);
+                    let c = Callsign::parse(&s).unwrap_or_else(|_| panic!("{s}"));
+                    let back = home_of(&c).unwrap_or_else(|| panic!("{s} has no home"));
+                    assert_eq!(back, home, "{s}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn weighted_formats_are_all_reached() {
+        let mut rng = Rng::new(3);
+        let us = by_dxcc(USA);
+        let mut seen = vec![0u32; us.formats.len()];
+        for _ in 0..5000 {
+            let f = pick_weighted(&mut rng, us.formats, |f| f.weight);
+            let i = us.formats.iter().position(|g| std::ptr::eq(g, f)).unwrap();
+            seen[i] += 1;
+        }
+        // 1x3 (weight 35) is drawn far more often than 2x1 (weight 5).
+        assert!(seen.iter().all(|n| *n > 0), "{seen:?}");
+        assert!(seen[3] > 4 * seen[1], "{seen:?}");
+    }
+
+    fn h(c: &str) -> Option<Home> {
+        home_of(&Callsign::parse(c).unwrap())
+    }
+
+    fn name(c: &str) -> &'static str {
+        h(c).unwrap_or_else(|| panic!("{c} has no home"))
+            .entity
+            .name
+    }
+
+    #[test]
     fn home_is_inferred_from_prefix() {
-        let h = |c: &str| home_of(&Callsign::parse(c).unwrap());
-        assert_eq!(h("KF0UWV").unwrap().zone(), 4);
-        assert_eq!(h("W6ABC").unwrap().zone(), 3);
-        assert!(matches!(h("HB9XYZ"), Some(Home::Dx(e)) if e.country == "SWITZERLAND"));
-        assert!(matches!(h("DL1ABC"), Some(Home::Dx(e)) if e.country == "GERMANY"));
-        assert!(matches!(h("AA1A"), Some(Home::Us(_))));
+        assert_eq!(h("KF0UWV").unwrap().cq(), 4);
+        assert_eq!(h("W6ABC").unwrap().cq(), 3);
+        assert_eq!(name("HB9XYZ"), "SWITZERLAND");
+        assert_eq!(name("DL1ABC"), "GERMANY");
+        assert_eq!(name("9A2AB"), "CROATIA");
+        assert_eq!(h("AA1A").unwrap().entity.dxcc, USA);
         assert!(h("4X1AB").is_none());
+    }
+
+    #[test]
+    fn a_location_designator_beats_the_home_call() {
+        assert_eq!(name("F/DL1ABC"), "FRANCE");
+        assert_eq!(name("HB9/DL1ABC"), "SWITZERLAND");
+        let ve = h("VE3/W1XYZ").unwrap();
+        assert_eq!(ve.entity.name, "CANADA");
+        assert_eq!(name("JA1ABC/VE3"), "CANADA");
+        // A bare digit moves the call area, not the entity.
+        let w = h("W1ABC/4").unwrap();
+        assert_eq!(w.entity.dxcc, USA);
+        assert_eq!(w.region.unwrap().digit, 4);
+        assert_eq!(h("W6ABC/7").unwrap().region.unwrap().digit, 7);
+        // An unknown designator is not silently the home call's entity.
+        assert!(h("4X/DL1ABC").is_none());
+    }
+
+    #[test]
+    fn modifiers_do_not_move_a_station() {
+        assert_eq!(name("DL1ABC/P"), "GERMANY");
+        // `/M` is mobile, not the `M` prefix of England.
+        assert_eq!(name("DL1ABC/M"), "GERMANY");
+        assert_eq!(name("G4ABC/M"), "ENGLAND");
+        assert_eq!(name("M0ABC/P"), "ENGLAND");
+        let me = h("KF0UWV/QRP").unwrap();
+        assert_eq!((me.entity.dxcc, me.region.unwrap().digit), (USA, 0));
+        assert!(h("DL1ABC/MM").is_none());
+        assert!(h("W1ABC/AM").is_none());
     }
 }

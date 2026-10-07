@@ -16,11 +16,12 @@
 
 use std::time::Duration;
 
-use super::callsign::{dx_call, fresh_call, home_of, us_call, Callsign, Home};
+use super::callsign::{call_from, fresh_call, home_of, Callsign, Home};
 use super::data::{
-    CallArea, DxEntity, ANTENNAS, DX, NAMES_DX, NAMES_US, PORTABLE_ANTENNAS, POWERS, QRP_POWERS,
-    RIGS, RST, SOTA_REGIONS, US_AREAS, WX,
+    ANTENNAS, NAMES_DX, NAMES_US, PORTABLE_ANTENNAS, POWERS, QRP_POWERS, RIGS, RST, SOTA_REGIONS,
+    WX,
 };
+use super::world::{by_dxcc, Entity, USA, WORLD};
 use super::{
     ContestExchange, Party, Persona, ScenarioConfig, ScenarioError, ScenarioKind, Script,
     SignalProfile, Start, Station, Transmission,
@@ -77,23 +78,27 @@ fn pick_str(rng: &mut Rng, items: &[&str]) -> String {
     (*rng.pick(items)).to_string()
 }
 
-fn us_persona_parts(rng: &mut Rng, area: &CallArea) -> (String, String) {
-    let (state, towns) = rng.pick(area.states);
-    (pick_str(rng, towns), (*state).to_string())
-}
-
 fn persona(rng: &mut Rng, call: Callsign, home: Option<Home>, portable: bool) -> Persona {
     let (name, qth, region, zone) = match home {
-        Some(Home::Us(area)) => {
-            let (qth, st) = us_persona_parts(rng, area);
-            (pick_str(rng, NAMES_US), qth, st, area.zone)
+        Some(home) => {
+            let names = if home.entity.dxcc == USA {
+                NAMES_US
+            } else {
+                NAMES_DX
+            };
+            let (qth, region) = match home.region {
+                // A call area: a state/province within it, as an exchange sends it.
+                Some(r) => {
+                    let (code, towns) = rng.pick(r.subdivisions);
+                    (pick_str(rng, towns), (*code).to_string())
+                }
+                None => (
+                    pick_str(rng, home.entity.towns),
+                    home.entity.name.to_string(),
+                ),
+            };
+            (pick_str(rng, names), qth, region, home.cq())
         }
-        Some(Home::Dx(e)) => (
-            pick_str(rng, NAMES_DX),
-            pick_str(rng, e.towns),
-            e.country.to_string(),
-            e.zone,
-        ),
         None => (
             pick_str(rng, NAMES_DX),
             "HOME".to_string(),
@@ -143,18 +148,27 @@ fn pota_ref(rng: &mut Rng, iso: &str) -> String {
 
 /// A SOTA association, and the home a station activating in it has.
 fn sota_home(assoc: &str, rng: &mut Rng) -> Home {
-    let us = |d: u8| Home::Us(US_AREAS.iter().find(|a| a.digit == d).expect("area"));
-    let dx = |country: &str| Home::Dx(DX.iter().find(|e| e.country == country).expect("entity"));
+    let us = |d: u8| {
+        let entity = by_dxcc(USA);
+        Home {
+            entity,
+            region: entity.region(d),
+        }
+    };
+    let dx = |dxcc: u16| Home {
+        entity: by_dxcc(dxcc),
+        region: None,
+    };
     match assoc {
         "W0C" => us(0),
         "W7W" | "W7A" => us(7),
         "W6" => us(6),
         "W4C" => us(4),
-        "G" => dx("ENGLAND"),
-        "GM" => dx("SCOTLAND"),
-        "DL" => dx("GERMANY"),
-        "HB" => dx("SWITZERLAND"),
-        "VE7" => dx("CANADA"),
+        "G" => dx(223),
+        "GM" => dx(279),
+        "DL" => dx(230),
+        "HB" => dx(287),
+        "VE7" => dx(1),
         _ => us(rng.range_u32(0, 9) as u8),
     }
 }
@@ -226,27 +240,19 @@ impl Builder<'_> {
             Some(h) => h,
             None => {
                 if self.st_rng.chance(dx_share) {
-                    Home::Dx(self.st_rng.pick(DX))
+                    Home::random_dx(&mut self.st_rng)
                 } else {
-                    Home::Us(self.st_rng.pick(US_AREAS))
+                    Home::random_us(&mut self.st_rng)
                 }
             }
         };
         let taken = self.taken();
-        let call = match home {
-            Home::Us(area) => fresh_call(
-                &mut self.st_rng,
-                &mut |r| us_call(r, Some(area)),
-                &self.cfg.my_call,
-                &taken,
-            ),
-            Home::Dx(e) => fresh_call(
-                &mut self.st_rng,
-                &mut |r| dx_call(r, e),
-                &self.cfg.my_call,
-                &taken,
-            ),
-        };
+        let call = fresh_call(
+            &mut self.st_rng,
+            &mut |r| call_from(r, &home),
+            &self.cfg.my_call,
+            &taken,
+        );
         let p = persona(&mut self.st_rng, call, Some(home), false);
         let signal = self.signal()?;
         self.stations.push(Station { persona: p, signal });
@@ -466,12 +472,17 @@ impl Builder<'_> {
 
     fn pota(&mut self, p2p: bool, me_rng: &mut Rng) -> Result<(), ScenarioError> {
         let (home, iso) = if self.st_rng.chance(0.75) {
-            (Home::Us(self.st_rng.pick(US_AREAS)), "US")
+            (Home::random_us(&mut self.st_rng), "US")
         } else {
-            let with_parks: Vec<&'static DxEntity> =
-                DX.iter().filter(|e| e.iso.is_some()).collect();
+            let with_parks: Vec<&'static Entity> = WORLD
+                .iter()
+                .filter(|e| e.iso.is_some() && e.dxcc != USA)
+                .collect();
             let e = *self.st_rng.pick(&with_parks);
-            (Home::Dx(e), e.iso.expect("filtered"))
+            (
+                Home::random_in(&mut self.st_rng, e),
+                e.iso.expect("filtered"),
+            )
         };
         let them = self.add_station(Some(home), 0.0)?;
         let park = pota_ref(&mut self.st_rng, iso);
@@ -482,10 +493,9 @@ impl Builder<'_> {
             p.antenna = pick_str(&mut self.st_rng, PORTABLE_ANTENNAS);
         }
         if p2p {
-            let my_iso = match home_of(&self.me.call) {
-                Some(Home::Dx(e)) => e.iso.unwrap_or("US"),
-                _ => "US",
-            };
+            let my_iso = home_of(&self.me.call)
+                .and_then(|h| h.entity.iso)
+                .unwrap_or("US");
             self.me.reference = Some(pota_ref(me_rng, my_iso));
         }
         let t = Party::Them(them);
@@ -530,9 +540,9 @@ impl Builder<'_> {
         let (summit, assoc) = sota_ref(&mut self.st_rng);
         let home = sota_home(assoc, &mut self.st_rng);
         let them = self.add_station(Some(home), 0.0)?;
-        if let (Home::Us(area), Some(state)) = (home, sota_state(assoc)) {
+        if let (Some(area), Some(state)) = (home.region, sota_state(assoc)) {
             // An activator in the association's own state.
-            if let Some((_, towns)) = area.states.iter().find(|(s, _)| *s == state) {
+            if let Some((_, towns)) = area.subdivisions.iter().find(|(s, _)| *s == state) {
                 let town = pick_str(&mut self.st_rng, towns);
                 let p = &mut self.stations[them].persona;
                 p.region = state.to_string();
@@ -683,16 +693,6 @@ mod tests {
         all.extend(PORTABLE_ANTENNAS);
         all.extend(WX);
         all.extend(RST);
-        for a in US_AREAS {
-            for (s, towns) in a.states {
-                all.push(s);
-                all.extend(towns.iter());
-            }
-        }
-        for e in DX {
-            all.push(e.country);
-            all.extend(e.towns.iter());
-        }
         for s in all {
             assert!(tokenize(s).is_ok(), "{s}");
         }
