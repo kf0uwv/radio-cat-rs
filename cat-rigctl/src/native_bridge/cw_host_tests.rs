@@ -967,3 +967,30 @@ fn a_poisoned_cw_lock_fails_closed() {
     assert!(rig.shared.cw_live());
     assert!(!rig.shared.cw_settled());
 }
+
+#[test]
+fn after_a_poisoned_lock_the_pump_still_stops_the_keyer() {
+    let mut rig = Rig::new(&CW_RADIO, true);
+    rig.arm().unwrap();
+    rig.radio.busy_after_send = 1_000;
+    rig.send("CQ CQ CQ").unwrap();
+    rig.cycle();
+    let shared = Arc::clone(&rig.shared);
+    let _ = std::thread::spawn(move || {
+        let _guard = shared.cw.lock().unwrap();
+        panic!("poison the CW lock");
+    })
+    .join();
+
+    // On noticing, the pump stops the keyer itself -- once.
+    rig.radio.log.clear();
+    rig.cycles(3);
+    let stops = |r: &Rig| r.radio.log.iter().filter(|l| *l == "stop").count();
+    assert_eq!(stops(&rig), 1, "{:?}", rig.radio.log);
+    assert!(!rig.radio.any("send "), "and sends nothing");
+
+    // And again for every abort a console sends afterwards.
+    assert_eq!(rig.shared.apply_as(OTHER, &Command::AbortCw), Ok(()));
+    rig.cycles(2);
+    assert_eq!(stops(&rig), 2, "{:?}", rig.radio.log);
+}

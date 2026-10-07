@@ -332,6 +332,9 @@ pub struct NativeShared {
     /// Set by any CW request so a sleeping pump wakes for it now rather
     /// than after an idle interval of up to ten seconds.
     cw_kick: AtomicBool,
+    /// An `AbortCw` arrived. Read only when the supervisor's lock is
+    /// poisoned, so the pump can still stop the keyer itself.
+    cw_abort_requested: AtomicBool,
     /// Pitch, speed and break-in as last read on the levels clock.
     cw_settings: Mutex<Option<CwSettings>>,
     /// Consoles waiting on an arm or disarm, by ticket.
@@ -392,6 +395,7 @@ impl NativeShared {
             cw: Mutex::new(None),
             cw_serving: AtomicBool::new(false),
             cw_kick: AtomicBool::new(false),
+            cw_abort_requested: AtomicBool::new(false),
             cw_settings: Mutex::new(None),
             cw_waiters: Mutex::new(HashMap::new()),
             cw_reply_timeout: Mutex::new(CW_REPLY_TIMEOUT),
@@ -788,7 +792,10 @@ impl NativeShared {
             // is the stop.
             Command::AbortCw => {
                 // Tried even through a poisoned lock: of everything here,
-                // a stop is the one thing that must not be skipped.
+                // a stop is the one thing that must not be skipped. The
+                // pump also sees the request directly, in case the
+                // supervisor behind that lock never acts on it.
+                self.cw_abort_requested.store(true, Ordering::SeqCst);
                 let mut slot = self
                     .cw
                     .lock()
@@ -928,6 +935,33 @@ pub async fn settle_cw(shared: &NativeShared, timeout: Duration) -> bool {
         monoio::time::sleep(CW_TICK).await;
     }
     shared.cw_settled() || shared.report_unsettled(timeout)
+}
+
+/// A poisoned supervisor lock: nothing it would do can be trusted, so the
+/// pump stops the keyer itself -- once on noticing, and again for every
+/// abort a console sends after. Never sends, never restores; the radio is
+/// left at the clamp (the safe direction) for the operator.
+async fn stop_after_poison<N: NativeRadio>(
+    shared: &NativeShared,
+    radio: &mut N,
+    pump: &mut PumpState,
+) {
+    let abort = shared.cw_abort_requested.swap(false, Ordering::SeqCst);
+    if pump.poison_stopped && !abort {
+        return;
+    }
+    if !pump.poison_stopped {
+        tracing::error!(
+            "the CW supervisor's state is poisoned (a panic mid-update); stopping the \
+             keyer and leaving power at the clamp -- check the radio and restart the server"
+        );
+    }
+    pump.poison_stopped = true;
+    if let Some(cw) = radio.cw() {
+        if let Err(e) = cw.stop().await {
+            tracing::error!(error = %e, "CW stop after a poisoned lock failed");
+        }
+    }
 }
 
 /// Run the supervisor's due actions against the radio.
@@ -1143,6 +1177,9 @@ pub(crate) struct PumpState {
     last_levels: Option<Instant>,
     last_cw_settings: Option<Instant>,
     cw_checked: bool,
+    /// The keyer has been stopped after the supervisor's lock was
+    /// poisoned. See [`stop_after_poison`].
+    poison_stopped: bool,
 }
 
 pub async fn pump<N: NativeRadio>(shared: Arc<NativeShared>, mut radio: N, interval: Duration) {
@@ -1237,6 +1274,12 @@ pub(crate) async fn pump_once<N: NativeRadio>(
         }
     }
 
+    if shared.cw.is_poisoned() {
+        stop_after_poison(shared, radio, pump).await;
+    } else {
+        // The supervisor handles aborts itself while its lock is sound.
+        shared.cw_abort_requested.store(false, Ordering::SeqCst);
+    }
     drive_cw(shared, radio).await;
 
     // Apply everything, then refresh, then answer. The order matters:
