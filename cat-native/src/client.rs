@@ -44,7 +44,7 @@ use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cat_signal::SpectrumFrame;
 
@@ -188,6 +188,11 @@ pub struct Connection {
     /// The newest audio frame, on the same newest-wins terms.
     latest_audio: Option<cat_signal::AudioFrame>,
     streams: Streams,
+    /// While `Some`, every read is armed with the time left until this
+    /// instant, and expiry is an error: one bound over a whole handshake,
+    /// which a server dripping bytes cannot stretch. `None` outside
+    /// [`Connection::connect_timeout`].
+    deadline: Option<Instant>,
 }
 
 impl Connection {
@@ -201,10 +206,50 @@ impl Connection {
         // Nagle would batch small control writes behind each other, which
         // on a request/response protocol is latency for no benefit.
         stream.set_nodelay(true)?;
-        Self::handshake(stream, streams)
+        Self::handshake(stream, streams, None)
     }
 
-    fn handshake(stream: TcpStream, streams: Streams) -> Result<Self> {
+    /// [`Connection::connect`], with connecting **and** the handshake
+    /// bounded together by `timeout`.
+    ///
+    /// For a client that must not hang: a server that accepts and then
+    /// never answers `Hello` -- or answers a byte at a time -- costs at
+    /// most `timeout`, and is reported as `ClientError::Io` with kind
+    /// `TimedOut`. A refused connection fails as soon as the OS says so.
+    /// Once connected the bound is gone: the connection behaves exactly
+    /// as one from `connect`.
+    pub fn connect_timeout<A: ToSocketAddrs>(
+        addr: A,
+        streams: Streams,
+        timeout: Duration,
+    ) -> Result<Self> {
+        let deadline = Instant::now() + timeout;
+        let mut last = None;
+        for target in addr.to_socket_addrs()? {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            match TcpStream::connect_timeout(&target, left) {
+                Ok(stream) => {
+                    stream.set_nodelay(true)?;
+                    stream.set_write_timeout(Some(left))?;
+                    let conn = Self::handshake(stream, streams, Some(deadline))
+                        .map_err(|e| timeout_error(e, timeout))?;
+                    conn.stream.set_read_timeout(None)?;
+                    conn.stream.set_write_timeout(None)?;
+                    return Ok(conn);
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(timeout_error(
+            ClientError::Io(last.unwrap_or_else(|| io::ErrorKind::TimedOut.into())),
+            timeout,
+        ))
+    }
+
+    fn handshake(stream: TcpStream, streams: Streams, deadline: Option<Instant>) -> Result<Self> {
         let mut conn = Self {
             stream,
             capabilities: placeholder_capabilities(),
@@ -213,6 +258,7 @@ impl Connection {
             latest_spectrum: None,
             latest_audio: None,
             streams,
+            deadline,
         };
         conn.send(&ClientMessage::Hello {
             version: PROTOCOL_VERSION,
@@ -232,6 +278,7 @@ impl Connection {
                     });
                 }
                 conn.capabilities = *capabilities;
+                conn.deadline = None;
                 Ok(conn)
             }
             other => Err(ClientError::Unexpected(other)),
@@ -518,6 +565,13 @@ impl Connection {
     /// differently — so all three become [`ClientError::Closed`] rather
     /// than making every caller match three ways to say one thing.
     fn fill(&mut self) -> Result<()> {
+        if let Some(deadline) = self.deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(ClientError::Io(io::ErrorKind::TimedOut.into()));
+            }
+            self.stream.set_read_timeout(Some(left))?;
+        }
         let mut buf = [0u8; 16 * 1024];
         match self.stream.read(&mut buf) {
             Ok(0) => Err(ClientError::Closed),
@@ -538,6 +592,26 @@ impl Connection {
             }
             Err(e) => Err(ClientError::Io(e)),
         }
+    }
+}
+
+/// A connect-and-handshake that ran out of time, said as one. A read
+/// timeout surfaces as `WouldBlock` on some platforms and `TimedOut` on
+/// others; a caller should not have to know which.
+fn timeout_error(e: ClientError, timeout: Duration) -> ClientError {
+    match e {
+        ClientError::Io(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) =>
+        {
+            ClientError::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("connect and handshake did not finish within {timeout:?}"),
+            ))
+        }
+        other => other,
     }
 }
 
@@ -646,7 +720,19 @@ impl Client {
     /// told the radio's capabilities, so a GUI never has to render an
     /// "unknown radio" state that exists for a few milliseconds.
     pub fn connect<A: ToSocketAddrs>(addr: A, streams: Streams) -> Result<Self> {
-        let mut conn = Connection::connect(addr, streams)?;
+        Self::start(Connection::connect(addr, streams)?)
+    }
+
+    /// [`Client::connect`], bounded as [`Connection::connect_timeout`].
+    pub fn connect_timeout<A: ToSocketAddrs>(
+        addr: A,
+        streams: Streams,
+        timeout: Duration,
+    ) -> Result<Self> {
+        Self::start(Connection::connect_timeout(addr, streams, timeout)?)
+    }
+
+    fn start(mut conn: Connection) -> Result<Self> {
         let capabilities = conn.capabilities().clone();
 
         let (command_tx, command_rx) = mpsc::channel::<ClientMessage>();

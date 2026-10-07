@@ -10,7 +10,7 @@ standalone trainer (new repo) works against any radio-cat-rs radio's
 
 ## Current Phase
 
-**T1-T7 done (+2 architect fixes); T7b next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
+**T1-T7b done (+ architect fixes, stop handle); T7c next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
 `feat/cw-capability` off `feat/cat-morse`). ADR 0023 Accepted 2026-10-07;
 open questions answered (see "Decisions" at the end). One task at a time;
 report after each. Do not push.
@@ -241,12 +241,18 @@ report after each. Do not push.
   `abort_cw` is a local no-op. A `Malformed` reply (a pre-0023 server)
   maps to `Refused(Unsupported)`. `Client` gets `cw_capability()`.
 
-### T7b — `cat-native`: `Connection::connect_timeout` (status: pending)
+### T7b — `cat-native`: `Connection::connect_timeout` (status: done 2026-10-07)
 - Connect **and** handshake (`Hello`/`Welcome`) bounded by one timeout;
   needed by the standalone cw-trainer client. Both platforms (`std::net`
   `connect_timeout` + read timeout during handshake, restored after).
 - Tests: a listener that accepts but never answers `Hello` → timeout
   error within bound; a stub host connects normally.
+- Design (2026-10-07): one deadline for the whole connect + handshake;
+  each address tried with the time left; during the handshake every read
+  is armed with the time *remaining* (a server dripping a byte at a time
+  cannot stretch it); expiry is `ClientError::Io(TimedOut)` naming the
+  bound; read/write timeouts cleared afterwards so the connection then
+  behaves exactly as `connect`'s. `Client::connect_timeout` too.
 
 ### T7c — consoles: CW state display (status: pending, decision 12)
 - `cat-ui` model for `RadioState.cw` (pitch, wpm, break-in, armed/sending)

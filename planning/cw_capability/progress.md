@@ -95,3 +95,10 @@ not start before that.
   then stop, restore observed) then exposed the pump sleeping up to 10 s
   idle before acting -> CW requests now kick the pump (red: 5.0 s; green
   < 2 s). Workspace 1240/0/3; clippy, fmt, xwin clean.
+- T7b done: `Connection::connect_timeout` / `Client::connect_timeout`:
+  one deadline over connect + handshake, each read armed with the time
+  remaining, expiry is `Io(TimedOut)`, timeouts cleared afterwards. Red: 6
+  compile errors. The drip test first passed trivially (zeros decode as a
+  bad frame) -- rewritten to drip a valid frame; a per-read-timeout
+  mutant now fails it (capped so it fails, not hangs). 5 tests; workspace
+  1245/0/3; clippy, fmt, xwin clean.
