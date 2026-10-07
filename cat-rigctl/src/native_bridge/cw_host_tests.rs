@@ -946,3 +946,24 @@ fn a_speed_change_queued_before_an_arm_is_not_applied_after_it() {
     assert!(!rig.radio.any("set_wpm"), "{:?}", rig.radio.log);
     assert!(reply.try_recv().unwrap().is_err());
 }
+
+#[test]
+fn a_poisoned_cw_lock_fails_closed() {
+    let mut rig = Rig::new(&CW_RADIO, true);
+    rig.cycle();
+    assert!(rig.shared.serves_cw());
+    let shared = Arc::clone(&rig.shared);
+    let _ = std::thread::spawn(move || {
+        let _guard = shared.cw.lock().unwrap();
+        panic!("poison the CW lock");
+    })
+    .join();
+    assert!(rig.shared.cw.is_poisoned());
+    // Nothing can be known, so everything is treated as live.
+    assert!(
+        rig.shared.cw_blocks_external_ptt(),
+        "rigctl T 1 and raw CAT refused"
+    );
+    assert!(rig.shared.cw_live());
+    assert!(!rig.shared.cw_settled());
+}

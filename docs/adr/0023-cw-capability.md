@@ -321,6 +321,13 @@ does **not** send it on disarm, detach or timeout -- an abort means stop
 ends, and publishes it as `CwState.id_owed` (additive) until an ID is
 next sent. Both consoles show it. Nothing is owed if nothing keyed.
 
+**Failing closed (safety review, 2026-10-07).** A poisoned supervisor
+lock (a panic mid-update) makes every query answer the safe way: CW is
+live, rigctl `T 1` and raw CAT are refused, and the server is not
+settled; an `AbortCw` is still attempted through it. Whether a host
+serves CW is asked per message, not fixed at the handshake, so an abort
+from a console that connected before the pump opted in still reaches it.
+
 ### 4. Chunking: the abort bound is a policy, not an accident
 
 A `SendCwText` job is split at word boundaries into chunks of at most

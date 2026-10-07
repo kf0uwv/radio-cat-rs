@@ -16,6 +16,7 @@
 //! it serves CW is never handed a CW command, whatever the radio can do.
 
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cat_framework::capabilities::*;
@@ -181,4 +182,49 @@ fn a_host_that_serves_cw_receives_what_validates_and_nothing_else() {
         other => panic!("{other:?}"),
     }
     assert_eq!(*host.applied.lock().unwrap(), vec![Command::AbortCw, arm()]);
+}
+
+/// A host that starts serving CW only after a console has connected, as
+/// the real server does when its pump opts in on its first cycle.
+struct LateHost {
+    serves: AtomicBool,
+    applied: Mutex<Vec<Command>>,
+}
+
+impl RadioHost for LateHost {
+    fn capabilities(&self) -> &'static RadioCapabilities {
+        &RADIO
+    }
+    fn state(&self) -> RadioState {
+        Host {
+            serves_cw: false,
+            applied: Mutex::new(Vec::new()),
+        }
+        .state()
+    }
+    fn serves_cw(&self) -> bool {
+        self.serves.load(Ordering::SeqCst)
+    }
+    fn apply(&self, command: &Command) -> Result<(), String> {
+        self.applied.lock().unwrap().push(command.clone());
+        Ok(())
+    }
+}
+
+#[test]
+fn an_abort_reaches_a_host_that_began_serving_after_the_console_connected() {
+    let host = Arc::new(LateHost {
+        serves: AtomicBool::new(false),
+        applied: Mutex::new(Vec::new()),
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let served = Arc::clone(&host);
+    std::thread::spawn(move || serve(listener, served));
+    let mut conn = Connection::connect(("127.0.0.1", port), Streams::none()).unwrap();
+
+    // The pump opts in after this console's handshake.
+    host.serves.store(true, Ordering::SeqCst);
+    assert_eq!(conn.command(Command::AbortCw).unwrap(), ServerMessage::Ack);
+    assert_eq!(*host.applied.lock().unwrap(), vec![Command::AbortCw]);
 }

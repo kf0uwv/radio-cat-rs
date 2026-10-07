@@ -626,8 +626,18 @@ impl NativeShared {
     /// Whether rigctl `T 1` must be refused: a console holds the CW arm,
     /// is arming, or its restore has not been verified (decision 8).
     pub fn cw_blocks_external_ptt(&self) -> bool {
-        self.with_cw(|sup| sup.blocks_external_ptt())
-            .unwrap_or(false)
+        self.cw_query(true, false, |sup| sup.blocks_external_ptt())
+    }
+
+    /// Ask the supervisor something, failing closed: a poisoned lock means
+    /// a panic mid-update, so nothing about CW can be known and the safe
+    /// answer (`poisoned`) is given. `absent` is the answer for a server
+    /// that does not serve CW.
+    fn cw_query<T>(&self, poisoned: T, absent: T, f: impl FnOnce(&cw::CwSupervisor) -> T) -> T {
+        match self.cw.lock() {
+            Ok(slot) => slot.as_ref().map_or(absent, f),
+            Err(_) => poisoned,
+        }
     }
 
     /// Stop any CW send and restore the radio, for a server that is
@@ -650,7 +660,7 @@ impl NativeShared {
     /// Nothing armed, nothing keyed, nothing left to restore. True for a
     /// server that does not serve CW.
     pub fn cw_settled(&self) -> bool {
-        self.with_cw(|sup| sup.is_settled()).unwrap_or(true)
+        self.cw_query(false, true, |sup| sup.is_settled())
     }
 
     /// Shut CW down and wait, blocking this thread, until the radio is
@@ -694,7 +704,7 @@ impl NativeShared {
 
     /// Whether CW needs the pump's fast tick and the link to itself.
     fn cw_live(&self) -> bool {
-        self.with_cw(|sup| sup.is_live()).unwrap_or(false)
+        self.cw_query(true, false, |sup| sup.is_live())
     }
 
     #[cfg(test)]
@@ -777,7 +787,16 @@ impl NativeShared {
             // On the listener thread, never queued: the pump's next step
             // is the stop.
             Command::AbortCw => {
-                self.with_cw(|sup| sup.abort(now));
+                // Tried even through a poisoned lock: of everything here,
+                // a stop is the one thing that must not be skipped.
+                let mut slot = self
+                    .cw
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(sup) = slot.as_mut() {
+                    sup.abort(now);
+                }
+                drop(slot);
                 self.kick_pump();
                 Ok(())
             }

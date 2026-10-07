@@ -385,6 +385,11 @@ fn serve_one<H: RadioHost>(
                         if let Some(devices) = host.devices() {
                             session.publish_devices(devices);
                         }
+                        // Asked afresh for every message: a host may start
+                        // serving CW after this console connected (the pump
+                        // opts in on its first cycle), and an abort sent
+                        // then must still reach it.
+                        session.set_serves_cw(host.serves_cw());
                         let reply = session.handle(message.clone());
                         // Only apply what the session accepted. A command
                         // it refused never reaches the radio, which is the
