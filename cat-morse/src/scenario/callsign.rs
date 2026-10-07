@@ -498,6 +498,21 @@ mod tests {
     }
 
     #[test]
+    fn south_america_islands_and_tags() {
+        assert_eq!(name("CE0YAB"), "EASTER IS");
+        assert_eq!(name("CE3ABC"), "CHILE");
+        assert_eq!(name("PY0FAB"), "FERNANDO DE NORONHA");
+        assert_eq!(name("PY2ABC"), "BRAZIL");
+        assert_eq!(name("HC8AB"), "GALAPAGOS");
+        assert_eq!(name("HK0ABC/M"), "MALPELO");
+        assert_eq!(name("VP8ABC"), "FALKLAND IS");
+        assert_eq!(name("VP8ABC/G"), "SOUTH GEORGIA");
+        assert_eq!(name("VP8AB/H"), "SOUTH SHETLAND");
+        assert_eq!(name("PJ2AB"), "CURACAO");
+        assert_eq!(name("YV5ABC"), "VENEZUELA");
+    }
+
+    #[test]
     fn modifiers_do_not_move_a_station() {
         assert_eq!(name("DL1ABC/P"), "GERMANY");
         // `/M` is mobile, not the `M` prefix of England.
