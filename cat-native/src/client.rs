@@ -483,6 +483,7 @@ fn placeholder_capabilities() -> CapabilitiesWire {
         layout: None,
         theme: None,
         installation: cat_framework::installation::Installation::default(),
+        cw: None,
     }
 }
 

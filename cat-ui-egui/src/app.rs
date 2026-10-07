@@ -646,6 +646,13 @@ impl Console {
             // is no pending value to show. The source panel reflects the
             // attach when the server's next state says it happened.
             Command::AttachDevice { .. } => {}
+            // The console sends no CW commands yet; CW state display is
+            // ADR 0023's T7c, and it reads `RadioState.cw`, not this.
+            Command::SetKeyerSpeed { .. }
+            | Command::ArmCwTransmit { .. }
+            | Command::SendCwText { .. }
+            | Command::AbortCw
+            | Command::DisarmCw => {}
         }
     }
 }

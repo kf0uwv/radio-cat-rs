@@ -147,6 +147,7 @@ pub fn full() -> CapabilitiesWire {
         layout: None,
         theme: None,
         installation: Installation::default(),
+        cw: None,
     }
 }
 
@@ -183,5 +184,6 @@ pub fn bare() -> CapabilitiesWire {
         layout: None,
         theme: None,
         installation: Installation::default(),
+        cw: None,
     }
 }

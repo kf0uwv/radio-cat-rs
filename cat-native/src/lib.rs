@@ -57,8 +57,9 @@ pub use server::{serve, serve_at, RadioHost};
 // and `ts570d` ADR 0008 forbids the GUI from taking that dependency
 // directly at all.
 pub use cat_framework::capabilities::{
-    EndpointRole, FrequencyRange, MemoryCapability, MenuCapability, MeterKind, ModeId, ModeKind,
-    RawRange, SUnitScale, Sideband, SignalSupport, VfoCapability, S_UNIT_LABELS,
+    BreakInKind, CwAbort, CwPacing, EndpointRole, FrequencyRange, HzRange, MemoryCapability,
+    MenuCapability, MeterKind, ModeId, ModeKind, RawRange, SUnitScale, Sideband, SignalSupport,
+    VfoCapability, WpmRange, S_UNIT_LABELS,
 };
 pub use cat_framework::installation::{
     AudioOrigin, Installation, InstalledSource, Session, SourceState,
@@ -226,6 +227,68 @@ pub struct CapabilitiesWire {
     /// a waterfall?" reads the installation; a client asking "could this
     /// radio ever have one?" reads the model.
     pub installation: Installation,
+    /// CW control over CAT (ADR 0023). `None` both for a radio with none
+    /// and for a pre-0023 server, and a client must treat the two alike:
+    /// never probe with a CW command to find out.
+    #[serde(default)]
+    pub cw: Option<CwCapabilityWire>,
+}
+
+/// [`CwCapability`] as a client receives it: owned, for the same reason as
+/// [`CapabilitiesWire`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CwCapabilityWire {
+    pub pitch: Option<HzRange>,
+    pub pitch_writable: bool,
+    pub keyer_wpm: Option<WpmRange>,
+    pub keyer_wpm_writable: bool,
+    pub break_in: Vec<BreakInKind>,
+    /// `None`: CW is read-only on this radio.
+    pub send_text: Option<CwSendTextWire>,
+    pub tx_gate: Option<TxGateWire>,
+}
+
+/// [`CwSendText`], owned.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CwSendTextWire {
+    pub max_chunk_chars: u16,
+    /// Upper case; a space is always allowed besides these.
+    pub charset: String,
+    pub pacing: CwPacing,
+    pub abort: CwAbort,
+    pub requires_break_in: Option<BreakInKind>,
+}
+
+/// [`TxGateCapability`], owned.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TxGateWire {
+    pub low_power_raw: u16,
+    pub low_power_label: String,
+    pub power_raw: RawRange,
+}
+
+impl From<&CwCapability> for CwCapabilityWire {
+    fn from(c: &CwCapability) -> Self {
+        Self {
+            pitch: c.pitch,
+            pitch_writable: c.pitch_writable,
+            keyer_wpm: c.keyer_wpm,
+            keyer_wpm_writable: c.keyer_wpm_writable,
+            break_in: c.break_in.to_vec(),
+            send_text: c.send_text.map(|t| CwSendTextWire {
+                max_chunk_chars: t.max_chunk_chars,
+                charset: t.charset.to_string(),
+                pacing: t.pacing,
+                abort: t.abort,
+                requires_break_in: t.requires_break_in,
+            }),
+            tx_gate: c.tx_gate.map(|g| TxGateWire {
+                low_power_raw: g.low_power_raw,
+                low_power_label: g.low_power_label.to_string(),
+                power_raw: g.power_raw,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -319,6 +382,7 @@ impl From<&RadioCapabilities> for CapabilitiesWire {
             layout: None,
             theme: None,
             installation: Installation::default(),
+            cw: c.cw.as_ref().map(CwCapabilityWire::from),
         }
     }
 }
@@ -397,6 +461,32 @@ pub enum Command {
     /// from one moment beside a mode from another is how a readout ends up
     /// describing a radio that never existed.
     ReadState,
+    /// Set the radio's internal keyer speed (ADR 0023 §2).
+    SetKeyerSpeed {
+        wpm: u16,
+    },
+    /// Take the CW transmit arm: the server clamps power, reads it back
+    /// and only then acknowledges (ADR 0023 §3). One owner at a time.
+    ArmCwTransmit {
+        callsign: String,
+        /// The operator's attestation, asked afresh every session. The
+        /// server records it; it cannot verify it.
+        dummy_load_acknowledged: bool,
+        /// Lower the per-send key-down cap for this arm, in seconds. The
+        /// server's cap (60 s) is a ceiling: a larger value is ignored.
+        #[serde(default)]
+        key_down_cap_s: Option<u16>,
+    },
+    /// Queue text for the radio's keyer. Arm owner only. `Ack` means
+    /// queued; progress rides [`CwState::sender`].
+    SendCwText {
+        text: String,
+    },
+    /// Stop any CW send now. Any console, armed or not; never refused
+    /// once CW control exists on the server.
+    AbortCw,
+    /// Release the arm: stop, restore power and break-in, read back.
+    DisarmCw,
 }
 
 /// One meter's current reading.
@@ -477,6 +567,74 @@ pub struct RadioState {
     /// protocol.
     #[serde(default)]
     pub levels: Option<RadioLevels>,
+    /// CW settings and the transmit session, when the radio has CW
+    /// control (ADR 0023 §2). `None` from a pre-0023 server.
+    #[serde(default)]
+    pub cw: Option<CwState>,
+}
+
+/// CW as it stands now.
+///
+/// The settings are CAT reads on the levels clock; `armed` and `sender`
+/// are the server's own bookkeeping, so they cost no CAT exchange.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CwState {
+    pub pitch_hz: Option<u32>,
+    pub keyer_wpm: Option<u16>,
+    pub break_in: Option<BreakInKind>,
+    /// Present only while some console holds the transmit arm.
+    #[serde(default)]
+    pub armed: Option<ArmedState>,
+    #[serde(default)]
+    pub sender: SenderState,
+}
+
+/// Who holds the CW transmit arm, and what the radio confirmed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArmedState {
+    pub callsign: String,
+    /// Power read back from the radio after the clamp, raw. Its label is
+    /// `CwCapabilityWire::tx_gate`'s.
+    pub power_raw: u16,
+    /// Whether the connection reading this owns the arm. Filled per
+    /// connection by the server.
+    pub mine: bool,
+}
+
+/// What the server's CW sender is doing.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SenderState {
+    #[default]
+    Idle,
+    /// `total_chars` includes any `DE <call>` the server appended.
+    Sending {
+        job: u32,
+        sent_chars: u32,
+        total_chars: u32,
+    },
+    /// A `DrainOnly` radio finishing the chunk it holds after an abort.
+    Draining { job: u32 },
+    Stopped {
+        job: u32,
+        reason: StopReason,
+        #[serde(default)]
+        message: Option<String>,
+    },
+}
+
+/// Why a CW job ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    Completed,
+    Aborted,
+    /// The job outlived its key-down cap and the watchdog stopped it.
+    KeyDownCap,
+    /// The arm owner's connection went away.
+    Disconnected,
+    /// The radio refused or misreported something (see `message`).
+    Error,
 }
 
 impl RadioState {
@@ -602,6 +760,10 @@ pub enum ErrorCode {
     /// It has the capability, but not with this value.
     OutOfRange,
     Malformed,
+    /// "You may not, now": not armed, armed by someone else, no dummy-load
+    /// acknowledgement (ADR 0023). Only ever sent in reply to a CW
+    /// command, which a pre-0023 client never sends.
+    Forbidden,
 }
 
 // ---------------------------------------------------------------------------
@@ -933,6 +1095,17 @@ impl NativeSession {
             // cards -- capabilities describe the radio *model*, and these
             // are facts about one machine. The host answers, or declines.
             Command::ReadDevices | Command::AttachDevice { .. } => Ok(()),
+            // ADR 0023: on the wire, not yet served. Refused here, before
+            // any host sees them, until the session rules (T3) and the
+            // server's CW supervisor (T5/T6) exist -- a command that could
+            // key a transmitter must not reach a host that cannot bound it.
+            Command::SetKeyerSpeed { .. }
+            | Command::ArmCwTransmit { .. }
+            | Command::SendCwText { .. }
+            | Command::AbortCw
+            | Command::DisarmCw => Err(unsupported(
+                "this server does not offer CW control".to_string(),
+            )),
         }
     }
 
@@ -1554,6 +1727,7 @@ mod tests {
                 raw: 24,
             }],
             levels: None,
+            cw: None,
         });
         assert_eq!(
             session.handle(ClientMessage::Command(Command::ReadMeter {
@@ -1859,5 +2033,266 @@ mod wire_shape_is_pinned {
         let json = serde_json::to_string(&wire).expect("serialize");
         let back: CapabilitiesWire = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(wire, back, "the wire format does not round trip");
+    }
+}
+
+/// ADR 0023 §2: CW on the wire. Additive and optional, so the version
+/// stays 2 and a pre-0023 peer is unaffected in either direction.
+#[cfg(test)]
+mod cw_wire {
+    use super::*;
+    use serde_json::Value;
+
+    const CW: CwCapability = CwCapability {
+        pitch: Some(HzRange::stepped(400, 1_000, 50)),
+        pitch_writable: true,
+        keyer_wpm: Some(WpmRange::new(10, 60)),
+        keyer_wpm_writable: true,
+        break_in: &[BreakInKind::Off, BreakInKind::Semi],
+        send_text: Some(CwSendText {
+            max_chunk_chars: 24,
+            charset: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/?",
+            pacing: CwPacing::BufferFlag,
+            abort: CwAbort::DrainOnly,
+            requires_break_in: Some(BreakInKind::Semi),
+        }),
+        tx_gate: Some(TxGateCapability {
+            low_power_raw: 5,
+            low_power_label: "5 W",
+            power_raw: RawRange::new(5, 100),
+        }),
+    };
+
+    fn cw_radio() -> &'static RadioCapabilities {
+        Box::leak(Box::new(RadioCapabilities {
+            cw: Some(CW),
+            ..crate::testing::STUB_RADIO
+        }))
+    }
+
+    fn state(cw: Option<CwState>) -> RadioState {
+        RadioState {
+            vfo_a_hz: 7_030_000,
+            vfo_b_hz: 7_030_000,
+            mode: ModeId::CwUpper,
+            split: false,
+            transmitting: false,
+            memory_channel: None,
+            if_shift_hz: None,
+            filter_width_hz: None,
+            meters: vec![],
+            levels: None,
+            cw,
+        }
+    }
+
+    /// Strip a key, recursively, so the JSON is what a pre-0023 peer wrote.
+    fn without(mut v: Value, key: &str) -> Value {
+        fn strip(v: &mut Value, key: &str) {
+            match v {
+                Value::Object(map) => {
+                    map.remove(key);
+                    map.values_mut().for_each(|c| strip(c, key));
+                }
+                Value::Array(items) => items.iter_mut().for_each(|c| strip(c, key)),
+                _ => {}
+            }
+        }
+        strip(&mut v, key);
+        v
+    }
+
+    #[test]
+    fn a_pre_0023_welcome_decodes_with_no_cw() {
+        let welcome = ServerMessage::Welcome {
+            version: PROTOCOL_VERSION,
+            capabilities: Box::new(CapabilitiesWire::from(cw_radio())),
+        };
+        let old = without(serde_json::to_value(&welcome).unwrap(), "cw");
+        assert!(!old.to_string().contains("\"cw\""));
+        match serde_json::from_value::<ServerMessage>(old).unwrap() {
+            ServerMessage::Welcome { capabilities, .. } => assert_eq!(capabilities.cw, None),
+            other => panic!("expected Welcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_pre_0023_state_decodes_with_no_cw() {
+        let old = without(serde_json::to_value(state(None)).unwrap(), "cw");
+        let back: RadioState = serde_json::from_value(old).unwrap();
+        assert_eq!(back.cw, None);
+    }
+
+    #[test]
+    fn cw_capability_crosses_the_wire_intact() {
+        let wire = CapabilitiesWire::from(cw_radio());
+        let cw = wire.cw.clone().expect("cw published");
+        assert_eq!(cw.pitch, CW.pitch);
+        assert_eq!(cw.keyer_wpm, CW.keyer_wpm);
+        assert!(cw.pitch_writable && cw.keyer_wpm_writable);
+        assert_eq!(cw.break_in, vec![BreakInKind::Off, BreakInKind::Semi]);
+        let send = cw.send_text.expect("send published");
+        assert_eq!(send.max_chunk_chars, 24);
+        assert_eq!(send.charset, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/?");
+        assert_eq!(send.pacing, CwPacing::BufferFlag);
+        assert_eq!(send.abort, CwAbort::DrainOnly);
+        assert_eq!(send.requires_break_in, Some(BreakInKind::Semi));
+        let gate = cw.tx_gate.expect("gate published");
+        assert_eq!(gate.low_power_raw, 5);
+        assert_eq!(gate.low_power_label, "5 W");
+        assert_eq!(gate.power_raw, RawRange::new(5, 100));
+
+        let json = serde_json::to_string(&wire).unwrap();
+        let back: CapabilitiesWire = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, wire);
+    }
+
+    #[test]
+    fn a_radio_without_cw_publishes_none_not_an_empty_description() {
+        let wire = CapabilitiesWire::from(&crate::testing::STUB_RADIO);
+        assert_eq!(wire.cw, None);
+    }
+
+    #[test]
+    fn cw_state_round_trips_in_every_sender_state() {
+        let armed = Some(ArmedState {
+            callsign: "N0CALL".to_string(),
+            power_raw: 5,
+            mine: true,
+        });
+        for sender in [
+            SenderState::Idle,
+            SenderState::Sending {
+                job: 3,
+                sent_chars: 4,
+                total_chars: 20,
+            },
+            SenderState::Draining { job: 3 },
+            SenderState::Stopped {
+                job: 3,
+                reason: StopReason::Aborted,
+                message: None,
+            },
+            SenderState::Stopped {
+                job: 4,
+                reason: StopReason::Error,
+                message: Some("power read back 50".to_string()),
+            },
+        ] {
+            let s = state(Some(CwState {
+                pitch_hz: Some(600),
+                keyer_wpm: Some(20),
+                break_in: Some(BreakInKind::Semi),
+                armed: armed.clone(),
+                sender,
+            }));
+            let back: RadioState =
+                serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+            assert_eq!(back, s);
+        }
+    }
+
+    #[test]
+    fn an_unarmed_idle_cw_state_needs_only_the_settings() {
+        // A copy trainer's whole need: pitch and speed. `armed` and
+        // `sender` default so a server can omit them.
+        let s: CwState =
+            serde_json::from_str(r#"{"pitch_hz":700,"keyer_wpm":18,"break_in":null}"#).unwrap();
+        assert_eq!(s.pitch_hz, Some(700));
+        assert_eq!(s.armed, None);
+        assert_eq!(s.sender, SenderState::Idle);
+    }
+
+    #[test]
+    fn cw_command_tags_are_pinned() {
+        let cases = [
+            (
+                Command::SetKeyerSpeed { wpm: 20 },
+                r#"{"cmd":"set_keyer_speed","wpm":20}"#,
+            ),
+            (
+                Command::ArmCwTransmit {
+                    callsign: "N0CALL".to_string(),
+                    dummy_load_acknowledged: true,
+                    key_down_cap_s: None,
+                },
+                r#"{"cmd":"arm_cw_transmit","callsign":"N0CALL","dummy_load_acknowledged":true,"key_down_cap_s":null}"#,
+            ),
+            (
+                Command::SendCwText {
+                    text: "CQ".to_string(),
+                },
+                r#"{"cmd":"send_cw_text","text":"CQ"}"#,
+            ),
+            (Command::AbortCw, r#"{"cmd":"abort_cw"}"#),
+            (Command::DisarmCw, r#"{"cmd":"disarm_cw"}"#),
+        ];
+        for (command, json) in cases {
+            assert_eq!(serde_json::to_string(&command).unwrap(), json);
+            assert_eq!(serde_json::from_str::<Command>(json).unwrap(), command);
+        }
+    }
+
+    #[test]
+    fn the_key_down_cap_may_be_omitted_by_a_client() {
+        let c: Command = serde_json::from_str(
+            r#"{"cmd":"arm_cw_transmit","callsign":"N0CALL","dummy_load_acknowledged":true}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            c,
+            Command::ArmCwTransmit {
+                key_down_cap_s: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn cw_enum_spellings_are_pinned() {
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::Forbidden).unwrap(),
+            r#""forbidden""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SenderState::Draining { job: 7 }).unwrap(),
+            r#"{"state":"draining","job":7}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&StopReason::KeyDownCap).unwrap(),
+            r#""key_down_cap""#
+        );
+    }
+
+    #[test]
+    fn until_the_supervisor_exists_no_cw_command_reaches_a_host() {
+        // T2 adds the commands to the wire only. Validation (T3) and the
+        // server-side supervisor (T5/T6) land later; until then a CW
+        // command must be refused before `RadioHost::apply`, even on a
+        // radio that describes CW, so nothing can key a transmitter.
+        for radio in [cw_radio(), &crate::testing::STUB_RADIO] {
+            let session = NativeSession::new(radio);
+            for command in [
+                Command::SetKeyerSpeed { wpm: 20 },
+                Command::ArmCwTransmit {
+                    callsign: "N0CALL".to_string(),
+                    dummy_load_acknowledged: true,
+                    key_down_cap_s: None,
+                },
+                Command::SendCwText {
+                    text: "CQ".to_string(),
+                },
+                Command::AbortCw,
+                Command::DisarmCw,
+            ] {
+                match session.validate(&command) {
+                    Err(ServerMessage::Error {
+                        code: ErrorCode::Unsupported,
+                        ..
+                    }) => {}
+                    other => panic!("{command:?} was not refused: {other:?}"),
+                }
+            }
+        }
     }
 }

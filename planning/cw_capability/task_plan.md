@@ -10,7 +10,7 @@ standalone trainer (new repo) works against any radio-cat-rs radio's
 
 ## Current Phase
 
-**T1 done; T2 next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
+**T1, T2 done; T3 next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
 `feat/cw-capability` off `feat/cat-morse`). ADR 0023 Accepted 2026-10-07;
 open questions answered (see "Decisions" at the end). One task at a time;
 report after each. Do not push.
@@ -56,7 +56,7 @@ report after each. Do not push.
   cat-native/cat-rigctl/cat-ui. Version bump to 0.9.0 **not** done in T1
   (left for release/T8 so Cargo.lock does not churn mid-series).
 
-### T2 — `cat-native`: wire types (status: pending)
+### T2 — `cat-native`: wire types (status: done 2026-10-07)
 - `CwCapabilityWire` + `From`; `CapabilitiesWire.cw` (`serde(default)`);
   `CwState`/`ArmedState`/`SenderState`/`StopReason`;
   `RadioState.cw` (`serde(default)`); `Command::{SetKeyerSpeed,
@@ -67,6 +67,15 @@ report after each. Do not push.
   `wire_shape_is_pinned` extended — version still 2.
 - Update every exhaustive `match` on `Command` (`Slot::of`,
   `NativeSession::validate`, testing stub).
+- Done: as above, plus `ArmCwTransmit.key_down_cap_s: Option<u16>`
+  (decision 5's "client may lower"), `Stopped.message`, `CwSendTextWire`
+  / `TxGateWire`, re-exports of the framework CW leaf types. **Interim:**
+  `NativeSession::validate` refuses all five CW commands `Unsupported`
+  (pinned by `until_the_supervisor_exists_no_cw_command_reaches_a_host`);
+  T3 replaces that, making `AbortCw` always `Ok`. `Slot::of` puts CW
+  commands at `None` pending T6; egui `note_request` no-ops them.
+  Production `RadioState` builders (native_bridge, cat-ui demo) publish
+  `cw: None` until T6.
 
 ### T3 — `cat-native`: `NativeSession` validation (status: pending)
 - Per-connection rules that need no radio: no `cw` capability →

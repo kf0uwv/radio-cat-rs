@@ -135,6 +135,14 @@ impl Slot {
             | Command::ReadState
             | Command::ReadDevices
             | Command::AttachDevice { .. } => None,
+            // ADR 0023: refused by `NativeSession::validate` until the CW
+            // supervisor lands (T6), which gives `SetKeyerSpeed` its own
+            // slot and keeps `AbortCw` out of supersession entirely.
+            Command::SetKeyerSpeed { .. }
+            | Command::ArmCwTransmit { .. }
+            | Command::SendCwText { .. }
+            | Command::AbortCw
+            | Command::DisarmCw => None,
         }
     }
 }
@@ -508,6 +516,7 @@ impl RadioHost for NativeShared {
             // Nor these. See the note above: an unread block is
             // reported as absent, not as somebody's defaults.
             levels: None,
+            cw: None,
         })
     }
 
@@ -702,6 +711,7 @@ mod tests {
             filter_width_hz: None,
             meters: Vec::new(),
             levels: None,
+            cw: None,
         }
     }
 
@@ -822,6 +832,7 @@ mod tests {
             filter_width_hz: None,
             meters: Vec::new(),
             levels: None,
+            cw: None,
         }
     }
 

@@ -445,6 +445,7 @@ mod tests {
             filter_width_hz: None,
             meters: Vec::new(),
             levels: None,
+            cw: None,
         }
     }
 

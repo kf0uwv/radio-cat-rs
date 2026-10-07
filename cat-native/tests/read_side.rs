@@ -151,6 +151,7 @@ impl RadioHost for Dummy {
             filter_width_hz: None,
             meters,
             levels: None,
+            cw: None,
         }
     }
 

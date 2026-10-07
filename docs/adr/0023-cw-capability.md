@@ -204,8 +204,19 @@ pub enum SenderState {
     Idle,
     Sending { job: u32, sent_chars: u32, total_chars: u32 },
     Draining { job: u32 },          // DrainOnly abort in progress
-    Stopped { job: u32, reason: StopReason }, // completed | aborted | cap | disconnect | error
+    Stopped { job: u32, reason: StopReason, message: Option<String> },
 }
+// StopReason: completed | aborted | key_down_cap | disconnected | error
+// SenderState is internally tagged: {"state":"draining","job":7}
+```
+
+`key_down_cap_s` (optional, seconds) is how a client lowers the 60 s cap
+for its arm (decision 5); a value above the server's cap is ignored.
+Owned capability mirrors are `CwCapabilityWire`, `CwSendTextWire` and
+`TxGateWire`; `HzRange`, `WpmRange`, `BreakInKind`, `CwPacing` and
+`CwAbort` cross the wire as they are and are re-exported by `cat-native`.
+
+```rust
 ```
 
 Pitch, wpm and break-in are CAT reads on the **levels** clock (5 s), and
@@ -218,7 +229,7 @@ last `ReadState`. A copy-practice trainer needs nothing but `ReadState`.
 | Command | Who may send | Reply | Server checks (beyond capability) |
 |---|---|---|---|
 | `SetKeyerSpeed { wpm }` | any console | `Ack` | in `keyer_wpm`, writable |
-| `ArmCwTransmit { callsign, dummy_load_acknowledged }` | any, if no other owner | `Ack` after clamp + read-back | §3 |
+| `ArmCwTransmit { callsign, dummy_load_acknowledged, key_down_cap_s? }` | any, if no other owner | `Ack` after clamp + read-back | §3 |
 | `SendCwText { text }` | the arm owner only | `Ack` when **queued** (progress in `CwState.sender`) | §3, §4 |
 | `AbortCw` | **any** console, armed or not | `Ack` when the stop has been issued | none — never refused |
 | `DisarmCw` | the arm owner | `Ack` after restore + read-back | — |

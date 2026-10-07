@@ -39,3 +39,8 @@ not start before that.
   Serialize+Deserialize and reusable on the wire directly; only
   `CwSendText`/`TxGateCapability`/`CwCapability` (`&'static` fields) need
   owned mirrors. `requires_break_in` must be mirrored too.
+- T1 accepted by architect (requires_break_in + PascalCase approved;
+  0.9.0 bump goes in the last task before release).
+- T2 done: wire types (tests first: 31 compile errors red; 10 `cw_wire`
+  tests green). Workspace 1149 passed / 0 failed / 3 ignored; clippy,
+  fmt, xwin msvc clean. PROTOCOL_VERSION still 2, existing pin unchanged.
