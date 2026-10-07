@@ -461,6 +461,26 @@ mod tests {
     }
 
     #[test]
+    fn europe_splits_blocks_by_digit_and_tag() {
+        assert_eq!(name("UA3ABC"), "EUROPEAN RUSSIA");
+        assert_eq!(name("RA2FA"), "KALININGRAD");
+        assert_eq!(name("R1FJL"), "FRANZ JOSEF LAND");
+        assert_eq!(name("IS0ABC"), "SARDINIA");
+        assert_eq!(name("IK0ABC"), "ITALY");
+        assert_eq!(name("EA6AB"), "BALEARIC IS");
+        assert_eq!(name("SV9ABC"), "CRETE");
+        assert_eq!(name("SV2ASP/A"), "MOUNT ATHOS");
+        // `/A` off Mount Athos's block is a modifier, not a tag.
+        assert_eq!(name("SV1ABC/A"), "GREECE");
+        assert_eq!(name("OH0ABC"), "ALAND IS");
+        assert_eq!(name("OJ0B"), "MARKET REEF");
+        assert_eq!(name("HB0ABC"), "LIECHTENSTEIN");
+        assert_eq!(name("2E0ABC"), "ENGLAND");
+        assert_eq!(name("MW0ABC"), "WALES");
+        assert_eq!(name("4U1ITU"), "ITU HQ");
+    }
+
+    #[test]
     fn modifiers_do_not_move_a_station() {
         assert_eq!(name("DL1ABC/P"), "GERMANY");
         // `/M` is mobile, not the `M` prefix of England.
