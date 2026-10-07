@@ -248,9 +248,10 @@ report after each. Do not push.
   Remaining: crate docs stating the abort-latency bound honestly.
 
 ### Out of this repo (for architect dispatch, after T6)
-- **Every radio's `server`** that opts in: call
-  `NativeShared::shutdown_cw()` on exit and keep the pump running until
-  `cw_settled()` (bounded), so a shutdown mid-send restores power.
+- ~~Every radio's server must call `shutdown_cw()`~~ — superseded:
+  `run_with_native` settles CW on exit itself (fix 2). **Open for the
+  architect:** signal-driven exit (Ctrl-C/SIGTERM) runs no library code;
+  owning it needs a process-wide handler + new dep (ADR 0023 §6 note).
 - **ts570d**: fix `send_cw` to the manual's `KY␠<24 padded>;` form (and
   its test pinning `KYCQ;`) and the emulator handler; implement
   `NativeCw`; `cw: Some(...)` with `BufferFlag` + `DrainOnly`; bench on a

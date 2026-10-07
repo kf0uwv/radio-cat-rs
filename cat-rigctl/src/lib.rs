@@ -356,6 +356,7 @@ where
     // and has no opinion about where a spectrum comes from.
     let native_shared = native.filter(|_| config.native_port.is_some());
     let serving_consoles = native_shared.is_some();
+    let cw_shared = native_shared.clone();
 
     let mut tasks = Vec::new();
 
@@ -463,6 +464,12 @@ where
     // and propagate whatever it returned (already logged above on the
     // `Err` path) instead of hardcoding `Ok(())` regardless of outcome.
     let (result, _index, _remaining) = futures::future::select_all(tasks).await;
+    // The server is ending. Stop any CW send and restore the radio before
+    // returning, so no radio repo has to remember to (ADR 0023). The pump
+    // is a task on this runtime and keeps running while this yields.
+    if let Some(shared) = &cw_shared {
+        native_bridge::settle_cw(shared, native_bridge::CW_SHUTDOWN_TIMEOUT).await;
+    }
     result
 }
 
@@ -555,6 +562,7 @@ where
     // source is the app's business. `cat-rigctl` orchestrates listeners
     // and has no opinion about where a spectrum comes from.
     let native_shared = native.filter(|_| config.native_port.is_some());
+    let cw_shared = native_shared.clone();
 
     if let Some(shared) = native_shared.clone() {
         let handle = handle.clone();
@@ -654,9 +662,16 @@ where
     // Wait for the first listener thread to end (accept()/bind-time
     // failure, or never on the happy path), and propagate its result -- the
     // `std` analog of the Linux path's `futures::future::select_all`.
-    done_rx
+    let result = done_rx
         .recv()
-        .unwrap_or(Err(io::Error::other("all listener threads exited")))
+        .unwrap_or(Err(io::Error::other("all listener threads exited")));
+    // The server is ending. Stop any CW send and restore the radio before
+    // returning (ADR 0023); the pump owns its own thread here and keeps
+    // running while this one waits.
+    if let Some(shared) = &cw_shared {
+        shared.settle_cw_blocking(native_bridge::CW_SHUTDOWN_TIMEOUT);
+    }
+    result
 }
 
 // Gated to Linux: exercises the `async fn run` implementation via

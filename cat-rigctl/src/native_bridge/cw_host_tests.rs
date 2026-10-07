@@ -19,6 +19,7 @@
 //! send owns the link, that rigctl `T 1` is refused, and that nothing a
 //! console gives up on is left keyed or clamped.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -649,4 +650,100 @@ fn an_abort_arriving_mid_queue_waits_for_one_command_at_most() {
     let stop = rig.radio.pos("stop").expect("stopped");
     let second = rig.radio.pos("apply SetFrequency").unwrap();
     assert!(first < stop && stop < second, "{:?}", rig.radio.log);
+}
+
+// ---------------------------------------------------------------------
+// The server's own exit path restores (architect, 2026-10-07)
+// ---------------------------------------------------------------------
+
+/// Turn the pump on its own thread, as the Windows server does, until
+/// told to stop.
+fn pump_in_background(
+    mut rig: Rig,
+) -> (
+    Arc<NativeShared>,
+    Arc<AtomicBool>,
+    std::thread::JoinHandle<Rig>,
+) {
+    let shared = Arc::clone(&rig.shared);
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let handle = std::thread::spawn(move || {
+        while !flag.load(Ordering::SeqCst) {
+            rig.cycle();
+            std::thread::sleep(CW_TICK);
+        }
+        rig
+    });
+    (shared, stop, handle)
+}
+
+#[test]
+fn the_blocking_exit_path_restores_before_it_returns() {
+    let mut rig = Rig::new(&CW_RADIO, true);
+    rig.arm().unwrap();
+    rig.radio.busy_after_send = 3;
+    rig.send("CQ CQ").unwrap();
+    rig.cycle();
+    let (shared, stop, handle) = pump_in_background(rig);
+
+    assert!(shared.settle_cw_blocking(Duration::from_secs(5)));
+    assert!(shared.cw_settled());
+    stop.store(true, Ordering::SeqCst);
+    let rig = handle.join().unwrap();
+    assert_eq!(rig.radio.power, 100, "restored before the server returned");
+    assert!(rig.radio.any("stop"));
+}
+
+#[test]
+fn an_exit_path_that_cannot_settle_says_so_and_does_not_hang() {
+    let mut rig = Rig::new(&CW_RADIO, true);
+    rig.arm().unwrap();
+    // No pump is turning: nothing will ever restore this radio.
+    let started = std::time::Instant::now();
+    assert!(!rig.shared.settle_cw_blocking(Duration::from_millis(300)));
+    let took = started.elapsed();
+    assert!(took >= Duration::from_millis(300) && took < Duration::from_secs(3));
+    assert!(!rig.shared.cw_settled());
+}
+
+#[test]
+fn a_server_without_cw_settles_at_once() {
+    let rig = Rig::new(&PLAIN_RADIO, false);
+    let started = std::time::Instant::now();
+    assert!(rig.shared.settle_cw_blocking(Duration::from_secs(5)));
+    assert!(started.elapsed() < Duration::from_millis(100));
+}
+
+#[cfg(target_os = "linux")]
+#[monoio::test(driver = "legacy", timer_enabled = true)]
+async fn the_async_exit_path_lets_the_pump_restore() {
+    // On Linux the pump is a task on the same runtime as the server, so
+    // the exit path must yield to it rather than block the thread.
+    let mut rig = Rig::new(&CW_RADIO, true);
+    rig.arm().unwrap();
+    let Rig {
+        shared,
+        mut radio,
+        mut pump,
+    } = rig;
+    let power = std::rc::Rc::new(std::cell::Cell::new(radio.power));
+    let seen = std::rc::Rc::clone(&power);
+    let task_shared = Arc::clone(&shared);
+    monoio::spawn(async move {
+        loop {
+            let wait = pump_once(
+                &task_shared,
+                &mut radio,
+                &mut pump,
+                Duration::from_millis(200),
+            )
+            .await;
+            seen.set(radio.power);
+            monoio::time::sleep(wait).await;
+        }
+    });
+    assert_eq!(power.get(), 5);
+    assert!(settle_cw(&shared, Duration::from_secs(5)).await);
+    assert_eq!(power.get(), 100);
 }

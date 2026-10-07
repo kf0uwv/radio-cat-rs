@@ -351,6 +351,13 @@ pub const CW_TICK: Duration = Duration::from_millis(50);
 /// after its console stopped waiting is released at once.
 const CW_REPLY_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// How long a server's exit path waits for CW to stop and restore.
+///
+/// A restore is two or four CAT exchanges and a drain of at most the 3 s
+/// bound; ten seconds covers a slow link with retries to spare, and is
+/// short enough that a wedged radio does not hold a server's exit open.
+pub const CW_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// How many supervisor actions one pump cycle runs before it looks at
 /// the queue and the clock again.
 const MAX_CW_STEPS: usize = 32;
@@ -627,6 +634,45 @@ impl NativeShared {
         self.with_cw(|sup| sup.is_settled()).unwrap_or(true)
     }
 
+    /// Shut CW down and wait, blocking this thread, until the radio is
+    /// restored or `timeout` passes. Returns whether it settled; if not,
+    /// says so loudly, naming what is left undone.
+    ///
+    /// For a thread that is not the pump's: the pump must keep running
+    /// for the restore to happen. That is the Windows server's shape (the
+    /// pump owns a thread); on Linux use [`settle_cw`], which yields to
+    /// the runtime the pump runs on.
+    pub fn settle_cw_blocking(&self, timeout: Duration) -> bool {
+        if self.cw_settled() {
+            return true;
+        }
+        self.shutdown_cw();
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if self.cw_settled() {
+                return true;
+            }
+            std::thread::sleep(CW_TICK);
+        }
+        self.cw_settled() || self.report_unsettled(timeout)
+    }
+
+    /// Say, as loudly as this crate says anything, that the radio was
+    /// left armed, keyed or unrestored. Returns `false`, for the caller.
+    fn report_unsettled(&self, timeout: Duration) -> bool {
+        let restore = self.with_cw(|sup| sup.restore_status()).flatten();
+        let armed = self
+            .with_cw(|sup| sup.armed_state(ConsoleId::from_raw(0)).is_some())
+            .unwrap_or(false);
+        tracing::error!(
+            ?restore,
+            armed,
+            "CW did not settle within {timeout:?} of shutdown: the radio's power and \
+             break-in may NOT be restored -- check the radio before transmitting"
+        );
+        false
+    }
+
     /// Whether CW needs the pump's fast tick and the link to itself.
     fn cw_live(&self) -> bool {
         self.with_cw(|sup| sup.is_live()).unwrap_or(false)
@@ -810,6 +856,24 @@ fn poisoned() -> HostRefusal {
         code: ErrorCode::OutOfRange,
         message: "the server's CW state is poisoned".to_string(),
     }
+}
+
+/// [`NativeShared::settle_cw_blocking`] for a server whose pump is a task
+/// on the same monoio runtime: waits by yielding, so the pump can run.
+#[cfg(target_os = "linux")]
+pub async fn settle_cw(shared: &NativeShared, timeout: Duration) -> bool {
+    if shared.cw_settled() {
+        return true;
+    }
+    shared.shutdown_cw();
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if shared.cw_settled() {
+            return true;
+        }
+        monoio::time::sleep(CW_TICK).await;
+    }
+    shared.cw_settled() || shared.report_unsettled(timeout)
 }
 
 /// Run the supervisor's due actions against the radio.

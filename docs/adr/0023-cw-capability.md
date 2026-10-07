@@ -424,10 +424,25 @@ supervisor on its first cycle only when that returns `Some` and
 `send_chunk` / `stop`. rigctl `T 1` is refused by a `PttGate` wrapper on
 both platforms (Windows rigctl is not wrapped in `Cached`). An arm whose
 console stopped waiting is released when it completes.
-`NativeShared::shutdown_cw()` / `cw_settled()` exist for a server's
-shutdown path; **each radio's `server` must call them** on exit, or a
-shutdown mid-send leaves power at the clamp (the safe direction, but not
-restored).
+**Shutdown (revised per architect, 2026-10-07).** `run_with_native`
+itself settles CW on its way out, on both platforms: when its listeners
+end it calls `shutdown_cw()` and waits (yielding to the pump on Linux,
+blocking its own thread on Windows) up to `CW_SHUTDOWN_TIMEOUT` (10 s)
+for `cw_settled()`, logging at error level what is left undone if it
+does not settle. A radio repo needs nothing extra for that path;
+`shutdown_cw()` / `cw_settled()` / `settle_cw_blocking()` / `settle_cw()`
+remain for hosts with their own shutdown.
+
+**The path the shared server cannot own: process signals.** Neither
+`cat-server` nor `cat-rigctl` installs a signal or console-control
+handler today; a server stopped with Ctrl-C or SIGTERM is killed by the
+default disposition (or by the application's own handler), and no code
+in this library runs. Owning it would mean a process-wide handler
+(a new dependency such as `ctrlc` or `signal-hook`, or `libc`/
+`windows-sys` directly) installed by a library, which would collide with
+any handler an application already has. That is an architect decision,
+not taken here. Until then a server killed mid-send leaves power at the
+clamp -- the safe direction -- with break-in possibly changed.
 
 ### 7. Against an older server, and an older client
 

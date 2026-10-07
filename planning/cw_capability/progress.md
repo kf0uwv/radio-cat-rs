@@ -79,3 +79,8 @@ not start before that.
   operator text, leads the next send if an abort cut it; arm refusal for
   a long ID removed. Red: 6 failing; green: 63 cw tests (supervisor +
   host). Mutants (no ID-first, unsplit ID) killed. ADR §4 worst case: 3 s.
+- Fix 2 (architect): `run_with_native` settles CW on exit on both
+  platforms (`settle_cw` async on Linux, `settle_cw_blocking` on
+  Windows; 10 s bound; error log if unsettled). Red: 4 compile errors;
+  green: 20 host tests; workspace 1233/0/3; clippy, fmt, xwin clean.
+  Signal-driven exit is not owned by any library code -- reported.
