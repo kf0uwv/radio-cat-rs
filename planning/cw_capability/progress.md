@@ -68,3 +68,10 @@ not start before that.
   mixed; arm refuses an ID that cannot fit one chunk. Red: 6 failing.
   Green: 46 supervisor tests; workspace 1212/0/3; clippy, fmt, xwin
   clean. Worst-case TS-570D drain stated in ADR §4: 27.48 s.
+- T6 done: `NativeCw` + `NativeRadio::cw()` opt-in, supervisor in
+  `NativeShared`, `apply_as`/`state_as`/detach wiring, `pump_once` with
+  CW-first ordering and live-CW fast tick, `PttGate` on both platforms.
+  Red: 15 compile errors. Green: 16 `cw_host_tests`; mutation check 8
+  mutants, 1 survivor (CW between queued commands) -> added a test,
+  killed. Workspace 1228/0/3; clippy, fmt, xwin clean. No radio in this
+  repo opts in; radio servers must call `shutdown_cw()` on exit.

@@ -10,7 +10,7 @@ standalone trainer (new repo) works against any radio-cat-rs radio's
 
 ## Current Phase
 
-**T1-T5 done; T6 next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
+**T1-T6 done; T7 next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
 `feat/cw-capability` off `feat/cat-morse`). ADR 0023 Accepted 2026-10-07;
 open questions answered (see "Decisions" at the end). One task at a time;
 report after each. Do not push.
@@ -183,7 +183,7 @@ report after each. Do not push.
   - Wire addition: `CwState.restore: Option<RestoreStatus>`
     (`serde(default)`).
 
-### T6 — `cat-rigctl`: pump + `NativeShared` integration (status: pending)
+### T6 — `cat-rigctl`: pump + `NativeShared` integration (status: done 2026-10-07)
 - `NativeCw` trait; `NativeRadio::cw()` defaulted to `None` (ft991a,
   ic7100 compile unchanged).
 - T6 inputs from T5: `ConsoleId::from_raw` exists for non-`serve` hosts
@@ -209,6 +209,24 @@ report after each. Do not push.
   platform split already in `pump` (and must not reintroduce the double
   sleep the comment there records). `cargo xwin check` + CI `cargo test`.
 
+- Design as built (2026-10-07): `NativeCw` methods map 1:1 onto
+  `CwAction` (`status`, `power_raw`/`set_power_raw`, `break_in`/
+  `set_break_in`, `ready`, `send_chunk`, `stop`, plus `settings` for the
+  levels clock and `set_keyer_wpm`). `NativeShared` holds the
+  `CwSupervisor`; the pump creates it on its first cycle **only if** the
+  radio returns `Some` from `cw()` and `capabilities.cw` validates —
+  that is the opt-in (`serves_cw()` true from then). `apply_as`:
+  `AbortCw` → supervisor on the listener thread, never queued; Arm /
+  Disarm wait (15 s) for the supervisor's reply; an arm whose console
+  gave up waiting is disarmed when its `Ok` arrives; `SendCwText` is
+  immediate; `SetKeyerSpeed` is queued (refused while a send is live).
+  Detach → `supervisor.detached`. `state_as` fills `CwState` per
+  console. Pump order: CW actions → queued commands → (state poll only
+  when CW is not live) → wait 50 ms while live. rigctl `T 1`: a
+  `PttGate<R>` wrapper on **both** platforms (Windows rigctl is not
+  wrapped in `Cached`, so `Cached` alone would miss it).
+  `NativeShared::shutdown_cw()` / `cw_settled()` for apps' shutdown.
+
 ### T7 — `cat-native` client conveniences (status: pending)
 - `Connection`/`Client`: `cw_capability()`, `arm_cw`, `send_cw`,
   `abort_cw`, `disarm_cw`, `set_keyer_speed`; `Malformed` in reply to a CW
@@ -232,6 +250,9 @@ report after each. Do not push.
   Remaining: crate docs stating the abort-latency bound honestly.
 
 ### Out of this repo (for architect dispatch, after T6)
+- **Every radio's `server`** that opts in: call
+  `NativeShared::shutdown_cw()` on exit and keep the pump running until
+  `cw_settled()` (bounded), so a shutdown mid-send restores power.
 - **ts570d**: fix `send_cw` to the manual's `KY␠<24 padded>;` form (and
   its test pinning `KYCQ;`) and the emulator handler; implement
   `NativeCw`; `cw: Some(...)` with `BufferFlag` + `DrainOnly`; bench on a

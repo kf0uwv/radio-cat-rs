@@ -33,17 +33,22 @@
 //! frequency should learn whether the radio took it. They queue, the poller
 //! applies them, and the answer comes back on a one-shot channel.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::Instant;
 
-use cat_framework::capabilities::RadioCapabilities;
-use cat_native::{Command, RadioHost, RadioState};
+use cat_framework::capabilities::{BreakInKind, CwCapability, RadioCapabilities};
+use cat_native::{Command, ConsoleId, CwState, ErrorCode, HostRefusal, RadioHost, RadioState};
 use cat_signal::SpectrumFrame;
 
 pub mod cw;
+
+#[cfg(test)]
+mod cw_host_tests;
 
 /// How long a console waits for the radio to answer a command.
 ///
@@ -73,6 +78,80 @@ pub trait NativeRadio {
     async fn levels(&mut self) -> Option<cat_native::RadioLevels> {
         None
     }
+
+    /// This radio's CW control, if its crate implements it (ADR 0023).
+    ///
+    /// Defaulted to `None`, and `None` means this server offers no CW to
+    /// consoles at all -- whatever `RadioCapabilities::cw` says. Returning
+    /// `Some` is the opt-in: from then on the shared supervisor in
+    /// [`cw`] drives these methods, and consoles may arm, send and abort.
+    fn cw(&mut self) -> Option<&mut dyn NativeCw> {
+        None
+    }
+}
+
+/// What [`NativeCw::status`] reports: enough to decide whether keying is
+/// allowed at all right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CwStatus {
+    /// The radio is in one of its CW modes.
+    pub cw_mode: bool,
+    /// The radio is transmitting, by any cause.
+    pub transmitting: bool,
+    /// Keyer speed, if the radio reports it.
+    pub wpm: Option<u16>,
+}
+
+/// The CW settings a console displays, read on the levels clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CwSettings {
+    pub pitch_hz: Option<u32>,
+    pub keyer_wpm: Option<u16>,
+    pub break_in: Option<BreakInKind>,
+}
+
+/// One radio's CW commands, in its own encoding (ADR 0023 §6).
+///
+/// Each method is one CAT exchange or close to it. The sequencing,
+/// gating, chunking, watchdog and restore are not here: they are written
+/// once, in [`cw::CwSupervisor`], and drive these.
+#[async_trait::async_trait(?Send)]
+pub trait NativeCw {
+    async fn status(&mut self) -> Result<CwStatus, String>;
+    /// For display. `None` if the radio did not answer.
+    async fn settings(&mut self) -> Option<CwSettings>;
+    async fn set_keyer_wpm(&mut self, wpm: u16) -> Result<(), String>;
+    /// Transmit power, raw, in the units of `TxGateCapability::power_raw`.
+    async fn power_raw(&mut self) -> Result<u16, String>;
+    async fn set_power_raw(&mut self, raw: u16) -> Result<(), String>;
+    async fn break_in(&mut self) -> Result<BreakInKind, String>;
+    async fn set_break_in(&mut self, kind: BreakInKind) -> Result<(), String>;
+    /// `CwPacing::BufferFlag` radios: whether the keyer can take a chunk.
+    async fn ready(&mut self) -> Result<bool, String>;
+    /// One chunk: upper case, within the charset and `max_chunk_chars`.
+    async fn send_chunk(&mut self, text: &str) -> Result<(), String>;
+    /// `CwAbort::RadioStop` radios stop; `DrainOnly` radios return `Ok`.
+    async fn stop(&mut self) -> Result<(), String>;
+}
+
+/// Run one supervisor action against the radio.
+async fn execute(radio: &mut dyn NativeCw, action: cw::CwAction) -> cw::CwOutcome {
+    use cw::{CwAction as A, CwOutcome as O};
+    let result = match action {
+        A::ReadStatus => radio.status().await.map(|s| O::Status {
+            cw_mode: s.cw_mode,
+            transmitting: s.transmitting,
+            wpm: s.wpm,
+        }),
+        A::ReadPower => radio.power_raw().await.map(O::Power),
+        A::SetPower(raw) => radio.set_power_raw(raw).await.map(|()| O::Done),
+        A::ReadBreakIn => radio.break_in().await.map(O::BreakIn),
+        A::SetBreakIn(kind) => radio.set_break_in(kind).await.map(|()| O::Done),
+        A::Ready => radio.ready().await.map(O::Ready),
+        A::SendChunk(text) => radio.send_chunk(&text).await.map(|()| O::Done),
+        A::Stop => radio.stop().await.map(|()| O::Done),
+    };
+    result.unwrap_or_else(O::Failed)
 }
 
 /// For a server that does not serve consoles.
@@ -120,6 +199,7 @@ enum Slot {
     /// source with the dial, so the two are not interchangeable even when
     /// they name the same hertz.
     Retune,
+    KeyerSpeed,
 }
 
 impl Slot {
@@ -137,11 +217,10 @@ impl Slot {
             | Command::ReadState
             | Command::ReadDevices
             | Command::AttachDevice { .. } => None,
-            // ADR 0023: refused by `NativeSession::validate` until the CW
-            // supervisor lands (T6), which gives `SetKeyerSpeed` its own
-            // slot and keeps `AbortCw` out of supersession entirely.
-            Command::SetKeyerSpeed { .. }
-            | Command::ArmCwTransmit { .. }
+            Command::SetKeyerSpeed { .. } => Some(Slot::KeyerSpeed),
+            // Never queued: `NativeShared::apply_as` hands these straight
+            // to the supervisor, so nothing can supersede an abort.
+            Command::ArmCwTransmit { .. }
             | Command::SendCwText { .. }
             | Command::AbortCw
             | Command::DisarmCw => None,
@@ -240,22 +319,69 @@ pub struct NativeShared {
     /// the *next* console what was there when the server started. Called
     /// once per connection, at handshake.
     installation: Mutex<Option<InstallationFn>>,
+    /// ADR 0023's CW supervisor. `None` until the pump finds a radio
+    /// whose crate implements [`NativeCw`] and whose capabilities
+    /// describe CW coherently; until then no console is offered CW.
+    cw: Mutex<Option<cw::CwSupervisor>>,
+    /// Mirrors `cw.is_some()`, readable without the lock.
+    cw_serving: AtomicBool,
+    /// Pitch, speed and break-in as last read on the levels clock.
+    cw_settings: Mutex<Option<CwSettings>>,
+    /// Consoles waiting on an arm or disarm, by ticket.
+    cw_waiters: Mutex<HashMap<cw::Ticket, CwWaiter>>,
+    /// How long a console waits for an arm or disarm to finish.
+    cw_reply_timeout: Mutex<Duration>,
+    /// Who each console is, for the arm log.
+    peers: Mutex<HashMap<ConsoleId, SocketAddr>>,
 }
+
+/// A console blocked in `apply_as` until the supervisor answers.
+struct CwWaiter {
+    owner: ConsoleId,
+    is_arm: bool,
+    reply: SyncSender<Result<(), HostRefusal>>,
+}
+
+/// How long the pump waits between cycles while CW is live: a send in
+/// progress, an abort draining, or a restore being retried.
+pub const CW_TICK: Duration = Duration::from_millis(50);
+
+/// How long a console waits for an arm (six or so CAT exchanges) or a
+/// disarm to finish before it is told to give up. An arm that completes
+/// after its console stopped waiting is released at once.
+const CW_REPLY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How many supervisor actions one pump cycle runs before it looks at
+/// the queue and the clock again.
+const MAX_CW_STEPS: usize = 32;
 
 impl NativeShared {
     pub fn new(capabilities: &'static RadioCapabilities) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new(Self::build(capabilities, None))
+    }
+
+    fn build(
+        capabilities: &'static RadioCapabilities,
+        devices: Option<Arc<dyn cat_signal::DeviceDirectory>>,
+    ) -> Self {
+        Self {
             capabilities,
             consoles: std::sync::atomic::AtomicUsize::new(0),
             cache: Mutex::new(Cache::default()),
             spectrum: Mutex::new(None),
             audio: Mutex::new(None),
             queue: Mutex::new(VecDeque::new()),
-            devices: None,
+            devices,
             installation: Mutex::new(None),
             layout: Mutex::new(None),
             theme: Mutex::new(None),
-        })
+            cw: Mutex::new(None),
+            cw_serving: AtomicBool::new(false),
+            cw_settings: Mutex::new(None),
+            cw_waiters: Mutex::new(HashMap::new()),
+            cw_reply_timeout: Mutex::new(CW_REPLY_TIMEOUT),
+            peers: Mutex::new(HashMap::new()),
+        }
     }
 
     /// The same, for a server that can tell clients what its machine has.
@@ -267,18 +393,7 @@ impl NativeShared {
         capabilities: &'static RadioCapabilities,
         devices: Arc<dyn cat_signal::DeviceDirectory>,
     ) -> Arc<Self> {
-        Arc::new(Self {
-            capabilities,
-            consoles: std::sync::atomic::AtomicUsize::new(0),
-            cache: Mutex::new(Cache::default()),
-            spectrum: Mutex::new(None),
-            audio: Mutex::new(None),
-            queue: Mutex::new(VecDeque::new()),
-            devices: Some(devices),
-            installation: Mutex::new(None),
-            layout: Mutex::new(None),
-            theme: Mutex::new(None),
-        })
+        Arc::new(Self::build(capabilities, Some(devices)))
     }
 
     /// Publish a spectrum frame. Newest wins.
@@ -479,6 +594,241 @@ impl NativeShared {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CW (ADR 0023)
+// ---------------------------------------------------------------------------
+
+impl NativeShared {
+    /// Start supervising CW. Called by the pump, once, and only for a
+    /// radio that implements [`NativeCw`] and a capability that validates.
+    fn enable_cw(&self, capability: CwCapability) {
+        if let Ok(mut slot) = self.cw.lock() {
+            *slot = Some(cw::CwSupervisor::new(capability, cw::CwConfig::default()));
+            self.cw_serving.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Whether rigctl `T 1` must be refused: a console holds the CW arm,
+    /// is arming, or its restore has not been verified (decision 8).
+    pub fn cw_blocks_external_ptt(&self) -> bool {
+        self.with_cw(|sup| sup.blocks_external_ptt())
+            .unwrap_or(false)
+    }
+
+    /// Stop any CW send and restore the radio, for a server that is
+    /// shutting down. Keep the pump running until [`Self::cw_settled`].
+    pub fn shutdown_cw(&self) {
+        self.with_cw(|sup| sup.shutdown(Instant::now()));
+    }
+
+    /// Nothing armed, nothing keyed, nothing left to restore. True for a
+    /// server that does not serve CW.
+    pub fn cw_settled(&self) -> bool {
+        self.with_cw(|sup| sup.is_settled()).unwrap_or(true)
+    }
+
+    /// Whether CW needs the pump's fast tick and the link to itself.
+    fn cw_live(&self) -> bool {
+        self.with_cw(|sup| sup.is_live()).unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_cw_reply_timeout(&self, timeout: Duration) {
+        if let Ok(mut t) = self.cw_reply_timeout.lock() {
+            *t = timeout;
+        }
+    }
+
+    fn with_cw<T>(&self, f: impl FnOnce(&mut cw::CwSupervisor) -> T) -> Option<T> {
+        let mut slot = self.cw.lock().ok()?;
+        slot.as_mut().map(f)
+    }
+
+    /// The CW block of `RadioState`, as console `viewer` should see it.
+    fn cw_state_for(&self, viewer: ConsoleId) -> Option<CwState> {
+        let settings = self
+            .cw_settings
+            .lock()
+            .ok()
+            .and_then(|s| *s)
+            .unwrap_or_default();
+        self.with_cw(|sup| CwState {
+            pitch_hz: settings.pitch_hz,
+            keyer_wpm: settings.keyer_wpm,
+            break_in: settings.break_in,
+            armed: sup.armed_state(viewer),
+            sender: sup.sender(),
+            restore: sup.restore_status(),
+        })
+    }
+
+    /// Ask the supervisor for something it answers later, and wait.
+    fn cw_wait(
+        &self,
+        owner: ConsoleId,
+        is_arm: bool,
+        request: impl FnOnce(&mut cw::CwSupervisor) -> Result<cw::Ticket, HostRefusal>,
+    ) -> Result<(), HostRefusal> {
+        let rx = {
+            let mut slot = self.cw.lock().map_err(|_| poisoned())?;
+            let sup = slot.as_mut().ok_or_else(no_cw)?;
+            let ticket = request(sup)?;
+            let (reply, rx) = sync_channel(1);
+            // Registered under the supervisor's lock, so the pump cannot
+            // answer before anyone is listening.
+            self.cw_waiters.lock().map_err(|_| poisoned())?.insert(
+                ticket,
+                CwWaiter {
+                    owner,
+                    is_arm,
+                    reply,
+                },
+            );
+            rx
+        };
+        let timeout = self
+            .cw_reply_timeout
+            .lock()
+            .map(|t| *t)
+            .unwrap_or(CW_REPLY_TIMEOUT);
+        rx.recv_timeout(timeout).unwrap_or_else(|_| {
+            Err(HostRefusal {
+                code: ErrorCode::OutOfRange,
+                message: if is_arm {
+                    "the radio did not finish arming in time; the arm will be released".to_string()
+                } else {
+                    "the restore has not finished; the server keeps trying".to_string()
+                },
+            })
+        })
+    }
+
+    fn apply_cw(&self, id: ConsoleId, command: &Command) -> Result<(), HostRefusal> {
+        let now = Instant::now();
+        match command {
+            // On the listener thread, never queued: the pump's next step
+            // is the stop.
+            Command::AbortCw => {
+                self.with_cw(|sup| sup.abort(now));
+                Ok(())
+            }
+            Command::ArmCwTransmit {
+                callsign,
+                key_down_cap_s,
+                ..
+            } => self.cw_wait(id, true, |sup| sup.arm(id, callsign, *key_down_cap_s, now)),
+            Command::DisarmCw => self.cw_wait(id, false, |sup| sup.disarm(id, now)),
+            Command::SendCwText { text } => self
+                .with_cw(|sup| sup.send(id, text, now).map(|_| ()))
+                .unwrap_or_else(|| Err(no_cw())),
+            Command::SetKeyerSpeed { .. } => {
+                if !self.cw_serving.load(Ordering::SeqCst) {
+                    return Err(no_cw());
+                }
+                if self.cw_live() {
+                    return Err(HostRefusal {
+                        code: ErrorCode::Forbidden,
+                        message: "not while a send is in progress".to_string(),
+                    });
+                }
+                self.apply(command).map_err(HostRefusal::from)
+            }
+            _ => self.apply(command).map_err(HostRefusal::from),
+        }
+    }
+
+    /// Deliver the supervisor's notices: answers to waiting consoles, and
+    /// the log. An arm whose console stopped waiting is released.
+    fn route_cw_notices(&self, notices: Vec<cw::CwNotice>) {
+        let mut abandoned = Vec::new();
+        for notice in notices {
+            match notice {
+                cw::CwNotice::Reply { ticket, result } => {
+                    let waiter = self
+                        .cw_waiters
+                        .lock()
+                        .ok()
+                        .and_then(|mut w| w.remove(&ticket));
+                    if let Some(w) = waiter {
+                        let ok = result.is_ok();
+                        if w.reply.send(result).is_err() && w.is_arm && ok {
+                            abandoned.push(w.owner);
+                        }
+                    }
+                }
+                cw::CwNotice::Armed {
+                    owner,
+                    callsign,
+                    power_raw,
+                } => {
+                    let peer = self.peers.lock().ok().and_then(|p| p.get(&owner).copied());
+                    tracing::warn!(
+                        console = %owner,
+                        peer = ?peer,
+                        callsign = %callsign,
+                        power_raw,
+                        "CW transmit armed; the operator attested a dummy load"
+                    );
+                }
+                cw::CwNotice::JobEnded {
+                    job,
+                    reason,
+                    message,
+                } => tracing::info!(job, ?reason, ?message, "CW send ended"),
+                cw::CwNotice::RestoreFailed { attempts, error } => tracing::error!(
+                    attempts,
+                    %error,
+                    "CW restore failed; power or break-in not yet back, retrying"
+                ),
+                cw::CwNotice::Restored { reason } => {
+                    tracing::info!(?reason, "CW disarmed; power and break-in restored")
+                }
+            }
+        }
+        for owner in abandoned {
+            tracing::warn!(console = %owner, "releasing a CW arm its console stopped waiting for");
+            self.with_cw(|sup| sup.disarm(owner, Instant::now()));
+        }
+    }
+
+    fn take_cw_notices(&self) {
+        if let Some(notices) = self.with_cw(|sup| sup.take_notices()) {
+            self.route_cw_notices(notices);
+        }
+    }
+}
+
+fn no_cw() -> HostRefusal {
+    HostRefusal {
+        code: ErrorCode::Unsupported,
+        message: "this server does not offer CW control".to_string(),
+    }
+}
+
+fn poisoned() -> HostRefusal {
+    HostRefusal {
+        code: ErrorCode::OutOfRange,
+        message: "the server's CW state is poisoned".to_string(),
+    }
+}
+
+/// Run the supervisor's due actions against the radio.
+async fn drive_cw<N: NativeRadio>(shared: &NativeShared, radio: &mut N) {
+    for _ in 0..MAX_CW_STEPS {
+        let action = shared
+            .with_cw(|sup| sup.next_action(Instant::now()))
+            .flatten();
+        shared.take_cw_notices();
+        let Some(action) = action else { break };
+        let outcome = match radio.cw() {
+            Some(cw) => execute(cw, action).await,
+            None => cw::CwOutcome::Failed("this radio has no CW control".to_string()),
+        };
+        shared.with_cw(|sup| sup.complete(outcome, Instant::now()));
+        shared.take_cw_notices();
+    }
+}
+
 impl RadioHost for NativeShared {
     fn capabilities(&self) -> &'static RadioCapabilities {
         self.capabilities
@@ -524,6 +874,36 @@ impl RadioHost for NativeShared {
 
     fn devices(&self) -> Option<Vec<cat_signal::DeviceList>> {
         self.devices.as_ref().map(|d| d.list())
+    }
+
+    fn serves_cw(&self) -> bool {
+        self.cw_serving.load(Ordering::SeqCst)
+    }
+
+    fn console_attached_as(&self, id: ConsoleId, peer: SocketAddr) {
+        if let Ok(mut peers) = self.peers.lock() {
+            peers.insert(id, peer);
+        }
+        self.console_attached();
+    }
+
+    fn console_detached_as(&self, id: ConsoleId) {
+        // An owner hanging up stops its send and restores the radio.
+        self.with_cw(|sup| sup.detached(id, Instant::now()));
+        if let Ok(mut peers) = self.peers.lock() {
+            peers.remove(&id);
+        }
+        self.console_detached();
+    }
+
+    fn state_as(&self, id: ConsoleId) -> RadioState {
+        let mut state = self.state();
+        state.cw = self.cw_state_for(id);
+        state
+    }
+
+    fn apply_as(&self, id: ConsoleId, command: &Command) -> Result<(), HostRefusal> {
+        self.apply_cw(id, command)
     }
 
     fn apply(&self, command: &Command) -> Result<(), String> {
@@ -637,23 +1017,101 @@ const IDLE_MULTIPLIER: u32 = 10;
 /// is five seconds stale has never misled anybody.
 const LEVELS_INTERVAL: Duration = Duration::from_secs(5);
 
+/// What the pump carries from one cycle to the next.
+#[derive(Default)]
+pub(crate) struct PumpState {
+    levels: Option<cat_native::RadioLevels>,
+    last_levels: Option<Instant>,
+    last_cw_settings: Option<Instant>,
+    cw_checked: bool,
+}
+
 pub async fn pump<N: NativeRadio>(shared: Arc<NativeShared>, mut radio: N, interval: Duration) {
+    let mut state = PumpState::default();
+    loop {
+        let wait = pump_once(&shared, &mut radio, &mut state, interval).await;
+        // Two platforms, two correct answers. On Linux the pump is a task
+        // inside the broker's runtime and must yield to it; on Windows it
+        // owns a thread, and sleeping that thread is exactly right.
+        //
+        // The wait is chosen in `pump_once`, outside any `cfg`. It used to
+        // be made twice, once under each attribute, and an attribute binds
+        // to the single item beneath it: the `#[cfg(not(linux))]` covered
+        // only its `let`, leaving `std::thread::sleep` unguarded. Linux
+        // therefore ran *both* sleeps, and the second one blocked the
+        // whole monoio runtime -- every rigctl client, every raw listener
+        // and the broker worker -- for a full interval per cycle. That is
+        // where the 2.5 s worst-case rigctl request came from.
+        #[cfg(target_os = "linux")]
+        monoio::time::sleep(wait).await;
+        #[cfg(not(target_os = "linux"))]
+        std::thread::sleep(wait);
+    }
+}
+
+/// One pump cycle. Returns how long to wait before the next.
+///
+/// Order: CW first (an abort's stop goes before anything queued), then
+/// queued commands -- with CW driven again after each, so an abort that
+/// arrives mid-queue waits for one command at most -- then the state
+/// poll, *unless CW is live*: while a send, a drain or a restore is in
+/// progress the link belongs to it, and the pump ticks at [`CW_TICK`].
+pub(crate) async fn pump_once<N: NativeRadio>(
+    shared: &NativeShared,
+    radio: &mut N,
+    pump: &mut PumpState,
+    interval: Duration,
+) -> Duration {
     // Poll at display rate only while a console is watching. See
     // `NativeShared::consoles`.
     let idle = interval * IDLE_MULTIPLIER;
-    let mut levels: Option<cat_native::RadioLevels> = None;
-    let mut last_levels: Option<Instant> = None;
-    loop {
-        // Apply everything, then refresh, then answer. The order matters:
-        // answering first lets a console's next read arrive before the
-        // refresh, so it sees the state from before its own command and
-        // the display appears not to have taken it. Refreshing first means
-        // that by the time `apply` returns, a read is already correct.
-        let queued = shared.take_queued();
-        let mut results = Vec::with_capacity(queued.len());
-        for (command, reply) in queued {
-            results.push((reply, radio.apply(&command).await));
+
+    // The opt-in (ADR 0023): only a radio crate that implements
+    // `NativeCw`, for a capability that is coherent, is offered to
+    // consoles. Checked once; neither can change at runtime.
+    if !pump.cw_checked {
+        pump.cw_checked = true;
+        if let (Some(capability), true) = (shared.capabilities.cw, radio.cw().is_some()) {
+            match capability.validate() {
+                Ok(()) => shared.enable_cw(capability),
+                Err(e) => tracing::error!(
+                    error = %e,
+                    "this radio's CW description is incoherent; CW is not offered"
+                ),
+            }
         }
+    }
+
+    drive_cw(shared, radio).await;
+
+    // Apply everything, then refresh, then answer. The order matters:
+    // answering first lets a console's next read arrive before the
+    // refresh, so it sees the state from before its own command and
+    // the display appears not to have taken it. Refreshing first means
+    // that by the time `apply` returns, a read is already correct.
+    let queued = shared.take_queued();
+    let mut results = Vec::with_capacity(queued.len());
+    for (command, reply) in queued {
+        let result = match &command {
+            Command::SetKeyerSpeed { wpm } => match radio.cw() {
+                Some(cw) => {
+                    let result = cw.set_keyer_wpm(*wpm).await;
+                    if result.is_ok() {
+                        if let Ok(mut settings) = shared.cw_settings.lock() {
+                            settings.get_or_insert_with(CwSettings::default).keyer_wpm = Some(*wpm);
+                        }
+                    }
+                    result
+                }
+                None => Err("this radio has no CW control".to_string()),
+            },
+            _ => radio.apply(&command).await,
+        };
+        results.push((reply, result));
+        drive_cw(shared, radio).await;
+    }
+
+    if !shared.cw_live() {
         // Snapshot before asking, so a set that lands mid-poll is
         // detectable at publish time. See `Cache::generation`.
         let generation = shared.generation();
@@ -662,38 +1120,46 @@ pub async fn pump<N: NativeRadio>(shared: Arc<NativeShared>, mut radio: N, inter
         // The occasional settings ride along on the state message, but are
         // read on their own clock. Kept across fast polls so a console is
         // not shown dashes for four seconds out of every five.
-        if last_levels.map_or(true, |t: Instant| t.elapsed() >= LEVELS_INTERVAL) {
+        if pump
+            .last_levels
+            .map_or(true, |t: Instant| t.elapsed() >= LEVELS_INTERVAL)
+        {
             if let Some(fresh) = radio.levels().await {
-                levels = Some(fresh);
-                last_levels = Some(Instant::now());
+                pump.levels = Some(fresh);
+                pump.last_levels = Some(Instant::now());
+            }
+        }
+        // CW settings on the same clock, only for a radio that serves CW
+        // (decision 11). Timed from the attempt, so a radio that does not
+        // answer is not asked every cycle.
+        if shared.cw_serving.load(Ordering::SeqCst)
+            && pump
+                .last_cw_settings
+                .map_or(true, |t: Instant| t.elapsed() >= LEVELS_INTERVAL)
+        {
+            pump.last_cw_settings = Some(Instant::now());
+            if let Some(cw) = radio.cw() {
+                if let Some(fresh) = cw.settings().await {
+                    if let Ok(mut slot) = shared.cw_settings.lock() {
+                        *slot = Some(fresh);
+                    }
+                }
             }
         }
         if let Some(state) = state.as_mut() {
-            state.levels = levels;
+            state.levels = pump.levels;
         }
         shared.publish_state(state, taken_at, generation);
-        for (reply, result) in results {
-            // A console that has hung up leaves nobody to tell; that is
-            // not an error worth logging on every disconnect.
-            let _ = reply.send(result);
-        }
-        // The choice is platform-independent, so it is made outside any
-        // `cfg`. It used to be made twice, once under each attribute, and
-        // an attribute binds to the single item beneath it: the
-        // `#[cfg(not(linux))]` covered only its `let`, leaving
-        // `std::thread::sleep` unguarded. Linux therefore ran *both*
-        // sleeps, and the second one blocked the whole monoio runtime --
-        // every rigctl client, every raw listener and the broker worker
-        // -- for a full interval per cycle. That is where the 2.5 s
-        // worst-case rigctl request came from.
-        let wait = shared.poll_interval(interval, idle);
-        // Two platforms, two correct answers. On Linux the pump is a task
-        // inside the broker's runtime and must yield to it; on Windows it
-        // owns a thread, and sleeping that thread is exactly right.
-        #[cfg(target_os = "linux")]
-        monoio::time::sleep(wait).await;
-        #[cfg(not(target_os = "linux"))]
-        std::thread::sleep(wait);
+    }
+    for (reply, result) in results {
+        // A console that has hung up leaves nobody to tell; that is
+        // not an error worth logging on every disconnect.
+        let _ = reply.send(result);
+    }
+    if shared.cw_live() {
+        CW_TICK
+    } else {
+        shared.poll_interval(interval, idle)
     }
 }
 

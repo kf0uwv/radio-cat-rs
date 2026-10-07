@@ -425,6 +425,20 @@ HostRefusal>` (defaults to `apply`, mapping to `OutOfRange` as today) and
 `console_detached_as(ConsoleId)` (defaults to `console_detached`) — let
 `NativeShared` know who owns the arm and who just hung up.
 
+**As built (T6, 2026-10-07).** `NativeRadio::cw() -> Option<&mut dyn
+NativeCw>` (default `None`) is the opt-in: the pump creates the
+supervisor on its first cycle only when that returns `Some` and
+`capabilities.cw` validates, and only then does `NativeShared` report
+`serves_cw()`. `NativeCw` is `status` / `settings` / `set_keyer_wpm` /
+`power_raw` / `set_power_raw` / `break_in` / `set_break_in` / `ready` /
+`send_chunk` / `stop`. rigctl `T 1` is refused by a `PttGate` wrapper on
+both platforms (Windows rigctl is not wrapped in `Cached`). An arm whose
+console stopped waiting is released when it completes.
+`NativeShared::shutdown_cw()` / `cw_settled()` exist for a server's
+shutdown path; **each radio's `server` must call them** on exit, or a
+shutdown mid-send leaves power at the clamp (the safe direction, but not
+restored).
+
 ### 7. Against an older server, and an older client
 
 | Peer | What happens | Client's duty |

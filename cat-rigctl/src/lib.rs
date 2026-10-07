@@ -76,6 +76,7 @@ mod rigctl_windows;
 
 pub mod native_bridge;
 mod protocol;
+pub mod ptt_gate;
 
 use std::io;
 use std::sync::Arc;
@@ -399,8 +400,13 @@ where
         tasks.push(monoio::spawn(async move {
             let result = match cache {
                 Some(shared) => {
+                    // Gated too: no rigctl `T 1` while a console holds the
+                    // CW arm (ADR 0023 decision 8).
                     let make = move |session| {
-                        crate::cached::Cached::new(make_radio(session), Arc::clone(&shared))
+                        crate::cached::Cached::new(
+                            crate::ptt_gate::PttGate::new(make_radio(session), Arc::clone(&shared)),
+                            Arc::clone(&shared),
+                        )
                     };
                     rigctl::serve(listener, handle, make).await
                 }
@@ -618,8 +624,19 @@ where
         let make_radio = make_radio.clone();
         let done_tx = done_tx.clone();
         listener_count += 1;
+        // No rigctl `T 1` while a console holds the CW arm (ADR 0023
+        // decision 8). Not wrapped in `Cached` here, so gated on its own.
+        let gate = native_shared.clone();
         thread::spawn(move || {
-            let result = rigctl_windows::serve(listener, handle, make_radio);
+            let result = match gate {
+                Some(shared) => {
+                    let make = move |session| {
+                        crate::ptt_gate::PttGate::new(make_radio(session), Arc::clone(&shared))
+                    };
+                    rigctl_windows::serve(listener, handle, make)
+                }
+                None => rigctl_windows::serve(listener, handle, make_radio),
+            };
             if let Err(e) = &result {
                 error!("Rigctld-compatible TCP listener on 0.0.0.0:{port} failed: {e}");
             }
