@@ -75,3 +75,7 @@ not start before that.
   mutants, 1 survivor (CW between queued commands) -> added a test,
   killed. Workspace 1228/0/3; clippy, fmt, xwin clean. No radio in this
   repo opts in; radio servers must call `shutdown_cw()` on exit.
+- Fix 1 (architect): ID chunked at the 3 s bound too, never mixed with
+  operator text, leads the next send if an abort cut it; arm refusal for
+  a long ID removed. Red: 6 failing; green: 63 cw tests (supervisor +
+  host). Mutants (no ID-first, unsplit ID) killed. ADR §4 worst case: 3 s.

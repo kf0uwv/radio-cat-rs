@@ -165,13 +165,11 @@ report after each. Do not push.
   - Restoring waits for the radio to finish draining before raising
     power back (never raise power under a keyed chunk).
   - Drain bound (3 s) chunking applies to `DrainOnly` radios only; a
-    `RadioStop` radio stops at once. **Revised per architect
-    (2026-10-07; the "never split a word" version was rejected):**
-    operator text splits at the bound regardless of words; only the
-    server's `DE <CALL>` is kept whole, as its own final chunk, never
-    mixed; arm refuses a call whose ID cannot fit one chunk. Worst-case
-    drain on the TS-570D: 27.48 s (longest valid ID at 10 wpm), 10.92 s
-    for a typical call, ≤ 3 s for operator text. ADR §4 states and a
+    `RadioStop` radio stops at once. **Revised twice per architect (2026-10-07):** every chunk,
+    operator text and ID alike, splits at the bound; the ID never
+    shares a chunk with operator text; an ID cut by an abort leads the
+    next send; the "ID must fit one chunk" arm refusal is gone. Worst-case
+    TS-570D drain: 3 s (+ in-flight exchange). ADR §4 states it and a
     test pins it.
   - The stop is always sent when a job ends (even before any chunk);
     a drain wait has its own deadline so a wedged keyer cannot hold a

@@ -189,6 +189,15 @@ pub enum CwNotice {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct Chunk {
+    text: String,
+    /// The job's last chunk.
+    last: bool,
+    /// The last chunk of the ID: once it is sent, the ID has been sent.
+    ends_id: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Step {
     Status,
     SnapPower,
@@ -200,8 +209,8 @@ enum Step {
     PowerAtMost(u16),
     WaitReady,
     WaitUntil(Instant),
-    /// The chunk, and whether it is the job's last.
-    Send(String, bool),
+    /// A chunk to send.
+    Send(Chunk),
     Stop,
 }
 
@@ -214,7 +223,7 @@ impl Step {
             Step::SetPower(raw) => CwAction::SetPower(*raw),
             Step::SetBreakIn(kind) => CwAction::SetBreakIn(*kind),
             Step::WaitReady => CwAction::Ready,
-            Step::Send(text, _) => CwAction::SendChunk(text.clone()),
+            Step::Send(chunk) => CwAction::SendChunk(chunk.text.clone()),
             Step::Stop => CwAction::Stop,
             Step::WaitUntil(_) => return None,
         })
@@ -239,6 +248,8 @@ struct Arm {
     wpm: u16,
     last_activity: Instant,
     last_id: Option<Instant>,
+    /// An abort cut the last ID short: the next send leads with it.
+    id_first: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +266,10 @@ struct Job {
     started: Instant,
     deadline: Instant,
     has_id: bool,
+    /// The ID leads this job rather than following it.
+    id_first: bool,
+    /// Every chunk of this job's ID has been handed to the radio.
+    id_sent: bool,
     chunk_in_radio: bool,
 }
 
@@ -384,18 +399,6 @@ impl CwSupervisor {
             ));
         }
 
-        let id_len = 3 + callsign.chars().count();
-        if id_len > usize::from(send.max_chunk_chars) {
-            return Err(refusal(
-                ErrorCode::Forbidden,
-                &format!(
-                    "\"DE {callsign}\" is {id_len} characters; this radio sends at most {} at once, \
-                     and the ID is never split",
-                    send.max_chunk_chars
-                ),
-            ));
-        }
-
         let cap = key_down_cap_s
             .map(|s| Duration::from_secs(u64::from(s)))
             .unwrap_or(self.config.key_down_cap)
@@ -465,7 +468,11 @@ impl CwSupervisor {
             now.saturating_duration_since(t) >= self.config.id_interval
         });
         let id_text = id_due.then(|| format!("DE {}", arm.callsign));
+        // Normally the ID closes the send. One an abort cut short leads
+        // the next, so it is not owed any longer than it has to be.
+        let id_first = id_due && arm.id_first;
         let full = match &id_text {
+            Some(id) if id_first => format!("{id} {operator}"),
             Some(id) => format!("{operator} {id}"),
             None => operator.clone(),
         };
@@ -495,6 +502,8 @@ impl CwSupervisor {
             started: now,
             deadline: now + self.watchdog_for(est),
             has_id: id_due,
+            id_first,
+            id_sent: false,
             chunk_in_radio: false,
         };
         self.plan.clear();
@@ -690,7 +699,7 @@ impl CwSupervisor {
                 self.plan.push_front(Step::WaitReady);
                 self.ready_retry_at = Some(now + self.config.tick);
             }
-            (Step::Send(text, last), CwOutcome::Done) => self.on_sent(&text, last, now),
+            (Step::Send(chunk), CwOutcome::Done) => self.on_sent(&chunk, now),
             (step, other) => self.fail(format!("unexpected answer {other:?} to {step:?}"), now),
         }
     }
@@ -834,6 +843,7 @@ impl CwSupervisor {
                     wpm,
                     last_activity: now,
                     last_id: None,
+                    id_first: false,
                 });
                 self.reply(ticket, Ok(()));
                 false
@@ -947,31 +957,54 @@ impl CwSupervisor {
                     return;
                 }
                 job.deadline = job.started + est + est / 5 + self.config.watchdog_margin;
-                let (operator, id_text) = (job.operator.clone(), job.id_text.clone());
+                let (operator, id_text, id_first) =
+                    (job.operator.clone(), job.id_text.clone(), job.id_first);
                 if let Some(arm) = &mut self.arm {
                     arm.wpm = wpm;
                 }
-                self.plan_chunks(&operator, id_text, wpm);
+                self.plan_chunks(&operator, id_text, id_first, wpm);
             }
             _ => {}
         }
     }
 
-    fn plan_chunks(&mut self, operator: &str, id_text: Option<String>, wpm: u16) {
+    fn plan_chunks(&mut self, operator: &str, id_text: Option<String>, id_first: bool, wpm: u16) {
         let Some(send) = self.send_text else {
             return;
         };
+        // Abort latency is the safety property: on a `DrainOnly` radio
+        // every chunk -- the ID too -- keys within the drain bound.
         let bound = (send.abort == CwAbort::DrainOnly).then_some(self.config.drain_bound);
-        let mut pieces = chunks(operator, send.max_chunk_chars, bound, wpm);
-        // Whole and alone: a split or merged ID is not a clean ID, and
-        // `arm` already checked it fits one chunk.
-        pieces.extend(id_text);
-        let n = pieces.len();
-        for (i, piece) in pieces.into_iter().enumerate() {
+        let piece = |text: &str| chunks(text, send.max_chunk_chars, bound, wpm);
+        let operator: Vec<(String, bool)> =
+            piece(operator).into_iter().map(|t| (t, false)).collect();
+        // The ID is chunked on its own, so no chunk ever carries both the
+        // operator's text and the server's ID.
+        let mut id: Vec<(String, bool)> = id_text
+            .as_deref()
+            .map(piece)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| (t, false))
+            .collect();
+        if let Some(last) = id.last_mut() {
+            last.1 = true;
+        }
+        let ordered: Vec<(String, bool)> = if id_first {
+            id.into_iter().chain(operator).collect()
+        } else {
+            operator.into_iter().chain(id).collect()
+        };
+        let n = ordered.len();
+        for (i, (text, ends_id)) in ordered.into_iter().enumerate() {
             if send.pacing == CwPacing::BufferFlag {
                 self.plan.push_back(Step::WaitReady);
             }
-            self.plan.push_back(Step::Send(piece, i + 1 == n));
+            self.plan.push_back(Step::Send(Chunk {
+                text,
+                last: i + 1 == n,
+                ends_id,
+            }));
         }
         if send.pacing == CwPacing::BufferFlag {
             // Done when the keyer is idle again.
@@ -979,20 +1012,22 @@ impl CwSupervisor {
         }
     }
 
-    fn on_sent(&mut self, text: &str, last: bool, now: Instant) {
+    fn on_sent(&mut self, chunk: &Chunk, now: Instant) {
         let wpm = self.arm.as_ref().map_or(self.slowest_wpm, |a| a.wpm);
-        let end = now + estimate(text, wpm);
+        let end = now + estimate(&chunk.text, wpm);
         self.last_chunk_end = Some(self.last_chunk_end.map_or(end, |e| e.max(end)));
         if let Activity::Sending(job) = &mut self.activity {
             job.chunk_in_radio = true;
-            job.sent = if last {
+            job.sent = if chunk.last {
                 job.total
             } else {
-                (job.sent + text.chars().count() as u32 + 1).min(job.total)
+                (job.sent + chunk.text.chars().count() as u32 + 1).min(job.total)
             };
-            if last && job.has_id {
+            if chunk.ends_id {
+                job.id_sent = true;
                 if let Some(arm) = &mut self.arm {
                     arm.last_id = Some(now);
+                    arm.id_first = false;
                 }
             }
             if self.send_text.map(|s| s.pacing) == Some(CwPacing::Estimated) {
@@ -1021,12 +1056,18 @@ impl CwSupervisor {
         };
         // A chunk whose completion has not come back yet is in the radio.
         let in_flight = match &self.outstanding {
-            Some(Step::Send(text, _)) => {
+            Some(Step::Send(chunk)) => {
                 let wpm = self.arm.as_ref().map_or(self.slowest_wpm, |a| a.wpm);
-                Some(now + estimate(text, wpm))
+                Some(now + estimate(&chunk.text, wpm))
             }
             _ => None,
         };
+        // An ID this job owed and did not finish leads the next send.
+        if job.has_id && !job.id_sent {
+            if let Some(arm) = &mut self.arm {
+                arm.id_first = true;
+            }
+        }
         let in_radio = job.chunk_in_radio || in_flight.is_some();
         self.plan.clear();
         self.ready_retry_at = None;
@@ -1208,8 +1249,8 @@ pub fn estimate(text: &str, wpm: u16) -> Duration {
 /// single character always goes, even one longer than the bound -- there
 /// is nothing smaller to send.
 ///
-/// The server's own `DE <call>` never comes through here: it is its own
-/// chunk (see [`CwSupervisor::send`]).
+/// The server's own `DE <call>` is chunked by this too, but separately:
+/// no chunk ever carries both the operator's text and the ID.
 pub fn chunks(text: &str, max_chars: u16, max_duration: Option<Duration>, wpm: u16) -> Vec<String> {
     let max = usize::from(max_chars.max(1));
     let fits =

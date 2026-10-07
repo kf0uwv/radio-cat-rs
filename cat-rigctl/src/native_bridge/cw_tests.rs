@@ -616,9 +616,9 @@ fn the_first_send_carries_the_id_and_later_ones_every_ten_minutes() {
     b.arm().unwrap();
     b.sup.send(OWNER, "cq test", b.now).unwrap();
     b.run_for(Duration::from_secs(20));
-    let first = b.radio.sent().join(" ");
-    assert!(first.ends_with("DE N0CALL"), "{first:?}");
-    assert!(first.starts_with("CQ TEST"), "{first:?}");
+    let first = b.radio.sent().concat().replace(' ', "");
+    assert!(first.ends_with("DEN0CALL"), "{first:?}");
+    assert!(first.starts_with("CQTEST"), "{first:?}");
 
     let before = b.radio.sent().len();
     b.sup.send(OWNER, "TEST", b.now).unwrap();
@@ -632,7 +632,11 @@ fn the_first_send_carries_the_id_and_later_ones_every_ten_minutes() {
         let n = b.radio.sent().len();
         b.sup.send(OWNER, "E", b.now).unwrap();
         b.run_for(Duration::from_secs(5));
-        if b.radio.sent()[n..].join(" ").contains("DE N0CALL") {
+        if b.radio.sent()[n..]
+            .concat()
+            .replace(' ', "")
+            .contains("DEN0CALL")
+        {
             assert!(b.elapsed() >= Duration::from_secs(600));
             return;
         }
@@ -653,7 +657,10 @@ fn an_aborted_id_is_owed_again() {
     let n = b.radio.sent().len();
     b.sup.send(OWNER, "CQ", b.now).unwrap();
     b.run_for(Duration::from_secs(10));
-    assert!(b.radio.sent()[n..].join(" ").contains("DE N0CALL"));
+    assert!(b.radio.sent()[n..]
+        .concat()
+        .replace(' ', "")
+        .contains("DEN0CALL"));
 }
 
 #[test]
@@ -690,17 +697,37 @@ fn a_client_may_lower_the_cap_but_not_raise_it() {
     assert_eq!(code(b.sup.send(OWNER, &long, b.now)), ErrorCode::OutOfRange);
 }
 
-/// The ID the server appends: its own chunk, whole, never shared.
+/// The ID the server appends, unsplit (as a radio with no drain bound
+/// sends it).
 const ID: &str = "DE N0CALL";
 
-fn assert_id_alone(chunks: &[String]) {
-    let ids: Vec<_> = chunks.iter().filter(|c| c.contains("DE N0")).collect();
-    assert_eq!(ids, vec![ID], "the ID is one whole chunk: {chunks:?}");
-    assert_eq!(chunks.last().map(String::as_str), Some(ID), "{chunks:?}");
+/// Split `chunks` into the operator's and the ID's, failing if any one
+/// chunk carries both. `id_first` says which comes first.
+fn split_id(chunks: &[String], operator: &str, id_first: bool) -> (Vec<String>, Vec<String>) {
+    let squash = |c: &[String]| c.concat().replace(' ', "");
+    let (first_text, _) = if id_first {
+        ("DEN0CALL".to_string(), ())
+    } else {
+        (operator.replace(' ', ""), ())
+    };
+    let mut n = 0;
+    while n < chunks.len() && squash(&chunks[..n]).len() < first_text.len() {
+        n += 1;
+    }
+    assert_eq!(
+        squash(&chunks[..n]),
+        first_text,
+        "a chunk carries both the operator's text and the ID: {chunks:?}"
+    );
+    let (a, b) = (chunks[..n].to_vec(), chunks[n..].to_vec());
+    let (op, id) = if id_first { (b, a) } else { (a, b) };
+    assert_eq!(squash(&op), operator.replace(' ', ""), "{chunks:?}");
+    assert_eq!(squash(&id), "DEN0CALL", "{chunks:?}");
+    (op, id)
 }
 
-/// Abort latency is the safety property (architect, 2026-10-07): operator
-/// text is split at the drain bound whatever its word boundaries.
+/// Abort latency is the safety property (architect, 2026-10-07): every
+/// chunk -- operator text and ID alike -- is split at the drain bound.
 #[test]
 fn a_drain_only_radio_never_holds_more_than_the_drain_bound() {
     let mut b = Bench::new(KENWOOD);
@@ -709,9 +736,8 @@ fn a_drain_only_radio_never_holds_more_than_the_drain_bound() {
     b.sup.send(OWNER, "CQ CQ DE K9X", b.now).unwrap();
     b.run_for(Duration::from_secs(60));
     let chunks = b.radio.sent();
-    let (id, operator) = chunks.split_last().unwrap();
-    assert_eq!(id, ID);
-    for c in operator {
+    split_id(&chunks, "CQ CQ DE K9X", false);
+    for c in &chunks {
         assert!(c.len() <= 24, "{c:?}");
         assert!(
             estimate(c, 10) <= CwConfig::default().drain_bound,
@@ -719,7 +745,6 @@ fn a_drain_only_radio_never_holds_more_than_the_drain_bound() {
             estimate(c, 10)
         );
     }
-    assert_eq!(operator.concat().replace(' ', ""), "CQCQDEK9X");
 }
 
 #[test]
@@ -733,29 +758,29 @@ fn long_text_with_no_spaces_is_chunked_within_the_bound() {
     b.sup.send(OWNER, text, b.now).unwrap();
     b.run_for(Duration::from_secs(60));
     let chunks = b.radio.sent();
-    let (id, operator) = chunks.split_last().unwrap();
-    assert_eq!(id, ID);
+    let (operator, _) = split_id(&chunks, text, false);
     assert!(operator.len() > 1);
-    for c in operator {
+    for c in &chunks {
         assert!(
             estimate(c, 10) <= CwConfig::default().drain_bound,
             "{c:?} takes {:?}",
             estimate(c, 10)
         );
     }
-    assert_eq!(operator.concat(), text);
 }
 
 #[test]
-fn the_id_is_never_split_and_never_mixed_with_operator_text() {
-    // Slow: the ID alone runs past the drain bound, and is still whole.
+fn the_id_never_shares_a_chunk_with_operator_text() {
+    // Slow: the ID is split at the bound like anything else, and still
+    // kept apart from what the operator typed.
     let mut b = Bench::new(KENWOOD);
     b.radio.wpm = Some(10);
     b.arm().unwrap();
     assert!(estimate(ID, 10) > CwConfig::default().drain_bound);
     b.sup.send(OWNER, "TEST", b.now).unwrap();
     b.run_for(Duration::from_secs(60));
-    assert_id_alone(&b.radio.sent());
+    let (_, id) = split_id(&b.radio.sent(), "TEST", false);
+    assert!(id.len() > 1, "split at the bound: {id:?}");
 
     // Fast, with room to spare: still not joined to the operator's text.
     let mut b = Bench::new(ICOM);
@@ -774,20 +799,52 @@ fn the_id_is_never_split_and_never_mixed_with_operator_text() {
 }
 
 #[test]
-fn a_callsign_whose_id_cannot_fit_one_chunk_cannot_be_armed() {
+fn an_id_cut_by_an_abort_goes_first_on_the_next_send() {
+    let mut b = Bench::new(KENWOOD);
+    b.radio.wpm = Some(20);
+    b.radio.busy_polls = 1_000;
+    b.arm().unwrap();
+    b.sup.send(OWNER, "E", b.now).unwrap();
+    // Feed chunks one at a time until the ID has started, then abort.
+    for _ in 0..50 {
+        b.radio.busy_left = 0;
+        b.drive();
+        if b.radio.sent().iter().any(|c| c.starts_with("DE")) {
+            break;
+        }
+    }
+    let before = b.radio.sent();
+    assert!(
+        before.concat().replace(' ', "") != "EDEN0CALL",
+        "cut short: {before:?}"
+    );
+    b.sup.abort(b.now);
+    b.run_for(Duration::from_secs(8));
+    b.radio.busy_polls = 0;
+    b.radio.busy_left = 0;
+
+    let n = b.radio.sent().len();
+    b.sup.send(OWNER, "TEST", b.now).unwrap();
+    b.run_for(Duration::from_secs(20));
+    split_id(&b.radio.sent()[n..], "TEST", true);
+}
+
+#[test]
+fn a_long_call_arms_on_a_small_chunk_radio_and_its_id_is_split() {
     let tiny = CwCapability {
         send_text: Some(CwSendText {
-            max_chunk_chars: 8,
+            max_chunk_chars: 4,
             ..KENWOOD.send_text.unwrap()
         }),
         ..KENWOOD
     };
     let mut b = Bench::new(tiny);
-    assert_eq!(
-        code(b.sup.arm(OWNER, "N0CALL", None, b.now)),
-        ErrorCode::Forbidden
-    );
-    assert!(b.sup.arm(OWNER, "K9X", None, b.now).is_ok());
+    assert_eq!(b.arm(), Ok(()));
+    b.sup.send(OWNER, "TEST", b.now).unwrap();
+    b.run_for(Duration::from_secs(60));
+    let chunks = b.radio.sent();
+    assert!(chunks.iter().all(|c| c.chars().count() <= 4), "{chunks:?}");
+    split_id(&chunks, "TEST", false);
 }
 
 #[test]
@@ -1110,25 +1167,35 @@ fn an_id_cut_off_by_an_abort_after_the_first_chunk_is_still_owed() {
     b.sup.send(OWNER, "CQ", b.now).unwrap();
     b.run_for(Duration::from_secs(20));
     assert!(
-        b.radio.sent()[n..].join(" ").contains("DE N0CALL"),
+        b.radio.sent()[n..]
+            .concat()
+            .replace(' ', "")
+            .contains("DEN0CALL"),
         "{:?}",
         b.radio.sent()
     );
 }
 
-/// Pins the number ADR 0023 §4 states for the worst-case drain after an
-/// abort on a `DrainOnly` radio: the ID chunk at the slowest wpm.
-///
-/// The longest valid ID is `DE` plus ten characters with at least one
-/// letter: nine `0`s (19 units each) and a 13-unit letter, 229 units in
-/// all. At the TS-570D's slowest keyer speed (10 wpm, 120 ms a unit)
-/// that is 27.48 s.
+/// Pins ADR 0023 §4: on a `DrainOnly` radio the worst-case drain after
+/// an abort is the 3 s bound -- for operator text and ID alike, even for
+/// the longest valid callsign (`DE` + nine `0`s + a 13-unit letter, 27.5 s
+/// unsplit) at the TS-570D's slowest keyer speed. A single character is
+/// never split; the longest (`0`, 2.28 s at 10 wpm) is inside the bound.
 #[test]
-fn the_worst_case_id_drain_is_the_number_in_the_adr() {
-    assert_eq!(estimate("DE 000000000Q", 10), Duration::from_millis(27_480));
-    // A typical six-character call, and the longest single character
-    // operator text can leave in the radio.
-    assert_eq!(estimate("DE N0CALL", 10), Duration::from_millis(10_920));
+fn the_worst_case_drain_is_the_bound_in_the_adr() {
+    assert_eq!(CwConfig::default().drain_bound, Duration::from_secs(3));
     assert_eq!(estimate("0", 10), Duration::from_millis(2_280));
-    assert!(estimate("0", 10) <= CwConfig::default().drain_bound);
+    let mut b = Bench::new(KENWOOD);
+    b.radio.wpm = Some(10); // KENWOOD's slowest
+    let ticket = b.sup.arm(OWNER, "000000000Q", None, b.now).unwrap();
+    b.drive();
+    assert_eq!(b.reply(ticket), Some(Ok(())));
+    b.sup
+        .send(OWNER, "ABCDEFGHIJKLMNOPQRSTUVWX", b.now)
+        .unwrap();
+    b.run_for(Duration::from_secs(60));
+    let chunks = b.radio.sent();
+    assert!(chunks.concat().contains("000000000Q"), "{chunks:?}");
+    let longest = chunks.iter().map(|c| estimate(c, 10)).max().unwrap();
+    assert!(longest <= Duration::from_secs(3), "{longest:?}");
 }
