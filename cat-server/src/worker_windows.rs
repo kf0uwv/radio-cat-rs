@@ -81,6 +81,7 @@ use cat_transport_core::{completion, CatSession};
 use crate::block_on::block_on;
 use crate::broker::{outcome_to_wire, run_task, Broker, TaskFn, Work, DEFAULT_REQUEST_TIMEOUT};
 use crate::registry::ClientId;
+use crate::release::{ReleaseLines, ReleaseLinesCloser};
 
 /// One unit of work submitted to a [`BrokerWorker`]. Same fields/purpose as
 /// `crate::broker::Job`; `reply` is a [`completion::CompletionTx`] instead
@@ -112,6 +113,8 @@ where
 {
     broker: Broker<C, S, F>,
     receiver: mpsc::Receiver<Job>,
+    /// Closes the release lines (ADR 0021) when the worker is dropped.
+    _release: ReleaseLinesCloser,
 }
 
 impl<C, S, F> BrokerWorker<C, S, F>
@@ -152,6 +155,7 @@ where
 pub struct BrokerHandle {
     sender: mpsc::Sender<Job>,
     next_request_id: Arc<AtomicU64>,
+    release: ReleaseLines,
 }
 
 impl BrokerHandle {
@@ -181,8 +185,27 @@ impl BrokerHandle {
     /// CAT exchange that may take seconds, and a line change cannot corrupt a
     /// frame in flight because `EscapeCommFunction` never touches the byte
     /// stream.
+    /// Release with [`Self::release_now_bypassing_queue`].
     pub async fn submit_task(&self, client_id: ClientId, run: TaskFn) -> Option<Vec<u8>> {
         self.enqueue(client_id, Work::Task(run)).await
+    }
+
+    /// **De-key now**, skipping the ordered queue. Identical signature and
+    /// semantics to `crate::broker::BrokerHandle::release_now_bypassing_queue`
+    /// (read its doc): runs `run` immediately on the calling thread against
+    /// the broker's owned duplicate of the session's modem lines, even while
+    /// the worker thread is mid-exchange. **Only de-keying / safe-state
+    /// actions may use it.** With no release lines it falls back to the
+    /// ordered queue and warns once. `None` only once the broker is gone.
+    pub async fn release_now_bypassing_queue(
+        &self,
+        client_id: ClientId,
+        run: TaskFn,
+    ) -> Option<Vec<u8>> {
+        match self.release.try_now(run) {
+            Ok(reply) => Some(reply),
+            Err(run) => self.submit_task(client_id, run).await,
+        }
     }
 
     /// Tag `work` with a request id, put it on the single ordered queue, and
@@ -237,12 +260,20 @@ where
     S::Error: std::error::Error + 'static,
     F: CatWireFormat + Default + Clone,
 {
+    // Before the session moves into the broker: afterwards it is reachable
+    // only through the worker thread's exclusive borrow (ADR 0021).
+    let release = ReleaseLines::from_session(&session);
     let broker = Broker::with_timeout(session, table, request_timeout);
     let (sender, receiver) = mpsc::channel();
-    let worker = BrokerWorker { broker, receiver };
+    let worker = BrokerWorker {
+        broker,
+        receiver,
+        _release: release.closer(),
+    };
     let handle = BrokerHandle {
         sender,
         next_request_id: Arc::new(AtomicU64::new(0)),
+        release,
     };
     (worker, handle)
 }

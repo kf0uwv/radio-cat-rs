@@ -53,6 +53,7 @@ use thiserror::Error;
 
 use crate::local_channel::{self, Receiver, Sender};
 use crate::registry::ClientId;
+use crate::release::{ReleaseLines, ReleaseLinesCloser};
 
 /// Default per-request timeout the broker enforces around every dispatch to
 /// the physical radio session.
@@ -479,6 +480,8 @@ where
 {
     broker: Broker<C, S, F>,
     receiver: Receiver<Job>,
+    /// Closes the release lines (ADR 0021) when the worker is dropped.
+    _release: ReleaseLinesCloser,
 }
 
 impl<C, S, F> BrokerWorker<C, S, F>
@@ -513,6 +516,7 @@ where
 pub struct BrokerHandle {
     sender: Sender<Job>,
     next_request_id: Rc<Cell<u64>>,
+    release: ReleaseLines,
 }
 
 impl BrokerHandle {
@@ -529,6 +533,7 @@ impl BrokerHandle {
     /// route the *release* through here — an un-key must not queue behind a
     /// CAT exchange that may take seconds, and a line change cannot corrupt a
     /// frame in flight because `TIOCMSET` never touches the byte stream.
+    /// Release with [`Self::release_now_bypassing_queue`].
     pub async fn submit_task(&self, client_id: ClientId, run: TaskFn) -> Option<Vec<u8>> {
         let request_id = self.next_request_id.get();
         self.next_request_id.set(request_id.wrapping_add(1));
@@ -542,6 +547,34 @@ impl BrokerHandle {
         };
         self.sender.send(job).ok()?;
         reply_rx.recv().await
+    }
+
+    /// **De-key now**: run `run` immediately, on the calling thread, against
+    /// the broker's release lines -- an owned duplicate of the session's
+    /// modem lines -- **skipping the ordered queue** and any CAT exchange
+    /// in flight (ADR 0021).
+    ///
+    /// **Only de-keying / safe-state actions may use this** (releasing PTT,
+    /// dropping a keying line). It deliberately gives up ordering against
+    /// CAT traffic, which is right for a release -- a line change never
+    /// touches the byte stream, and an un-key must not wait 2-5 s behind a
+    /// stuck read while the radio transmits -- and wrong for anything that
+    /// must follow earlier commands. Asserting PTT goes through
+    /// [`Self::submit_task`].
+    ///
+    /// If the session offered no release lines (its transport returned
+    /// `None` from `release_lines`), this **falls back to the ordered
+    /// queue** -- the task still runs, but may wait -- and logs a warning
+    /// the first time. Returns `None` only once the broker has shut down.
+    pub async fn release_now_bypassing_queue(
+        &self,
+        client_id: ClientId,
+        run: TaskFn,
+    ) -> Option<Vec<u8>> {
+        match self.release.try_now(run) {
+            Ok(reply) => Some(reply),
+            Err(run) => self.submit_task(client_id, run).await,
+        }
     }
 
     /// Submit one raw wire-format request from `client_id` and await the
@@ -594,12 +627,20 @@ where
     S: CatSession,
     S::Error: std::error::Error + 'static,
 {
+    // Before the session moves into the broker: afterwards it is reachable
+    // only through the worker's exclusive borrow (ADR 0021).
+    let release = ReleaseLines::from_session(&session);
     let broker = Broker::with_timeout(session, table, request_timeout);
     let (sender, receiver) = local_channel::channel();
-    let worker = BrokerWorker { broker, receiver };
+    let worker = BrokerWorker {
+        broker,
+        receiver,
+        _release: release.closer(),
+    };
     let handle = BrokerHandle {
         sender,
         next_request_id: Rc::new(Cell::new(0)),
+        release,
     };
     (worker, handle)
 }

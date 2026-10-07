@@ -58,17 +58,28 @@ impl BrokerCatSession {
     ///
     /// The radio software supplies the closure; the broker only serialises
     /// it against CAT traffic. See [`crate::BrokerHandle::submit_task`] —
-    /// including why an un-key must **not** go through here.
+    /// including why an un-key must **not** go through here; use
+    /// [`Self::release_now_bypassing_queue`] for that.
     pub async fn submit_task(&self, run: crate::TaskFn) -> Option<Vec<u8>> {
         self.handle.submit_task(self.client_id, run).await
     }
 
-    /// A second handle onto the same broker, for work that must not queue.
+    /// **De-key now**, skipping the broker's ordered queue and any CAT
+    /// exchange in flight. See
+    /// [`crate::BrokerHandle::release_now_bypassing_queue`] (ADR 0021).
     ///
-    /// Exists for the PTT release path: `ptt_line.rs` is explicit that the
-    /// key which unkeys the transmitter must not wait behind a CAT exchange,
-    /// and a queued un-key can be delayed by a 2 s read timeout or the 5 s
-    /// broker timeout — while transmitting.
+    /// **Only de-keying / safe-state actions may use this.** Assert PTT with
+    /// [`Self::submit_task`]. If the session has no release lines this falls
+    /// back to the queue and logs a warning once.
+    pub async fn release_now_bypassing_queue(&self, run: crate::TaskFn) -> Option<Vec<u8>> {
+        self.handle
+            .release_now_bypassing_queue(self.client_id, run)
+            .await
+    }
+
+    /// A second handle onto the same broker, sharing its queue and its
+    /// release lines -- for a watchdog or disconnect path that has to
+    /// release from somewhere the caller's session cannot be borrowed.
     pub fn handle(&self) -> BrokerHandle {
         self.handle.clone()
     }
