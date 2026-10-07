@@ -166,6 +166,9 @@ pub struct RadioDisplay {
     /// sends a fresh `RadioDisplay` every cycle and does not know about this
     /// field; `terminal::ui_task` restamps it. See `docs/adr/0010`.
     pub ptt_line_available: bool,
+    /// CW settings and the transmit session, from a server that serves CW
+    /// (ADR 0023). `None` for a radio or a link that has none.
+    pub cw: Option<cat_native::CwState>,
 }
 
 impl Default for RadioDisplay {
@@ -216,6 +219,7 @@ impl Default for RadioDisplay {
             connected: true,
             initializing: true,
             ptt_line_available: false,
+            cw: None,
         }
     }
 }

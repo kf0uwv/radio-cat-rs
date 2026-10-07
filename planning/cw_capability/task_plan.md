@@ -10,7 +10,7 @@ standalone trainer (new repo) works against any radio-cat-rs radio's
 
 ## Current Phase
 
-**T1-T7b done (+ architect fixes, stop handle); T7c next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
+**T1-T7c done; T8 next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
 `feat/cw-capability` off `feat/cat-morse`). ADR 0023 Accepted 2026-10-07;
 open questions answered (see "Decisions" at the end). One task at a time;
 report after each. Do not push.
@@ -254,16 +254,37 @@ report after each. Do not push.
   bound; read/write timeouts cleared afterwards so the connection then
   behaves exactly as `connect`'s. `Client::connect_timeout` too.
 
-### T7c — consoles: CW state display (status: pending, decision 12)
+### T7c — consoles: CW state display (status: done 2026-10-07, decision 12)
 - `cat-ui` model for `RadioState.cw` (pitch, wpm, break-in, armed/sending)
   rendered by **both** `cat-ui-ratatui` and `cat-ui-egui` (ADR 0013
   parity); hidden when `cw` is `None`.
+
+- Design (2026-10-07): `cat_ui::cw::CwPanel` (pure) built from
+  `CwState` + `CwCapabilityWire`: settings line, arm line (this console /
+  another console, callsign, power label), sender line + progress
+  fraction, and `alert` for a failed restore. `CwPanel::status()` gives
+  the one-line strip text by priority: alert (Alarm) > sending/draining
+  > armed > nothing. `RadioDisplay.cw: Option<CwState>` (default `None`;
+  apps already use `..Default`). New `PanelKind::Cw` for layouts that
+  place a full panel; **the status strip carries the summary and the
+  alert in every layout**, so a radio repo need not re-author its
+  layout to be safe. Both renderers do both (ADR 0013). Tests: cat-ui
+  model (every sender state, both owners, alert precedence); ratatui
+  `TestBackend` for the panel and the strip; egui through the same
+  pure strip function plus storing `state.cw`.
+- As built: the panel is the reserved custom name `cat.cw`
+  (`PanelKind::cw()`), **not** a new variant -- a variant would break
+  `Welcome` decoding in every older console. ADR §6 records it.
 
 ### T8 — docs + bookkeeping (status: pending)
 - ADR 0023 Accepted + `docs/adr/README.md` row: done with the ADR commit.
   Remaining: crate docs stating the abort-latency bound honestly.
 
 ### Out of this repo (for architect dispatch, after T6)
+- **Radio TUIs** (ts570d/ft991a/ic7100 `ui`): fill `RadioDisplay.cw` from
+  the server's `RadioState.cw` when talking to a server; place
+  `PanelKind::cw()` in the server-authored layout if a full panel is
+  wanted (the status strip shows the summary and alert regardless).
 - ~~Every radio's server must call `shutdown_cw()`~~ — superseded:
   `run_with_native` settles CW on exit itself (fix 2). Signals (architect
   decision): no library handler; `ServerConfig::stop: StopHandle` —

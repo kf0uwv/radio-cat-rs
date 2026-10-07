@@ -102,3 +102,9 @@ not start before that.
   bad frame) -- rewritten to drip a valid frame; a per-read-timeout
   mutant now fails it (capped so it fails, not hangs). 5 tests; workspace
   1245/0/3; clippy, fmt, xwin clean.
+- T7c done: `cat_ui::cw::CwPanel` (+6 tests), `RadioDisplay.cw`,
+  `cat_layout::CW_PANEL` / `PanelKind::cw()` (+1 wire test), ratatui
+  `draw_cw` + status-strip priority (+5 TestBackend tests), egui
+  `cw::{status_line, panel}` + App wiring (+5 tests). Mutant (alert not
+  prioritised) fails 2 suites. Workspace 1262/0/3; clippy, fmt, xwin
+  clean.

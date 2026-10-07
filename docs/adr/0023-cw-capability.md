@@ -448,6 +448,19 @@ The same work found the pump could sleep a full idle interval (up to
 shutdown. A server that serves CW now sleeps in `CW_TICK` slices and is
 woken by any CW request.
 
+**Consoles (T7c, 2026-10-07; decision 12).** `cat_ui::cw::CwPanel` is
+the one model both renderers draw. The CW panel is the reserved custom
+name `cat_layout::CW_PANEL` (`"cat.cw"`, `PanelKind::cw()`), not a new
+`PanelKind` variant: `PanelKind` has no unknown-variant fallback, so a
+variant would stop every older console decoding a `Welcome` whose layout
+placed it, while a custom name decodes everywhere and an older console
+draws its placeholder. Independently of layout, **both consoles' status
+strips put CW first**: a failed restore replaces everything else the
+strip would say (white on red / the warning fill), and an arm or a send
+rides in front of the console's own text. `RadioDisplay.cw` carries the
+state to the terminal console; the application fills it from
+`RadioState.cw`.
+
 ### 7. Against an older server, and an older client
 
 | Peer | What happens | Client's duty |
