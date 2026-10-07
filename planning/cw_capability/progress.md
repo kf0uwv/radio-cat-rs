@@ -89,3 +89,9 @@ not start before that.
   `ClientError::Refused`. Never probes a server without CW; `Malformed`
   -> `Refused(Unsupported)`. Red: 18 compile errors; green: 3 socket + 2
   unit tests; workspace 1238/0/3; clippy, fmt, xwin clean.
+- Stop handle (architect): `ServerConfig::stop: StopHandle`, polled by a
+  task (Linux) / thread (Windows) that ends the listener wait, so the
+  restore path runs. Red: 3 compile errors; the end-to-end test (arm,
+  then stop, restore observed) then exposed the pump sleeping up to 10 s
+  idle before acting -> CW requests now kick the pump (red: 5.0 s; green
+  < 2 s). Workspace 1240/0/3; clippy, fmt, xwin clean.

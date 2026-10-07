@@ -259,9 +259,10 @@ report after each. Do not push.
 
 ### Out of this repo (for architect dispatch, after T6)
 - ~~Every radio's server must call `shutdown_cw()`~~ — superseded:
-  `run_with_native` settles CW on exit itself (fix 2). **Open for the
-  architect:** signal-driven exit (Ctrl-C/SIGTERM) runs no library code;
-  owning it needs a process-wide handler + new dep (ADR 0023 §6 note).
+  `run_with_native` settles CW on exit itself (fix 2). Signals (architect
+  decision): no library handler; `ServerConfig::stop: StopHandle` —
+  **each radio server wires Ctrl-C/SIGTERM to `stop()`** (radio-repo
+  server tasks).
 - **ts570d**: fix `send_cw` to the manual's `KY␠<24 padded>;` form (and
   its test pinning `KYCQ;`) and the emulator handler; implement
   `NativeCw`; `cw: Some(...)` with `BufferFlag` + `DrainOnly`; bench on a

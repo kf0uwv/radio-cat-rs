@@ -433,16 +433,20 @@ does not settle. A radio repo needs nothing extra for that path;
 `shutdown_cw()` / `cw_settled()` / `settle_cw_blocking()` / `settle_cw()`
 remain for hosts with their own shutdown.
 
-**The path the shared server cannot own: process signals.** Neither
-`cat-server` nor `cat-rigctl` installs a signal or console-control
-handler today; a server stopped with Ctrl-C or SIGTERM is killed by the
-default disposition (or by the application's own handler), and no code
-in this library runs. Owning it would mean a process-wide handler
-(a new dependency such as `ctrlc` or `signal-hook`, or `libc`/
-`windows-sys` directly) installed by a library, which would collide with
-any handler an application already has. That is an architect decision,
-not taken here. Until then a server killed mid-send leaves power at the
-clamp -- the safe direction -- with break-in possibly changed.
+**Signals (architect decision, 2026-10-07).** The library installs no
+process-wide signal or console-control handler. Instead
+`ServerConfig::stop` is a `StopHandle` (`Clone + Send`, both platforms);
+`StopHandle::stop()` ends `run_with_native`'s wait exactly as a listener
+ending would, so the restore-and-wait path above runs and the call
+returns `Ok(())`. **Every server application must wire its Ctrl-C /
+SIGTERM handler to `stop()`** (dispatched as part of the ts570d, ft991a
+and ic7100 server tasks); a server killed by the default disposition
+runs no restore and leaves CW power at the clamp.
+
+The same work found the pump could sleep a full idle interval (up to
+10 s with no console watching) before acting on an arm, abort, disarm or
+shutdown. A server that serves CW now sleeps in `CW_TICK` slices and is
+woken by any CW request.
 
 ### 7. Against an older server, and an older client
 

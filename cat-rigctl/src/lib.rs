@@ -252,6 +252,37 @@ pub struct ServerConfig {
     pub raw_udp_port: Option<u16>,
     /// The Hamlib rigctld-compatible TCP listener, for WSJT-X.
     pub rigctl_port: Option<u16>,
+    /// Ends the server: [`StopHandle::stop`] makes `run_with_native`
+    /// stop any CW send, restore the radio and return.
+    ///
+    /// **Every server application must wire its Ctrl-C / SIGTERM handler
+    /// to this** (ADR 0023). This library installs no process-wide signal
+    /// handler of its own -- that would collide with an application's --
+    /// so a server killed by the default signal disposition runs no
+    /// restore at all and leaves CW power at the clamp.
+    pub stop: StopHandle,
+}
+
+/// A way to end a running server from anywhere: a signal handler, a
+/// console thread, a test. Clone it freely; every clone stops the same
+/// server.
+#[derive(Debug, Clone, Default)]
+pub struct StopHandle(Arc<std::sync::atomic::AtomicBool>);
+
+/// How often a running server checks its [`StopHandle`].
+const STOP_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+impl StopHandle {
+    /// Ask the server to stop. Returns at once; `run_with_native` then
+    /// settles CW (bounded by `native_bridge::CW_SHUTDOWN_TIMEOUT`) and
+    /// returns `Ok(())`.
+    pub fn stop(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 /// How often the state pump reads the radio while a console is watching.
@@ -446,18 +477,26 @@ where
         monoio::spawn(native_bridge::pump(shared, radio, POLL_INTERVAL));
     }
 
-    if tasks.is_empty() {
-        // The console listener is a thread, not a task, so it never
-        // appears in `tasks`. A server bound only to `--console-port` is a
-        // perfectly ordinary server -- a GUI and nothing else -- and used
-        // to be rejected here as if nothing had been asked for.
-        if serving_consoles {
-            std::future::pending::<()>().await;
-        }
+    // The console listener is a thread, not a task, so it never appears
+    // in `tasks`. A server bound only to `--console-port` is a perfectly
+    // ordinary server -- a GUI and nothing else -- and used to be rejected
+    // here as if nothing had been asked for.
+    if tasks.is_empty() && !serving_consoles {
         return Err(io::Error::other(
             "server mode requires at least one of --raw-tcp-port/--raw-udp-port/--rigctl-port/--console-port",
         ));
     }
+
+    // The stop handle ends the wait below like a listener would, so a
+    // stop takes the same restore-and-return path as any other exit.
+    let stop = config.stop.clone();
+    tasks.push(monoio::spawn(async move {
+        while !stop.is_stopped() {
+            monoio::time::sleep(STOP_POLL).await;
+        }
+        info!("Stop requested; shutting the server down");
+        Ok(())
+    }));
 
     // Every listener loop above only returns on a fatal accept()/bind-time
     // error (or never, on the happy path) -- wait for the first one to end,
@@ -656,6 +695,20 @@ where
         return Err(io::Error::other(
             "server mode requires at least one of --raw-tcp-port/--raw-udp-port/--rigctl-port",
         ));
+    }
+
+    // The stop handle ends the wait below like a listener would, so a
+    // stop takes the same restore-and-return path as any other exit.
+    {
+        let stop = config.stop.clone();
+        let done_tx = done_tx.clone();
+        thread::spawn(move || {
+            while !stop.is_stopped() {
+                thread::sleep(STOP_POLL);
+            }
+            info!("Stop requested; shutting the server down");
+            let _ = done_tx.send(Ok(()));
+        });
     }
     drop(done_tx);
 

@@ -325,6 +325,9 @@ pub struct NativeShared {
     cw: Mutex<Option<cw::CwSupervisor>>,
     /// Mirrors `cw.is_some()`, readable without the lock.
     cw_serving: AtomicBool,
+    /// Set by any CW request so a sleeping pump wakes for it now rather
+    /// than after an idle interval of up to ten seconds.
+    cw_kick: AtomicBool,
     /// Pitch, speed and break-in as last read on the levels clock.
     cw_settings: Mutex<Option<CwSettings>>,
     /// Consoles waiting on an arm or disarm, by ticket.
@@ -384,6 +387,7 @@ impl NativeShared {
             theme: Mutex::new(None),
             cw: Mutex::new(None),
             cw_serving: AtomicBool::new(false),
+            cw_kick: AtomicBool::new(false),
             cw_settings: Mutex::new(None),
             cw_waiters: Mutex::new(HashMap::new()),
             cw_reply_timeout: Mutex::new(CW_REPLY_TIMEOUT),
@@ -626,6 +630,17 @@ impl NativeShared {
     /// shutting down. Keep the pump running until [`Self::cw_settled`].
     pub fn shutdown_cw(&self) {
         self.with_cw(|sup| sup.shutdown(Instant::now()));
+        self.kick_pump();
+    }
+
+    /// Wake the pump for CW work.
+    fn kick_pump(&self) {
+        self.cw_kick.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the pump was kicked since it last asked, clearing it.
+    fn take_kick(&self) -> bool {
+        self.cw_kick.swap(false, Ordering::SeqCst)
     }
 
     /// Nothing armed, nothing keyed, nothing left to restore. True for a
@@ -732,6 +747,7 @@ impl NativeShared {
             );
             rx
         };
+        self.kick_pump();
         let timeout = self
             .cw_reply_timeout
             .lock()
@@ -751,11 +767,13 @@ impl NativeShared {
 
     fn apply_cw(&self, id: ConsoleId, command: &Command) -> Result<(), HostRefusal> {
         let now = Instant::now();
+
         match command {
             // On the listener thread, never queued: the pump's next step
             // is the stop.
             Command::AbortCw => {
                 self.with_cw(|sup| sup.abort(now));
+                self.kick_pump();
                 Ok(())
             }
             Command::ArmCwTransmit {
@@ -764,9 +782,13 @@ impl NativeShared {
                 ..
             } => self.cw_wait(id, true, |sup| sup.arm(id, callsign, *key_down_cap_s, now)),
             Command::DisarmCw => self.cw_wait(id, false, |sup| sup.disarm(id, now)),
-            Command::SendCwText { text } => self
-                .with_cw(|sup| sup.send(id, text, now).map(|_| ()))
-                .unwrap_or_else(|| Err(no_cw())),
+            Command::SendCwText { text } => {
+                let queued = self
+                    .with_cw(|sup| sup.send(id, text, now).map(|_| ()))
+                    .unwrap_or_else(|| Err(no_cw()));
+                self.kick_pump();
+                queued
+            }
             Command::SetKeyerSpeed { .. } => {
                 if !self.cw_serving.load(Ordering::SeqCst) {
                     return Err(no_cw());
@@ -954,6 +976,7 @@ impl RadioHost for NativeShared {
     fn console_detached_as(&self, id: ConsoleId) {
         // An owner hanging up stops its send and restores the radio.
         self.with_cw(|sup| sup.detached(id, Instant::now()));
+        self.kick_pump();
         if let Ok(mut peers) = self.peers.lock() {
             peers.remove(&id);
         }
@@ -1106,10 +1129,46 @@ pub async fn pump<N: NativeRadio>(shared: Arc<NativeShared>, mut radio: N, inter
         // whole monoio runtime -- every rigctl client, every raw listener
         // and the broker worker -- for a full interval per cycle. That is
         // where the 2.5 s worst-case rigctl request came from.
+        //
+        // A server that serves CW sleeps in `CW_TICK` slices and wakes
+        // early when kicked: an arm, an abort or a shutdown must not wait
+        // out an idle interval of up to ten seconds.
         #[cfg(target_os = "linux")]
-        monoio::time::sleep(wait).await;
+        pump_sleep(&shared, wait).await;
         #[cfg(not(target_os = "linux"))]
+        pump_sleep_blocking(&shared, wait);
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn pump_sleep(shared: &NativeShared, wait: Duration) {
+    if !shared.cw_serving.load(Ordering::SeqCst) {
+        monoio::time::sleep(wait).await;
+        return;
+    }
+    let deadline = Instant::now() + wait;
+    while !shared.take_kick() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        monoio::time::sleep(left.min(CW_TICK)).await;
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pump_sleep_blocking(shared: &NativeShared, wait: Duration) {
+    if !shared.cw_serving.load(Ordering::SeqCst) {
         std::thread::sleep(wait);
+        return;
+    }
+    let deadline = Instant::now() + wait;
+    while !shared.take_kick() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::sleep(left.min(CW_TICK));
     }
 }
 

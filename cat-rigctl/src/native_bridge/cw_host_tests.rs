@@ -107,6 +107,8 @@ struct Fake {
     busy: u32,
     /// Another console aborts while this radio is applying a command.
     abort_during_apply: Option<Arc<NativeShared>>,
+    /// Mirrors `power`, for a test that cannot reach the radio itself.
+    power_probe: Option<Arc<std::sync::atomic::AtomicU16>>,
 }
 
 impl Fake {
@@ -119,6 +121,7 @@ impl Fake {
             busy_after_send: 0,
             busy: 0,
             abort_during_apply: None,
+            power_probe: None,
         }
     }
 
@@ -197,6 +200,9 @@ impl NativeCw for Fake {
     async fn set_power_raw(&mut self, raw: u16) -> Result<(), String> {
         self.log.push(format!("set_power {raw}"));
         self.power = raw;
+        if let Some(probe) = &self.power_probe {
+            probe.store(raw, Ordering::SeqCst);
+        }
         Ok(())
     }
     async fn break_in(&mut self) -> Result<BreakInKind, String> {
@@ -746,4 +752,110 @@ async fn the_async_exit_path_lets_the_pump_restore() {
     assert_eq!(power.get(), 5);
     assert!(settle_cw(&shared, Duration::from_secs(5)).await);
     assert_eq!(power.get(), 100);
+}
+
+// ---------------------------------------------------------------------
+// The stop handle: a server's Ctrl-C reaches the restore
+// ---------------------------------------------------------------------
+
+#[test]
+fn a_stop_handle_is_shared_by_its_clones() {
+    let stop = crate::StopHandle::default();
+    let theirs = stop.clone();
+    assert!(!stop.is_stopped());
+    theirs.stop();
+    assert!(stop.is_stopped());
+    // Send, so a signal handler on another thread can hold one.
+    std::thread::spawn(move || theirs.stop()).join().unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[monoio::test(driver = "legacy", timer_enabled = true)]
+async fn stopping_the_server_mid_arm_restores_the_radio_before_it_returns() {
+    use std::sync::atomic::AtomicU16;
+
+    use cat_framework::{CommandDefinition, CommandForm, CommandOperation, CommandTable};
+    use cat_transport_core::test_support::ScriptedCatSession;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Id {
+        Frequency,
+    }
+    static DEFINITIONS: &[CommandDefinition<Id>] = &[CommandDefinition {
+        id: Id::Frequency,
+        code: "FA",
+        name: "Frequency",
+        description: "Test frequency",
+        query_forms: &[CommandForm::fixed(CommandOperation::Query, 0)],
+        set_forms: &[CommandForm::fixed(CommandOperation::Set, 9)],
+        action_forms: &[],
+        response_forms: &[],
+        readable: true,
+        writable: true,
+    }];
+    static TABLE: CommandTable<Id> = CommandTable::new(DEFINITIONS);
+
+    let shared = NativeShared::new(&CW_RADIO);
+    let stop = crate::StopHandle::default();
+    let probe = Arc::new(AtomicU16::new(100));
+    let config = crate::ServerConfig {
+        native_port: Some(0),
+        stop: stop.clone(),
+        ..crate::ServerConfig::default()
+    };
+
+    // The operator arms from a console, then hits Ctrl-C.
+    let console = Arc::clone(&shared);
+    let seen = Arc::clone(&probe);
+    let operator = std::thread::spawn(move || {
+        // A console is only offered CW once the pump has opted in.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !console.serves_cw() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let armed = console.apply_as(
+            OWNER,
+            &Command::ArmCwTransmit {
+                callsign: "N0CALL".into(),
+                dummy_load_acknowledged: true,
+                key_down_cap_s: None,
+            },
+        );
+        let clamped = seen.load(Ordering::SeqCst);
+        stop.stop();
+        (armed, clamped, std::time::Instant::now())
+    });
+
+    let pump_probe = Arc::clone(&probe);
+    let result = crate::run_with_native(
+        ScriptedCatSession::new(),
+        &TABLE,
+        config,
+        |_session| Hamlib::default(),
+        move |_session| {
+            let mut radio = Fake::new(true);
+            radio.power_probe = Some(pump_probe);
+            radio
+        },
+        Some(Arc::clone(&shared)),
+    )
+    .await;
+
+    let (armed, clamped, stopped_at) = operator.join().unwrap();
+    // Promptly: the pump is woken by the stop, not left to finish an idle
+    // sleep of up to ten seconds first.
+    assert!(
+        stopped_at.elapsed() < Duration::from_secs(2),
+        "took {:?} from stop to restored",
+        stopped_at.elapsed()
+    );
+    assert_eq!(armed, Ok(()));
+    assert_eq!(clamped, 5, "armed at the clamp before the stop");
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        probe.load(Ordering::SeqCst),
+        100,
+        "restored before run_with_native returned"
+    );
+    assert!(shared.cw_settled());
 }
