@@ -16,7 +16,7 @@
 
 use std::time::Duration;
 
-use super::callsign::{call_from, fresh_call, home_of, Callsign, Home};
+use super::callsign::{call_from, fresh_call, home_of, station_call, Callsign, Home};
 use super::data::{
     Names, ANTENNAS, PORTABLE_ANTENNAS, POWERS, QRP_POWERS, RIGS, RST, SOTA_REGIONS, WX,
 };
@@ -27,6 +27,9 @@ use super::{
 };
 use crate::rng::Rng;
 use crate::timing::Speed;
+
+/// Chance a rag-chew partner is maritime mobile.
+const P_MARITIME: f64 = 0.03;
 
 const STREAM_ME: u64 = 1;
 const STREAM_STATIONS: u64 = 2;
@@ -238,6 +241,9 @@ impl Builder<'_> {
 
     /// Adds a station from `home` (or a random US/DX home), returns its index.
     fn add_station(&mut self, home: Option<Home>, dx_share: f64) -> Result<usize, ScenarioError> {
+        // A station drawn at random may be portable or abroad; one placed
+        // for an activation keeps a plain call (the activation adds `/P`).
+        let random = home.is_none();
         let mut home = match home {
             Some(h) => h,
             None => {
@@ -256,7 +262,13 @@ impl Builder<'_> {
             let h = home;
             if let Some(c) = fresh_call(
                 &mut self.st_rng,
-                &mut |r| call_from(r, &h),
+                &mut |r| {
+                    if random {
+                        station_call(r, &h)
+                    } else {
+                        call_from(r, &h)
+                    }
+                },
                 &self.cfg.my_call,
                 &taken,
             ) {
@@ -313,6 +325,15 @@ impl Builder<'_> {
 
     fn rag_chew(&mut self) -> Result<(), ScenarioError> {
         let them = self.add_station(None, 0.3)?;
+        if self.st_rng.chance(P_MARITIME) {
+            // Maritime mobile: on a ship, in no DXCC entity.
+            let p = &mut self.stations[them].persona;
+            p.call = Callsign::parse(p.call.base())
+                .expect("a base call is a call")
+                .with_suffix("MM");
+            p.qth = "AT SEA".to_string();
+            p.region = "MM".to_string();
+        }
         let t = Party::Them(them);
         let c = self.call_of(them);
         let me = self.me_call();

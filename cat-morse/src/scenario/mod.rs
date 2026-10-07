@@ -572,6 +572,26 @@ mod tests {
     }
 
     #[test]
+    fn some_rag_chews_are_with_a_ship_at_sea() {
+        let mm: Vec<_> = (0..400)
+            .filter_map(|seed| {
+                let s = generate(&cfg(ScenarioKind::RagChew, seed)).unwrap();
+                let p = s.stations[0].persona.clone();
+                p.call.as_str().ends_with("/MM").then_some(p)
+            })
+            .collect();
+        assert!(!mm.is_empty());
+        for p in mm {
+            assert_eq!(p.qth, "AT SEA");
+            assert!(has_no_home(&p.call));
+        }
+    }
+
+    fn has_no_home(c: &Callsign) -> bool {
+        callsign::home_of(c).is_none()
+    }
+
+    #[test]
     fn operators_have_names_from_their_part_of_the_world() {
         use super::data::Names;
         let names = |call: &str| -> Vec<String> {

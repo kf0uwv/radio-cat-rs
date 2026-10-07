@@ -31,3 +31,5 @@
 - Task 5 done: 30 regional name pools, persona draws from the entity's pool.
   --all-features 116 lib + 18 + 10 + 1 doc = 145 pass; default 114 + 17 + 10 + 1; clippy, fmt clean.
   task_plan task 8 now also covers the band-noise US-centred draw.
+- Task 6 done: station_call portable/abroad/out-of-area forms, /MM rag-chews, strict slash
+  scoring tests. --all-features 119 lib + 18 + 10 + 1 = 148; default 117 + 17 + 10 + 1; clippy, fmt clean.

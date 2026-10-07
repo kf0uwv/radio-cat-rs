@@ -267,7 +267,19 @@ fn pick_weighted<'a, T>(rng: &mut Rng, items: &'a [T], weight: impl Fn(&T) -> u3
 
 /// A call of format `f`, from `home`.
 fn call_in_format(rng: &mut Rng, f: &CallFormat, home: &Home) -> String {
-    let (p, digit) = match f.digit {
+    let (p, digit) = prefix_and_digit(rng, f, home);
+    let n = rng.range_u32(f.suffix.0, f.suffix.1);
+    let mut s = format!("{p}{digit}{}", letters(rng, n));
+    if let Some(tag) = home.entity.tag {
+        s.push('/');
+        s.push_str(tag);
+    }
+    s
+}
+
+/// The prefix and digit of a call of format `f` from `home`.
+fn prefix_and_digit(rng: &mut Rng, f: &CallFormat, home: &Home) -> (&'static str, String) {
+    match f.digit {
         DigitRule::InPrefix => (*rng.pick(f.prefixes), String::new()),
         DigitRule::OneOf(d) => (*rng.pick(f.prefixes), rng.pick(d).to_string()),
         DigitRule::FromRegion => {
@@ -280,14 +292,7 @@ fn call_in_format(rng: &mut Rng, f: &CallFormat, home: &Home) -> String {
             };
             (*rng.pick(prefixes), r.digit.to_string())
         }
-    };
-    let n = rng.range_u32(f.suffix.0, f.suffix.1);
-    let mut s = format!("{p}{digit}{}", letters(rng, n));
-    if let Some(tag) = home.entity.tag {
-        s.push('/');
-        s.push_str(tag);
     }
-    s
 }
 
 /// Draws for [`call_from`] before it settles for a near miss.
@@ -310,6 +315,80 @@ pub(crate) fn call_from(rng: &mut Rng, home: &Home) -> String {
         }
     }
     s
+}
+
+/// A prefix designator that puts a visiting station in `home`: `F`,
+/// `EA8`, `VE3`, `HB0`. `None` for an entity that cannot be named so (a
+/// tagged entity, or one whose shortest designator does not resolve).
+fn designator(rng: &mut Rng, home: &Home) -> Option<String> {
+    if home.entity.tag.is_some() {
+        return None;
+    }
+    for _ in 0..16 {
+        let f = pick_weighted(rng, home.entity.formats, |f| f.weight);
+        let (p, d) = prefix_and_digit(rng, f, home);
+        // CEPT style drops the digit where the prefix alone names the
+        // entity (`F/`, `DL/`); an area or a numbered prefix keeps it.
+        let mut tries = vec![format!("{p}{d}")];
+        if matches!(f.digit, DigitRule::OneOf(_)) {
+            tries.insert(0, p.to_string());
+        }
+        for t in tries {
+            let region = first_digit(&t).and_then(|dg| home.entity.region(&t, dg));
+            if entity_of(&t) == Some(home.entity) && region == home.region {
+                return Some(t);
+            }
+        }
+    }
+    None
+}
+
+/// Chances that a station's call is `/P` (or `/M`, `/QRP`), signed abroad
+/// (`EA8/DL1ABC`), or, for the US, signed in another call area
+/// (`W1ABC/4`).
+const P_PORTABLE: f64 = 0.04;
+const P_ABROAD: f64 = 0.03;
+const P_OTHER_AREA: f64 = 0.03;
+
+/// A station's call as sent: usually [`call_from`], sometimes portable,
+/// mobile, visiting from another entity, or (in the US) out of its area.
+/// The call's home is always `home`.
+pub(crate) fn station_call(rng: &mut Rng, home: &Home) -> String {
+    let roll = rng.unit_f64();
+    // A tagged entity's call already carries its `/` suffix.
+    if home.entity.tag.is_some() {
+        return call_from(rng, home);
+    }
+    if roll < P_PORTABLE {
+        let suffix = *rng.pick(&["P", "P", "P", "M", "QRP"]);
+        let s = format!("{}/{suffix}", call_from(rng, home));
+        // `JD1AB/M` would read as Minami Torishima's tag: send it plain.
+        if Callsign::parse(&s).ok().and_then(|c| home_of(&c)) == Some(*home) {
+            return s;
+        }
+    }
+    if roll < P_PORTABLE + P_ABROAD {
+        let licensed = Home::random_dx(rng, Some(*home));
+        let licence = call_from(rng, &licensed);
+        if let Some(d) = designator(rng, home) {
+            let s = format!("{d}/{licence}");
+            let ok = !licence.contains('/')
+                && licence.len() > d.len()
+                && Callsign::parse(&s).ok().and_then(|c| home_of(&c)) == Some(*home);
+            if ok {
+                return s;
+            }
+        }
+    } else if roll < P_PORTABLE + P_ABROAD + P_OTHER_AREA && home.entity.dxcc == USA {
+        if let Some(area) = home.region {
+            // A ham licensed in another area, now operating in this one.
+            let licensed = Home::random_us(rng);
+            if licensed.region != home.region {
+                return format!("{}/{}", call_from(rng, &licensed), area.digit);
+            }
+        }
+    }
+    call_from(rng, home)
 }
 
 /// Draws [`fresh_call`] makes before deciding a home has no call left.
@@ -756,6 +835,57 @@ mod tests {
             })
             .count();
         assert!(ja1 > 2_000, "{ja1}");
+    }
+
+    #[test]
+    fn station_calls_are_sometimes_portable_and_always_home() {
+        let mut rng = Rng::new(21);
+        let (mut plain, mut suffix, mut abroad, mut area) = (0, 0, 0, 0);
+        let n = 20_000;
+        for i in 0..n {
+            let home = if i % 2 == 0 {
+                Home::random_us(&mut rng)
+            } else {
+                Home::random_dx(&mut rng, None)
+            };
+            let s = station_call(&mut rng, &home);
+            let c = Callsign::parse(&s).unwrap_or_else(|_| panic!("{s}"));
+            assert_eq!(home_of(&c), Some(home), "{s}");
+            let pieces: Vec<&str> = s.split('/').collect();
+            match pieces.as_slice() {
+                [_] => plain += 1,
+                [_, "P" | "M" | "QRP"] => suffix += 1,
+                [_, d] if d.bytes().all(|b| b.is_ascii_digit()) => area += 1,
+                [d, b] if b.len() > d.len() => abroad += 1,
+                // A tagged entity's own suffix (3D2AB/R) is a plain call.
+                [_, t] if home.entity.tag == Some(*t) => plain += 1,
+                _ => panic!("unexpected shape {s}"),
+            }
+        }
+        assert!(plain as f64 > 0.85 * n as f64, "{plain}");
+        assert!(
+            suffix > 200 && abroad > 200 && area > 50,
+            "{suffix} {abroad} {area}"
+        );
+    }
+
+    #[test]
+    fn slash_calls_score_strictly() {
+        use crate::score::{align, align_unordered, ScoreOptions};
+        let o = ScoreOptions::default();
+        // Copying the whole call is perfect.
+        let s = align("EA8/DL1ABC", "EA8/DL1ABC", &o).unwrap().score();
+        assert_eq!((s.matches, s.deletions), (10, 0));
+        // Dropping the designator is four errors, not a pass.
+        let s = align("EA8/DL1ABC", "DL1ABC", &o).unwrap().score();
+        assert_eq!((s.matches, s.deletions), (6, 4));
+        // In a pileup the base still pairs with its call, charged the same.
+        let u = align_unordered(&["EA8/DL1ABC", "K1ABC"], "K1ABC DL1ABC", &o).unwrap();
+        assert_eq!(u.matched, vec![Some(1), Some(0)]);
+        assert_eq!(u.score().deletions, 4);
+        // A numeral in a prefix is an ordinary character.
+        let s = align("3D2AB/R", "3D2AB/P", &o).unwrap().score();
+        assert_eq!((s.matches, s.substitutions), (6, 1));
     }
 
     #[test]

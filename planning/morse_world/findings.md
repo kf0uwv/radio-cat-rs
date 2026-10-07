@@ -126,3 +126,16 @@
 - Towns were already per entity and per call area (tasks 2-3); unchanged here.
 - Mixed-language countries take one pool (Belgium Dutch, Canada Anglo, Switzerland German,
   Luxembourg German) — a simplification.
+
+## Task 6 — portable and slash calls (2026-10-07)
+- `station_call` (random stations only; activations keep plain calls and add /P themselves):
+  4% `/P` `/M` `/QRP`, 3% signed abroad CEPT-style (`F/DL1ABC`, `EA8/G4ABC`, `VE3/W1AB`;
+  the licence drawn by `random_dx` from the operating home, so mostly a neighbour), 3% of US
+  stations out of area (`W1ABC/4`). Every form is checked to home back to the station's home;
+  one that would not (e.g. `JD1AB/M` reads as Minami Torishima's tag) is sent plain.
+  Tagged-entity calls are never decorated further.
+- Rag-chew partner is maritime mobile 3% of the time: base call + `/MM`, QTH "AT SEA",
+  region "MM", no home.
+- Name pool of a visitor follows the operating entity, not the licence (simplification).
+- Scoring unchanged and strict, pinned by tests: dropping `EA8/` costs 4 deletions; in a
+  pileup the bare base still pairs with its slash call and is charged the same 4.
