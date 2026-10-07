@@ -1432,3 +1432,82 @@ fn speed_is_read_before_every_chunk_on_a_drain_only_radio() {
         from = i + 1;
     }
 }
+
+// ---------------------------------------------------------------------
+// An owed ID is reported, never sent on the way out (safety review)
+// ---------------------------------------------------------------------
+
+fn owed_notice(b: &Bench) -> Option<String> {
+    b.notices.iter().find_map(|n| match n {
+        CwNotice::IdOwed { callsign, .. } => Some(callsign.clone()),
+        _ => None,
+    })
+}
+
+/// Send, let the first chunk key, abort before the ID: returns the bench.
+fn keyed_without_its_id() -> Bench {
+    let mut b = buffer_space_bench(20);
+    b.arm().unwrap();
+    b.sup.send(OWNER, "ABCDE FGHIJ KLMNO", b.now).unwrap();
+    b.drive();
+    assert_eq!(b.radio.sent().len(), 1);
+    b.sup.abort(b.now);
+    b.run_for(Duration::from_secs(5));
+    b
+}
+
+#[test]
+fn ending_an_arm_that_owes_its_id_reports_it_and_sends_nothing() {
+    for ending in ["disarm", "detach", "idle"] {
+        let mut b = keyed_without_its_id();
+        let sent = b.radio.sent().len();
+        assert_eq!(
+            b.sup.id_owed().as_deref(),
+            Some("N0CALL"),
+            "owed while armed"
+        );
+        match ending {
+            "disarm" => {
+                b.sup.disarm(OWNER, b.now).unwrap();
+            }
+            "detach" => b.sup.detached(OWNER, b.now),
+            _ => b.run_for(CwConfig::default().idle_ttl + Duration::from_secs(1)),
+        }
+        b.run_for(Duration::from_secs(5));
+        assert!(b.sup.armed_state(OWNER).is_none(), "{ending}");
+        assert_eq!(b.radio.sent().len(), sent, "{ending}: abort means stop");
+        assert_eq!(owed_notice(&b).as_deref(), Some("N0CALL"), "{ending}");
+        assert_eq!(
+            b.sup.id_owed().as_deref(),
+            Some("N0CALL"),
+            "{ending}: still shown"
+        );
+    }
+}
+
+#[test]
+fn nothing_is_owed_if_nothing_keyed() {
+    let mut b = Bench::new(KENWOOD);
+    b.arm().unwrap();
+    b.radio.never_ready = true;
+    b.sup.send(OWNER, "CQ", b.now).unwrap();
+    b.drive();
+    b.sup.abort(b.now);
+    b.sup.disarm(OWNER, b.now).unwrap();
+    b.run_for(Duration::from_secs(5));
+    assert!(b.radio.sent().is_empty());
+    assert_eq!(b.sup.id_owed(), None);
+    assert_eq!(owed_notice(&b), None);
+}
+
+#[test]
+fn an_owed_id_is_cleared_once_an_id_is_sent() {
+    let mut b = keyed_without_its_id();
+    b.sup.disarm(OWNER, b.now).unwrap();
+    b.run_for(Duration::from_secs(5));
+    assert!(b.sup.id_owed().is_some());
+    b.arm().unwrap();
+    b.sup.send(OWNER, "E", b.now).unwrap();
+    b.run_for(Duration::from_secs(30));
+    assert_eq!(b.sup.id_owed(), None);
+}

@@ -461,6 +461,12 @@ fn draw_cw(f: &mut Frame, area: Rect, radio: &RadioDisplay, caps: &cat_native::C
             cw_style(cat_ui::cw::Tone::Alarm),
         )));
     }
+    if let Some(owed) = &panel.id_owed {
+        lines.push(Line::from(Span::styled(
+            owed.clone(),
+            cw_style(cat_ui::cw::Tone::Warning).add_modifier(Modifier::BOLD),
+        )));
+    }
     for line in panel.lines() {
         let mut spans = vec![
             Span::styled(format!("{:<5}", line.label), Style::default().fg(DIM)),
@@ -2882,6 +2888,7 @@ mod cw_tests {
                 attempts: 3,
                 last_error: "PC write timed out".into(),
             }),
+            id_owed: None,
         }
     }
 
@@ -2975,5 +2982,26 @@ mod cw_tests {
             )
         });
         assert!(!out.contains("CW"), "{out}");
+    }
+
+    #[test]
+    fn an_owed_id_is_shown_in_the_panel_and_the_strip() {
+        let radio = RadioDisplay {
+            cw: Some(CwState {
+                armed: None,
+                sender: SenderState::Idle,
+                restore: None,
+                id_owed: Some("N0CALL".into()),
+                ..cw(false, false, false)
+            }),
+            ..RadioDisplay::default()
+        };
+        let caps = cat_ui::demo::full();
+        let panel = render(100, 6, |f| draw_cw(f, f.size(), &radio, &caps));
+        assert!(panel.contains("ID OWED"), "{panel}");
+        let strip = render(200, 1, |f| {
+            draw_status(f, f.size(), &radio, &ConsoleView::default(), &caps)
+        });
+        assert!(strip.contains("ID OWED: N0CALL"), "{strip}");
     }
 }

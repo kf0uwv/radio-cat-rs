@@ -75,6 +75,14 @@ pub fn panel(ui: &mut egui::Ui, cw: Option<&CwState>, cap: Option<&CwCapabilityW
                 );
             });
     }
+    if let Some(owed) = &panel.id_owed {
+        ui.label(
+            RichText::new(owed)
+                .color(colour(Tone::Warning, &pal))
+                .strong()
+                .size(theme::SIZE_BODY),
+        );
+    }
     for line in panel.lines() {
         ui.horizontal(|ui| {
             ui.label(
@@ -125,6 +133,7 @@ mod tests {
                 attempts: 1,
                 last_error: "PC write timed out".into(),
             }),
+            id_owed: None,
         }
     }
 
@@ -170,5 +179,18 @@ mod tests {
         let s = state(false, true);
         let model = CwPanel::new(&s, None).status().unwrap().0;
         assert!(status_line("", Some(&s), None).0 == model);
+    }
+
+    #[test]
+    fn an_owed_id_reaches_the_status_line() {
+        let s = CwState {
+            armed: None,
+            sender: SenderState::Idle,
+            id_owed: Some("N0CALL".into()),
+            ..state(false, false)
+        };
+        let (text, tone) = status_line("ready", Some(&s), None);
+        assert_eq!(tone, Some(Tone::Warning));
+        assert!(text.contains("ID OWED: N0CALL"), "{text}");
     }
 }

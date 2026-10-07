@@ -199,6 +199,14 @@ pub enum CwNotice {
     RestoreFailed { attempts: u32, error: String },
     /// Every changed setting has been written back **and read back**.
     Restored { reason: DisarmReason },
+    /// An arm ended with its station ID owed: text was keyed and an abort
+    /// cut the send before its `DE <CALL>`. The server does not send it on
+    /// the way out -- an abort means stop -- so the operator must identify
+    /// by hand.
+    IdOwed {
+        callsign: String,
+        reason: DisarmReason,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -347,6 +355,9 @@ pub struct CwSupervisor {
     next_job: u32,
     last_sender: SenderState,
     shutting_down: bool,
+    /// A callsign that keyed text without completing its ID. Shown until
+    /// an ID is sent.
+    id_owed: Option<String>,
 }
 
 impl CwSupervisor {
@@ -368,6 +379,7 @@ impl CwSupervisor {
             next_job: 1,
             last_sender: SenderState::Idle,
             shutting_down: false,
+            id_owed: None,
         }
     }
 
@@ -784,6 +796,12 @@ impl CwSupervisor {
         }
     }
 
+    /// A callsign whose station ID is owed: it keyed text and an abort
+    /// cut the send before its ID. Cleared when an ID is next sent.
+    pub fn id_owed(&self) -> Option<String> {
+        self.id_owed.clone()
+    }
+
     /// The alert a console must show while a restore is unverified.
     pub fn restore_status(&self) -> Option<RestoreStatus> {
         match &self.activity {
@@ -1168,6 +1186,7 @@ impl CwSupervisor {
             };
             if chunk.ends_id {
                 job.id_sent = true;
+                self.id_owed = None;
                 if let Some(arm) = &mut self.arm {
                     arm.last_id = Some(now);
                     arm.id_first = false;
@@ -1193,10 +1212,15 @@ impl CwSupervisor {
                 return;
             }
         };
-        // An ID this job owed and did not finish leads the next send.
+        // An ID this job owed and did not finish leads the next send. If
+        // anything was keyed, the ID is owed until it is sent.
         if job.has_id && !job.id_sent {
+            let keyed = job.chunk_in_radio || matches!(self.outstanding, Some(Step::Send(_)));
             if let Some(arm) = &mut self.arm {
                 arm.id_first = true;
+                if keyed {
+                    self.id_owed = Some(arm.callsign.clone());
+                }
             }
         }
         self.plan.clear();
@@ -1256,6 +1280,15 @@ impl CwSupervisor {
     }
 
     fn start_restore(&mut self, reason: DisarmReason, ticket: Option<Ticket>) {
+        // Reported, never sent: an abort means stop (safety review 4).
+        if self.arm.is_some() {
+            if let Some(callsign) = &self.id_owed {
+                self.notices.push(CwNotice::IdOwed {
+                    callsign: callsign.clone(),
+                    reason,
+                });
+            }
+        }
         // Sends are over from here; the alert, not the arm, is what a
         // console sees until the read-back proves the radio is back.
         self.arm = None;

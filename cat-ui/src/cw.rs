@@ -59,6 +59,9 @@ pub struct CwPanel {
     pub live: bool,
     /// A failed restore, worded to be read once and acted on.
     pub alert: Option<String>,
+    /// A station ID an abort cut short, which the server will not send on
+    /// the operator's behalf.
+    pub id_owed: Option<String>,
 }
 
 impl CwPanel {
@@ -194,6 +197,10 @@ impl CwPanel {
             )
         });
 
+        let id_owed = state.id_owed.as_ref().map(|call| {
+            format!("ID OWED: {call} keyed text and its ID was cut short -- identify by hand")
+        });
+
         CwPanel {
             settings,
             arm,
@@ -201,6 +208,7 @@ impl CwPanel {
             progress,
             live,
             alert,
+            id_owed,
         }
     }
 
@@ -213,6 +221,9 @@ impl CwPanel {
         }
         if self.live {
             return Some((format!("CW {}", self.sender.text), self.sender.tone));
+        }
+        if let Some(owed) = &self.id_owed {
+            return Some((owed.clone(), Tone::Warning));
         }
         if self.arm.tone != Tone::Quiet {
             return Some((format!("CW {}", self.arm.text), self.arm.tone));
@@ -261,6 +272,7 @@ mod tests {
             armed: None,
             sender: SenderState::Idle,
             restore: None,
+            id_owed: None,
         }
     }
 
@@ -407,5 +419,38 @@ mod tests {
         assert!(text.starts_with("CW RESTORE FAILED (2 attempts)"), "{text}");
         assert!(text.contains("power read back 5, wanted 100"));
         assert!(text.contains("check the radio before transmitting"));
+    }
+
+    #[test]
+    fn an_owed_id_is_named_and_reaches_the_strip() {
+        let p = CwPanel::new(
+            &CwState {
+                id_owed: Some("N0CALL".into()),
+                ..state()
+            },
+            None,
+        );
+        let owed = p.id_owed.as_deref().expect("shown");
+        assert!(
+            owed.contains("N0CALL") && owed.contains("identify"),
+            "{owed}"
+        );
+        let (text, tone) = p.status().unwrap();
+        assert_eq!(tone, Tone::Warning);
+        assert!(text.contains("ID OWED"), "{text}");
+
+        // Still below a failed restore.
+        let both = CwPanel::new(
+            &CwState {
+                id_owed: Some("N0CALL".into()),
+                restore: Some(RestoreStatus {
+                    attempts: 1,
+                    last_error: "x".into(),
+                }),
+                ..state()
+            },
+            None,
+        );
+        assert_eq!(both.status().unwrap().1, Tone::Alarm);
     }
 }

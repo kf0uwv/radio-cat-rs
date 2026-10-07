@@ -724,6 +724,7 @@ impl NativeShared {
             armed: sup.armed_state(viewer),
             sender: sup.sender(),
             restore: sup.restore_status(),
+            id_owed: sup.id_owed(),
         })
     }
 
@@ -853,6 +854,12 @@ impl NativeShared {
                     attempts,
                     %error,
                     "CW restore failed; power or break-in not yet back, retrying"
+                ),
+                cw::CwNotice::IdOwed { callsign, reason } => tracing::error!(
+                    callsign = %callsign,
+                    ?reason,
+                    "STATION ID OWED: {callsign} keyed text and its ID was cut short; \
+                     the server does not send it on disarm -- identify by hand"
                 ),
                 cw::CwNotice::Restored { reason } => {
                     tracing::info!(?reason, "CW disarmed; power and break-in restored")

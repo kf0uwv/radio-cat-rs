@@ -600,6 +600,12 @@ pub struct CwState {
     /// not back the way the operator left it.
     #[serde(default)]
     pub restore: Option<RestoreStatus>,
+    /// A callsign that keyed text and had its station ID cut short by an
+    /// abort. The server does not send it on the way out -- an abort
+    /// means stop -- so a console must tell the operator to identify by
+    /// hand. Cleared when an ID is next sent.
+    #[serde(default)]
+    pub id_owed: Option<String>,
 }
 
 /// A restore that has not yet been verified (ADR 0023 §3.4).
@@ -2338,6 +2344,7 @@ mod cw_wire {
                     attempts: 2,
                     last_error: "power read back 5, wanted 100".to_string(),
                 }),
+                id_owed: None,
             }));
             let back: RadioState =
                 serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
@@ -2355,6 +2362,7 @@ mod cw_wire {
         assert_eq!(s.armed, None);
         assert_eq!(s.sender, SenderState::Idle);
         assert_eq!(s.restore, None, "no alert unless a restore failed");
+        assert_eq!(s.id_owed, None, "no ID owed unless one was cut short");
     }
 
     #[test]

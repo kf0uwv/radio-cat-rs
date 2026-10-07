@@ -314,6 +314,13 @@ onto `charset`, showing `armed.power_raw`'s label and send progress, a
 single key that sends `AbortCw`, and refusing to arm in copy mode at all.
 Arming never survives a reconnect; the client must ask again.
 
+**Owed ID (safety review, 2026-10-07).** When text has keyed and an
+abort cuts the send before its `DE <CALL>`, the ID is *owed*. The server
+does **not** send it on disarm, detach or timeout -- an abort means stop
+-- but leads the next send with it, logs it at error level when the arm
+ends, and publishes it as `CwState.id_owed` (additive) until an ID is
+next sent. Both consoles show it. Nothing is owed if nothing keyed.
+
 ### 4. Chunking: the abort bound is a policy, not an accident
 
 A `SendCwText` job is split at word boundaries into chunks of at most
