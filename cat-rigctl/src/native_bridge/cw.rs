@@ -796,6 +796,15 @@ impl CwSupervisor {
         }
     }
 
+    /// The running job's watchdog deadline. Tests only.
+    #[cfg(test)]
+    pub(crate) fn job_deadline(&self) -> Option<Instant> {
+        match &self.activity {
+            Activity::Sending(job) => Some(job.deadline),
+            _ => None,
+        }
+    }
+
     /// A callsign whose station ID is owed: it keyed text and an abort
     /// cut the send before its ID. Cleared when an ID is next sent.
     pub fn id_owed(&self) -> Option<String> {
@@ -1082,12 +1091,21 @@ impl CwSupervisor {
             .iter()
             .map(|c| estimate(&c.text, wpm))
             .sum::<Duration>();
+        // The cap is on the whole send: what has keyed so far (counted
+        // from the start, gaps included -- the long way) plus what is left
+        // at the new speed.
         let cap = self.arm.as_ref().map_or(Duration::ZERO, |a| a.cap);
-        if rest > cap {
+        let started = match &self.activity {
+            Activity::Sending(job) => job.started,
+            _ => now,
+        };
+        let elapsed = now.saturating_duration_since(started);
+        if elapsed + rest > cap {
             self.begin_stop(
                 StopReason::Error,
                 Some(format!(
-                    "the keyer speed changed to {wpm} wpm; what is left would take {:.1} s, over the {} s cap",
+                    "the keyer speed changed to {wpm} wpm; {:.1} s sent and {:.1} s left is over the {} s key-down cap",
+                    elapsed.as_secs_f64(),
                     rest.as_secs_f64(),
                     cap.as_secs()
                 )),
@@ -1116,8 +1134,10 @@ impl CwSupervisor {
             .count() as u32;
         let pacing = (self.config.tick * 4 + self.config.pacing_margin) * count;
         let budget = self.watchdog_for(rest) + pacing;
+        // Recomputed, not only extended: a faster knob brings the
+        // watchdog in as surely as a slower one pushes it out.
         if let Activity::Sending(job) = &mut self.activity {
-            job.deadline = job.deadline.max(now + budget);
+            job.deadline = now + budget;
         }
     }
 

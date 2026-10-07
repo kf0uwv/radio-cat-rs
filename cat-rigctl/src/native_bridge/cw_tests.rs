@@ -1524,3 +1524,50 @@ fn estimates_assume_the_heaviest_weighting_a_keyer_may_use() {
     // longest real one with its gap (`0`: 24 + 3 units).
     assert!(estimate("\u{2603}", 20) >= Duration::from_millis(27 * 60));
 }
+
+// ---------------------------------------------------------------------
+// Re-review: a re-plan respects the cap as a whole, and the watchdog
+// moves both ways
+// ---------------------------------------------------------------------
+
+#[test]
+fn a_slowdown_that_pushes_the_whole_send_past_the_cap_stops_it() {
+    // 25 words at 30 wpm: under the cap. At 33 s about 17 s is left; at
+    // 10 wpm that is ~51 s -- under the cap on its own, far over it with
+    // the 33 s already keyed.
+    let mut b = buffer_space_bench(30);
+    b.arm().unwrap();
+    let text = "PARIS ".repeat(25);
+    b.sup.send(OWNER, &text, b.now).unwrap();
+    b.run_for(Duration::from_secs(33));
+    assert!(matches!(b.sup.sender(), SenderState::Sending { .. }));
+    b.radio.wpm = Some(10);
+    b.run_for(Duration::from_secs(10));
+    match b.sup.sender() {
+        SenderState::Stopped {
+            reason: StopReason::Error,
+            message: Some(m),
+            ..
+        } => assert!(m.contains("cap"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(b.radio.violations.is_empty(), "{:?}", b.radio.violations);
+}
+
+#[test]
+fn a_faster_knob_brings_the_watchdog_in_as_well_as_out() {
+    let mut b = buffer_space_bench(10);
+    b.arm().unwrap();
+    b.sup.send(OWNER, "ABCDE FGHIJ KLMNO PQRST", b.now).unwrap();
+    b.drive();
+    let slow = b.sup.job_deadline().expect("a job");
+    b.radio.wpm = Some(30);
+    b.run_for(Duration::from_secs(5));
+    let fast = b.sup.job_deadline().expect("still sending");
+    assert!(
+        fast < slow,
+        "{:?} is not before {:?}",
+        fast - b.t0,
+        slow - b.t0
+    );
+}
