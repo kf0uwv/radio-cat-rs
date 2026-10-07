@@ -4,7 +4,10 @@ Date: 2026-07-18
 
 ## Status
 
-Accepted
+Accepted. **Amended 2026-10-06 by [ADR 0021](0021-queue-bypassing-ptt-release.md):**
+transports may also hand out an *owned duplicate* of their modem lines
+(`release_lines`), used by `cat-server` so a PTT release does not wait
+behind the broker's queue.
 
 ## Context
 

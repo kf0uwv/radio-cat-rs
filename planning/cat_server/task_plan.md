@@ -274,6 +274,10 @@ is made by the worker from the session it owns, for the duration of the call.
 The closure never holds it, so it cannot outlive it. No `Arc`, no `dup`, no
 fd smuggled past the broker.
 
+> **Superseded for the PTT *release* path only (2026-10-06, user-approved):**
+> see "Decision: release-only modem lines" below and ADR 0021. The assert
+> path (`submit_task`) keeps the borrow-only design.
+
 Also killed: my option (D), "return an error rather than touch a closed fd".
 It is unimplementable — `fcntl(F_GETFD)` succeeds on a *reused* fd. And the
 raw-fd option was worse than use-after-close: this process opens sound cards,
@@ -455,3 +459,62 @@ Owner: cat_rigctl. Needs `cached` made platform-neutral (it holds an
 
 ### 4. Re-run every check (Linux test/clippy/fmt, xwin check/clippy incl.
 cat-signal-audio device, actionlint).
+
+## Decision: release-only modem lines (2026-10-06) -- USER-APPROVED
+
+Supersedes v2's "No `Arc`, no `dup`" for one purpose: de-keying. Recorded in
+`docs/adr/0021-queue-bypassing-ptt-release.md` (and an amendment note on
+ADR 0003).
+
+### Rationale
+- During an exchange the worker's `dispatch` holds `&mut` session; nothing
+  else can borrow the lines until the read returns or times out (2 s read /
+  5 s broker). A release must not wait behind that borrow while the radio
+  transmits.
+- v2's objection was to a *captured raw fd*: after the port closes its
+  number can be reused by another device. An **owned duplicate** (`dup` ->
+  `OwnedFd`; `DuplicateHandle` -> `OwnedHandle`) holds its own reference to
+  the open file description: it cannot be reused while held, and closing it
+  is ours. RFC 2217 shares its `Arc<Shared>` socket state, same property.
+- A line ioctl never touches the byte stream, so no ordering is lost.
+
+### Design (implement exactly)
+- `cat-transport-core`: `Transport::release_lines(&self)` and
+  `CatSession::release_lines(&self)` ->
+  `Option<Box<dyn ModemControlLines + Send + Sync>>`, default `None`.
+  `SerialCatSession` forwards to its transport.
+- `cat-transport-serial`: Linux `SerialPort` -> `dup` (CLOEXEC) into an
+  `OwnedFd` wrapper; Windows `SerialPort` -> `DuplicateHandle` into an
+  `OwnedHandle` wrapper. Each implements `ModemControlLines` with the same
+  ioctl / `EscapeCommFunction` helpers as the primary.
+- `cat-transport-rfc2217`: a lines type holding an `Arc<Shared>` clone.
+- `cat-server`: one shared `release::ReleaseLines` (Arc + Mutex<Option<..>>),
+  taken from the session **once in `build`** before the session moves into
+  the broker. The worker holds a closer whose `Drop` drops the duplicate, so
+  the duplicate never outlives the broker. The mutex is held while a
+  release runs, so a close cannot race a release (use-after-close is not
+  representable).
+- `BrokerHandle::release_now_bypassing_queue(client_id, run: TaskFn)`: runs
+  `run` immediately on the caller's thread against the release lines. If
+  there are none (transport returned `None`, or the duplicate failed),
+  falls back to `submit_task` and logs a warning once per broker. After the
+  broker is gone it returns `None` like every other submit. Docs: only
+  de-keying / safe-state actions may use it. Asserts stay on `submit_task`.
+  `BrokerCatSession` gets the same method minus the client id.
+- New dependency: `tracing` (workspace) in `cat-server`, for the warning.
+
+### Tests (TDD)
+- core: defaults are `None`; `SerialCatSession` forwards.
+- serial Linux: the duplicate is a distinct fd on the same device (fstat
+  rdev), works while the primary is open and after the primary is dropped
+  (ENOTTY on a PTY, never EBADF), and dropping it restores the
+  `/proc/self/fd` count (own integration-test binary, so no parallel test
+  perturbs the count).
+- serial Windows: duplicate is a distinct handle; drop closes it.
+- rfc2217: release lines drive DTR at the fake peer while the reader is
+  parked, with the primary still open.
+- cat-server, Linux (monoio) and Windows (threads), shared fake session:
+  stalled exchange -> release completes < 100 ms and before the stalled
+  submit returns; an assert submitted after a stalled CAT runs after it;
+  no release lines -> queued fallback still delivers; dropping the worker
+  drops the duplicate and a later release returns `None`.

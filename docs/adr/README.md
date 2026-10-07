@@ -26,6 +26,7 @@ never reused.
 | [0018](0018-remote-device-enumeration.md) | A console asks the **radio's** host what signal hardware it has, instead of enumerating its own — `ReadDevices`/`AttachDevice`, and a decline that is not an empty list | Accepted (2026-09-02) |
 | [0019](0019-audio-over-the-native-protocol.md) | A radio's receive audio to a console elsewhere: `FrameKind::Audio`, both halves of an `AudioFrame` in one payload, and a second opt-in beside spectrum | Accepted (2026-09-02) |
 | [0020](0020-server-authored-console-layouts.md) | Shared components and one solver; each radio's **server** authors its own console arrangement and publishes it in the handshake | Accepted (2026-09-02) |
+| [0021](0021-queue-bypassing-ptt-release.md) | A PTT release that does not wait for the broker queue: owned, release-only duplicates of the port's modem lines (amends 0003) | Accepted (2026-10-06) |
 
 ## Repository status
 
