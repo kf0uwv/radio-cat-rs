@@ -114,3 +114,15 @@
 - Distribution tests are seeded (fixed `Rng::new(n)`), so deterministic: Common share > 30%,
   Rare < 5%, every non-US entity drawn in 100k, JA operator's Asia share > 1.5x neutral,
   VE3 > 10x VY0, JA1 > 20%.
+
+## Task 5 — regional names (2026-10-07)
+- `Names` enum in data.rs: 30 pools (Us, Anglo, German, French, Italian, Iberian, LatAm,
+  Lusophone, Nordic, Finnish, Baltic, Dutch, WestSlavic, EastSlavic, Danube, Greek, Turkish,
+  Caucasus, Albanian, Arabic, Hebrew, Persian, Indian, Japanese, Chinese, Korean, SeAsian,
+  Mongol, African, Expedition), 5-20 common given names each, ASCII and Morse-safe.
+  Only plausible first names; no callsign is ever paired with a real person's name.
+- Every entity names its pool (`Entity::names`); uninhabited/DXpedition-only entities use
+  the international Expedition pool, as do operators whose call has no known home.
+- Towns were already per entity and per call area (tasks 2-3); unchanged here.
+- Mixed-language countries take one pool (Belgium Dutch, Canada Anglo, Switzerland German,
+  Luxembourg German) — a simplification.

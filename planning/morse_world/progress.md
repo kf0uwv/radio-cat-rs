@@ -28,3 +28,6 @@
   --all-features 110 lib + 18 + 10 + 1 doc = 139 pass; default 108 + 17 + 10 + 1; clippy, fmt clean.
 - Task 4 done: Activity tiers, NEAR_BOOST continent bias, random_local, weighted call areas.
   --all-features 114 lib + 18 + 10 + 1 doc = 143 pass; default 112 + 17 + 10 + 1; clippy, fmt clean.
+- Task 5 done: 30 regional name pools, persona draws from the entity's pool.
+  --all-features 116 lib + 18 + 10 + 1 doc = 145 pass; default 114 + 17 + 10 + 1; clippy, fmt clean.
+  task_plan task 8 now also covers the band-noise US-centred draw.

@@ -572,6 +572,31 @@ mod tests {
     }
 
     #[test]
+    fn operators_have_names_from_their_part_of_the_world() {
+        use super::data::Names;
+        let names = |call: &str| -> Vec<String> {
+            (0..20)
+                .map(|seed| {
+                    let mut c = cfg(ScenarioKind::RagChew, seed);
+                    c.my_call = Callsign::parse(call).unwrap();
+                    generate(&c).unwrap().me.name
+                })
+                .collect()
+        };
+        for (call, pool) in [
+            ("JA1ABC", Names::Japanese),
+            ("DL1ABC", Names::German),
+            ("UA3ABC", Names::EastSlavic),
+            ("LU1ABC", Names::LatAm),
+            ("KF0UWV", Names::Us),
+        ] {
+            for n in names(call) {
+                assert!(pool.pool().contains(&n.as_str()), "{call}: {n}");
+            }
+        }
+    }
+
+    #[test]
     fn call_area_operators_get_their_area_zone_and_region() {
         let me = |call: &str| {
             let mut c = cfg(ScenarioKind::RagChew, 2);

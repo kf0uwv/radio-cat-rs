@@ -18,8 +18,7 @@ use std::time::Duration;
 
 use super::callsign::{call_from, fresh_call, home_of, Callsign, Home};
 use super::data::{
-    ANTENNAS, NAMES_DX, NAMES_US, PORTABLE_ANTENNAS, POWERS, QRP_POWERS, RIGS, RST, SOTA_REGIONS,
-    WX,
+    Names, ANTENNAS, PORTABLE_ANTENNAS, POWERS, QRP_POWERS, RIGS, RST, SOTA_REGIONS, WX,
 };
 use super::world::{by_dxcc, Entity, USA, WORLD};
 use super::{
@@ -81,11 +80,7 @@ fn pick_str(rng: &mut Rng, items: &[&str]) -> String {
 fn persona(rng: &mut Rng, call: Callsign, home: Option<Home>, portable: bool) -> Persona {
     let (name, qth, region, zone) = match home {
         Some(home) => {
-            let names = if home.entity.dxcc == USA {
-                NAMES_US
-            } else {
-                NAMES_DX
-            };
+            let names = home.entity.names.pool();
             let (qth, region) = match home.region {
                 // A call area: a town in one of its subdivisions; the region
                 // is a state/province code an exchange sends (two letters),
@@ -107,7 +102,7 @@ fn persona(rng: &mut Rng, call: Callsign, home: Option<Home>, portable: bool) ->
             (pick_str(rng, names), qth, region, home.cq())
         }
         None => (
-            pick_str(rng, NAMES_DX),
+            pick_str(rng, Names::Expedition.pool()),
             "HOME".to_string(),
             "DX".to_string(),
             rng.range_u32(1, 40) as u8,
@@ -702,8 +697,9 @@ mod tests {
     fn tables_are_encodable() {
         use crate::codec::tokenize;
         let mut all: Vec<&str> = Vec::new();
-        all.extend(NAMES_US);
-        all.extend(NAMES_DX);
+        for n in Names::ALL {
+            all.extend(n.pool());
+        }
         all.extend(RIGS);
         all.extend(ANTENNAS);
         all.extend(PORTABLE_ANTENNAS);
