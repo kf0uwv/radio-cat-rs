@@ -86,15 +86,20 @@ jobs:
         # build, on every PR.
         run: cargo check -p cat-signal-rtlsdr --features device
 
-      - name: Install ALSA headers (for the optional audio device layer)
-        run: sudo apt-get install -y libasound2-dev
+      - name: Build cat-signal-audio's device layer (ALSA)
+        # ADR 0017 sections 10 and 16: capture and playback are behind the
+        # default-off `device` feature, so CI must build it explicitly
+        # (cat-signal-audio/Cargo.toml has long said this job does; until
+        # 2026-10-06 it did not). Built, not run: no runner has a sound card.
+        # Consuming apps ship this feature on.
+        run: |
+          sudo apt-get install -y libasound2-dev
+          cargo check -p cat-signal-audio --features device --all-targets
 
-      - name: Build the feature-gated audio device layer
-        # cat-signal-audio/Cargo.toml has said since ADR 0017's amendment
-        # that "the Linux CI job builds `--features device` explicitly";
-        # until 2026-10-06 it did not. Same reasoning as the RTL-SDR step
-        # above, and consuming apps ship this feature on.
-        run: cargo check -p cat-signal-audio --features device --all-targets
+      - name: Test cat-morse's default-off serde feature
+        # Same reason as the step above: default-off code is code CI does
+        # not otherwise build (ADR 0021).
+        run: cargo test -p cat-morse --features serde
 
   windows-check:
     name: Windows (MSVC)
@@ -146,10 +151,11 @@ jobs:
         # backend are type-checked here and nowhere else.
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Build the feature-gated audio device layer (WASAPI)
-        # Consuming apps ship `audio-device` on Windows too; this is the
-        # only place its Windows backend is compiled before a release.
-        run: cargo check -p cat-signal-audio --features device --all-targets
-
       - name: cargo test (workspace)
         run: cargo test --workspace
+
+      - name: cargo test (cat-morse serde feature)
+        run: cargo test -p cat-morse --features serde
+
+      - name: cargo check (cat-signal-audio device layer, WASAPI)
+        run: cargo check -p cat-signal-audio --features device --all-targets

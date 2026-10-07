@@ -22,10 +22,11 @@ never reused.
 | [0014](0014-rtlsdr-spectrum-source.md) | `cat-signal-rtlsdr`: worker thread, latest-frame backpressure, and a WinUSB driver story | Accepted |
 | [0015](0015-model-facts-versus-installation-facts.md) | Separate what a radio *model* can do from what an *installation* has wired | Accepted |
 | [0016](0016-rfc2217-transport.md) | `cat-transport-rfc2217`: a serial port, with its modem control lines, over TCP | Accepted |
-| [0017](0017-acc2-audio-source.md) | `cat-signal-audio`: a radio's audio pair from a socket **or a sound card** — a reader thread, latest-frame backpressure, a transmit path that keys nothing, and a default-off `device` feature | Accepted (amended 2026-09-02) |
+| [0017](0017-acc2-audio-source.md) | `cat-signal-audio`: a radio's audio pair from a socket **or a sound card** — a reader thread, latest-frame backpressure, a transmit path that keys nothing, a default-off `device` feature, and (2026-10-06) playback to a speaker | Accepted (amended 2026-09-02, 2026-10-06) |
 | [0018](0018-remote-device-enumeration.md) | A console asks the **radio's** host what signal hardware it has, instead of enumerating its own — `ReadDevices`/`AttachDevice`, and a decline that is not an empty list | Accepted (2026-09-02) |
 | [0019](0019-audio-over-the-native-protocol.md) | A radio's receive audio to a console elsewhere: `FrameKind::Audio`, both halves of an `AudioFrame` in one payload, and a second opt-in beside spectrum | Accepted (2026-09-02) |
 | [0020](0020-server-authored-console-layouts.md) | Shared components and one solver; each radio's **server** authors its own console arrangement and publishes it in the handshake | Accepted (2026-09-02) |
+| [0021](0021-cat-morse.md) | `cat-morse`: radio-independent Morse (codec, timing, synth, decoder, scenarios, scoring) — no radio, no device audio, no runtime; keying and scripts bit-identical per seed on every platform | Accepted (2026-10-06) |
 | [0022](0022-queue-bypassing-ptt-release.md) | A PTT release that does not wait for the broker queue: owned, release-only duplicates of the port's modem lines (amends 0003) | Accepted (2026-10-06) |
 
 ## Repository status

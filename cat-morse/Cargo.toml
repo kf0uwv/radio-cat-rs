@@ -1,0 +1,40 @@
+[package]
+name = "cat-morse"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Radio-independent Morse code: codec, timing and fists, tone synthesis with band conditions, a streaming decoder, QSO scenarios and copy scoring."
+
+# A pure, synchronous library at the bottom of the graph, beside
+# `cat-layout`: no local crate dependencies, no async runtime (no monoio,
+# no tokio), no device audio and nothing radio-specific. It produces and
+# consumes f32 PCM buffers; whoever owns a sound card or a radio does the
+# rest. See docs/adr/0021-cat-morse.md.
+#
+# Deliberately no `rand`: an in-crate xoshiro256** keeps every seeded
+# output reproducible and identical on every platform (ADR 0021's
+# determinism promise), which a dependency's algorithm choice could change
+# under us. No `rustfft` either: one Goertzel bin per known pitch, and a
+# small bank of them for pitch search, is all the decoder needs.
+[dependencies]
+thiserror = { workspace = true }
+
+[dependencies.serde]
+workspace = true
+optional = true
+
+[features]
+# OFF by default. Plain-data types (tokens, speeds, fists, scripts, scores,
+# per-character stats) derive Serialize/Deserialize when it is on, because
+# the orphan rule stops a caller deriving them itself. Default-off code is
+# code CI does not build unless asked, so ci.yml runs
+# `cargo test -p cat-morse --features serde` explicitly.
+default = []
+serde = ["dep:serde"]
+
+[dev-dependencies]
+serde_json = { workspace = true }

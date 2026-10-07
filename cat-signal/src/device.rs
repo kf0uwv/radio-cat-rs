@@ -53,6 +53,10 @@ pub enum DeviceKind {
     AudioInput,
     /// A software-defined radio — the IF output's other end.
     Sdr,
+    /// A sound-card output — where locally generated audio (a Morse
+    /// trainer's tone, say) is played. Added for `cat-signal-audio`'s
+    /// playback path (ADR 0017's 2026-10-06 amendment).
+    AudioOutput,
 }
 
 impl DeviceKind {
@@ -61,6 +65,7 @@ impl DeviceKind {
         match self {
             DeviceKind::AudioInput => "AUDIO INPUT",
             DeviceKind::Sdr => "SDR",
+            DeviceKind::AudioOutput => "AUDIO OUTPUT",
         }
     }
 
@@ -72,6 +77,7 @@ impl DeviceKind {
         match self {
             DeviceKind::AudioInput => "--acc2-audio",
             DeviceKind::Sdr => "--if-out",
+            DeviceKind::AudioOutput => "--audio-out",
         }
     }
 }
@@ -217,5 +223,7 @@ mod tests {
         // without every renderer hard-coding the pairing.
         assert_eq!(DeviceKind::AudioInput.flag(), "--acc2-audio");
         assert_eq!(DeviceKind::Sdr.flag(), "--if-out");
+        assert_eq!(DeviceKind::AudioOutput.flag(), "--audio-out");
+        assert_eq!(DeviceKind::AudioOutput.heading(), "AUDIO OUTPUT");
     }
 }
