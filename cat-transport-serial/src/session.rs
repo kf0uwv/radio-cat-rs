@@ -213,6 +213,10 @@ impl<T: Transport, F: FrameScanner> CatSession for SerialCatSession<T, F> {
         // claim lines it may not have. The transport knows.
         self.transport.modem_lines()
     }
+
+    fn release_lines(&self) -> Option<Box<dyn ModemControlLines + Send + Sync>> {
+        self.transport.release_lines()
+    }
 }
 
 /// Blanket delegation: whenever the wrapped `Transport` also implements
@@ -376,6 +380,68 @@ mod tests {
             // the bytes it was supposed to discard were still delivered.
             self.reads.clear();
         }
+    }
+
+    /// Release lines the fake hands out: owned, `Send + Sync`, recording
+    /// into shared state the test can read after the session has them.
+    struct RecordingReleaseLines(std::sync::Arc<std::sync::Mutex<Vec<bool>>>);
+
+    impl ModemControlLines for RecordingReleaseLines {
+        fn set_rts(&self, _asserted: bool) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn set_dtr(&self, asserted: bool) -> Result<(), TransportError> {
+            self.0.lock().unwrap().push(asserted);
+            Ok(())
+        }
+        fn read_cts(&self) -> Result<bool, TransportError> {
+            Ok(false)
+        }
+        fn read_dsr(&self) -> Result<bool, TransportError> {
+            Ok(false)
+        }
+        fn read_dcd(&self) -> Result<bool, TransportError> {
+            Ok(false)
+        }
+    }
+
+    /// A transport that has release lines, and nothing else to say.
+    struct ReleaseLinesTransport(std::sync::Arc<std::sync::Mutex<Vec<bool>>>);
+
+    #[async_trait(?Send)]
+    impl Transport for ReleaseLinesTransport {
+        async fn write(&mut self, data: &[u8]) -> Result<usize, TransportError> {
+            Ok(data.len())
+        }
+        async fn read(&mut self, _buf: &mut [u8]) -> Result<usize, TransportError> {
+            Ok(0)
+        }
+        async fn flush(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn release_lines(&self) -> Option<Box<dyn ModemControlLines + Send + Sync>> {
+            Some(Box::new(RecordingReleaseLines(std::sync::Arc::clone(
+                &self.0,
+            ))))
+        }
+    }
+
+    #[test]
+    fn release_lines_are_forwarded_from_the_transport() {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let session = SerialCatSession::new(ReleaseLinesTransport(std::sync::Arc::clone(&log)));
+
+        let lines = CatSession::release_lines(&session).expect("the transport has release lines");
+        lines.set_dtr(false).unwrap();
+        assert_eq!(*log.lock().unwrap(), vec![false]);
+    }
+
+    #[test]
+    fn a_transport_without_release_lines_reports_none_through_the_session() {
+        // FakeTransport has modem lines but does not override
+        // `release_lines`: the session must not invent any.
+        let session = SerialCatSession::new(FakeTransport::new());
+        assert!(CatSession::release_lines(&session).is_none());
     }
 
     /// A `Transport` whose `read()` panics — used to prove `send()` never
