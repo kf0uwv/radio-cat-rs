@@ -249,8 +249,16 @@ fn entity_of(piece: &str) -> Option<&'static Entity> {
     best.map(|(e, _)| e)
 }
 
-fn first_digit(piece: &str) -> Option<u8> {
-    piece.bytes().find(u8::is_ascii_digit).map(|b| b - b'0')
+/// The call-area digit of `piece`: its first digit, except that a prefix
+/// that starts with a digit (`7K`, `8J`, `3H`) is followed by the area's
+/// own (`7K3A` is area 3). A bare digit (`W1ABC/4`) is the area.
+fn area_digit(piece: &str) -> Option<u8> {
+    let b = piece.as_bytes();
+    let skip = usize::from(b.len() > 1 && b[0].is_ascii_digit());
+    b[skip..]
+        .iter()
+        .find(|c| c.is_ascii_digit())
+        .map(|c| c - b'0')
 }
 
 /// The tagged entity `tag` names for a call whose base is `base`.
@@ -310,7 +318,7 @@ pub(crate) fn home_of(call: &Callsign) -> Option<Home> {
         Some(d) => (entity_of(d)?, d, d),
         None => (entity_of(base)?, base, base),
     };
-    let region = first_digit(digit_from).and_then(|d| entity.region(prefix_from, d));
+    let region = area_digit(digit_from).and_then(|d| entity.region(prefix_from, d));
     Some(Home { entity, region })
 }
 
@@ -406,7 +414,7 @@ fn designator(rng: &mut Rng, home: &Home) -> Option<String> {
             tries.insert(0, p.to_string());
         }
         for t in tries {
-            let region = first_digit(&t).and_then(|dg| home.entity.region(&t, dg));
+            let region = area_digit(&t).and_then(|dg| home.entity.region(&t, dg));
             if entity_of(&t) == Some(home.entity) && region == home.region {
                 return Some(t);
             }
@@ -988,6 +996,16 @@ mod tests {
         // A numeral in a prefix is an ordinary character.
         let s = align("3D2AB/R", "3D2AB/P", &o).unwrap().score();
         assert_eq!((s.matches, s.substitutions), (6, 1));
+    }
+
+    #[test]
+    fn a_prefix_starting_with_a_digit_takes_the_next_digit_as_its_area() {
+        let area = |c: &str| h(c).unwrap().region.map(|r| r.digit);
+        assert_eq!(area("7K3A"), Some(3));
+        assert_eq!(area("7J1ABC"), Some(1));
+        assert_eq!(area("8J1A"), Some(1));
+        assert_eq!(area("JA7ABC"), Some(7));
+        assert_eq!(area("W1ABC/4"), Some(4));
     }
 
     #[test]

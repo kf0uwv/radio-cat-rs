@@ -94,8 +94,10 @@
     UA8 as Siberia CQ 18 / ITU 31; Volga (4) ITU 29 (parts are 30).
   - China BY9 taken as CQ 23 / ITU 43 (Shaanxi is CQ 24); BY2 ITU 33.
   - Brazil PY9 (Centro-Oeste) ITU 15 (Mato Grosso is 12); PY8 ITU 13 (Amazonas is 12).
-  - Japan 7K-7N (always Kanto, digits 1-4) are no longer generated; `home_of` still
-    reads 7K3ABC as area 3. Argentina LU areas left out: digit-to-province mapping not
+  - Japan 7K-7N (always Kanto, digits 1-4) are no longer generated. (Correction, review
+    finding 3: `home_of` then read 7K3ABC as area 7 from the leading digit; it now takes the
+    digit after a digit-led prefix, so 7K3ABC is area 3 — itself approximate, since real
+    7K-7N1-4 calls are all Kanto.) Argentina LU areas left out: digit-to-province mapping not
     known with confidence.
   - Regions are drawn uniformly (VY0 as often as VE3) until task 4's weighting.
 
