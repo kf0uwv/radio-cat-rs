@@ -221,7 +221,10 @@ enum Step {
     VerifyBreakIn(BreakInKind),
     PowerAtMost(u16),
     WaitReady,
-    WaitUntil(Instant),
+    /// Until everything handed to the radio has had time to key, plus
+    /// this margin. Evaluated when reached, so a chunk whose completion
+    /// arrives later still counts.
+    WaitKeyed(Duration),
     /// A chunk to send.
     Send(Chunk),
     Stop,
@@ -238,7 +241,7 @@ impl Step {
             Step::WaitReady => CwAction::Ready,
             Step::Send(chunk) => CwAction::SendChunk(chunk.text.clone()),
             Step::Stop => CwAction::Stop,
-            Step::WaitUntil(_) => return None,
+            Step::WaitKeyed(_) => return None,
         })
     }
 }
@@ -308,9 +311,6 @@ enum Activity {
         reason: StopReason,
         message: Option<String>,
         then: After,
-        /// Give up waiting for a `DrainOnly` radio to go idle at this
-        /// point, so a wedged keyer cannot hold a restore off forever.
-        drain_deadline: Instant,
     },
     Restoring {
         reason: DisarmReason,
@@ -333,7 +333,11 @@ pub struct CwSupervisor {
     outstanding: Option<Step>,
     ready_retry_at: Option<Instant>,
     snap: Snapshot,
-    last_chunk_end: Option<Instant>,
+    /// When everything handed to the radio will have finished keying, by
+    /// estimate: chunks key one after another. A `DrainOnly` keyer's
+    /// `ready` means buffer space, not idle, so this -- never `ready` --
+    /// decides when a job is done and when power may go back up.
+    keyed_until: Option<Instant>,
     notices: Vec<CwNotice>,
     next_ticket: u64,
     next_job: u32,
@@ -354,7 +358,7 @@ impl CwSupervisor {
             outstanding: None,
             ready_retry_at: None,
             snap: Snapshot::default(),
-            last_chunk_end: None,
+            keyed_until: None,
             notices: Vec::new(),
             next_ticket: 1,
             next_job: 1,
@@ -622,8 +626,8 @@ impl CwSupervisor {
                         return None;
                     }
                 }
-                Some(Step::WaitUntil(t)) => {
-                    if now < t {
+                Some(Step::WaitKeyed(margin)) => {
+                    if self.keyed_until.is_some_and(|t| now < t + margin) {
                         return None;
                     }
                     self.plan.pop_front();
@@ -706,7 +710,14 @@ impl CwSupervisor {
                     self.fail(format!("break-in read back {k:?}, wanted {want:?}"), now);
                 }
             }
-            (Step::SetPower(_) | Step::SetBreakIn(_) | Step::Stop, CwOutcome::Done) => {}
+            (Step::Stop, CwOutcome::Done) => {
+                // A keyer with a real stop is silent now; one without
+                // keeps draining what it holds.
+                if self.send_text.map(|s| s.abort) == Some(CwAbort::RadioStop) {
+                    self.keyed_until = None;
+                }
+            }
+            (Step::SetPower(_) | Step::SetBreakIn(_), CwOutcome::Done) => {}
             (Step::WaitReady, CwOutcome::Ready(true)) => {}
             (Step::WaitReady, CwOutcome::Ready(false)) => {
                 self.plan.push_front(Step::WaitReady);
@@ -795,6 +806,22 @@ impl CwSupervisor {
         estimate + estimate / 5 + self.config.watchdog_margin
     }
 
+    /// The running job's deadline: its keying estimate with the usual
+    /// allowance, plus the pacing gap each chunk costs (a tick or two
+    /// waiting for the previous one to finish, and its CAT exchanges).
+    fn set_watchdog(&mut self, estimate: Duration) {
+        let chunks = self
+            .plan
+            .iter()
+            .filter(|s| matches!(s, Step::Send(_)))
+            .count() as u32;
+        let pacing = (self.config.tick * 4 + self.config.pacing_margin) * chunks;
+        let budget = self.watchdog_for(estimate) + pacing;
+        if let Activity::Sending(job) = &mut self.activity {
+            job.deadline = job.started + budget;
+        }
+    }
+
     fn reply(&mut self, ticket: Ticket, result: Result<(), HostRefusal>) {
         self.notices.push(CwNotice::Reply { ticket, result });
     }
@@ -812,13 +839,6 @@ impl CwSupervisor {
                     After::Restore(DisarmReason::KeyDownCap, None),
                     now,
                 );
-            }
-            Activity::Stopping { drain_deadline, .. } if now >= *drain_deadline => {
-                // The radio never said it was idle. Stop waiting; the
-                // restore still reads every write back.
-                self.plan
-                    .retain(|s| !matches!(s, Step::WaitReady | Step::WaitUntil(_)));
-                self.ready_retry_at = None;
             }
             Activity::Idle => {
                 if let Some(arm) = &self.arm {
@@ -931,7 +951,6 @@ impl CwSupervisor {
             reason,
             message,
         };
-        self.last_chunk_end = None;
     }
 
     fn on_status(&mut self, cw_mode: bool, transmitting: bool, wpm: Option<u16>, now: Instant) {
@@ -969,13 +988,13 @@ impl CwSupervisor {
                     self.begin_stop(StopReason::Error, Some(message), After::StayArmed, now);
                     return;
                 }
-                job.deadline = job.started + est + est / 5 + self.config.watchdog_margin;
                 let (operator, id_text, id_first) =
                     (job.operator.clone(), job.id_text.clone(), job.id_first);
                 if let Some(arm) = &mut self.arm {
                     arm.wpm = wpm;
                 }
                 self.plan_chunks(&operator, id_text, id_first, wpm);
+                self.set_watchdog(est);
             }
             _ => {}
         }
@@ -1010,6 +1029,11 @@ impl CwSupervisor {
         };
         let n = ordered.len();
         for (i, (text, ends_id)) in ordered.into_iter().enumerate() {
+            // The next chunk goes once the last has had time to key, so
+            // the radio never holds more than one -- the drain bound. A
+            // busy flag is asked as well, but it only ever says "there is
+            // buffer space", never "idle".
+            self.plan.push_back(Step::WaitKeyed(Duration::ZERO));
             if send.pacing == CwPacing::BufferFlag {
                 self.plan.push_back(Step::WaitReady);
             }
@@ -1019,16 +1043,16 @@ impl CwSupervisor {
                 ends_id,
             }));
         }
-        if send.pacing == CwPacing::BufferFlag {
-            // Done when the keyer is idle again.
-            self.plan.push_back(Step::WaitReady);
-        }
+        // Done when everything sent has had time to key.
+        self.plan
+            .push_back(Step::WaitKeyed(self.config.pacing_margin));
     }
 
     fn on_sent(&mut self, chunk: &Chunk, now: Instant) {
         let wpm = self.arm.as_ref().map_or(self.slowest_wpm, |a| a.wpm);
-        let end = now + estimate(&chunk.text, wpm);
-        self.last_chunk_end = Some(self.last_chunk_end.map_or(end, |e| e.max(end)));
+        // Keyed after whatever the radio already holds.
+        let start = self.keyed_until.filter(|t| *t > now).unwrap_or(now);
+        self.keyed_until = Some(start + estimate(&chunk.text, wpm));
         if let Activity::Sending(job) = &mut self.activity {
             job.chunk_in_radio = true;
             job.sent = if chunk.last {
@@ -1043,10 +1067,6 @@ impl CwSupervisor {
                     arm.id_first = false;
                 }
             }
-            if self.send_text.map(|s| s.pacing) == Some(CwPacing::Estimated) {
-                self.plan
-                    .push_front(Step::WaitUntil(end + self.config.pacing_margin));
-            }
         }
     }
 
@@ -1056,7 +1076,7 @@ impl CwSupervisor {
         reason: StopReason,
         message: Option<String>,
         then: After,
-        now: Instant,
+        _now: Instant,
     ) {
         let job = match &self.activity {
             Activity::Sending(job) => job.clone(),
@@ -1067,52 +1087,27 @@ impl CwSupervisor {
                 return;
             }
         };
-        // A chunk whose completion has not come back yet is in the radio.
-        let in_flight = match &self.outstanding {
-            Some(Step::Send(chunk)) => {
-                let wpm = self.arm.as_ref().map_or(self.slowest_wpm, |a| a.wpm);
-                Some(now + estimate(&chunk.text, wpm))
-            }
-            _ => None,
-        };
         // An ID this job owed and did not finish leads the next send.
         if job.has_id && !job.id_sent {
             if let Some(arm) = &mut self.arm {
                 arm.id_first = true;
             }
         }
-        let in_radio = job.chunk_in_radio || in_flight.is_some();
         self.plan.clear();
         self.ready_retry_at = None;
         // Always: cheap, and a radio that took a chunk we lost track of
-        // is exactly the case it covers.
+        // is exactly the case it covers. Then wait out whatever a keyer
+        // without a real stop is still draining -- by estimate, because
+        // its busy flag means buffer space, not idle. A chunk still on
+        // the wire is counted when its completion arrives.
         self.plan.push_back(Step::Stop);
-        let mut drain_deadline = now;
-        if let (true, Some(send)) = (in_radio, self.send_text) {
-            if send.abort == CwAbort::DrainOnly {
-                let drain_end = [self.last_chunk_end, in_flight]
-                    .into_iter()
-                    .flatten()
-                    .max()
-                    .unwrap_or(now);
-                match send.pacing {
-                    CwPacing::BufferFlag => self.plan.push_back(Step::WaitReady),
-                    CwPacing::Estimated => self
-                        .plan
-                        .push_back(Step::WaitUntil(drain_end + self.config.pacing_margin)),
-                }
-                let longest = drain_end
-                    .saturating_duration_since(now)
-                    .max(self.config.drain_bound);
-                drain_deadline = now + longest + self.config.watchdog_margin;
-            }
-        }
+        self.plan
+            .push_back(Step::WaitKeyed(self.config.pacing_margin));
         self.activity = Activity::Stopping {
             job: job.id,
             reason,
             message,
             then,
-            drain_deadline,
         };
     }
 
@@ -1171,6 +1166,9 @@ impl CwSupervisor {
 
     fn plan_restore(&mut self) {
         self.plan.clear();
+        // Never raise power under text the radio may still be keying.
+        self.plan
+            .push_back(Step::WaitKeyed(self.config.pacing_margin));
         if self.snap.power_changed {
             if let Some(p) = self.snap.power {
                 self.plan.push_back(Step::SetPower(p));
@@ -1197,9 +1195,8 @@ impl CwSupervisor {
                 // a chunk can take instead, then carry on.
                 self.plan.clear();
                 self.ready_retry_at = None;
-                self.plan.push_back(Step::WaitUntil(
-                    now + self.config.drain_bound + self.config.pacing_margin,
-                ));
+                self.plan
+                    .push_back(Step::WaitKeyed(self.config.pacing_margin));
             }
             Activity::Restoring {
                 ticket,

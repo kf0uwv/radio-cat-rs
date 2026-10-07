@@ -126,7 +126,11 @@ pub trait NativeCw {
     async fn set_power_raw(&mut self, raw: u16) -> Result<(), String>;
     async fn break_in(&mut self) -> Result<BreakInKind, String>;
     async fn set_break_in(&mut self, kind: BreakInKind) -> Result<(), String>;
-    /// `CwPacing::BufferFlag` radios: whether the keyer can take a chunk.
+    /// `CwPacing::BufferFlag` radios: whether the keyer can take another
+    /// chunk -- buffer space (TS-570D `KY;` → `KY0`). **Not "idle"**: a
+    /// radio answers `true` while still keying what it holds, and the
+    /// supervisor never reads it as finished. When text is done keying,
+    /// and when power may go back up, is decided by estimate.
     async fn ready(&mut self) -> Result<bool, String>;
     /// One chunk: upper case, within the charset and `max_chunk_chars`.
     async fn send_chunk(&mut self, text: &str) -> Result<(), String>;

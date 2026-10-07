@@ -336,6 +336,17 @@ the longest valid ID would have been 27.48 s.) Pinned by
 `the_worst_case_drain_is_the_bound_in_the_adr`. The bench (§9) may show
 `RX;` stops a TS-570D `KY` sentence, which would make it `RadioStop`.
 
+**Ready is not idle (safety review, 2026-10-07).** `KY;` reports buffer
+*space*: a TS-570D answers ready while still keying. The supervisor
+therefore never treats `ready` as finished. It tracks the estimated end
+of everything handed to the radio (chunks key one after another) and
+waits for it: before each next chunk (as well as `ready`, on a
+`BufferFlag` radio), before a job counts as complete, after an abort
+before the drain counts as over, and before **any** restore -- power is
+never raised while sent text may still be keying. A `RadioStop` keyer's
+`Stop` clears the estimate. The radio therefore holds at most one chunk,
+which is what makes the drain bound real.
+
 ### 5. Abort does not wait behind a send
 
 A CAT stop cannot use ADR 0022's release lines: it is bytes on the wire,

@@ -580,7 +580,8 @@ pub enum BreakInKind {
 /// How the server learns that the radio's keyer has finished a chunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CwPacing {
-    /// The radio reports its keyer buffer busy/free (TS-570D `KY;`).
+    /// The radio reports whether its keyer buffer has space (TS-570D
+    /// `KY;`). Space, not idle: it reads "ready" while still keying.
     BufferFlag,
     /// No busy flag: the server paces by a `cat-morse` duration estimate
     /// at the radio's reported speed, plus a margin (IC-7100).

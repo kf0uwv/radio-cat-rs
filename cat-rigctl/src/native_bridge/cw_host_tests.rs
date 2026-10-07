@@ -117,7 +117,8 @@ impl Fake {
             has_cw,
             log: Vec::new(),
             power: 100,
-            wpm: 20,
+            // Fast, so tests on the real clock wait seconds, not tens.
+            wpm: 60,
             busy_after_send: 0,
             busy: 0,
             abort_during_apply: None,
@@ -382,7 +383,7 @@ fn cw_settings_ride_the_levels_clock() {
     assert!(rig.radio.any("settings"));
     let cw = rig.shared.state_as(OWNER).cw.expect("cw state");
     assert_eq!(cw.pitch_hz, Some(600));
-    assert_eq!(cw.keyer_wpm, Some(20));
+    assert_eq!(cw.keyer_wpm, Some(60));
 
     // Not again until the levels clock comes round.
     rig.radio.log.clear();
@@ -540,7 +541,13 @@ fn shutdown_restores_and_then_reports_settled() {
     rig.cycle();
     assert!(!rig.shared.cw_settled());
     rig.shared.shutdown_cw();
-    rig.cycles(20);
+    // Until the text already handed over has had time to key.
+    for _ in 0..200 {
+        if rig.shared.cw_settled() {
+            break;
+        }
+        rig.cycles(1);
+    }
     assert!(rig.radio.any("stop"));
     assert_eq!(rig.radio.power, 100);
     assert!(rig.shared.cw_settled());

@@ -91,6 +91,17 @@ struct Radio {
     ignores_power: bool,
     fail_break_in_writes: u32,
     log: Vec<CwAction>,
+    /// When the radio will finish keying everything it has been handed,
+    /// keyed one after another at its own speed. `None`: silent.
+    keyed_until: Option<Instant>,
+    /// A `RadioStop` keyer: `Stop` silences it at once.
+    stops: bool,
+    /// Answer `Ready` as the TS-570D's `KY` does: buffer space, not idle
+    /// -- true while it is still keying what it holds.
+    buffer_space_ready: bool,
+    /// Anything that must never happen, recorded rather than panicked so
+    /// a test can say which.
+    violations: Vec<String>,
 }
 
 impl Radio {
@@ -108,11 +119,27 @@ impl Radio {
             ignores_power: false,
             fail_break_in_writes: 0,
             log: Vec::new(),
+            keyed_until: None,
+            stops: false,
+            buffer_space_ready: false,
+            violations: Vec::new(),
         }
     }
 
-    fn answer(&mut self, action: &CwAction) -> CwOutcome {
+    fn keying_at(&self, now: Instant) -> bool {
+        self.keyed_until.is_some_and(|t| now < t)
+    }
+
+    fn answer(&mut self, action: &CwAction, now: Instant) -> CwOutcome {
         self.log.push(action.clone());
+        if let CwAction::SetPower(raw) = action {
+            if *raw > self.power && self.keying_at(now) {
+                self.violations.push(format!(
+                    "power raised to {raw} with {:?} still to key",
+                    self.keyed_until.unwrap() - now
+                ));
+            }
+        }
         match action {
             CwAction::ReadStatus => CwOutcome::Status {
                 cw_mode: self.cw_mode,
@@ -140,6 +167,9 @@ impl Radio {
                 CwOutcome::Done
             }
             CwAction::Ready => {
+                if self.buffer_space_ready {
+                    return CwOutcome::Ready(true);
+                }
                 if self.never_ready {
                     return CwOutcome::Ready(false);
                 }
@@ -151,11 +181,18 @@ impl Radio {
                     CwOutcome::Ready(true)
                 }
             }
-            CwAction::SendChunk(_) => {
+            CwAction::SendChunk(text) => {
                 self.busy_left = self.busy_polls;
+                let start = self.keyed_until.filter(|t| *t > now).unwrap_or(now);
+                self.keyed_until = Some(start + estimate(text, self.wpm.unwrap_or(10)));
                 CwOutcome::Done
             }
-            CwAction::Stop => CwOutcome::Done,
+            CwAction::Stop => {
+                if self.stops {
+                    self.keyed_until = None;
+                }
+                CwOutcome::Done
+            }
         }
     }
 
@@ -200,7 +237,7 @@ impl Bench {
         for _ in 0..10_000 {
             match self.sup.next_action(self.now) {
                 Some(action) => {
-                    let outcome = self.radio.answer(&action);
+                    let outcome = self.radio.answer(&action, self.now);
                     self.sup.complete(outcome, self.now);
                 }
                 None => break,
@@ -1007,7 +1044,7 @@ fn abort_while_a_chunk_is_on_the_wire_still_stops_next() {
     // Run to the chunk, but abort before its completion arrives.
     loop {
         let a = b.sup.next_action(b.now).unwrap();
-        let outcome = b.radio.answer(&a);
+        let outcome = b.radio.answer(&a, b.now);
         if matches!(a, CwAction::SendChunk(_)) {
             b.sup.abort(b.now);
             b.sup.complete(outcome, b.now);
@@ -1079,7 +1116,7 @@ fn a_stale_watchdog_cannot_stop_the_next_send() {
     b.radio.wpm = Some(20);
     b.arm().unwrap();
     b.sup.send(OWNER, "E", b.now).unwrap();
-    b.run_for(Duration::from_secs(1));
+    b.run_for(Duration::from_secs(10));
     assert!(matches!(
         b.sup.sender(),
         SenderState::Stopped {
@@ -1198,4 +1235,135 @@ fn the_worst_case_drain_is_the_bound_in_the_adr() {
     assert!(chunks.concat().contains("000000000Q"), "{chunks:?}");
     let longest = chunks.iter().map(|c| estimate(c, 10)).max().unwrap();
     assert!(longest <= Duration::from_secs(3), "{longest:?}");
+}
+
+// ---------------------------------------------------------------------
+// Ready is buffer space, not idle (safety review, 2026-10-07)
+// ---------------------------------------------------------------------
+
+/// A TS-570D-shaped radio whose `KY;` says "buffer space" and so answers
+/// ready while it is still keying.
+fn buffer_space_bench(wpm: u16) -> Bench {
+    let mut b = Bench::new(KENWOOD);
+    b.radio.wpm = Some(wpm);
+    b.radio.buffer_space_ready = true;
+    b
+}
+
+#[test]
+fn a_ready_buffer_is_not_fed_ahead_of_what_it_is_keying() {
+    // The reviewer's scenario: a 10 wpm job of some fourteen chunks used
+    // to be handed over entirely at t=0.
+    let mut b = buffer_space_bench(10);
+    b.arm().unwrap();
+    let text = "ABCDE FGHIJ KLMNO PQRST";
+    b.sup.send(OWNER, text, b.now).unwrap();
+    b.drive();
+    assert_eq!(
+        b.radio.sent().len(),
+        1,
+        "one chunk at a time: {:?}",
+        b.radio.sent()
+    );
+    // At any moment the radio holds no more than the drain bound.
+    for _ in 0..600 {
+        b.run_for(Duration::from_millis(100));
+        if let Some(t) = b.radio.keyed_until {
+            let left = t.saturating_duration_since(b.now);
+            assert!(
+                left <= CwConfig::default().drain_bound + Duration::from_millis(100),
+                "{left:?} buffered at {:?}",
+                b.elapsed()
+            );
+        }
+    }
+    assert!(b.radio.violations.is_empty(), "{:?}", b.radio.violations);
+}
+
+#[test]
+fn abort_and_disarm_never_raise_power_under_buffered_text() {
+    let mut b = buffer_space_bench(10);
+    b.arm().unwrap();
+    b.sup.send(OWNER, "ABCDE FGHIJ KLMNO PQRST", b.now).unwrap();
+    b.drive();
+    b.sup.abort(b.now);
+    b.sup.disarm(OWNER, b.now).unwrap();
+    b.drive();
+    assert_eq!(
+        b.radio.power, 5,
+        "not while the first chunk is still keying"
+    );
+    b.run_for(Duration::from_secs(10));
+    assert_eq!(b.radio.power, 100, "restored once it has finished");
+    assert!(b.radio.violations.is_empty(), "{:?}", b.radio.violations);
+}
+
+#[test]
+fn a_job_is_complete_only_when_its_text_has_had_time_to_key() {
+    let mut b = buffer_space_bench(10);
+    b.arm().unwrap();
+    b.sup.send(OWNER, "E", b.now).unwrap();
+    b.drive();
+    // "E DE N0CALL" at 10 wpm is several seconds; the buffer said ready
+    // at once.
+    b.run_for(Duration::from_millis(500));
+    assert!(
+        matches!(b.sup.sender(), SenderState::Sending { .. }),
+        "{:?}",
+        b.sup.sender()
+    );
+    b.run_for(Duration::from_secs(30));
+    assert!(matches!(
+        b.sup.sender(),
+        SenderState::Stopped {
+            reason: StopReason::Completed,
+            ..
+        }
+    ));
+    // And a disarm right after completion restores at once, safely.
+    b.sup.disarm(OWNER, b.now).unwrap();
+    b.drive();
+    assert_eq!(b.radio.power, 100);
+    assert!(b.radio.violations.is_empty(), "{:?}", b.radio.violations);
+}
+
+#[test]
+fn every_way_out_waits_for_keyed_text_before_restoring() {
+    for ending in ["detach", "shutdown", "watchdog"] {
+        let mut b = buffer_space_bench(10);
+        b.arm().unwrap();
+        b.sup.send(OWNER, "ABCDE FGHIJ KLMNO PQRST", b.now).unwrap();
+        b.drive();
+        match ending {
+            "detach" => b.sup.detached(OWNER, b.now),
+            "shutdown" => b.sup.shutdown(b.now),
+            _ => {
+                // Wedge: the radio stops reporting buffer space.
+                b.radio.buffer_space_ready = false;
+                b.radio.never_ready = true;
+            }
+        }
+        b.run_for(Duration::from_secs(90));
+        assert_eq!(b.radio.power, 100, "{ending}");
+        assert!(
+            b.radio.violations.is_empty(),
+            "{ending}: {:?}",
+            b.radio.violations
+        );
+    }
+}
+
+#[test]
+fn a_radio_stop_keyer_may_be_restored_once_stopped() {
+    let mut b = Bench::new(ICOM);
+    b.radio.stops = true;
+    b.radio.power = 200;
+    b.arm().unwrap();
+    b.sup.send(OWNER, "CQ CQ CQ", b.now).unwrap();
+    b.drive();
+    b.sup.abort(b.now);
+    b.sup.disarm(OWNER, b.now).unwrap();
+    b.run_for(Duration::from_secs(1));
+    assert_eq!(b.radio.power, 200);
+    assert!(b.radio.violations.is_empty(), "{:?}", b.radio.violations);
 }
