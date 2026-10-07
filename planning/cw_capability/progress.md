@@ -84,3 +84,8 @@ not start before that.
   Windows; 10 s bound; error log if unsettled). Red: 4 compile errors;
   green: 20 host tests; workspace 1233/0/3; clippy, fmt, xwin clean.
   Signal-driven exit is not owned by any library code -- reported.
+- T7 done: `Connection::{cw_capability, cw_state, set_keyer_speed,
+  arm_cw, send_cw, abort_cw, disarm_cw}`, `Client::cw_capability`,
+  `ClientError::Refused`. Never probes a server without CW; `Malformed`
+  -> `Refused(Unsupported)`. Red: 18 compile errors; green: 3 socket + 2
+  unit tests; workspace 1238/0/3; clippy, fmt, xwin clean.

@@ -71,6 +71,14 @@ pub enum ClientError {
     },
     /// The peer closed the connection.
     Closed,
+    /// The server refused the command, with its reason (ADR 0023: a CW
+    /// arm held by another console is `Forbidden`, a speed outside the
+    /// radio's range `OutOfRange`). A server that predates a command, or
+    /// does not offer it, is `Unsupported`.
+    Refused {
+        code: crate::ErrorCode,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for ClientError {
@@ -87,6 +95,7 @@ impl std::fmt::Display for ClientError {
                 )
             }
             ClientError::Closed => write!(f, "connection closed by the server"),
+            ClientError::Refused { code, message } => write!(f, "refused ({code:?}): {message}"),
         }
     }
 }
@@ -312,6 +321,84 @@ impl Connection {
         }
     }
 
+    // -----------------------------------------------------------------
+    // CW (ADR 0023)
+    //
+    // Never probe: a server whose `Welcome` carried no `cw` is not asked,
+    // and every call but `abort_cw` is refused here without a byte sent.
+    // -----------------------------------------------------------------
+
+    /// This server's CW control, or `None` if it offers none -- whether
+    /// the radio has none, the server predates CW, or the host does not
+    /// supervise it. Treat all three alike.
+    pub fn cw_capability(&self) -> Option<&crate::CwCapabilityWire> {
+        self.capabilities.cw.as_ref()
+    }
+
+    /// CW settings and the transmit session, from one `ReadState`.
+    pub fn cw_state(&mut self) -> Result<Option<crate::CwState>> {
+        if self.cw_capability().is_none() {
+            return Ok(None);
+        }
+        Ok(self.read_state()?.cw)
+    }
+
+    /// Set the radio's keyer speed.
+    pub fn set_keyer_speed(&mut self, wpm: u16) -> Result<()> {
+        self.cw_command(Command::SetKeyerSpeed { wpm })
+    }
+
+    /// Take the CW transmit arm. `Ok` once the server has clamped power
+    /// and read it back.
+    ///
+    /// `dummy_load_acknowledged` is the operator's answer to a question
+    /// the trainer must ask every session; it is an explicit argument so
+    /// no caller can arm by default.
+    pub fn arm_cw(
+        &mut self,
+        callsign: &str,
+        dummy_load_acknowledged: bool,
+        key_down_cap_s: Option<u16>,
+    ) -> Result<()> {
+        self.cw_command(Command::ArmCwTransmit {
+            callsign: callsign.to_string(),
+            dummy_load_acknowledged,
+            key_down_cap_s,
+        })
+    }
+
+    /// Queue text for the radio's keyer. `Ok` means queued; progress
+    /// rides [`crate::CwState::sender`].
+    pub fn send_cw(&mut self, text: &str) -> Result<()> {
+        self.cw_command(Command::SendCwText {
+            text: text.to_string(),
+        })
+    }
+
+    /// Stop any CW send now. A server without CW has nothing to stop and
+    /// is not asked.
+    pub fn abort_cw(&mut self) -> Result<()> {
+        if self.cw_capability().is_none() {
+            return Ok(());
+        }
+        cw_reply(self.command(Command::AbortCw)?)
+    }
+
+    /// Release the arm. `Ok` once the server has restored and read back.
+    pub fn disarm_cw(&mut self) -> Result<()> {
+        self.cw_command(Command::DisarmCw)
+    }
+
+    fn cw_command(&mut self, command: Command) -> Result<()> {
+        if self.cw_capability().is_none() {
+            return Err(ClientError::Refused {
+                code: crate::ErrorCode::Unsupported,
+                message: "this server does not offer CW control".to_string(),
+            });
+        }
+        cw_reply(self.command(command)?)
+    }
+
     /// Round-trip a ping. Useful as a liveness check that changes nothing.
     pub fn ping(&mut self) -> Result<()> {
         match self.request(&ClientMessage::Ping)? {
@@ -451,6 +538,23 @@ impl Connection {
             }
             Err(e) => Err(ClientError::Io(e)),
         }
+    }
+}
+
+/// A CW command's reply as a result. A server that cannot parse the
+/// command predates it, which a caller treats as "not offered".
+fn cw_reply(reply: ServerMessage) -> Result<()> {
+    match reply {
+        ServerMessage::Ack => Ok(()),
+        ServerMessage::Error {
+            code: crate::ErrorCode::Malformed,
+            ..
+        } => Err(ClientError::Refused {
+            code: crate::ErrorCode::Unsupported,
+            message: "this server predates CW control".to_string(),
+        }),
+        ServerMessage::Error { code, message } => Err(ClientError::Refused { code, message }),
+        other => Err(ClientError::Unexpected(other)),
     }
 }
 
@@ -624,6 +728,12 @@ impl Client {
         &self.capabilities
     }
 
+    /// This server's CW control, if it offers any. See
+    /// [`Connection::cw_capability`].
+    pub fn cw_capability(&self) -> Option<&crate::CwCapabilityWire> {
+        self.capabilities.cw.as_ref()
+    }
+
     /// Queue a command. Returns `false` if the connection has ended.
     pub fn send(&self, command: Command) -> bool {
         self.commands.send(ClientMessage::Command(command)).is_ok()
@@ -688,5 +798,32 @@ impl Client {
     /// and not a channel.
     pub fn spectrum_slot(&self) -> Arc<Mutex<Option<SpectrumFrame>>> {
         Arc::clone(&self.spectrum)
+    }
+}
+
+#[cfg(test)]
+mod cw_reply_tests {
+    use super::*;
+    use crate::ErrorCode;
+
+    #[test]
+    fn a_server_that_cannot_parse_a_cw_command_predates_it() {
+        let old = ServerMessage::Error {
+            code: ErrorCode::Malformed,
+            message: "unknown variant `arm_cw_transmit`".to_string(),
+        };
+        match cw_reply(old) {
+            Err(ClientError::Refused { code, .. }) => assert_eq!(code, ErrorCode::Unsupported),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_ack_is_ok_and_anything_else_is_unexpected() {
+        assert!(cw_reply(ServerMessage::Ack).is_ok());
+        assert!(matches!(
+            cw_reply(ServerMessage::Pong),
+            Err(ClientError::Unexpected(ServerMessage::Pong))
+        ));
     }
 }

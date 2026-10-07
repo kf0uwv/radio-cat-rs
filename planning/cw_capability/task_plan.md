@@ -10,7 +10,7 @@ standalone trainer (new repo) works against any radio-cat-rs radio's
 
 ## Current Phase
 
-**T1-T6 done; T7 next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
+**T1-T7 done (+2 architect fixes); T7b next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
 `feat/cw-capability` off `feat/cat-morse`). ADR 0023 Accepted 2026-10-07;
 open questions answered (see "Decisions" at the end). One task at a time;
 report after each. Do not push.
@@ -225,11 +225,21 @@ report after each. Do not push.
   wrapped in `Cached`, so `Cached` alone would miss it).
   `NativeShared::shutdown_cw()` / `cw_settled()` for apps' shutdown.
 
-### T7 — `cat-native` client conveniences (status: pending)
+### T7 — `cat-native` client conveniences (status: done 2026-10-07)
 - `Connection`/`Client`: `cw_capability()`, `arm_cw`, `send_cw`,
   `abort_cw`, `disarm_cw`, `set_keyer_speed`; `Malformed` in reply to a CW
   command from an old server surfaces as `ClientError::Unsupported`-like.
 - Tests against `testing` stub with and without `cw`.
+
+- Design (2026-10-07): on `Connection` (the blocking client a trainer
+  uses): `cw_capability()`, `cw_state()`, `set_keyer_speed`, `arm_cw(call,
+  dummy_load_acknowledged, key_down_cap_s)` (the acknowledgement is an
+  explicit argument, never defaulted), `send_cw`, `abort_cw`,
+  `disarm_cw`. New `ClientError::Refused { code, message }` for a
+  server's refusal. **Never probe** (ADR §7): with `cw: None` every call
+  but `abort_cw` returns `Refused(Unsupported)` without sending;
+  `abort_cw` is a local no-op. A `Malformed` reply (a pre-0023 server)
+  maps to `Refused(Unsupported)`. `Client` gets `cw_capability()`.
 
 ### T7b — `cat-native`: `Connection::connect_timeout` (status: pending)
 - Connect **and** handshake (`Hello`/`Welcome`) bounded by one timeout;
