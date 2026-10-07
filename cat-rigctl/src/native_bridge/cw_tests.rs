@@ -1010,7 +1010,7 @@ fn any_console_may_abort_and_the_stop_goes_first() {
     b.radio.busy_polls = 2;
     b.arm().unwrap();
     b.sup
-        .send(OWNER, "CQ CQ CQ DE N0CALL N0CALL N0CALL K", b.now)
+        .send(OWNER, "CQ CQ CQ DE N0CALL N0CALL K", b.now)
         .unwrap();
     b.drive();
     let sent = b.radio.sent().len();
@@ -1065,7 +1065,8 @@ fn a_drain_only_abort_reports_draining_until_the_radio_is_idle() {
     b.sup.abort(b.now);
     b.drive();
     assert!(matches!(b.sup.sender(), SenderState::Draining { .. }));
-    b.run_for(Duration::from_secs(2));
+    // Until the chunk already handed over has had time to key.
+    b.run_for(Duration::from_secs(10));
     assert!(matches!(
         b.sup.sender(),
         SenderState::Stopped {
@@ -1094,7 +1095,7 @@ fn a_send_that_outlives_its_estimate_is_stopped_and_disarmed() {
     b.arm().unwrap();
     b.radio.never_ready = true; // the keyer has wedged
     b.sup.send(OWNER, "CQ", b.now).unwrap();
-    b.run_for(Duration::from_secs(15));
+    b.run_for(Duration::from_secs(30));
     assert!(b.radio.log.contains(&CwAction::Stop));
     assert!(matches!(
         b.sup.sender(),
@@ -1221,16 +1222,16 @@ fn an_id_cut_off_by_an_abort_after_the_first_chunk_is_still_owed() {
 #[test]
 fn the_worst_case_drain_is_the_bound_in_the_adr() {
     assert_eq!(CwConfig::default().drain_bound, Duration::from_secs(3));
-    assert_eq!(estimate("0", 10), Duration::from_millis(2_280));
+    // At the conservative 4:1 dash weighting: five 4-unit dashes and
+    // four gaps, 24 units of 120 ms.
+    assert_eq!(estimate("0", 10), Duration::from_millis(2_880));
     let mut b = Bench::new(KENWOOD);
     b.radio.wpm = Some(10); // KENWOOD's slowest
     let ticket = b.sup.arm(OWNER, "000000000Q", None, b.now).unwrap();
     b.drive();
     assert_eq!(b.reply(ticket), Some(Ok(())));
-    b.sup
-        .send(OWNER, "ABCDEFGHIJKLMNOPQRSTUVWX", b.now)
-        .unwrap();
-    b.run_for(Duration::from_secs(60));
+    b.sup.send(OWNER, "ABCDEFGHIJKL", b.now).unwrap();
+    b.run_for(Duration::from_secs(90));
     let chunks = b.radio.sent();
     assert!(chunks.concat().contains("000000000Q"), "{chunks:?}");
     let longest = chunks.iter().map(|c| estimate(c, 10)).max().unwrap();
@@ -1510,4 +1511,16 @@ fn an_owed_id_is_cleared_once_an_id_is_sent() {
     b.sup.send(OWNER, "E", b.now).unwrap();
     b.run_for(Duration::from_secs(30));
     assert_eq!(b.sup.id_owed(), None);
+}
+
+#[test]
+fn estimates_assume_the_heaviest_weighting_a_keyer_may_use() {
+    // Safety review 6: a TS-570D's keyer weighting can stretch a dash to
+    // 4:1. Every bound -- chunk split, drain, watchdog, cap -- is computed
+    // from `estimate`, so it errs long: a 4-unit dash, not the textbook 3.
+    assert_eq!(estimate("E", 20), Duration::from_millis(60));
+    assert_eq!(estimate("T", 20), Duration::from_millis(240));
+    // A character the codec cannot key is costed at least as long as the
+    // longest real one with its gap (`0`: 24 + 3 units).
+    assert!(estimate("\u{2603}", 20) >= Duration::from_millis(27 * 60));
 }

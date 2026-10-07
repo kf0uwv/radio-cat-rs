@@ -69,7 +69,7 @@
 //! and ID alike -- keeps within [`CwConfig::drain_bound`] (3 s) at the
 //! radio's current speed; only a single character longer than that at a
 //! very slow speed can exceed it (none does on the TS-570D, whose slowest
-//! is 10 wpm). See ADR 0023 §4-§5.
+//! is 10 wpm: its longest, `0`, is 2.88 s at the conservative 4:1 dash). See ADR 0023 §4-§5.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -1375,17 +1375,30 @@ fn refusal(code: ErrorCode, message: &str) -> HostRefusal {
     }
 }
 
-/// How long `text` takes to key at `wpm`, PARIS timing, no trailing gap.
+/// The dash weighting every estimate assumes: 4:1, the heaviest a
+/// TS-570D's keyer weighting reaches (safety review 6). Every bound --
+/// chunk split, drain, watchdog, key-down cap -- comes from [`estimate`],
+/// so assuming the textbook 3:1 would let a heavily weighted keyer run
+/// past all of them on dash-heavy text.
+pub const CONSERVATIVE_DASH_RATIO: f64 = 4.0;
+
+/// How long `text` takes to key at `wpm`, PARIS dot timing with
+/// [`CONSERVATIVE_DASH_RATIO`] dashes, no trailing gap.
 ///
-/// Text the Morse codec cannot tokenize is costed at 22 units a
-/// character -- longer than any real character plus its gap -- so an
-/// unknown character can only make an estimate pessimistic.
+/// Text the Morse codec cannot tokenize is costed at 28 units a
+/// character -- longer than any real character plus its gap at that
+/// weighting -- so an unknown character can only make an estimate
+/// pessimistic.
 pub fn estimate(text: &str, wpm: u16) -> Duration {
     let wpm = f64::from(wpm.clamp(3, 100));
     let speed = Speed::wpm(wpm).expect("clamped into cat-morse's range");
-    match timing::key_text(text.trim(), speed, &Fist::perfect(), 0) {
+    let heavy = Fist {
+        dash_ratio: CONSERVATIVE_DASH_RATIO,
+        ..Fist::perfect()
+    };
+    match timing::key_text(text.trim(), speed, &heavy, 0) {
         Ok(keying) => keying.total(),
-        Err(_) => speed.dot() * (22 * text.chars().count() as u32),
+        Err(_) => speed.dot() * (28 * text.chars().count() as u32),
     }
 }
 

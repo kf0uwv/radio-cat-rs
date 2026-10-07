@@ -350,10 +350,14 @@ bound does not apply to a `RadioStop` radio, which stops at once.
 
 **Worst-case drain after an abort, `DrainOnly` radio:** the 3 s bound,
 for operator text and ID alike, as long as the radio's longest character
-keys within it at the slowest keyer speed. For the TS-570D (slowest
-10 wpm) the longest character, `0`, is 2.28 s, so the worst case is
-**3 s**, plus one in-flight CAT exchange and one CW tick (§5). (Unsplit,
-the longest valid ID would have been 27.48 s.) Pinned by
+keys within it at the slowest keyer speed. Every estimate assumes a
+**4:1 dash** (`CONSERVATIVE_DASH_RATIO`, safety review 6): the heaviest a
+TS-570D's keyer weighting reaches, so a weighted keyer cannot run past
+the chunk split, drain, watchdog or cap on dash-heavy text. For the
+TS-570D (slowest 10 wpm) the longest character, `0`, is then 2.88 s, so
+the worst case is **3 s**, plus one in-flight CAT exchange and one CW
+tick (§5). (Unsplit, the longest valid ID would have been 27.48 s even at
+3:1.) Pinned by
 `the_worst_case_drain_is_the_bound_in_the_adr`. The bench (§9) may show
 `RX;` stops a TS-570D `KY` sentence, which would make it `RadioStop`.
 
@@ -547,6 +551,13 @@ overwrite the operator's stored keyer messages and is rejected.
 
 - TS-570D: does `RX;` stop a running `KY` sentence? Does `SD0000` mean
   Full break-in? How long is the gap between back-to-back chunks?
+- TS-570D: **the ID split.** At slow speed the drain bound splits the
+  `DE <CALL>` ID across chunks (e.g. `N0CA` / `LL`). Listen on a dummy
+  load for whether the inter-chunk gap is heard as a word space; if it
+  is, the ID is not legible and the bound or the pacing must change.
+- TS-570D: measure the actual keyer weighting and dash ratio; the 4:1
+  estimate is a ceiling, and a radio that declares its own could tighten
+  every bound.
 - IC-7100: is a second `17` while sending queued, appended, or refused?
   Minimum watts at raw 0 per band. The `17` character table.
 - FT-991A: whether CAT keyer playback needs `KR1` (moot until send exists).
