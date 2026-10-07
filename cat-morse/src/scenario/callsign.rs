@@ -241,14 +241,24 @@ fn tagged(base: &str, tag: &str) -> Option<&'static Entity> {
 ///
 /// A location designator wins over the home call: `EA8/DL1ABC` is in the
 /// Canaries, `W1ABC/KH6` in Hawaii, `W1ABC/4` in US call area 4. Operating
-/// modifiers (`/P`, `/M`, `/A`, `/QRP`) are ignored; `/MM` and `/AM` are in
-/// no entity. Unknown prefixes return `None`; the caller picks a generic
+/// modifiers after the base (`/P`, `/M`, `/A`, `/QRP`) are ignored; `/MM`
+/// and `/AM` after it are in no entity. Before the base every piece is a
+/// location prefix, so `M/DL1ABC` is England and `MM/DL1ABC` Scotland. Unknown prefixes return `None`; the caller picks a generic
 /// home.
 pub(crate) fn home_of(call: &Callsign) -> Option<Home> {
     let base = call.base();
-    let mut designator: Option<&str> = None;
+    // A piece before the base is a location prefix (`EA8/`, and `M/` or
+    // `MM/` for England and Scotland); only pieces after it can be tags,
+    // modifiers or `/MM`. A prefix designator wins over a suffix one.
+    let (mut before, mut after): (Option<&str>, Option<&str>) = (None, None);
+    let mut past_base = false;
     for piece in call.as_str().split('/') {
         if std::ptr::eq(piece, base) {
+            past_base = true;
+            continue;
+        }
+        if !past_base {
+            before = Some(piece);
             continue;
         }
         if let Some(entity) = tagged(base, piece) {
@@ -263,8 +273,9 @@ pub(crate) fn home_of(call: &Callsign) -> Option<Home> {
         if NO_ENTITY.contains(&piece) {
             return None;
         }
-        designator = Some(piece);
+        after = Some(piece);
     }
+    let designator = before.or(after);
     // The piece naming the call area's prefix, and the one carrying its digit.
     let (entity, prefix_from, digit_from) = match designator {
         Some(d) if d.bytes().all(|b| b.is_ascii_digit()) => (entity_of(base)?, base, d),
@@ -949,6 +960,30 @@ mod tests {
         // A numeral in a prefix is an ordinary character.
         let s = align("3D2AB/R", "3D2AB/P", &o).unwrap().score();
         assert_eq!((s.matches, s.substitutions), (6, 1));
+    }
+
+    #[test]
+    fn modifiers_only_follow_the_base() {
+        // Before the base, `M`, `B` and `MM` are prefixes, not modifiers.
+        assert_eq!(name("M/DL1ABC"), "ENGLAND");
+        assert_eq!(name("B/DL1ABC"), "CHINA");
+        assert_eq!(name("MM/DL1ABC"), "SCOTLAND");
+        assert_eq!(name("MM/DL1ABC/P"), "SCOTLAND");
+        // After it, they still are.
+        assert!(h("DL1ABC/MM").is_none());
+        assert_eq!(name("DL1ABC/M"), "GERMANY");
+        // And a visitor can be signed into England as M/ and Scotland as MM/.
+        let mut rng = Rng::new(4);
+        let mut seen = std::collections::HashSet::new();
+        for dxcc in [223, 279] {
+            for _ in 0..400 {
+                let home = Home::random_in(&mut rng, by_dxcc(dxcc));
+                if let Some(d) = designator(&mut rng, &home) {
+                    seen.insert(d);
+                }
+            }
+        }
+        assert!(seen.contains("M") && seen.contains("MM"), "{seen:?}");
     }
 
     #[test]
