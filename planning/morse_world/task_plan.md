@@ -1,6 +1,6 @@
 # morse_world — task plan: "simulate many calls from all over the world"
 
-Status: APPROVED 2026-10-07 (architect). Tasks 1-8 done; task 9 in progress. Branch `feat/morse-world-calls` off
+Status: APPROVED 2026-10-07 (architect). All tasks 1-9 done (2026-10-07). Branch `feat/morse-world-calls` off
 `feat/cat-morse` (PR #17), worktree `../radio-cat-rs-world`. Scope confined to
 `cat-morse/src/scenario/` (+ this planning dir). No changes to score.rs/codec.rs unless an
 open question is answered that way. Parallel agent on `feat/cw-capability` — no overlap expected.
@@ -77,7 +77,7 @@ pub(crate) struct Region { digit: Option<u8>, code: &'static str, cq: u8, itu: u
 8. [x] (approved) `Difficulty.hf_band` propagation weighting. Also fold in: band-noise (QRM)
        stations still use a US-centred `random_dx(None)` draw — give the band model the
        operator's home (or the hf_band path model) so QRM follows the same weighting.
-9. [ ] Size check test (table counts) + docs (scenario module docs, ADR 0021 note).
+9. [x] Size check test (table counts) + docs (scenario module docs, ADR 0021 note).
 
 ## Open questions
 1. Data source: OK to hand-build from public facts (recommended) rather than vendor cty.dat?

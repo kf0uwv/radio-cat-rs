@@ -460,8 +460,11 @@ pub(crate) const US_REGIONS: &[Region] = &[
     },
 ];
 
-/// Every entity the trainer knows.
-pub(crate) const WORLD: &[Entity] = &[
+/// Every entity the trainer knows: the 340 current DXCC entities.
+///
+/// A `static`, not a `const`: a `const` slice is materialised at every use
+/// site, which more than doubled the table's share of a release binary.
+pub(crate) static WORLD: &[Entity] = &[
     Entity {
         dxcc: USA,
         name: "USA",
@@ -3040,6 +3043,39 @@ mod tests {
         for n in Names::ALL {
             assert!(n.pool().len() >= 5, "{n:?}");
         }
+    }
+
+    /// A guard on table growth. Binary size cannot be measured from a
+    /// unit test, so this bounds what drives it: every `&str` in the table
+    /// costs a fat pointer (and, in a Linux PIE, a 24-byte relocation) on
+    /// top of its bytes. Measured 2026-10-07 on x86_64 Linux, stripped
+    /// release: the table added ~106 KB of data plus ~100 KB of PIE
+    /// relocations. Raise these bounds deliberately, not by accident.
+    #[test]
+    fn table_size_stays_in_budget() {
+        let (mut strs, mut bytes) = (0usize, 0usize);
+        let mut count = |s: &str| {
+            strs += 1;
+            bytes += s.len();
+        };
+        for e in WORLD {
+            count(e.name);
+            e.prefixes.iter().for_each(|p| count(p));
+            e.towns.iter().for_each(|t| count(t));
+            for f in e.formats {
+                f.prefixes.iter().for_each(|p| count(p));
+            }
+            for r in e.regions {
+                r.prefixes.iter().for_each(|p| count(p));
+                for (code, towns) in r.subdivisions {
+                    count(code);
+                    towns.iter().for_each(|t| count(t));
+                }
+            }
+        }
+        // 3,253 strings and 14,019 bytes at the time of writing.
+        assert!(strs <= 3_600, "{strs} strings");
+        assert!(bytes <= 16_000, "{bytes} bytes");
     }
 
     #[test]

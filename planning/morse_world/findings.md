@@ -163,3 +163,16 @@
   solar cycle; judgement values.
 - QRM station: 70% local to the operator (random_local), else DX by activity, nearness and
   hf_band. cw-trainer/ts570d must call `band_channel_for` with the operator's call to benefit.
+
+## Task 9 — size and docs (2026-10-07)
+- Size probe: a stripped release binary calling `generate` (x86_64 Linux PIE), feat/cat-morse
+  vs this branch: 496,504 -> 725,816 bytes (+229 KB). Sections: .rodata +11 KB, .data.rel.ro
+  +95 KB, .rela.dyn +100 KB (PIE relocations, 24 B per pointer), .text +22 KB.
+  So table data ~106 KB (about the 100 KB budget) plus PIE relocation overhead not foreseen in
+  the budget. Windows (PE base relocations) and non-PIE builds pay far less for the relocs.
+- Found and fixed: `WORLD` as a `const` was materialised per use site -> 1,179,880 bytes
+  (+683 KB). Now a `static`.
+- Further reduction available if wanted (not done): store prefix lists as one space-separated
+  `&str` each (~1,300 fewer pointers, est. -50 KB incl. relocations).
+- Guard test bounds the table at <= 3,600 strings / 16,000 bytes (now 3,253 / 14,019).
+- Docs: scenario module "Who is on the air"; ADR 0021 amendment (model, conventions, cost).

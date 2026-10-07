@@ -40,6 +40,25 @@
 //!
 //! Any kind may include repeat requests (`QRZ?`, `AGN?`, `PSE RPT`) at
 //! the rate [`Difficulty::repeat_requests`] sets.
+//!
+//! # Who is on the air
+//!
+//! Stations come from all 340 current DXCC entities, each with its real
+//! ITU prefix blocks, call formats, CQ and ITU zones and continent, and
+//! call areas where the digit means something (US, Canada, Japan,
+//! Russia, China, Australia, New Zealand, Brazil). An entity's activity
+//! sets how often it is heard; stations on the operator's own continent
+//! are heard more, and [`Difficulty::hf_band`] can make that a low-band
+//! or a long-haul lean. The local side of a contact comes from the
+//! operator's own entity. Operators carry given names from their part of
+//! the world. Calls are sometimes `/P`, `/M` or `/QRP`, signed abroad
+//! (`EA8/DL1ABC`), or out of their US call area (`W1ABC/4`), and a
+//! rag-chew is now and then with a ship at sea (`/MM`).
+//!
+//! Where the calls of an entity share another's prefix block (Rotuma in
+//! Fiji's `3D2`, the VP8 dependencies, Bouvet and Peter I in `3Y`), the
+//! trainer tells them apart with a `/` suffix (`3D2AB/R`). That is a
+//! simulation convention; real operations use one-off calls. See ADR 0021.
 
 mod band;
 mod callsign;

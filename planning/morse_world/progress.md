@@ -37,3 +37,4 @@
   --all-features 121 lib + 18 + 10 + 1 = 150; default 119 + 17 + 10 + 1; clippy, fmt clean.
 - Task 8 done: HfBand path model, Difficulty::hf_band, band_channel_for. --all-features
   124 lib + 18 + 10 + 1 = 153; default 122 + 17 + 10 + 1; clippy, fmt clean; workspace check clean.
+- Task 9 done: WORLD static (size fix), table-size guard test, module docs, ADR 0021 amendment.
