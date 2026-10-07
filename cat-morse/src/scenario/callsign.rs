@@ -481,6 +481,23 @@ mod tests {
     }
 
     #[test]
+    fn north_america_carves_territories_out_of_the_us_blocks() {
+        assert_eq!(name("KL7ABC"), "ALASKA");
+        assert_eq!(name("WP4ABC"), "PUERTO RICO");
+        assert_eq!(name("KP2AB"), "US VIRGIN IS");
+        assert_eq!(name("KG4AB"), "GUANTANAMO BAY");
+        assert_eq!(name("4U1UN"), "UN HQ");
+        assert_eq!(name("CY0ABC"), "SABLE IS");
+        assert_eq!(name("VE3ABC"), "CANADA");
+        assert_eq!(name("C6AGU"), "BAHAMAS");
+        assert_eq!(name("XF4ABC"), "REVILLAGIGEDO");
+        assert_eq!(name("XE1ABC"), "MEXICO");
+        assert_eq!(name("TI9ABC"), "COCOS IS");
+        assert_eq!(name("VP2EAB"), "ANGUILLA");
+        assert_eq!(name("FO0ABC/C"), "CLIPPERTON");
+    }
+
+    #[test]
     fn modifiers_do_not_move_a_station() {
         assert_eq!(name("DL1ABC/P"), "GERMANY");
         // `/M` is mobile, not the `M` prefix of England.
