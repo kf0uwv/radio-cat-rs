@@ -441,7 +441,8 @@ mod tests {
         assert_eq!(name("DL1ABC"), "GERMANY");
         assert_eq!(name("9A2AB"), "CROATIA");
         assert_eq!(h("AA1A").unwrap().entity.dxcc, USA);
-        assert!(h("4X1AB").is_none());
+        // No entity issues `Q`-prefixed calls.
+        assert!(h("Q1AB").is_none());
     }
 
     #[test]
@@ -457,7 +458,7 @@ mod tests {
         assert_eq!(w.region.unwrap().digit, 4);
         assert_eq!(h("W6ABC/7").unwrap().region.unwrap().digit, 7);
         // An unknown designator is not silently the home call's entity.
-        assert!(h("4X/DL1ABC").is_none());
+        assert!(h("Q/DL1ABC").is_none());
     }
 
     #[test]
@@ -528,6 +529,25 @@ mod tests {
         assert_eq!(name("VK0AB/H"), "HEARD IS");
         assert_eq!(name("ZD8AB"), "ASCENSION IS");
         assert_eq!(name("5Z4ABC"), "KENYA");
+    }
+
+    #[test]
+    fn asia_splits_shared_blocks() {
+        assert_eq!(name("UA9ABC"), "ASIATIC RUSSIA");
+        assert_eq!(name("RA0AB"), "ASIATIC RUSSIA");
+        assert_eq!(name("UK8ABC"), "UZBEKISTAN");
+        assert_eq!(name("BY1ABC"), "CHINA");
+        assert_eq!(name("BV2AB"), "TAIWAN");
+        assert_eq!(name("BV9PAB"), "PRATAS IS");
+        assert_eq!(name("BS7H"), "SCARBOROUGH REEF");
+        assert_eq!(name("JA1ABC"), "JAPAN");
+        assert_eq!(name("JD1ABC"), "OGASAWARA");
+        assert_eq!(name("VU2ABC"), "INDIA");
+        assert_eq!(name("VU4AB"), "ANDAMAN NICOBAR");
+        assert_eq!(name("9M2AB"), "WEST MALAYSIA");
+        assert_eq!(name("9M0AB"), "SPRATLY IS");
+        assert_eq!(name("4X1AB"), "ISRAEL");
+        assert_eq!(name("5B4AB"), "CYPRUS");
     }
 
     #[test]
