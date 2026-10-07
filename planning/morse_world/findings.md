@@ -48,9 +48,8 @@
   (counts), not on binary bytes.
 
 ## Task 2 — full DXCC table (2026-10-07)
-- WORLD now has 341 entries (US + 340 others) from memory of the current DXCC list.
-  The published current count is 340, so one entry is probably wrong (deleted, or a
-  duplicate of an entity under another name) — needs a check against the ARRL list.
+- WORLD had 341 entries; resolved (fix 1): Malyj Vysotskij (151) is deleted per the ADIF 3.1.5
+  DXCC enumeration (diffed all 340 current codes against the table). Removed; now 340, pinned by a test.
   Unique DXCC numbers are enforced by a test, but a test cannot check that a number is right.
 - Uncertain facts, flagged for verification (not silently guessed):
   - **Tagged entities are a simulation convention**, not real allocations: Rotuma

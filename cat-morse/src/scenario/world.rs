@@ -733,13 +733,6 @@ pub(crate) const WORLD: &[Entity] = &[
         towns: ["KRENKEL"],
     },
     ent! {
-        dxcc: 151, name: "MALYJ VYSOTSKIJ", continent: Eu, cq: 16, itu: 29,
-        prefixes: ["R1MV", "RI1MV", "UA1MV"],
-        formats: [cf(&["R1MV"], DigitRule::InPrefix, (1, 1), 1)],
-        tag: None, iso: None,
-        towns: ["VYSOTSK"],
-    },
-    ent! {
         dxcc: 499, name: "SLOVENIA", continent: Eu, cq: 15, itu: 28,
         prefixes: ["S5"],
         formats: [cf(&["S5"], DigitRule::OneOf(D1_9), (2, 3), 1)],
@@ -2859,7 +2852,11 @@ mod tests {
 
     #[test]
     fn every_continent_is_covered() {
-        assert!(WORLD.len() >= 330, "{}", WORLD.len());
+        // The current DXCC list: 340 entities, the US included. Deleted
+        // entities are left out — Malyj Vysotskij (151, R1MV) among them:
+        // the ADIF 3.1.5 DXCC enumeration marks it deleted, so its calls
+        // are European Russia.
+        assert_eq!(WORLD.len(), 340);
         for c in [
             Continent::Na,
             Continent::Sa,

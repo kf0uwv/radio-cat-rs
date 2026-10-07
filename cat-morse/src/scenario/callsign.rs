@@ -466,6 +466,8 @@ mod tests {
         assert_eq!(name("UA3ABC"), "EUROPEAN RUSSIA");
         assert_eq!(name("RA2FA"), "KALININGRAD");
         assert_eq!(name("R1FJL"), "FRANZ JOSEF LAND");
+        // Malyj Vysotskij is a deleted entity: R1MV is European Russia.
+        assert_eq!(name("R1MVA"), "EUROPEAN RUSSIA");
         assert_eq!(name("IS0ABC"), "SARDINIA");
         assert_eq!(name("IK0ABC"), "ITALY");
         assert_eq!(name("EA6AB"), "BALEARIC IS");
