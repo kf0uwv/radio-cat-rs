@@ -57,6 +57,19 @@
 //! - **Abort**: from anyone, never refused.
 //! - **rigctl**: [`CwSupervisor::blocks_external_ptt`] is true from the
 //!   moment an arm is requested until a restore is verified (decision 8).
+//!
+//! # Abort latency, stated honestly
+//!
+//! From `AbortCw` to the radio falling silent: at most one CAT exchange
+//! already in flight (bounded by the transport's read timeout, typically
+//! tens of milliseconds), plus one pump tick ([`super::CW_TICK`], 50 ms,
+//! and a sleeping pump is woken at once), plus the radio's own drain. A
+//! `RadioStop` radio stops within about one element. A `DrainOnly` radio
+//! keeps keying what it already holds, which every chunk -- operator text
+//! and ID alike -- keeps within [`CwConfig::drain_bound`] (3 s) at the
+//! radio's current speed; only a single character longer than that at a
+//! very slow speed can exceed it (none does on the TS-570D, whose slowest
+//! is 10 wpm). See ADR 0023 §4-§5.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};

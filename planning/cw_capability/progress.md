@@ -108,3 +108,5 @@ not start before that.
   `cw::{status_line, panel}` + App wiring (+5 tests). Mutant (alert not
   prioritised) fails 2 suites. Workspace 1262/0/3; clippy, fmt, xwin
   clean.
+- T8 done: ADR radio-repo checklist; abort-latency bound in the
+  supervisor's crate docs. Final commit: workspace 0.9.0 + Cargo.lock.

@@ -10,7 +10,7 @@ standalone trainer (new repo) works against any radio-cat-rs radio's
 
 ## Current Phase
 
-**T1-T7c done; T8 next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
+**All tasks done (T1-T8); series closes with the 0.9.0 bump. Awaiting architect review / push decision.** (worktree `../radio-cat-rs-cw`, branch
 `feat/cw-capability` off `feat/cat-morse`). ADR 0023 Accepted 2026-10-07;
 open questions answered (see "Decisions" at the end). One task at a time;
 report after each. Do not push.
@@ -276,7 +276,7 @@ report after each. Do not push.
   (`PanelKind::cw()`), **not** a new variant -- a variant would break
   `Welcome` decoding in every older console. ADR §6 records it.
 
-### T8 — docs + bookkeeping (status: pending)
+### T8 — docs + bookkeeping (status: done 2026-10-07)
 - ADR 0023 Accepted + `docs/adr/README.md` row: done with the ADR commit.
   Remaining: crate docs stating the abort-latency bound honestly.
 

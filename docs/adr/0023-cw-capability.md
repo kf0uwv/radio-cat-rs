@@ -511,6 +511,29 @@ overwrite the operator's stored keyer messages and is rejected.
   Minimum watts at raw 0 per band. The `17` character table.
 - FT-991A: whether CAT keyer playback needs `KR1` (moot until send exists).
 
+## Radio repo checklist (0.9.0)
+
+What each radio repository (`ts570d`, `ft991a`, `ic7100`) does to adopt
+this. Until step 2 is done the server offers no CW at all.
+
+1. **Declare** `RadioCapabilities.cw` — `None`, or a real description —
+   and call `CwCapability::validate()` from a test on the `const`. A
+   description that does not validate is never served.
+2. **Implement `NativeCw`** for the radio's native bridge and return it
+   from `NativeRadio::cw()`. This is the opt-in. Only after the radio's
+   own commands are right (TS-570D: fix `send_cw` to `KY␠<24 padded>;`
+   first).
+3. **Add `ServerConfig.stop`** (the 0.9.0 struct literal will not
+   compile without it) and **wire the application's Ctrl-C / SIGTERM
+   handler to `StopHandle::stop()`**, so a stopped server restores the
+   radio before it exits. The library installs no signal handler.
+4. **Fill `RadioDisplay.cw`** from `RadioState.cw` in the terminal
+   console when it talks to a server; the GUI reads it itself.
+5. *Optional:* place `PanelKind::cw()` (`"cat.cw"`) in the
+   server-authored layout. The status strip shows the arm, the send and
+   any failed-restore alert without it.
+6. **Bench on a dummy load** (§9) before declaring `send_text`.
+
 ## Consequences
 
 **Good.**
