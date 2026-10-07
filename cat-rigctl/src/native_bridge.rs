@@ -797,10 +797,12 @@ impl NativeShared {
                 if !self.cw_serving.load(Ordering::SeqCst) {
                     return Err(no_cw());
                 }
-                if self.cw_live() {
+                // Not from any console while CW is live: chunks, the drain
+                // bound and the watchdog are all sized at the current speed.
+                if self.cw_blocks_external_ptt() {
                     return Err(HostRefusal {
                         code: ErrorCode::Forbidden,
-                        message: "not while a send is in progress".to_string(),
+                        message: "not while CW is armed or sending".to_string(),
                     });
                 }
                 self.apply(command).map_err(HostRefusal::from)
@@ -1220,6 +1222,11 @@ pub(crate) async fn pump_once<N: NativeRadio>(
     let mut results = Vec::with_capacity(queued.len());
     for (command, reply) in queued {
         let result = match &command {
+            // Checked again here: accepted before an arm, applied after it,
+            // would change the speed under a send.
+            Command::SetKeyerSpeed { .. } if shared.cw_blocks_external_ptt() => {
+                Err("not while CW is armed or sending".to_string())
+            }
             Command::SetKeyerSpeed { wpm } => match radio.cw() {
                 Some(cw) => {
                     let result = cw.set_keyer_wpm(*wpm).await;

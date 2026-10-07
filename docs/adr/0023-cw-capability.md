@@ -354,6 +354,14 @@ never raised while sent text may still be keying. A `RadioStop` keyer's
 `Stop` clears the estimate. The radio therefore holds at most one chunk,
 which is what makes the drain bound real.
 
+**Keyer speed under a send (safety review, 2026-10-07).** `SetKeyerSpeed`
+is refused from every console while CW is live (arm requested → restore
+verified), including one queued before an arm and applied after it. The
+radio's own knob (or raw `KS` before an arm) cannot be refused, so on a
+`DrainOnly` radio the supervisor reads the speed again before every
+chunk; a change re-chunks what is left, and moves the watchdog, at the
+new speed -- or stops the send if what is left would now exceed the cap.
+
 ### 5. Abort does not wait behind a send
 
 A CAT stop cannot use ADR 0022's release lines: it is bytes on the wire,

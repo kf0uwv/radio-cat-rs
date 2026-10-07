@@ -1367,3 +1367,68 @@ fn a_radio_stop_keyer_may_be_restored_once_stopped() {
     assert_eq!(b.radio.power, 200);
     assert!(b.radio.violations.is_empty(), "{:?}", b.radio.violations);
 }
+
+// ---------------------------------------------------------------------
+// Keyer speed can change under a send (safety review, 2026-10-07)
+// ---------------------------------------------------------------------
+
+#[test]
+fn a_slower_knob_mid_send_replans_within_the_drain_bound() {
+    let mut b = buffer_space_bench(30);
+    b.arm().unwrap();
+    b.sup
+        .send(OWNER, "ABCDE FGHIJ KLMNO PQRST UVWXY", b.now)
+        .unwrap();
+    b.drive();
+    assert_eq!(b.radio.sent().len(), 1);
+    // The operator turns the speed knob down on the front panel.
+    b.radio.wpm = Some(10);
+    let first = b.radio.sent().len();
+    b.run_for(Duration::from_secs(120));
+    let later = &b.radio.sent()[first..];
+    assert!(!later.is_empty());
+    for c in later {
+        assert!(
+            estimate(c, 10) <= CwConfig::default().drain_bound,
+            "{c:?} takes {:?} at the new speed",
+            estimate(c, 10)
+        );
+    }
+    assert!(b.radio.violations.is_empty(), "{:?}", b.radio.violations);
+    assert!(
+        !matches!(
+            b.sup.sender(),
+            SenderState::Stopped {
+                reason: StopReason::KeyDownCap,
+                ..
+            }
+        ),
+        "the watchdog follows the new speed: {:?}",
+        b.sup.sender()
+    );
+}
+
+#[test]
+fn speed_is_read_before_every_chunk_on_a_drain_only_radio() {
+    let mut b = buffer_space_bench(20);
+    b.arm().unwrap();
+    b.radio.log.clear();
+    b.sup.send(OWNER, "ABCDE FGHIJ", b.now).unwrap();
+    b.run_for(Duration::from_secs(60));
+    let log = &b.radio.log;
+    let sends: Vec<usize> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| matches!(a, CwAction::SendChunk(_)))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(sends.len() > 1);
+    let mut from = 0;
+    for i in sends {
+        assert!(
+            log[from..i].contains(&CwAction::ReadStatus),
+            "no speed read before chunk at {i}: {log:?}"
+        );
+        from = i + 1;
+    }
+}

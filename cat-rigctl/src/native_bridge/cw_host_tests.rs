@@ -914,3 +914,35 @@ async fn raw_cat_is_refused_from_arm_until_restore() {
     let answered = raw.submit(client, b"FA;".to_vec()).await.unwrap();
     assert_eq!(answered, b"FA00007030000;".to_vec());
 }
+
+#[test]
+fn keyer_speed_is_refused_from_any_console_while_armed() {
+    let mut rig = Rig::new(&CW_RADIO, true);
+    rig.arm().unwrap();
+    for console in [OWNER, OTHER] {
+        let r = rig
+            .shared
+            .apply_as(console, &Command::SetKeyerSpeed { wpm: 25 });
+        assert_eq!(r.unwrap_err().code, ErrorCode::Forbidden);
+    }
+    assert!(!rig.radio.any("set_wpm"));
+}
+
+#[test]
+fn a_speed_change_queued_before_an_arm_is_not_applied_after_it() {
+    let mut rig = Rig::new(&CW_RADIO, true);
+    rig.cycle();
+    // Accepted while nothing was armed, still queued when the arm lands.
+    let reply = rig
+        .shared
+        .enqueue(&Command::SetKeyerSpeed { wpm: 25 })
+        .unwrap();
+    let _ticket = rig
+        .shared
+        .with_cw(|sup| sup.arm(OWNER, "N0CALL", None, std::time::Instant::now()))
+        .unwrap()
+        .unwrap();
+    rig.cycle();
+    assert!(!rig.radio.any("set_wpm"), "{:?}", rig.radio.log);
+    assert!(reply.try_recv().unwrap().is_err());
+}

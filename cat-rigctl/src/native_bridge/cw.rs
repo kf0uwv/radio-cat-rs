@@ -225,6 +225,10 @@ enum Step {
     /// this margin. Evaluated when reached, so a chunk whose completion
     /// arrives later still counts.
     WaitKeyed(Duration),
+    /// Read the keyer speed again before the next chunk: a front-panel
+    /// knob turned mid-send would otherwise leave the rest sized at the
+    /// old speed. A change re-plans what is left.
+    CheckSpeed,
     /// A chunk to send.
     Send(Chunk),
     Stop,
@@ -233,7 +237,7 @@ enum Step {
 impl Step {
     fn action(&self) -> Option<CwAction> {
         Some(match self {
-            Step::Status => CwAction::ReadStatus,
+            Step::Status | Step::CheckSpeed => CwAction::ReadStatus,
             Step::SnapPower | Step::VerifyPower(_) | Step::PowerAtMost(_) => CwAction::ReadPower,
             Step::SnapBreakIn | Step::VerifyBreakIn(_) => CwAction::ReadBreakIn,
             Step::SetPower(raw) => CwAction::SetPower(*raw),
@@ -678,6 +682,9 @@ impl CwSupervisor {
                     wpm,
                 },
             ) => self.on_status(cw_mode, transmitting, wpm, now),
+            (Step::CheckSpeed, CwOutcome::Status { cw_mode, wpm, .. }) => {
+                self.on_speed(cw_mode, wpm, now)
+            }
             (Step::SnapPower, CwOutcome::Power(p)) => self.snap.power = Some(p),
             (Step::VerifyPower(want), CwOutcome::Power(p)) => {
                 if p != want {
@@ -1000,6 +1007,102 @@ impl CwSupervisor {
         }
     }
 
+    /// The keyer speed, read again before a chunk.
+    fn on_speed(&mut self, cw_mode: bool, wpm: Option<u16>, now: Instant) {
+        if !matches!(self.activity, Activity::Sending(_)) {
+            return;
+        }
+        if !cw_mode {
+            self.begin_stop(
+                StopReason::Error,
+                Some("the radio left CW mode".to_string()),
+                After::StayArmed,
+                now,
+            );
+            return;
+        }
+        let wpm = wpm.unwrap_or(self.slowest_wpm).max(1);
+        if self.arm.as_ref().is_some_and(|a| a.wpm == wpm) {
+            return;
+        }
+        if let Some(arm) = &mut self.arm {
+            arm.wpm = wpm;
+        }
+        self.replan(wpm, now);
+    }
+
+    /// Re-chunk what has not been sent yet at a new speed, and move the
+    /// watchdog with it. The next chunk goes at once (its pacing waits
+    /// were already met); the rest are paced as usual.
+    fn replan(&mut self, wpm: u16, now: Instant) {
+        let Some(send) = self.send_text else {
+            return;
+        };
+        let bound = (send.abort == CwAbort::DrainOnly).then_some(self.config.drain_bound);
+        let remaining: Vec<Chunk> = self
+            .plan
+            .iter()
+            .filter_map(|s| match s {
+                Step::Send(c) => Some(c.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut pieces: Vec<Chunk> = Vec::new();
+        for chunk in remaining {
+            let parts = chunks(&chunk.text, send.max_chunk_chars, bound, wpm);
+            let n = parts.len();
+            for (i, text) in parts.into_iter().enumerate() {
+                let tail = i + 1 == n;
+                pieces.push(Chunk {
+                    text,
+                    last: chunk.last && tail,
+                    ends_id: chunk.ends_id && tail,
+                });
+            }
+        }
+        let rest = pieces
+            .iter()
+            .map(|c| estimate(&c.text, wpm))
+            .sum::<Duration>();
+        let cap = self.arm.as_ref().map_or(Duration::ZERO, |a| a.cap);
+        if rest > cap {
+            self.begin_stop(
+                StopReason::Error,
+                Some(format!(
+                    "the keyer speed changed to {wpm} wpm; what is left would take {:.1} s, over the {} s cap",
+                    rest.as_secs_f64(),
+                    cap.as_secs()
+                )),
+                After::StayArmed,
+                now,
+            );
+            return;
+        }
+        self.plan.clear();
+        for (i, chunk) in pieces.into_iter().enumerate() {
+            if i > 0 {
+                self.plan.push_back(Step::WaitKeyed(Duration::ZERO));
+                if send.pacing == CwPacing::BufferFlag {
+                    self.plan.push_back(Step::WaitReady);
+                }
+                self.plan.push_back(Step::CheckSpeed);
+            }
+            self.plan.push_back(Step::Send(chunk));
+        }
+        self.plan
+            .push_back(Step::WaitKeyed(self.config.pacing_margin));
+        let count = self
+            .plan
+            .iter()
+            .filter(|s| matches!(s, Step::Send(_)))
+            .count() as u32;
+        let pacing = (self.config.tick * 4 + self.config.pacing_margin) * count;
+        let budget = self.watchdog_for(rest) + pacing;
+        if let Activity::Sending(job) = &mut self.activity {
+            job.deadline = job.deadline.max(now + budget);
+        }
+    }
+
     fn plan_chunks(&mut self, operator: &str, id_text: Option<String>, id_first: bool, wpm: u16) {
         let Some(send) = self.send_text else {
             return;
@@ -1036,6 +1139,9 @@ impl CwSupervisor {
             self.plan.push_back(Step::WaitKeyed(Duration::ZERO));
             if send.pacing == CwPacing::BufferFlag {
                 self.plan.push_back(Step::WaitReady);
+            }
+            if send.abort == CwAbort::DrainOnly {
+                self.plan.push_back(Step::CheckSpeed);
             }
             self.plan.push_back(Step::Send(Chunk {
                 text,
