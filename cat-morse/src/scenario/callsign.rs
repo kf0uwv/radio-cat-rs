@@ -232,15 +232,19 @@ const MODIFIERS: &[&str] = &["P", "M", "A", "B", "QRP"];
 const NO_ENTITY: &[&str] = &["MM", "AM"];
 
 /// The entity whose prefix is the longest one `piece` starts with.
-/// Tagged entities (`3D2AB/R`) are found by their tag, not here.
-fn entity_of(piece: &str) -> Option<&'static Entity> {
+/// Tagged entities (`3D2AB/R`) are found by their tag, not here. A
+/// `designator` piece is a prefix on its own, so a suffix-length rule
+/// (`KG4` + two letters) does not apply to it: `/KG4` is Guantanamo.
+fn entity_of(piece: &str, designator: bool) -> Option<&'static Entity> {
     let mut best: Option<(&'static Entity, usize)> = None;
     for e in WORLD.iter().filter(|e| e.tag.is_none()) {
         for p in e.prefixes {
             let fits = EXACT_SUFFIX
                 .iter()
                 .find(|(q, _)| q == p)
-                .map_or(true, |(_, n)| piece.len() == p.len() + n);
+                .map_or(true, |(_, n)| {
+                    piece.len() == p.len() + n || (designator && piece.len() == p.len())
+                });
             if fits && piece.starts_with(p) && best.map_or(true, |(_, l)| p.len() > l) {
                 best = Some((e, p.len()));
             }
@@ -314,9 +318,9 @@ pub(crate) fn home_of(call: &Callsign) -> Option<Home> {
     let designator = before.or(after);
     // The piece naming the call area's prefix, and the one carrying its digit.
     let (entity, prefix_from, digit_from) = match designator {
-        Some(d) if d.bytes().all(|b| b.is_ascii_digit()) => (entity_of(base)?, base, d),
-        Some(d) => (entity_of(d)?, d, d),
-        None => (entity_of(base)?, base, base),
+        Some(d) if d.bytes().all(|b| b.is_ascii_digit()) => (entity_of(base, false)?, base, d),
+        Some(d) => (entity_of(d, true)?, d, d),
+        None => (entity_of(base, false)?, base, base),
     };
     let region = area_digit(digit_from).and_then(|d| entity.region(prefix_from, d));
     Some(Home { entity, region })
@@ -415,7 +419,7 @@ fn designator(rng: &mut Rng, home: &Home) -> Option<String> {
         }
         for t in tries {
             let region = area_digit(&t).and_then(|dg| home.entity.region(&t, dg));
-            if entity_of(&t) == Some(home.entity) && region == home.region {
+            if entity_of(&t, true) == Some(home.entity) && region == home.region {
                 return Some(t);
             }
         }
@@ -996,6 +1000,22 @@ mod tests {
         // A numeral in a prefix is an ordinary character.
         let s = align("3D2AB/R", "3D2AB/P", &o).unwrap().score();
         assert_eq!((s.matches, s.substitutions), (6, 1));
+    }
+
+    #[test]
+    fn review_data_gaps_are_filled() {
+        assert_eq!(name("CT9ABC"), "MADEIRA");
+        assert_eq!(name("FT4YM"), "ANTARCTICA");
+        assert_eq!(name("FT5YJ"), "ANTARCTICA");
+        assert_eq!(name("ZS7ANT"), "ANTARCTICA");
+        assert_eq!(name("R1ANA"), "ANTARCTICA");
+        assert_eq!(name("4U1VIC"), "AUSTRIA");
+        assert_eq!(name("3H1A"), "CHINA");
+        assert_eq!(name("3U8ABC"), "CHINA");
+        assert_eq!(name("XS3A"), "CHINA");
+        // A KG4 location designator is Guantanamo whatever the base.
+        assert_eq!(name("DL1ABC/KG4"), "GUANTANAMO BAY");
+        assert_eq!(name("KG4/W1ABC"), "GUANTANAMO BAY");
     }
 
     #[test]

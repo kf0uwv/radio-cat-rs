@@ -751,7 +751,7 @@ pub(crate) static WORLD: &[Entity] = &[
     },
     ent! {
         dxcc: 206, name: "AUSTRIA", continent: Eu, cq: 15, itu: 28,
-        prefixes: ["OE"],
+        prefixes: ["OE", "4U1VIC"],
         formats: [cf(&["OE"], DigitRule::OneOf(D1_9), (2, 3), 1)],
         tag: None, iso: None, activity: Regular, names: German,
         towns: ["WIEN", "GRAZ"],
@@ -1820,7 +1820,7 @@ pub(crate) static WORLD: &[Entity] = &[
     },
     ent! {
         dxcc: 256, name: "MADEIRA", continent: Af, cq: 33, itu: 36,
-        prefixes: ["CT3", "CQ3", "CR3", "CS3"],
+        prefixes: ["CT3", "CQ3", "CR3", "CS3", "CT9", "CQ9", "CR9", "CS9"],
         formats: [cf(&["CT3", "CS3"], DigitRule::InPrefix, (2, 3), 1)],
         tag: None, iso: None, activity: Uncommon, names: Iberian,
         towns: ["FUNCHAL"],
@@ -2130,7 +2130,8 @@ pub(crate) static WORLD: &[Entity] = &[
     // Asia --------------------------------------------------------------------------------------
     ent! {
         dxcc: 318, name: "CHINA", continent: As, cq: 24, itu: 44,
-        prefixes: ["B"],
+        prefixes: ["B", "XS", "3H", "3I", "3J", "3K", "3L", "3M", "3N", "3O", "3P", "3Q", "3R",
+            "3S", "3T", "3U"],
         formats: [cf(&["BA", "BD", "BG", "BH", "BI", "BY"], DigitRule::FromRegion, (2, 3), 1)],
         regions: [
             rg(1, &[], 24, 44, 4, &[("BEIJING", &["BEIJING"])]),
@@ -2992,7 +2993,8 @@ pub(crate) static WORLD: &[Entity] = &[
     // Antarctica --------------------------------------------------------------------------------
     ent! {
         dxcc: 13, name: "ANTARCTICA", continent: An, cq: 13, itu: 74,
-        prefixes: ["CE9", "KC4AA", "KC4US", "RI1AN", "8J1R"],
+        prefixes: ["CE9", "KC4AA", "KC4US", "RI1AN", "R1AN", "8J1R", "ZS7", "FT0Y", "FT1Y", "FT2Y",
+            "FT3Y", "FT4Y", "FT5Y", "FT6Y", "FT7Y", "FT8Y", "FT9Y"],
         formats: [
             cf(&["CE9"], DigitRule::InPrefix, (2, 3), 1),
             cf(&["KC4AA", "KC4US"], DigitRule::InPrefix, (1, 1), 1),
