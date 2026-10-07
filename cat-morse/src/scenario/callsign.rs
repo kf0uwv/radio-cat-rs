@@ -575,6 +575,17 @@ mod tests {
     }
 
     #[test]
+    fn antarctica_and_peter_i() {
+        assert_eq!(name("KC4AAA"), "ANTARCTICA");
+        assert_eq!(name("KC4USV"), "ANTARCTICA");
+        // An ordinary US KC4 call is still in the US.
+        assert_eq!(h("KC4ABC").unwrap().entity.dxcc, USA);
+        assert_eq!(name("CE9AB"), "ANTARCTICA");
+        assert_eq!(name("RI1ANA"), "ANTARCTICA");
+        assert_eq!(name("3Y0AB/P"), "PETER I IS");
+    }
+
+    #[test]
     fn modifiers_do_not_move_a_station() {
         assert_eq!(name("DL1ABC/P"), "GERMANY");
         // `/M` is mobile, not the `M` prefix of England.

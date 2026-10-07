@@ -26,7 +26,7 @@ use std::fmt;
 
 /// A continent, as DXCC assigns them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // weighting by continent arrives with task 4; `An` with the full list
+#[allow(dead_code)] // read by tests; weighting by continent arrives with task 4
 pub(crate) enum Continent {
     Na,
     Sa,
@@ -2829,6 +2829,26 @@ pub(crate) const WORLD: &[Entity] = &[
         tag: Some("M"), iso: None,
         towns: ["MINAMI TORISHIMA"],
     },
+    // Antarctica --------------------------------------------------------------------------------
+    ent! {
+        dxcc: 13, name: "ANTARCTICA", continent: An, cq: 13, itu: 74,
+        prefixes: ["CE9", "KC4AA", "KC4US", "RI1AN", "8J1R"],
+        formats: [
+            cf(&["CE9"], DigitRule::InPrefix, (2, 3), 1),
+            cf(&["KC4AA", "KC4US"], DigitRule::InPrefix, (1, 1), 1),
+            cf(&["RI1AN"], DigitRule::InPrefix, (1, 2), 1),
+            cf(&["8J1R"], DigitRule::InPrefix, (2, 3), 1),
+        ],
+        tag: None, iso: None,
+        towns: ["MCMURDO", "VOSTOK", "MIRNY"],
+    },
+    ent! {
+        dxcc: 199, name: "PETER I IS", continent: An, cq: 12, itu: 72,
+        prefixes: ["3Y"],
+        formats: [cf(&["3Y"], DigitRule::OneOf(&[0]), (2, 3), 1)],
+        tag: Some("P"), iso: None,
+        towns: ["PETER I"],
+    },
 ];
 
 #[cfg(test)]
@@ -2836,6 +2856,22 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use super::*;
+
+    #[test]
+    fn every_continent_is_covered() {
+        assert!(WORLD.len() >= 330, "{}", WORLD.len());
+        for c in [
+            Continent::Na,
+            Continent::Sa,
+            Continent::Eu,
+            Continent::Af,
+            Continent::As,
+            Continent::Oc,
+            Continent::An,
+        ] {
+            assert!(WORLD.iter().any(|e| e.continent == c), "{c:?}");
+        }
+    }
 
     #[test]
     fn dxcc_numbers_are_unique() {

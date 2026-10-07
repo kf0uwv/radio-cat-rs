@@ -17,3 +17,8 @@
 - Verified: cargo test -p cat-morse --all-features: 98 lib + 18 + 10 + 1 doc = 127 pass
   (was 87+18+10+1 = 116); default features 96+17+10+1; clippy --all-targets --all-features clean;
   fmt --check clean.
+- Task 2 done: mechanism commit (tags, row macro, bounded draws) + one commit per
+  continent (EU 70, NA 49, SA 30, AF 76, AS 54, OC 59, AN 2; 341 rows incl. US).
+  Pinned pileup script re-baselined each commit. Per-continent home tests added.
+  Final: --all-features 108 lib + 18 + 10 + 1 doc = 137 pass; default 106 + 17 + 10 + 1;
+  clippy clean; fmt clean. Uncertainties recorded in findings.md.

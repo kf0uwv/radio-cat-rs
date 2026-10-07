@@ -46,3 +46,37 @@
   ≈ 3 KB. District tables (JA 0–9, VE1–VY0, UA districts, VK, ZL, PY, LU, BY, W already) ~5 KB.
   Budget: ≤ 100 KB added to the cat-morse rlib's rodata; enforce with a test on table sizes
   (counts), not on binary bytes.
+
+## Task 2 — full DXCC table (2026-10-07)
+- WORLD now has 341 entries (US + 340 others) from memory of the current DXCC list.
+  The published current count is 340, so one entry is probably wrong (deleted, or a
+  duplicate of an entity under another name) — needs a check against the ARRL list.
+  Unique DXCC numbers are enforced by a test, but a test cannot check that a number is right.
+- Uncertain facts, flagged for verification (not silently guessed):
+  - **Tagged entities are a simulation convention**, not real allocations: Rotuma
+    `3D2../R`, Conway Reef `3D2../C`, North Cook `E51../N` (South Cook is plain E51),
+    Austral `FO0../A`, Marquesas `FO0../M`, Clipperton `FO0../C`, Chesterfield `FK8../C`,
+    Ducie `VP6../D`, Malpelo `HK0../M` (San Andres is plain HK0), the VP8 dependencies
+    `/G /O /S /H`, Bouvet `3Y0../B`, Peter I `3Y0../P`, Heard `VK0../H`, Macquarie
+    `VK0../M`, Swains `KH8../S`, Minami Torishima `JD1../M`. Real operations use
+    one-off calls (3Y0J, VP8PJ, TX5S, ...) that cty.dat lists by exact call.
+    Mount Athos `SV2xxx/A` is the real form.
+  - Kaliningrad = any Russian prefix + digit 2. The real rule depends on the
+    suffix's first letter (e.g. UA2F/UA2K); approximate.
+  - European Russia digits taken as 1/3/4/6/7; Asiatic as 8/9/0. Russian districts
+    and zones (CQ 16/17/18/19/23, ITU 19-35) are one default per entity until task 3.
+  - Franz Josef Land `R1FJ`/`RI1FJ`/`UA1FJ`, Malyj Vysotskij `R1MV`, Antarctica
+    `KC4AA`/`KC4US`/`RI1AN`/`8J1R`/`CE9`: literal prefixes, partial.
+  - Guantanamo `KG4` matches all KG4 calls, but only KG4 2x2 calls are Guantanamo;
+    US 2x3 KG4xxx calls are mis-homed by `home_of` (generation avoids them).
+  - Turkey continent set EU (cty.dat's choice as remembered; DXCC lists it
+    under Asia). Cyprus and UK bases set AS.
+  - Some single-digit choices are "most common" rather than exhaustive
+    (e.g. `6Y5`, `J68`, `FK8`, `TR8`, `5Z4`).
+  - CQ/ITU zones of multi-zone entities (US, VE, VK, UA, BY, PY, LU, JA, ...) are
+    one default per entity until task 3's regions.
+- Mechanism added: `Entity::tag`, `ent!` row macro + `cf`, `call_from` redraw
+  (≤64) so generated calls always round-trip, `fresh_call` → Option (≤256 draws)
+  with `add_station` moving to another DX home when a one-call entity (4U1UN,
+  4U1ITU, BS7H) is exhausted.
+- world.rs ≈ 3000 lines source; rodata well under the 100 KB budget (no size test yet — task 9).
