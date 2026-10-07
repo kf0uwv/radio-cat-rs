@@ -10,7 +10,7 @@ standalone trainer (new repo) works against any radio-cat-rs radio's
 
 ## Current Phase
 
-**T1-T4 done; T5 next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
+**T1-T5 done; T6 next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
 `feat/cw-capability` off `feat/cat-morse`). ADR 0023 Accepted 2026-10-07;
 open questions answered (see "Decisions" at the end). One task at a time;
 report after each. Do not push.
@@ -120,7 +120,7 @@ report after each. Do not push.
   message }` with `From<String>` → `OutOfRange`. Hosts in this repo keep
   the defaults; nothing opts into CW.
 
-### T5 — `cat-rigctl`: pure `CwSupervisor` (status: pending)
+### T5 — `cat-rigctl`: pure `CwSupervisor` (status: done 2026-10-07)
 - New `native_bridge::cw` module. I/O-free state machine; inputs are
   events (`Arm{owner,…}`, `Send{owner,text}`, `Abort`, `Disarm`,
   `Detached(id)`, `Tick(now)`, radio results), outputs are actions
@@ -148,9 +148,43 @@ report after each. Do not push.
   no later `SendChunk`; stale watchdog from job N cannot stop job N+1;
   owner detach restores; non-owner detach does not; restore runs once.
 
+- Design as built (2026-10-07, architect requirements added):
+  sans-IO `CwSupervisor` — `next_action(now) -> Option<CwAction>` /
+  `complete(CwOutcome, now)`, one outstanding action at a time;
+  requests `arm/send/abort/disarm/detached/shutdown`; replies to arm and
+  disarm as `CwNotice::Reply{ticket, ..}`; `take_notices()` for logging.
+  Actions: ReadStatus (cw mode, transmitting, wpm), Read/SetPower,
+  Read/SetBreakIn, Ready, SendChunk, Stop.
+  - Restore (disarm, owner detach, watchdog, idle TTL, power-above-clamp,
+    shutdown) writes back only what was changed, then reads it back. A
+    failed write or mismatch is `RestoreFailed` + `CwState.restore`
+    alert, retried every 5 s **forever**; the arm stays locked (no new
+    arm, rigctl `T 1` still refused) and `Restored` is only ever
+    reported after a verified read-back. A pending disarm is answered
+    `Err` on the first failure, never `Ok` until verified.
+  - Restoring waits for the radio to finish draining before raising
+    power back (never raise power under a keyed chunk).
+  - Drain bound (3 s) chunking applies to `DrainOnly` radios only; a
+    `RadioStop` radio stops at once. It joins words but **never splits
+    one** (a split callsign is not a legal ID); only `max_chunk_chars`
+    splits a word. Worst-case drain = max(3 s, longest word). ADR §4
+    amended.
+  - The stop is always sent when a job ends (even before any chunk);
+    a drain wait has its own deadline so a wedged keyer cannot hold a
+    restore off.
+  - ID: `" DE <CALL>"` appended to a job when none has been sent this arm
+    or 10 min have passed since the last; `last_id` advances only when
+    the chunk carrying it is sent.
+  - `blocks_external_ptt()` → rigctl `T 1` refusal (wired in T6).
+  - Wire addition: `CwState.restore: Option<RestoreStatus>`
+    (`serde(default)`).
+
 ### T6 — `cat-rigctl`: pump + `NativeShared` integration (status: pending)
 - `NativeCw` trait; `NativeRadio::cw()` defaulted to `None` (ft991a,
   ic7100 compile unchanged).
+- T6 inputs from T5: `ConsoleId::from_raw` exists for non-`serve` hosts
+  and tests; `CwSupervisor::{blocks_external_ptt, is_live, is_settled,
+  armed_state, sender, restore_status, take_notices}`.
 - Refactor `pump` into a testable `pump_once(&shared, &mut radio, now)`
   plus the loop (same behaviour; existing tests stay green first).
 - Per cycle order: abort → CW supervisor actions → queued commands →

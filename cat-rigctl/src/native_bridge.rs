@@ -43,6 +43,8 @@ use cat_framework::capabilities::RadioCapabilities;
 use cat_native::{Command, RadioHost, RadioState};
 use cat_signal::SpectrumFrame;
 
+pub mod cw;
+
 /// How long a console waits for the radio to answer a command.
 ///
 /// Generous: the link is slow and the poller may be mid-cycle. Short

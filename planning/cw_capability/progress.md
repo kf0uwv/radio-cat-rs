@@ -54,3 +54,12 @@ not start before that.
   `serve` routes every call through them. Red: 6 compile errors. Green:
   5 `console_identity` socket tests (20/20 repeat runs), workspace
   1166/0/3; clippy, fmt, xwin clean. No host overrides `serves_cw`.
+- T5 done: `cat_rigctl::native_bridge::cw::CwSupervisor` (sans-IO), new
+  dep cat-rigctl -> cat-morse, `ConsoleId::from_raw`, wire
+  `CwState.restore: Option<RestoreStatus>`. Red: 41/41 failing against a
+  todo!() skeleton. Green: 42 supervisor tests. Mutation check: 8
+  mutants (no power verify, PTT gate only while armed, no retry wait, no
+  clamp check, no stop, no watchdog, ID counted early, no restore on idle
+  disarm) -- 7 killed at first, the ID one survived; added a test, now
+  killed. Workspace 1208/0/3; clippy, fmt,
+  xwin clean.

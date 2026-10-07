@@ -270,7 +270,14 @@ only a human can supply.
 3. *Break-in* — if `send_text` requires it (IC-7100 transmits a `17`
    message only with break-in on), set `Semi` on arm, read back, restore
    on disarm.
-4. *Restore* — on `DisarmCw`, owner disconnect, arm idle timeout (default
+4. *Restore* (as built: only changed settings are written back, never
+   while a `DrainOnly` radio is still draining, and each write is read
+   back. A failed write or a wrong read-back is reported
+   (`CwState.restore: Option<RestoreStatus>`, additive), keeps the arm
+   locked -- no new arm, rigctl `T 1` still refused -- and is retried every
+   5 s until verified; a pending `DisarmCw` is answered `Err` on the first
+   failure and the server never reports a restore it has not read back)
+   — on `DisarmCw`, owner disconnect, arm idle timeout (default
    10 min with no send) and server shutdown (best effort): stop any send,
    restore power and break-in from the snapshot, read back, log
    mismatches. A crash that skips restore leaves power **low**, the safe
@@ -309,6 +316,15 @@ For a `DrainOnly` radio this is the worst-case time a transmitter keeps
 keying after abort. Without it the TS-570D at 10 wpm would drain a full
 24-character buffer for ~29 s after the operator hit abort. The cost —
 a slightly longer gap at chunk boundaries — is a bench question (§9).
+
+**As built (T5, 2026-10-07):** the drain bound applies to `DrainOnly`
+radios only (a `RadioStop` radio stops at once), and it governs how many
+words are *joined*, never whether a word is split: a callsign keyed as
+`N0CA` / `LL` with a gap between is neither good copy nor a legal ID. Only
+the radio's own `max_chunk_chars` splits a word. The worst-case drain is
+therefore `max(drain_bound, longest single word)` -- for a callsign at
+10 wpm, around 9 s. The bench measurements in §9 should confirm whether
+the inter-chunk gap makes a smaller bound worth its cost.
 
 ### 5. Abort does not wait behind a send
 

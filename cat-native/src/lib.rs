@@ -595,6 +595,19 @@ pub struct CwState {
     pub armed: Option<ArmedState>,
     #[serde(default)]
     pub sender: SenderState,
+    /// Present while restoring power or break-in after a disarm has
+    /// failed and is being retried. A console must show it: the radio is
+    /// not back the way the operator left it.
+    #[serde(default)]
+    pub restore: Option<RestoreStatus>,
+}
+
+/// A restore that has not yet been verified (ADR 0023 §3.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreStatus {
+    /// Failed attempts so far. The server keeps trying.
+    pub attempts: u32,
+    pub last_error: String,
 }
 
 /// Who holds the CW transmit arm, and what the radio confirmed.
@@ -2321,6 +2334,10 @@ mod cw_wire {
                 break_in: Some(BreakInKind::Semi),
                 armed: armed.clone(),
                 sender,
+                restore: Some(RestoreStatus {
+                    attempts: 2,
+                    last_error: "power read back 5, wanted 100".to_string(),
+                }),
             }));
             let back: RadioState =
                 serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
@@ -2337,6 +2354,7 @@ mod cw_wire {
         assert_eq!(s.pitch_hz, Some(700));
         assert_eq!(s.armed, None);
         assert_eq!(s.sender, SenderState::Idle);
+        assert_eq!(s.restore, None, "no alert unless a restore failed");
     }
 
     #[test]

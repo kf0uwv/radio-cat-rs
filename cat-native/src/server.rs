@@ -57,6 +57,16 @@ impl ConsoleId {
         Self(NEXT.fetch_add(1, Ordering::Relaxed))
     }
 
+    /// An id from a number a host already has.
+    ///
+    /// For a host that serves consoles over something other than
+    /// [`serve`], and for tests of per-console state. Ids from [`serve`]
+    /// start at 1 and are never reused; a host mixing the two must keep
+    /// its own numbers out of that range.
+    pub const fn from_raw(n: u64) -> Self {
+        Self(n)
+    }
+
     /// The number behind the id, for logs.
     pub fn get(self) -> u64 {
         self.0

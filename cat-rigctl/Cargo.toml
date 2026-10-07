@@ -42,6 +42,11 @@ cat-signal = { path = "../cat-signal" }
 # The console arrangement an application authors for its radio.
 cat-layout = { path = "../cat-layout" }
 
+# Duration estimates for CW sends (ADR 0023 §3.7, decision 10): the key-
+# down cap and the drain-bounded chunking both need how long text takes
+# to key at a given speed. cat-morse has no local dependencies.
+cat-morse = { path = "../cat-morse" }
+
 # CatSession — the physical session trait `run()`'s `session: S` parameter
 # is bounded on, matching `cat-server::build`'s own bound exactly.
 cat-transport-core = { path = "../cat-transport-core" }
