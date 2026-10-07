@@ -551,6 +551,30 @@ mod tests {
     }
 
     #[test]
+    fn oceania_islands_and_tags() {
+        assert_eq!(name("KH6ABC"), "HAWAII");
+        assert_eq!(name("KH7KA"), "KURE IS");
+        assert_eq!(name("KH8AB"), "AMERICAN SAMOA");
+        assert_eq!(name("KH8AB/S"), "SWAINS IS");
+        assert_eq!(name("VK9XAB"), "CHRISTMAS IS");
+        assert_eq!(name("VK2ABC"), "AUSTRALIA");
+        assert_eq!(name("VK0AB/M"), "MACQUARIE IS");
+        assert_eq!(name("ZL7AB"), "CHATHAM IS");
+        assert_eq!(name("3D2AB"), "FIJI");
+        assert_eq!(name("3D2AB/R"), "ROTUMA");
+        assert_eq!(name("3D2AB/C"), "CONWAY REEF");
+        assert_eq!(name("E51AB/N"), "NORTH COOK IS");
+        assert_eq!(name("FO0AB/M"), "MARQUESAS IS");
+        assert_eq!(name("FO5AB"), "FRENCH POLYNESIA");
+        assert_eq!(name("JD1AB/M"), "MINAMI TORISHIMA");
+        assert_eq!(name("T33AB"), "BANABA");
+        assert_eq!(name("H40AB"), "TEMOTU");
+        assert_eq!(name("H44AB"), "SOLOMON IS");
+        // Mobile is not a tag off any block but those that define one.
+        assert_eq!(name("KH6ABC/M"), "HAWAII");
+    }
+
+    #[test]
     fn modifiers_do_not_move_a_station() {
         assert_eq!(name("DL1ABC/P"), "GERMANY");
         // `/M` is mobile, not the `M` prefix of England.
