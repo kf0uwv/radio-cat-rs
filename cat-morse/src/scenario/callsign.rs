@@ -84,8 +84,9 @@ impl Callsign {
         &self.0
     }
 
-    /// The part without any `/P`-style suffix or `VE3/`-style prefix:
-    /// the longest `/`-separated piece.
+    /// The part without any `/P`-style suffix or `VE3/`-style prefix: the
+    /// longest `/`-separated piece with a digit that is not a modifier, a
+    /// call rather than a bare prefix on a tie.
     pub fn base(&self) -> &str {
         base_part(&self.0)
     }
@@ -96,8 +97,35 @@ impl Callsign {
     }
 }
 
+/// The base of a `/`-separated call: the longest piece that has a digit
+/// and is not an operating modifier (`QRP`, `MM`); on a tie, the piece
+/// that is a call rather than a bare prefix (`W1A/VE3` is W1A in Canada,
+/// `K1AB/VP2E` is K1AB in Anguilla). With no such piece, the longest.
 fn base_part(s: &str) -> &str {
-    s.split('/').max_by_key(|p| p.len()).unwrap_or(s)
+    if !s.contains('/') {
+        return s;
+    }
+    let candidate = |p: &&str| {
+        p.bytes().any(|b| b.is_ascii_digit()) && !MODIFIERS.contains(p) && !NO_ENTITY.contains(p)
+    };
+    let mut best: Option<&str> = None;
+    for p in s.split('/').filter(candidate) {
+        best = match best {
+            None => Some(p),
+            Some(b) if p.len() > b.len() => Some(p),
+            // The table is only consulted on a tie.
+            Some(b) if p.len() == b.len() && is_bare_prefix(b) && !is_bare_prefix(p) => Some(p),
+            keep => keep,
+        };
+    }
+    best.or_else(|| s.split('/').max_by_key(|p| p.len()))
+        .unwrap_or(s)
+}
+
+/// A piece that is a prefix on its own: it ends in its digit (`VE3`,
+/// `KH6`), or it is one of an entity's prefixes as written (`VP2E`).
+fn is_bare_prefix(p: &str) -> bool {
+    p.ends_with(|c: char| c.is_ascii_digit()) || WORLD.iter().any(|e| e.prefixes.contains(&p))
 }
 
 impl fmt::Display for Callsign {
@@ -960,6 +988,20 @@ mod tests {
         // A numeral in a prefix is an ordinary character.
         let s = align("3D2AB/R", "3D2AB/P", &o).unwrap().score();
         assert_eq!((s.matches, s.substitutions), (6, 1));
+    }
+
+    #[test]
+    fn the_base_is_the_call_not_a_bare_prefix() {
+        // Ties in length go to the piece that is a call, not a prefix.
+        assert_eq!(name("W1A/VE3"), "CANADA");
+        assert_eq!(name("N0A/KH6"), "HAWAII");
+        assert_eq!(name("K1AB/VP2E"), "ANGUILLA");
+        assert_eq!(name("F5AB/VP2E"), "ANGUILLA");
+        assert_eq!(Callsign::parse("W1A/VE3").unwrap().base(), "W1A");
+        // A modifier is never the base, even when it is longest.
+        let c = Callsign::parse("N0A/QRP").unwrap();
+        assert_eq!(c.base(), "N0A");
+        assert_eq!(h("N0A/QRP").unwrap().entity.dxcc, USA);
     }
 
     #[test]
