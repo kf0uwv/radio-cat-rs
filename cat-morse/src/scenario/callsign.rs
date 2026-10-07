@@ -513,6 +513,24 @@ mod tests {
     }
 
     #[test]
+    fn africa_islands_and_tags() {
+        assert_eq!(name("EA8ABC"), "CANARY IS");
+        assert_eq!(name("CT3AB"), "MADEIRA");
+        assert_eq!(name("3B8AB"), "MAURITIUS");
+        assert_eq!(name("3B9AB"), "RODRIGUES");
+        assert_eq!(name("3C0AB"), "ANNOBON");
+        assert_eq!(name("3C3AB"), "EQUATORIAL GUINEA");
+        assert_eq!(name("FT5ZM"), "AMSTERDAM ST PAUL");
+        assert_eq!(name("FT4XU"), "KERGUELEN");
+        assert_eq!(name("ZS8Z"), "PRINCE EDWARD MARION");
+        assert_eq!(name("ZS6ABC"), "SOUTH AFRICA");
+        assert_eq!(name("3Y0AB/B"), "BOUVET");
+        assert_eq!(name("VK0AB/H"), "HEARD IS");
+        assert_eq!(name("ZD8AB"), "ASCENSION IS");
+        assert_eq!(name("5Z4ABC"), "KENYA");
+    }
+
+    #[test]
     fn modifiers_do_not_move_a_station() {
         assert_eq!(name("DL1ABC/P"), "GERMANY");
         // `/M` is mobile, not the `M` prefix of England.
