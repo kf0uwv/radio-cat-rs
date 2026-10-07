@@ -93,6 +93,7 @@ static RADIO: RadioCapabilities = RadioCapabilities {
         if_center_hz: 73_050_000,
         inverted: true,
     },
+    cw: None,
 };
 
 /// A radio made of atomics, so `apply` can take `&self` the way the trait

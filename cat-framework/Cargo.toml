@@ -23,3 +23,8 @@ cat-signal = { path = "../cat-signal" }
 # Serialize-only by necessity -- the server holds them as `const`, and a
 # client receives owned mirrors (see cat-server::native).
 serde = { workspace = true }
+
+[dev-dependencies]
+# Pins capability enums' serialized names (`BreakInKind`), which cat-native
+# mirrors onto the wire.
+serde_json = { workspace = true }

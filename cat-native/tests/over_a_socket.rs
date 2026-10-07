@@ -82,6 +82,7 @@ static RADIO: RadioCapabilities = RadioCapabilities {
         if_center_hz: 73_050_000,
         inverted: true,
     },
+    cw: None,
 };
 
 /// What the fake server should do beyond answering control messages.

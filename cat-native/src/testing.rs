@@ -97,6 +97,7 @@ pub static STUB_RADIO: RadioCapabilities = RadioCapabilities {
         if_center_hz: 73_050_000,
         inverted: true,
     },
+    cw: None,
 };
 
 /// A radio that answers, remembers what it was asked, and can be told to

@@ -30,3 +30,12 @@ not start before that.
 - Plan changes: T5 ID rule is server-appended `DE <CALL>`; T5 refuses
   non-CW mode; T6 refuses rigctl `T 1` while armed; new T7b
   (`connect_timeout`) and T7c (console CW display).
+- T1 done: CW capability types in `cat_framework::capabilities`, tests
+  first (red: 58 compile errors; green: 86 cat-framework lib tests).
+  Workspace: 1139 passed / 0 failed / 3 ignored; clippy -D warnings
+  clean; fmt clean; `cargo xwin check --target x86_64-pc-windows-msvc
+  --workspace --all-targets` clean.
+- For T2: `BreakInKind`/`CwPacing`/`CwAbort`/`HzRange`/`WpmRange` are
+  Serialize+Deserialize and reusable on the wire directly; only
+  `CwSendText`/`TxGateCapability`/`CwCapability` (`&'static` fields) need
+  owned mirrors. `requires_break_in` must be mirrored too.

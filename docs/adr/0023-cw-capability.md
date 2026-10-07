@@ -131,6 +131,9 @@ pub struct CwSendText {
     pub pacing: CwPacing,
     /// What abort can actually do on this radio.
     pub abort: CwAbort,
+    /// Break-in the radio needs before it keys a sent message (IC-7100:
+    /// `Semi`); set on arm, restored on disarm (§3.3). `None`: keys anyway.
+    pub requires_break_in: Option<BreakInKind>,
 }
 
 pub enum CwPacing {
@@ -158,6 +161,12 @@ pub struct TxGateCapability {
     pub power_raw: RawRange,
 }
 ```
+
+`HzRange::contains` honours the step; `CwSendText::accepts` folds ASCII
+case and always allows a space; `CwCapability::validate()` rejects an
+incoherent description (above all: `send_text` without `tx_gate`), and
+each radio crate calls it from a test on its own `const`. Enums serialize
+PascalCase like `ModeId`/`ModeKind`.
 
 All of it is static per model (ADR 0010 §1, ADR 0015's rule): two
 TS-570Ds cannot disagree about any of it. Ranges are in operator units

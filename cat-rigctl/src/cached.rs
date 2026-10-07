@@ -303,6 +303,7 @@ mod tests {
         memory: None,
         menu: None,
         signal: SignalSupport::None,
+        cw: None,
     };
 
     /// What the fake radio was actually asked to do.

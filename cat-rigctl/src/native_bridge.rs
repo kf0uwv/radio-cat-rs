@@ -807,6 +807,7 @@ mod tests {
         memory: None,
         menu: None,
         signal: SignalSupport::None,
+        cw: None,
     };
 
     fn state_at(hz: u64) -> RadioState {

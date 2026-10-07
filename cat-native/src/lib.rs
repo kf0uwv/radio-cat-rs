@@ -1149,6 +1149,7 @@ mod tests {
             if_center_hz: 73_050_000,
             inverted: true,
         },
+        cw: None,
     };
 
     static NO_EXTRAS: RadioCapabilities = RadioCapabilities {
@@ -1172,6 +1173,7 @@ mod tests {
         memory: None,
         menu: None,
         signal: SignalSupport::None,
+        cw: None,
     };
 
     #[test]

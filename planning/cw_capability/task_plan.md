@@ -10,7 +10,7 @@ standalone trainer (new repo) works against any radio-cat-rs radio's
 
 ## Current Phase
 
-**T1 approved and in progress** (worktree `../radio-cat-rs-cw`, branch
+**T1 done; T2 next, awaiting go-ahead** (worktree `../radio-cat-rs-cw`, branch
 `feat/cw-capability` off `feat/cat-morse`). ADR 0023 Accepted 2026-10-07;
 open questions answered (see "Decisions" at the end). One task at a time;
 report after each. Do not push.
@@ -35,7 +35,7 @@ report after each. Do not push.
 
 ## Tasks
 
-### T1 — `cat-framework`: CW capability types (status: pending)
+### T1 — `cat-framework`: CW capability types (status: done 2026-10-07)
 - Add `CwCapability`, `HzRange`, `WpmRange`, `BreakInKind`, `CwSendText`,
   `CwPacing`, `CwAbort`, `TxGateCapability`; `RadioCapabilities.cw:
   Option<CwCapability>`.
@@ -47,6 +47,14 @@ report after each. Do not push.
 - Update synthetic fixtures (`capabilities_fixtures.rs`) with a CW-capable
   and a CW-less radio; no real radio fixture tuned to pass.
 - Note: breaking struct-literal change → workspace version 0.9.0.
+- Done: as above, plus `CwSendText.requires_break_in: Option<BreakInKind>`
+  (§3.3 needed it; ADR §1 updated) and `CwCapabilityError` (thiserror).
+  The fixtures file holds real-radio copies (TS570D, FT991A), not
+  synthetic radios: TS570D got send + DrainOnly/BufferFlag, FT991A
+  read-only (decision 2); the synthetic radio lives in
+  `capabilities.rs`'s tests. `cw: None` added to every literal in
+  cat-native/cat-rigctl/cat-ui. Version bump to 0.9.0 **not** done in T1
+  (left for release/T8 so Cargo.lock does not churn mid-series).
 
 ### T2 — `cat-native`: wire types (status: pending)
 - `CwCapabilityWire` + `From`; `CapabilitiesWire.cw` (`serde(default)`);

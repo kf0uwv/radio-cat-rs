@@ -504,6 +504,238 @@ pub struct MenuCapability {
 }
 
 // ---------------------------------------------------------------------------
+// CW (ADR 0023 §1)
+// ---------------------------------------------------------------------------
+
+/// An inclusive range of audio frequencies, in Hz, optionally stepped.
+///
+/// Operator units, not the radio's encoding: the TS-570D's `PT` index
+/// 0-12 and the IC-7100's raw 0-255 both become Hz here, and translating
+/// back is the radio crate's job, as it is for mode bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HzRange {
+    pub min_hz: u32,
+    pub max_hz: u32,
+    /// `None` (or `Some(0)`): any whole Hz in range is settable.
+    pub step_hz: Option<u32>,
+}
+
+impl HzRange {
+    pub const fn stepped(min_hz: u32, max_hz: u32, step_hz: u32) -> Self {
+        Self {
+            min_hz,
+            max_hz,
+            step_hz: Some(step_hz),
+        }
+    }
+
+    pub const fn continuous(min_hz: u32, max_hz: u32) -> Self {
+        Self {
+            min_hz,
+            max_hz,
+            step_hz: None,
+        }
+    }
+
+    /// Whether `hz` is a value this radio can actually be set to: inside
+    /// the range and, for a stepped range, on a step counted from `min_hz`.
+    pub fn contains(&self, hz: u32) -> bool {
+        if hz < self.min_hz || hz > self.max_hz {
+            return false;
+        }
+        match self.step_hz {
+            Some(step) if step > 0 => (hz - self.min_hz) % step == 0,
+            _ => true,
+        }
+    }
+}
+
+/// An inclusive internal-keyer speed range, in words per minute (PARIS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WpmRange {
+    pub min: u16,
+    pub max: u16,
+}
+
+impl WpmRange {
+    pub const fn new(min: u16, max: u16) -> Self {
+        Self { min, max }
+    }
+
+    pub fn contains(&self, wpm: u16) -> bool {
+        wpm >= self.min && wpm <= self.max
+    }
+}
+
+/// A break-in (QSK) setting CAT can select.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum BreakInKind {
+    Off,
+    /// Semi break-in: the transmitter drops back to receive after a delay.
+    Semi,
+    /// Full break-in: receive between elements.
+    Full,
+}
+
+/// How the server learns that the radio's keyer has finished a chunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CwPacing {
+    /// The radio reports its keyer buffer busy/free (TS-570D `KY;`).
+    BufferFlag,
+    /// No busy flag: the server paces by a `cat-morse` duration estimate
+    /// at the radio's reported speed, plus a margin (IC-7100).
+    Estimated,
+}
+
+/// What an abort can actually do on this radio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CwAbort {
+    /// A command stops the keyer mid-character (IC-7100 `17 FF`).
+    RadioStop,
+    /// No stop command: abort stops feeding, and the radio finishes the
+    /// chunk it holds. The server bounds that by chunk size (ADR 0023 §4).
+    DrainOnly,
+}
+
+/// The radio's keyer can send arbitrary text over CAT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct CwSendText {
+    /// Largest message the radio accepts in one command.
+    pub max_chunk_chars: u16,
+    /// The characters the keyer will send, uppercase. A client maps
+    /// prosigns onto these (AR → `+`, BT → `=`) and the server rejects
+    /// anything outside them. A space is always allowed and need not be
+    /// listed.
+    pub charset: &'static str,
+    pub pacing: CwPacing,
+    pub abort: CwAbort,
+    /// The break-in the radio needs before it will key a sent message
+    /// (the IC-7100 transmits a `17` message only with break-in on). The
+    /// server sets it on arm and restores it on disarm. `None`: the radio
+    /// keys regardless.
+    pub requires_break_in: Option<BreakInKind>,
+}
+
+impl CwSendText {
+    /// The first character of `text` this keyer cannot send, if any.
+    ///
+    /// ASCII letters are folded to upper case; nothing else is, so no
+    /// Unicode letter can upper-case its way into the charset. A space is
+    /// always allowed; any other whitespace is not.
+    pub fn rejected_char(&self, text: &str) -> Option<char> {
+        text.chars()
+            .find(|&c| c != ' ' && !self.charset.contains(c.to_ascii_uppercase()))
+    }
+
+    pub fn accepts(&self, text: &str) -> bool {
+        self.rejected_char(text).is_none()
+    }
+}
+
+/// What the server forces before any keyed CW, and how it checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct TxGateCapability {
+    /// The radio's lowest settable power, in its own units. The server
+    /// sets exactly this on arm and reads it back (ADR 0023 decision 6).
+    pub low_power_raw: u16,
+    /// What `low_power_raw` means to an operator ("5 W").
+    pub low_power_label: &'static str,
+    /// Inclusive raw range the radio's power read reports.
+    pub power_raw: RawRange,
+}
+
+/// CW control the radio exposes over CAT. See ADR 0023.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct CwCapability {
+    /// Sidetone/receive pitch. `None`: CAT cannot read it.
+    pub pitch: Option<HzRange>,
+    pub pitch_writable: bool,
+    /// Internal keyer speed. `None`: CAT cannot read it.
+    pub keyer_wpm: Option<WpmRange>,
+    pub keyer_wpm_writable: bool,
+    /// Break-in settings CAT can select. Empty: CAT cannot set break-in.
+    pub break_in: &'static [BreakInKind],
+    /// `None`: CW is read-only over CAT (FT-991A in v1).
+    pub send_text: Option<CwSendText>,
+    /// Required whenever `send_text` is `Some`.
+    pub tx_gate: Option<TxGateCapability>,
+}
+
+/// Why a [`CwCapability`] description is incoherent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum CwCapabilityError {
+    #[error("pitch range is empty (min above max)")]
+    EmptyPitchRange,
+    #[error("keyer speed range is empty (min above max)")]
+    EmptyWpmRange,
+    #[error("a setting is marked writable but has no range")]
+    WritableWithoutRange,
+    #[error("send_text.max_chunk_chars is zero")]
+    ZeroChunk,
+    #[error("send_text.charset is empty")]
+    EmptyCharset,
+    #[error("send_text.charset contains a lower-case letter")]
+    CharsetNotUppercase,
+    #[error("send_text.requires_break_in is not one of break_in")]
+    RequiredBreakInNotSelectable,
+    #[error("send_text is present but tx_gate is not: nothing says how to clamp power")]
+    SendWithoutTxGate,
+    #[error("tx_gate.low_power_raw lies outside tx_gate.power_raw")]
+    LowPowerOutOfRange,
+}
+
+impl CwCapability {
+    /// Check that this description is one a server can act on safely.
+    ///
+    /// A radio crate calls this from a test on its own `const`; the
+    /// server may call it at startup. The rule that matters most:
+    /// a radio that can send must say how its power is clamped.
+    pub fn validate(&self) -> Result<(), CwCapabilityError> {
+        if let Some(p) = self.pitch {
+            if p.min_hz > p.max_hz {
+                return Err(CwCapabilityError::EmptyPitchRange);
+            }
+        }
+        if let Some(w) = self.keyer_wpm {
+            if w.min > w.max {
+                return Err(CwCapabilityError::EmptyWpmRange);
+            }
+        }
+        if (self.pitch_writable && self.pitch.is_none())
+            || (self.keyer_wpm_writable && self.keyer_wpm.is_none())
+        {
+            return Err(CwCapabilityError::WritableWithoutRange);
+        }
+        if let Some(send) = self.send_text {
+            if send.max_chunk_chars == 0 {
+                return Err(CwCapabilityError::ZeroChunk);
+            }
+            if send.charset.is_empty() {
+                return Err(CwCapabilityError::EmptyCharset);
+            }
+            if send.charset.chars().any(char::is_lowercase) {
+                return Err(CwCapabilityError::CharsetNotUppercase);
+            }
+            if let Some(kind) = send.requires_break_in {
+                if !self.break_in.contains(&kind) {
+                    return Err(CwCapabilityError::RequiredBreakInNotSelectable);
+                }
+            }
+            if self.tx_gate.is_none() {
+                return Err(CwCapabilityError::SendWithoutTxGate);
+            }
+        }
+        if let Some(gate) = self.tx_gate {
+            let r = gate.power_raw;
+            if gate.low_power_raw < r.min || gate.low_power_raw > r.max {
+                return Err(CwCapabilityError::LowPowerOutOfRange);
+            }
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The whole picture
 // ---------------------------------------------------------------------------
 
@@ -539,6 +771,8 @@ pub struct RadioCapabilities {
     /// bench, because the CN4 header is part of the radio; whether an SDR
     /// hangs off it is [`crate::installation::Installation`]'s business.
     pub signal: SignalSupport,
+    /// CW control over CAT (ADR 0023). `None`: this radio exposes none.
+    pub cw: Option<CwCapability>,
 }
 
 impl RadioCapabilities {
@@ -633,6 +867,32 @@ mod tests {
             writable: true,
         }),
         signal: SignalSupport::None,
+        cw: Some(CW),
+    };
+
+    // Synthetic, like RADIO: no real radio's numbers, so nothing here is
+    // tuned to pass. Stepped pitch, a keyer that sends text with a busy
+    // flag and no stop.
+    const CW_SEND: CwSendText = CwSendText {
+        max_chunk_chars: 20,
+        charset: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/?=+",
+        pacing: CwPacing::BufferFlag,
+        abort: CwAbort::DrainOnly,
+        requires_break_in: None,
+    };
+    const CW_GATE: TxGateCapability = TxGateCapability {
+        low_power_raw: 5,
+        low_power_label: "5 W",
+        power_raw: RawRange::new(5, 100),
+    };
+    const CW: CwCapability = CwCapability {
+        pitch: Some(HzRange::stepped(400, 1000, 50)),
+        pitch_writable: true,
+        keyer_wpm: Some(WpmRange::new(10, 60)),
+        keyer_wpm_writable: true,
+        break_in: &[BreakInKind::Off, BreakInKind::Semi],
+        send_text: Some(CW_SEND),
+        tx_gate: Some(CW_GATE),
     };
 
     #[test]
@@ -762,5 +1022,218 @@ mod tests {
         };
         assert!(shift_only.if_shift_hz.is_some());
         assert!(shift_only.widths_hz.is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // CW (ADR 0023 §1)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn a_stepped_pitch_range_holds_only_its_steps() {
+        let r = HzRange::stepped(400, 1000, 50);
+        assert!(r.contains(400));
+        assert!(r.contains(1000));
+        assert!(r.contains(650));
+        assert!(!r.contains(675), "between steps");
+        assert!(!r.contains(350));
+        assert!(!r.contains(1050));
+    }
+
+    #[test]
+    fn a_continuous_pitch_range_holds_every_hz_inside_it() {
+        let r = HzRange::continuous(300, 900);
+        assert_eq!(r.step_hz, None);
+        assert!(r.contains(300));
+        assert!(r.contains(677));
+        assert!(r.contains(900));
+        assert!(!r.contains(299));
+        assert!(!r.contains(901));
+    }
+
+    #[test]
+    fn a_zero_step_is_treated_as_continuous_not_as_a_division_by_zero() {
+        let r = HzRange {
+            min_hz: 300,
+            max_hz: 900,
+            step_hz: Some(0),
+        };
+        assert!(r.contains(301));
+    }
+
+    #[test]
+    fn wpm_range_is_inclusive_at_both_ends() {
+        let r = WpmRange::new(10, 60);
+        assert!(r.contains(10));
+        assert!(r.contains(60));
+        assert!(!r.contains(9));
+        assert!(!r.contains(61));
+    }
+
+    #[test]
+    fn send_text_folds_case_and_always_allows_a_space() {
+        assert!(CW_SEND.accepts("CQ CQ DE N0CALL"));
+        assert!(CW_SEND.accepts("cq de n0call k"));
+        assert!(CW_SEND.accepts(""));
+        assert_eq!(CW_SEND.rejected_char("TNX FER QSO"), None);
+    }
+
+    #[test]
+    fn send_text_names_the_first_character_the_keyer_cannot_send() {
+        assert_eq!(CW_SEND.rejected_char("HI!"), Some('!'));
+        assert_eq!(CW_SEND.rejected_char("A,B!"), Some(','));
+        // Not a space: a tab or newline would be sent as nothing, or as
+        // something the operator did not mean.
+        assert_eq!(CW_SEND.rejected_char("A\tB"), Some('\t'));
+        assert_eq!(CW_SEND.rejected_char("A\nB"), Some('\n'));
+        // Case folding is ASCII only: no Unicode letter sneaks in by
+        // upper-casing into something in the charset.
+        assert_eq!(CW_SEND.rejected_char("ß"), Some('ß'));
+        assert!(!CW_SEND.accepts("HI!"));
+    }
+
+    #[test]
+    fn a_coherent_cw_description_validates() {
+        assert_eq!(CW.validate(), Ok(()));
+        assert_eq!(RADIO.cw.unwrap().validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_radio_that_can_send_must_say_how_power_is_clamped() {
+        let ungated = CwCapability {
+            tx_gate: None,
+            ..CW
+        };
+        assert_eq!(
+            ungated.validate(),
+            Err(CwCapabilityError::SendWithoutTxGate)
+        );
+    }
+
+    #[test]
+    fn a_read_only_cw_radio_needs_no_tx_gate() {
+        let read_only = CwCapability {
+            send_text: None,
+            tx_gate: None,
+            ..CW
+        };
+        assert_eq!(read_only.validate(), Ok(()));
+    }
+
+    #[test]
+    fn the_low_power_setting_must_be_a_power_the_radio_reports() {
+        let bad = CwCapability {
+            tx_gate: Some(TxGateCapability {
+                low_power_raw: 0,
+                ..CW_GATE
+            }),
+            ..CW
+        };
+        assert_eq!(bad.validate(), Err(CwCapabilityError::LowPowerOutOfRange));
+    }
+
+    #[test]
+    fn inverted_ranges_are_refused() {
+        let pitch = CwCapability {
+            pitch: Some(HzRange::continuous(900, 300)),
+            ..CW
+        };
+        assert_eq!(pitch.validate(), Err(CwCapabilityError::EmptyPitchRange));
+        let wpm = CwCapability {
+            keyer_wpm: Some(WpmRange::new(60, 10)),
+            ..CW
+        };
+        assert_eq!(wpm.validate(), Err(CwCapabilityError::EmptyWpmRange));
+    }
+
+    #[test]
+    fn a_writable_setting_must_have_a_range_to_write_into() {
+        let pitch = CwCapability { pitch: None, ..CW };
+        assert_eq!(
+            pitch.validate(),
+            Err(CwCapabilityError::WritableWithoutRange)
+        );
+        let wpm = CwCapability {
+            keyer_wpm: None,
+            ..CW
+        };
+        assert_eq!(wpm.validate(), Err(CwCapabilityError::WritableWithoutRange));
+    }
+
+    #[test]
+    fn a_send_description_must_be_usable() {
+        let zero_chunk = CwCapability {
+            send_text: Some(CwSendText {
+                max_chunk_chars: 0,
+                ..CW_SEND
+            }),
+            ..CW
+        };
+        assert_eq!(zero_chunk.validate(), Err(CwCapabilityError::ZeroChunk));
+
+        let lower = CwCapability {
+            send_text: Some(CwSendText {
+                charset: "abc",
+                ..CW_SEND
+            }),
+            ..CW
+        };
+        assert_eq!(
+            lower.validate(),
+            Err(CwCapabilityError::CharsetNotUppercase)
+        );
+
+        let empty = CwCapability {
+            send_text: Some(CwSendText {
+                charset: "",
+                ..CW_SEND
+            }),
+            ..CW
+        };
+        assert_eq!(empty.validate(), Err(CwCapabilityError::EmptyCharset));
+    }
+
+    #[test]
+    fn a_required_break_in_must_be_one_cat_can_select() {
+        let needs_full = CwCapability {
+            send_text: Some(CwSendText {
+                requires_break_in: Some(BreakInKind::Full),
+                ..CW_SEND
+            }),
+            ..CW
+        };
+        assert_eq!(
+            needs_full.validate(),
+            Err(CwCapabilityError::RequiredBreakInNotSelectable)
+        );
+        let needs_semi = CwCapability {
+            send_text: Some(CwSendText {
+                requires_break_in: Some(BreakInKind::Semi),
+                ..CW_SEND
+            }),
+            ..CW
+        };
+        assert_eq!(needs_semi.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_radio_with_no_cw_over_cat_says_none() {
+        let no_cw = RadioCapabilities { cw: None, ..RADIO };
+        assert!(no_cw.cw.is_none());
+        assert!(RADIO.cw.is_some());
+    }
+
+    #[test]
+    fn break_in_kinds_have_stable_wire_names() {
+        // T2 mirrors these onto the native protocol; pin them here so the
+        // wire never changes by accident.
+        let names: Vec<String> = [BreakInKind::Off, BreakInKind::Semi, BreakInKind::Full]
+            .iter()
+            .map(|k| serde_json::to_string(k).unwrap())
+            .collect();
+        // PascalCase, like every other capability enum (`ModeId`,
+        // `ModeKind`) that already rides in `CapabilitiesWire`.
+        assert_eq!(names, ["\"Off\"", "\"Semi\"", "\"Full\""]);
+        let back: BreakInKind = serde_json::from_str("\"Semi\"").unwrap();
+        assert_eq!(back, BreakInKind::Semi);
     }
 }

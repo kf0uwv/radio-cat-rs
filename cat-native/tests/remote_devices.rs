@@ -92,6 +92,7 @@ static RADIO: RadioCapabilities = RadioCapabilities {
         if_center_hz: 73_050_000,
         inverted: true,
     },
+    cw: None,
 };
 
 /// The radio's host. Its devices are deliberately named nothing like a
