@@ -72,6 +72,10 @@ const TRACE_MIN_HEIGHT: f32 = 50.0;
 /// coordinates at draw time. 2 KB a frame instead of 512 KB, so the
 /// throttle that bought back responsiveness is no longer paying for
 /// anything, and the rate goes back to what a waterfall should run at.
+///
+/// The throttle only coalesces: a draw that skips the upload leaves its
+/// row owed, and the next upload sends every row pushed since the last
+/// one. See `waterfall_upload_plan`.
 const WATERFALL_UPLOAD_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
 pub struct Console {
@@ -96,8 +100,8 @@ pub struct Console {
     /// The rebuild count already on the GPU.
     ///
     /// When this still matches, the ring on the GPU differs from the one
-    /// in memory by at most the rows scrolled in since -- so a one-row
-    /// upload per scroll is enough. When it does not, every pixel may
+    /// in memory by at most the rows scrolled in since -- so uploading
+    /// those rows is enough. When it does not, every pixel may
     /// have moved and the whole image goes up.
     waterfall_rebuilds: Option<u64>,
     /// The waterfall generation already on the GPU.
@@ -1782,21 +1786,35 @@ impl Console {
             // order here is what used to cost half a megabyte of copy and
             // upload per frame; the rotation is free at draw time as two
             // UV ranges. See `WATERFALL_UPLOAD_INTERVAL`.
-            let whole = self.waterfall_texture.is_none()
-                || self.waterfall_rebuilds != Some(rebuilds)
-                || self.waterfall_uploaded.is_none();
-            match (&mut self.waterfall_texture, whole) {
-                (Some(handle), false) => {
-                    // A scroll wrote exactly one row, at `head`. Upload
-                    // that row and nothing else.
-                    let head = self.waterfall.head() as usize;
-                    let row = egui::ColorImage::from_rgba_unmultiplied(
-                        [width, 1],
-                        self.waterfall.row_rgba(0),
-                    );
-                    handle.set_partial([0, head], row, egui::TextureOptions::NEAREST);
+            let on_gpu = match (&self.waterfall_texture, self.waterfall_uploaded) {
+                (Some(_), Some(g)) => self.waterfall_rebuilds.map(|r| (g, r)),
+                _ => None,
+            };
+            let plan = waterfall_upload_plan(
+                on_gpu,
+                generation,
+                rebuilds,
+                self.waterfall.head(),
+                height as u32,
+            );
+            let stride = width * 4;
+            match (&mut self.waterfall_texture, plan) {
+                (Some(_), WaterfallUpload::Nothing) => {}
+                (Some(handle), WaterfallUpload::Rows(runs)) => {
+                    // A scroll writes one row each, at the new `head`.
+                    // Every row pushed since the last upload goes up --
+                    // not just the newest, or the throttled draws in
+                    // between leave black (or 256-row-old) lines behind.
+                    for (first, count) in runs {
+                        let (first, count) = (first as usize, count as usize);
+                        let rows = egui::ColorImage::from_rgba_unmultiplied(
+                            [width, count],
+                            &self.waterfall.pixels()[first * stride..(first + count) * stride],
+                        );
+                        handle.set_partial([0, first], rows, egui::TextureOptions::NEAREST);
+                    }
                 }
-                (Some(handle), true) => {
+                (Some(handle), _) => {
                     let image = egui::ColorImage::from_rgba_unmultiplied(
                         [width, height],
                         self.waterfall.pixels(),
@@ -2085,6 +2103,63 @@ impl Console {
             self.connect();
         }
     }
+}
+
+/// What has to go to the GPU to bring the waterfall texture up to date.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WaterfallUpload {
+    /// The texture already matches the image.
+    Nothing,
+    /// Every pixel may have moved: send the whole ring.
+    Whole,
+    /// Only these ring rows changed, as `(first row, row count)` runs
+    /// that are contiguous in the texture.
+    Rows(Vec<(u32, u32)>),
+}
+
+/// Decide what to upload, given what is on the GPU (`(generation,
+/// rebuilds)` as of the last upload, `None` if nothing is) and the
+/// image's state now.
+///
+/// Every row pushed since the last upload is owed, not just the newest.
+/// `pump` pushes a row on any draw that saw a frame, and egui draws far
+/// faster than `WATERFALL_UPLOAD_INTERVAL` while the mouse moves; when
+/// only the newest row went up, the ones pushed on throttled draws never
+/// reached the GPU and showed as black lines -- or, after the ring
+/// wrapped, as a line from 256 rows ago. Extracted from the draw call so
+/// that bookkeeping can be tested without a GPU.
+fn waterfall_upload_plan(
+    on_gpu: Option<(u64, u64)>,
+    generation: u64,
+    rebuilds: u64,
+    head: u32,
+    height: u32,
+) -> WaterfallUpload {
+    let Some((uploaded, uploaded_rebuilds)) = on_gpu else {
+        return WaterfallUpload::Whole;
+    };
+    if uploaded_rebuilds != rebuilds {
+        return WaterfallUpload::Whole;
+    }
+    if uploaded == generation {
+        return WaterfallUpload::Nothing;
+    }
+    // With no rebuild in between, the generation moves only on a
+    // `push`, and each push wrote one row at the new `head`, one above
+    // the previous one modulo the height. So the rows still owed are the
+    // `pending` rows starting at `head` and running down the ring.
+    let pending = generation.wrapping_sub(uploaded);
+    if height == 0 || pending >= u64::from(height) {
+        return WaterfallUpload::Whole;
+    }
+    let pending = pending as u32;
+    let head = head % height;
+    let first_run = pending.min(height - head);
+    let mut runs = vec![(head, first_run)];
+    if pending > first_run {
+        runs.push((0, pending - first_run));
+    }
+    WaterfallUpload::Rows(runs)
 }
 
 /// One character cell, in points.
@@ -2675,5 +2750,127 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(seen, "the attach never reached the server");
+    }
+}
+
+#[cfg(test)]
+mod waterfall_upload_tests {
+    use super::*;
+    use crate::waterfall::{Palette, WaterfallImage};
+
+    /// A frame whose single peak sits in bin `peak`, so each pushed row
+    /// is distinguishable from its neighbours.
+    fn frame(peak: usize) -> SpectrumFrame {
+        let mut bins = vec![-110.0f32; 16];
+        bins[peak % 16] = -20.0;
+        SpectrumFrame {
+            center_hz: 14_074_000,
+            span_hz: 96_000,
+            ref_level_dbm: -20.0,
+            bins,
+            sequence: peak as u64,
+        }
+    }
+
+    /// Stands in for the GPU: applies a plan exactly as the draw call
+    /// does, and remembers what it was last brought up to.
+    struct Gpu {
+        pixels: Option<Vec<u8>>,
+        on: Option<(u64, u64)>,
+    }
+
+    impl Gpu {
+        fn new() -> Self {
+            Self {
+                pixels: None,
+                on: None,
+            }
+        }
+
+        fn upload(&mut self, img: &WaterfallImage) {
+            let stride = img.width() as usize * 4;
+            let plan = waterfall_upload_plan(
+                self.on,
+                img.generation(),
+                img.rebuilds(),
+                img.head(),
+                img.height(),
+            );
+            match plan {
+                WaterfallUpload::Nothing => {}
+                WaterfallUpload::Whole => self.pixels = Some(img.pixels().to_vec()),
+                WaterfallUpload::Rows(runs) => {
+                    let gpu = self.pixels.as_mut().expect("rows onto an empty texture");
+                    for (first, count) in runs {
+                        let (a, b) = (first as usize * stride, (first + count) as usize * stride);
+                        gpu[a..b].copy_from_slice(&img.pixels()[a..b]);
+                    }
+                }
+            }
+            self.on = Some((img.generation(), img.rebuilds()));
+        }
+    }
+
+    #[test]
+    fn every_row_pushed_between_uploads_reaches_the_gpu() {
+        // The bug: draws come faster than the upload throttle, the row
+        // pushed on a throttled draw never went up, and the waterfall
+        // showed black lines (or 256-row-old ones after wrap).
+        let mut img = WaterfallImage::new(16, 8, Palette::TURBO, -120.0);
+        let mut gpu = Gpu::new();
+        img.push(&frame(0));
+        gpu.upload(&img);
+        let mut peak = 1;
+        // Enough rounds to wrap the ring several times, with 2 and 3
+        // pushes between uploads.
+        for round in 0..20 {
+            for _ in 0..(2 + round % 2) {
+                img.push(&frame(peak));
+                peak += 1;
+            }
+            gpu.upload(&img);
+            assert_eq!(
+                gpu.pixels.as_deref(),
+                Some(img.pixels()),
+                "round {round}: GPU texture differs from the image"
+            );
+        }
+    }
+
+    #[test]
+    fn rows_straddling_the_ring_seam_are_split_into_two_runs() {
+        // Newest row at `head`, older ones below it modulo height.
+        let plan = waterfall_upload_plan(Some((10, 0)), 13, 0, 6, 8);
+        assert_eq!(plan, WaterfallUpload::Rows(vec![(6, 2), (0, 1)]));
+        let plan = waterfall_upload_plan(Some((10, 0)), 13, 0, 2, 8);
+        assert_eq!(plan, WaterfallUpload::Rows(vec![(2, 3)]));
+    }
+
+    #[test]
+    fn a_full_ring_or_more_of_pending_rows_is_a_whole_upload() {
+        assert_eq!(
+            waterfall_upload_plan(Some((0, 0)), 8, 0, 3, 8),
+            WaterfallUpload::Whole
+        );
+        assert_eq!(
+            waterfall_upload_plan(Some((0, 0)), 500, 0, 3, 8),
+            WaterfallUpload::Whole
+        );
+    }
+
+    #[test]
+    fn a_rebuild_or_an_empty_texture_is_a_whole_upload() {
+        assert_eq!(
+            waterfall_upload_plan(None, 5, 0, 0, 8),
+            WaterfallUpload::Whole
+        );
+        assert_eq!(
+            waterfall_upload_plan(Some((4, 0)), 5, 1, 0, 8),
+            WaterfallUpload::Whole
+        );
+        assert_eq!(
+            waterfall_upload_plan(Some((5, 1)), 5, 1, 0, 8),
+            WaterfallUpload::Nothing
+        );
     }
 }
