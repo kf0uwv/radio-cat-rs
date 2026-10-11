@@ -15,408 +15,6 @@
 //! Static tables for plausible QSO content. Every string here is upper
 //! case and uses only characters in the Morse table (checked by a test).
 
-/// A US call area: its digit, the states it historically covers (two-letter
-/// postal codes, as sent in a POTA exchange) with a few towns each, and
-/// its CQ zone.
-pub(crate) struct CallArea {
-    pub digit: u8,
-    pub zone: u8,
-    pub states: &'static [(&'static str, &'static [&'static str])],
-}
-
-pub(crate) const US_AREAS: &[CallArea] = &[
-    CallArea {
-        digit: 1,
-        zone: 5,
-        states: &[
-            ("MA", &["BOSTON", "WORCESTER", "SALEM"]),
-            ("CT", &["HARTFORD", "NEWINGTON", "MYSTIC"]),
-            ("ME", &["PORTLAND", "BANGOR"]),
-            ("NH", &["NASHUA", "CONCORD"]),
-            ("VT", &["BURLINGTON"]),
-            ("RI", &["PROVIDENCE"]),
-        ],
-    },
-    CallArea {
-        digit: 2,
-        zone: 5,
-        states: &[
-            ("NY", &["ALBANY", "BUFFALO", "ROCHESTER", "ITHACA"]),
-            ("NJ", &["TRENTON", "PRINCETON", "NEWARK"]),
-        ],
-    },
-    CallArea {
-        digit: 3,
-        zone: 5,
-        states: &[
-            ("PA", &["PITTSBURGH", "ERIE", "LANCASTER"]),
-            ("MD", &["BALTIMORE", "FREDERICK"]),
-            ("DE", &["DOVER", "WILMINGTON"]),
-        ],
-    },
-    CallArea {
-        digit: 4,
-        zone: 5,
-        states: &[
-            ("FL", &["TAMPA", "ORLANDO", "MIAMI"]),
-            ("GA", &["ATLANTA", "SAVANNAH"]),
-            ("NC", &["RALEIGH", "ASHEVILLE", "DURHAM"]),
-            ("VA", &["RICHMOND", "ROANOKE"]),
-            ("TN", &["NASHVILLE", "KNOXVILLE"]),
-            ("KY", &["LEXINGTON", "LOUISVILLE"]),
-            ("AL", &["HUNTSVILLE", "MOBILE"]),
-            ("SC", &["CHARLESTON", "COLUMBIA"]),
-        ],
-    },
-    CallArea {
-        digit: 5,
-        zone: 4,
-        states: &[
-            ("TX", &["AUSTIN", "DALLAS", "EL PASO", "HOUSTON"]),
-            ("OK", &["TULSA", "NORMAN"]),
-            ("LA", &["BATON ROUGE", "SHREVEPORT"]),
-            ("NM", &["SANTA FE", "TAOS", "ALBUQUERQUE"]),
-            ("AR", &["LITTLE ROCK"]),
-            ("MS", &["JACKSON", "BILOXI"]),
-        ],
-    },
-    CallArea {
-        digit: 6,
-        zone: 3,
-        states: &[(
-            "CA",
-            &["SAN DIEGO", "FRESNO", "SACRAMENTO", "SAN JOSE", "BISHOP"],
-        )],
-    },
-    CallArea {
-        digit: 7,
-        zone: 3,
-        states: &[
-            ("WA", &["SEATTLE", "SPOKANE", "OLYMPIA"]),
-            ("OR", &["PORTLAND", "BEND", "EUGENE"]),
-            ("AZ", &["TUCSON", "PHOENIX", "FLAGSTAFF"]),
-            ("UT", &["OGDEN", "MOAB", "PROVO"]),
-            ("MT", &["BOZEMAN", "MISSOULA"]),
-            ("ID", &["BOISE"]),
-            ("NV", &["RENO", "ELKO"]),
-            ("WY", &["CHEYENNE", "CODY"]),
-        ],
-    },
-    CallArea {
-        digit: 8,
-        zone: 4,
-        states: &[
-            ("OH", &["DAYTON", "COLUMBUS", "TOLEDO"]),
-            ("MI", &["DETROIT", "LANSING", "MARQUETTE"]),
-            ("WV", &["MORGANTOWN", "CHARLESTON"]),
-        ],
-    },
-    CallArea {
-        digit: 9,
-        zone: 4,
-        states: &[
-            ("IL", &["CHICAGO", "PEORIA", "SPRINGFIELD"]),
-            ("IN", &["FORT WAYNE", "INDIANAPOLIS"]),
-            ("WI", &["MADISON", "GREEN BAY"]),
-        ],
-    },
-    CallArea {
-        digit: 0,
-        zone: 4,
-        states: &[
-            ("CO", &["DENVER", "BOULDER", "GOLDEN", "DURANGO"]),
-            ("MN", &["DULUTH", "ROCHESTER", "ST PAUL"]),
-            ("MO", &["ST LOUIS", "JOPLIN"]),
-            ("KS", &["WICHITA", "LAWRENCE"]),
-            ("NE", &["OMAHA", "LINCOLN"]),
-            ("IA", &["DES MOINES", "AMES"]),
-            ("ND", &["FARGO", "MINOT"]),
-            ("SD", &["RAPID CITY", "SIOUX FALLS"]),
-        ],
-    },
-];
-
-/// A DX entity: prefixes as issued, call shape, CQ zone and towns.
-///
-/// `iso` is the ISO 3166 code POTA uses for the entity's park references
-/// (since the 2024 re-prefixing, e.g. `DE-0123`), where POTA parks are
-/// common enough to appear in a scenario.
-pub(crate) struct DxEntity {
-    pub prefixes: &'static [&'static str],
-    /// Whether a digit follows the prefix (`DL1ABC`) or is part of it
-    /// (`HB9ABC`, `9A2AB`).
-    pub add_digit: bool,
-    pub suffix_len: (u32, u32),
-    pub zone: u8,
-    pub country: &'static str,
-    pub iso: Option<&'static str>,
-    pub towns: &'static [&'static str],
-}
-
-pub(crate) const DX: &[DxEntity] = &[
-    DxEntity {
-        prefixes: &["G", "M"],
-        add_digit: true,
-        suffix_len: (3, 3),
-        zone: 14,
-        country: "ENGLAND",
-        iso: None,
-        towns: &["LONDON", "BRISTOL", "YORK", "LEEDS"],
-    },
-    DxEntity {
-        prefixes: &["DL", "DK", "DJ", "DF"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 14,
-        country: "GERMANY",
-        iso: Some("DE"),
-        towns: &["BERLIN", "MUNICH", "HAMBURG", "BONN"],
-    },
-    DxEntity {
-        prefixes: &["F"],
-        add_digit: true,
-        suffix_len: (3, 3),
-        zone: 14,
-        country: "FRANCE",
-        iso: Some("FR"),
-        towns: &["PARIS", "LYON", "NANTES"],
-    },
-    DxEntity {
-        prefixes: &["I", "IK", "IZ"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 15,
-        country: "ITALY",
-        iso: Some("IT"),
-        towns: &["ROMA", "MILANO", "TORINO"],
-    },
-    DxEntity {
-        prefixes: &["EA"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 14,
-        country: "SPAIN",
-        iso: Some("ES"),
-        towns: &["MADRID", "SEVILLA", "VALENCIA"],
-    },
-    DxEntity {
-        prefixes: &["ON"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 14,
-        country: "BELGIUM",
-        iso: None,
-        towns: &["GENT", "BRUGGE"],
-    },
-    DxEntity {
-        prefixes: &["PA", "PD"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 14,
-        country: "NETHERLANDS",
-        iso: None,
-        towns: &["UTRECHT", "DELFT"],
-    },
-    DxEntity {
-        prefixes: &["OH"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 15,
-        country: "FINLAND",
-        iso: None,
-        towns: &["HELSINKI", "OULU"],
-    },
-    DxEntity {
-        prefixes: &["SM"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 14,
-        country: "SWEDEN",
-        iso: None,
-        towns: &["STOCKHOLM", "LUND"],
-    },
-    DxEntity {
-        prefixes: &["LA"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 14,
-        country: "NORWAY",
-        iso: None,
-        towns: &["OSLO", "BERGEN"],
-    },
-    DxEntity {
-        prefixes: &["OK"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 15,
-        country: "CZECH REP",
-        iso: None,
-        towns: &["PRAHA", "BRNO"],
-    },
-    DxEntity {
-        prefixes: &["SP"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 15,
-        country: "POLAND",
-        iso: None,
-        towns: &["KRAKOW", "GDANSK"],
-    },
-    DxEntity {
-        prefixes: &["HA"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 15,
-        country: "HUNGARY",
-        iso: None,
-        towns: &["BUDAPEST", "PECS"],
-    },
-    DxEntity {
-        prefixes: &["S5"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 15,
-        country: "SLOVENIA",
-        iso: None,
-        towns: &["LJUBLJANA"],
-    },
-    DxEntity {
-        prefixes: &["9A"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 15,
-        country: "CROATIA",
-        iso: None,
-        towns: &["ZAGREB", "SPLIT"],
-    },
-    DxEntity {
-        prefixes: &["EI"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 14,
-        country: "IRELAND",
-        iso: None,
-        towns: &["DUBLIN", "CORK"],
-    },
-    DxEntity {
-        prefixes: &["GM", "MM"],
-        add_digit: true,
-        suffix_len: (3, 3),
-        zone: 14,
-        country: "SCOTLAND",
-        iso: None,
-        towns: &["EDINBURGH", "GLASGOW"],
-    },
-    DxEntity {
-        prefixes: &["OE"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 15,
-        country: "AUSTRIA",
-        iso: None,
-        towns: &["WIEN", "GRAZ"],
-    },
-    DxEntity {
-        prefixes: &["HB9"],
-        add_digit: false,
-        suffix_len: (2, 3),
-        zone: 14,
-        country: "SWITZERLAND",
-        iso: None,
-        towns: &["BERN", "ZURICH"],
-    },
-    DxEntity {
-        prefixes: &["CT"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 14,
-        country: "PORTUGAL",
-        iso: None,
-        towns: &["LISBOA", "PORTO"],
-    },
-    DxEntity {
-        prefixes: &["JA", "JH", "JR", "JE"],
-        add_digit: true,
-        suffix_len: (3, 3),
-        zone: 25,
-        country: "JAPAN",
-        iso: Some("JP"),
-        towns: &["TOKYO", "OSAKA", "SAPPORO"],
-    },
-    DxEntity {
-        prefixes: &["VK"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 30,
-        country: "AUSTRALIA",
-        iso: Some("AU"),
-        towns: &["SYDNEY", "PERTH", "HOBART"],
-    },
-    DxEntity {
-        prefixes: &["ZL"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 32,
-        country: "NEW ZEALAND",
-        iso: None,
-        towns: &["AUCKLAND", "NELSON"],
-    },
-    DxEntity {
-        prefixes: &["VE", "VA"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 4,
-        country: "CANADA",
-        iso: Some("CA"),
-        towns: &["TORONTO", "OTTAWA", "CALGARY"],
-    },
-    DxEntity {
-        prefixes: &["XE"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 6,
-        country: "MEXICO",
-        iso: None,
-        towns: &["PUEBLA", "MERIDA"],
-    },
-    DxEntity {
-        prefixes: &["LU"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 13,
-        country: "ARGENTINA",
-        iso: None,
-        towns: &["CORDOBA", "MENDOZA"],
-    },
-    DxEntity {
-        prefixes: &["PY"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 11,
-        country: "BRAZIL",
-        iso: None,
-        towns: &["RIO", "RECIFE"],
-    },
-    DxEntity {
-        prefixes: &["ZS"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 38,
-        country: "SOUTH AFRICA",
-        iso: None,
-        towns: &["DURBAN", "PRETORIA"],
-    },
-    DxEntity {
-        prefixes: &["UA", "RA", "RW"],
-        add_digit: true,
-        suffix_len: (2, 3),
-        zone: 16,
-        country: "RUSSIA",
-        iso: None,
-        towns: &["MOSKVA", "KAZAN"],
-    },
-];
-
 /// SOTA associations and regions, as written in a summit reference
 /// (`W0C/FR-001`).
 pub(crate) const SOTA_REGIONS: &[(&str, &[&str])] = &[
@@ -439,9 +37,251 @@ pub(crate) const NAMES_US: &[&str] = &[
     "KAREN", "LIZ", "PAT", "DEB",
 ];
 
-pub(crate) const NAMES_DX: &[&str] = &[
-    "HANS", "KLAUS", "PIERRE", "JEAN", "MARCO", "LUCA", "JOSE", "KENJI", "HIRO", "IAN", "NIGEL",
-    "SVEN", "LARS", "JAN", "PIOTR", "LASZLO", "ANDY", "PETER", "MIGUEL", "IGOR",
+/// A pool of common given names for operators from one part of the
+/// world. Plausible first names only; nothing pairs a name with a real
+/// callsign.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Names {
+    Us,
+    Anglo,
+    German,
+    French,
+    Italian,
+    Iberian,
+    LatAm,
+    Lusophone,
+    Nordic,
+    Finnish,
+    Baltic,
+    Dutch,
+    WestSlavic,
+    EastSlavic,
+    Danube,
+    Greek,
+    Turkish,
+    Caucasus,
+    Albanian,
+    Arabic,
+    Hebrew,
+    Persian,
+    Indian,
+    Japanese,
+    Chinese,
+    Korean,
+    SeAsian,
+    Mongol,
+    African,
+    Expedition,
+}
+
+impl Names {
+    /// Every pool.
+    #[cfg(test)]
+    pub(crate) const ALL: &[Names] = &[
+        Names::Us,
+        Names::Anglo,
+        Names::German,
+        Names::French,
+        Names::Italian,
+        Names::Iberian,
+        Names::LatAm,
+        Names::Lusophone,
+        Names::Nordic,
+        Names::Finnish,
+        Names::Baltic,
+        Names::Dutch,
+        Names::WestSlavic,
+        Names::EastSlavic,
+        Names::Danube,
+        Names::Greek,
+        Names::Turkish,
+        Names::Caucasus,
+        Names::Albanian,
+        Names::Arabic,
+        Names::Hebrew,
+        Names::Persian,
+        Names::Indian,
+        Names::Japanese,
+        Names::Chinese,
+        Names::Korean,
+        Names::SeAsian,
+        Names::Mongol,
+        Names::African,
+        Names::Expedition,
+    ];
+
+    /// The names.
+    pub(crate) fn pool(self) -> &'static [&'static str] {
+        match self {
+            Names::Us => NAMES_US,
+            Names::Anglo => NAMES_ANGLO,
+            Names::German => NAMES_GERMAN,
+            Names::French => NAMES_FRENCH,
+            Names::Italian => NAMES_ITALIAN,
+            Names::Iberian => NAMES_IBERIAN,
+            Names::LatAm => NAMES_LAT_AM,
+            Names::Lusophone => NAMES_LUSOPHONE,
+            Names::Nordic => NAMES_NORDIC,
+            Names::Finnish => NAMES_FINNISH,
+            Names::Baltic => NAMES_BALTIC,
+            Names::Dutch => NAMES_DUTCH,
+            Names::WestSlavic => NAMES_WEST_SLAVIC,
+            Names::EastSlavic => NAMES_EAST_SLAVIC,
+            Names::Danube => NAMES_DANUBE,
+            Names::Greek => NAMES_GREEK,
+            Names::Turkish => NAMES_TURKISH,
+            Names::Caucasus => NAMES_CAUCASUS,
+            Names::Albanian => NAMES_ALBANIAN,
+            Names::Arabic => NAMES_ARABIC,
+            Names::Hebrew => NAMES_HEBREW,
+            Names::Persian => NAMES_PERSIAN,
+            Names::Indian => NAMES_INDIAN,
+            Names::Japanese => NAMES_JAPANESE,
+            Names::Chinese => NAMES_CHINESE,
+            Names::Korean => NAMES_KOREAN,
+            Names::SeAsian => NAMES_SE_ASIAN,
+            Names::Mongol => NAMES_MONGOL,
+            Names::African => NAMES_AFRICAN,
+            Names::Expedition => NAMES_EXPEDITION,
+        }
+    }
+}
+
+const NAMES_ANGLO: &[&str] = &[
+    "JOHN", "DAVID", "PAUL", "MARK", "IAN", "NIGEL", "ANDY", "CHRIS", "STEVE", "PETER", "MIKE",
+    "GRAHAM", "ALAN", "SIMON", "TONY", "MARTIN", "KEVIN", "GARY", "SUE", "JANE",
+];
+const NAMES_GERMAN: &[&str] = &[
+    "HANS", "KLAUS", "JUERGEN", "WOLFGANG", "PETER", "UWE", "DIETER", "FRANK", "THOMAS", "STEFAN",
+    "MICHAEL", "ANDREAS", "RALF", "BERND", "GERD", "MARTIN", "SABINE", "KARIN",
+];
+const NAMES_FRENCH: &[&str] = &[
+    "JEAN",
+    "PIERRE",
+    "MICHEL",
+    "ALAIN",
+    "PHILIPPE",
+    "PATRICK",
+    "BERNARD",
+    "CHRISTIAN",
+    "DANIEL",
+    "ERIC",
+    "FRANCOIS",
+    "LUC",
+    "DIDIER",
+    "OLIVIER",
+    "MARIE",
+    "SYLVIE",
+];
+const NAMES_ITALIAN: &[&str] = &[
+    "MARCO", "LUCA", "GIUSEPPE", "PAOLO", "FRANCO", "ROBERTO", "MAURO", "STEFANO", "GIANNI",
+    "ANDREA", "SERGIO", "FABIO", "CLAUDIO", "SILVIA",
+];
+const NAMES_IBERIAN: &[&str] = &[
+    "JOSE",
+    "ANTONIO",
+    "MANUEL",
+    "JUAN",
+    "FRANCISCO",
+    "CARLOS",
+    "LUIS",
+    "JAVIER",
+    "PEDRO",
+    "MIGUEL",
+    "PACO",
+    "JOAO",
+    "RUI",
+    "CARMEN",
+];
+const NAMES_LAT_AM: &[&str] = &[
+    "JOSE",
+    "CARLOS",
+    "JORGE",
+    "LUIS",
+    "MIGUEL",
+    "PEDRO",
+    "RAUL",
+    "OSCAR",
+    "RICARDO",
+    "ALEJANDRO",
+    "DIEGO",
+    "FERNANDO",
+    "MARIO",
+    "GABRIEL",
+    "ANA",
+];
+const NAMES_LUSOPHONE: &[&str] = &[
+    "JOAO", "PAULO", "CARLOS", "MARCOS", "JOSE", "RICARDO", "ANDRE", "FABIO", "RODRIGO", "EDSON",
+    "MARCIO", "LUIZ", "RENATO",
+];
+const NAMES_NORDIC: &[&str] = &[
+    "LARS", "SVEN", "ERIK", "OLA", "BJORN", "NILS", "PER", "JAN", "ANDERS", "MAGNUS", "KNUT",
+    "ARNE", "INGE", "OLE",
+];
+const NAMES_FINNISH: &[&str] = &[
+    "JUHA", "MIKKO", "PEKKA", "JARI", "KARI", "TIMO", "MATTI", "HANNU", "ESA", "ARI",
+];
+const NAMES_BALTIC: &[&str] = &[
+    "JONAS", "ANDRIS", "TOOMAS", "ALGIS", "JANIS", "MART", "AIVARS", "RAIMONDS",
+];
+const NAMES_DUTCH: &[&str] = &[
+    "JAN", "PIET", "HENK", "KEES", "WIM", "JOOP", "GERRIT", "BART", "DIRK", "RUUD", "JEROEN",
+    "MARC",
+];
+const NAMES_WEST_SLAVIC: &[&str] = &[
+    "PIOTR", "TOMASZ", "PAVEL", "JAN", "MAREK", "JIRI", "MIRO", "ZORAN", "DRAGAN", "BOJAN",
+    "GORAN", "PETAR", "STANKO", "ZDENEK",
+];
+const NAMES_EAST_SLAVIC: &[&str] = &[
+    "IGOR", "SERGEI", "VLADIMIR", "ALEX", "OLEG", "YURI", "ANDREI", "DMITRI", "NIKOLAI", "VICTOR",
+    "MIKHAIL", "VALERY", "GENNADY", "OLGA",
+];
+const NAMES_DANUBE: &[&str] = &[
+    "LASZLO", "ZOLTAN", "GABOR", "ISTVAN", "ATTILA", "SANDOR", "ION", "MIHAI", "DAN", "SORIN",
+    "ADRIAN", "VASILE",
+];
+const NAMES_GREEK: &[&str] = &[
+    "NIKOS", "GIORGOS", "KOSTAS", "YANNIS", "DIMITRIS", "ANDREAS", "PANOS", "VASILIS",
+];
+const NAMES_TURKISH: &[&str] = &[
+    "MEHMET", "AHMET", "MUSTAFA", "ALI", "HASAN", "MURAT", "EMRE", "OSMAN", "KEMAL", "ELDAR",
+];
+const NAMES_CAUCASUS: &[&str] = &[
+    "GIORGI", "LEVAN", "DAVIT", "ARMEN", "ARAM", "VAHE", "GAGIK", "ZURAB",
+];
+const NAMES_ALBANIAN: &[&str] = &["ARBEN", "BESNIK", "GENTI", "ILIR", "AGIM", "FATOS"];
+const NAMES_ARABIC: &[&str] = &[
+    "AHMED", "MOHAMED", "ALI", "OMAR", "KHALID", "HASSAN", "SAMIR", "KARIM", "YOUSEF", "TARIQ",
+    "FAISAL", "NABIL",
+];
+const NAMES_HEBREW: &[&str] = &[
+    "DAVID", "MOSHE", "YOSSI", "AVI", "ITZIK", "RONI", "DANI", "ERAN", "GIL",
+];
+const NAMES_PERSIAN: &[&str] = &["REZA", "ALI", "MEHDI", "HOSSEIN", "AMIR", "DARIUS", "FARID"];
+const NAMES_INDIAN: &[&str] = &[
+    "RAJ", "RAVI", "SURESH", "ANIL", "VIJAY", "AMIT", "SANJAY", "RAMESH", "PRAKASH", "IMRAN",
+    "ASIF", "KUMAR",
+];
+const NAMES_JAPANESE: &[&str] = &[
+    "KENJI", "HIRO", "TAKA", "YOSHI", "KAZU", "AKIRA", "MASA", "TOSHI", "SHIN", "NOBU", "KOJI",
+    "MAKOTO", "YUKI",
+];
+const NAMES_CHINESE: &[&str] = &[
+    "WEI", "MING", "JUN", "LEI", "HUA", "GANG", "YONG", "BIN", "JIAN", "FENG", "CHEN", "LIN",
+];
+const NAMES_KOREAN: &[&str] = &[
+    "KIM", "PARK", "SUNG", "JIN", "HYUN", "YOUNG", "MIN", "DONG", "JAE",
+];
+const NAMES_SE_ASIAN: &[&str] = &[
+    "SOMCHAI", "NGUYEN", "BUDI", "AGUS", "AHMAD", "RAMON", "JOJO", "EDDIE", "ANDI", "RIZAL",
+];
+const NAMES_MONGOL: &[&str] = &["BAT", "GANBAA", "TSOGT", "BOLD", "ENKH"];
+const NAMES_AFRICAN: &[&str] = &[
+    "JOHN", "EMMANUEL", "SAMUEL", "JOSEPH", "DANIEL", "PATRICK", "MOSES", "FRANCIS", "KOFI",
+    "KWAME", "DAVID", "PETER",
+];
+const NAMES_EXPEDITION: &[&str] = &[
+    "DAVE", "HANS", "KEN", "PAUL", "ADRIAN", "DOM", "JUAN", "KAZU", "MAREK", "ROB",
 ];
 
 pub(crate) const RIGS: &[&str] = &[

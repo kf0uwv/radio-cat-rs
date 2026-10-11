@@ -16,17 +16,20 @@
 
 use std::time::Duration;
 
-use super::callsign::{dx_call, fresh_call, home_of, us_call, Callsign, Home};
+use super::callsign::{call_from, fresh_call, home_of, station_call, Callsign, Home};
 use super::data::{
-    CallArea, DxEntity, ANTENNAS, DX, NAMES_DX, NAMES_US, PORTABLE_ANTENNAS, POWERS, QRP_POWERS,
-    RIGS, RST, SOTA_REGIONS, US_AREAS, WX,
+    Names, ANTENNAS, PORTABLE_ANTENNAS, POWERS, QRP_POWERS, RIGS, RST, SOTA_REGIONS, WX,
 };
+use super::world::{by_dxcc, Entity, USA, WORLD};
 use super::{
     ContestExchange, Party, Persona, ScenarioConfig, ScenarioError, ScenarioKind, Script,
     SignalProfile, Start, Station, Transmission,
 };
 use crate::rng::Rng;
 use crate::timing::Speed;
+
+/// Chance a rag-chew partner is maritime mobile.
+const P_MARITIME: f64 = 0.03;
 
 const STREAM_ME: u64 = 1;
 const STREAM_STATIONS: u64 = 2;
@@ -39,6 +42,8 @@ struct Builder<'a> {
     stations: Vec<Station>,
     tx: Vec<Transmission>,
     st_rng: Rng,
+    /// An entity no further station may come from (the DX being chased).
+    avoid: Option<u16>,
     text: Rng,
     timing: Rng,
 }
@@ -52,6 +57,7 @@ pub(super) fn build(cfg: &ScenarioConfig, rng: &mut Rng) -> Result<Script, Scena
         stations: Vec::new(),
         tx: Vec::new(),
         st_rng: rng.fork(STREAM_STATIONS),
+        avoid: None,
         text: rng.fork(STREAM_TEXT),
         timing: rng.fork(STREAM_TIMING),
     };
@@ -64,6 +70,7 @@ pub(super) fn build(cfg: &ScenarioConfig, rng: &mut Rng) -> Result<Script, Scena
         ScenarioKind::Pota { park_to_park } => b.pota(park_to_park, &mut me_rng)?,
         ScenarioKind::Sota { summit_to_summit } => b.sota(summit_to_summit, &mut me_rng)?,
         ScenarioKind::DxPileup { callers } => b.pileup(callers)?,
+        ScenarioKind::DxChase { callers } => b.chase(callers)?,
     }
     Ok(Script {
         kind: cfg.kind,
@@ -77,25 +84,32 @@ fn pick_str(rng: &mut Rng, items: &[&str]) -> String {
     (*rng.pick(items)).to_string()
 }
 
-fn us_persona_parts(rng: &mut Rng, area: &CallArea) -> (String, String) {
-    let (state, towns) = rng.pick(area.states);
-    (pick_str(rng, towns), (*state).to_string())
-}
-
 fn persona(rng: &mut Rng, call: Callsign, home: Option<Home>, portable: bool) -> Persona {
     let (name, qth, region, zone) = match home {
-        Some(Home::Us(area)) => {
-            let (qth, st) = us_persona_parts(rng, area);
-            (pick_str(rng, NAMES_US), qth, st, area.zone)
+        Some(home) => {
+            let names = home.entity.names.pool();
+            let (qth, region) = match home.region {
+                // A call area: a town in one of its subdivisions; the region
+                // is a state/province code an exchange sends (two letters),
+                // else the entity.
+                Some(r) => {
+                    let (code, towns) = rng.pick(r.subdivisions);
+                    let region = if code.len() == 2 {
+                        (*code).to_string()
+                    } else {
+                        home.entity.name.to_string()
+                    };
+                    (pick_str(rng, towns), region)
+                }
+                None => (
+                    pick_str(rng, home.entity.towns),
+                    home.entity.name.to_string(),
+                ),
+            };
+            (pick_str(rng, names), qth, region, home.cq())
         }
-        Some(Home::Dx(e)) => (
-            pick_str(rng, NAMES_DX),
-            pick_str(rng, e.towns),
-            e.country.to_string(),
-            e.zone,
-        ),
         None => (
-            pick_str(rng, NAMES_DX),
+            pick_str(rng, Names::Expedition.pool()),
             "HOME".to_string(),
             "DX".to_string(),
             rng.range_u32(1, 40) as u8,
@@ -143,18 +157,27 @@ fn pota_ref(rng: &mut Rng, iso: &str) -> String {
 
 /// A SOTA association, and the home a station activating in it has.
 fn sota_home(assoc: &str, rng: &mut Rng) -> Home {
-    let us = |d: u8| Home::Us(US_AREAS.iter().find(|a| a.digit == d).expect("area"));
-    let dx = |country: &str| Home::Dx(DX.iter().find(|e| e.country == country).expect("entity"));
+    let us = |d: u8| {
+        let entity = by_dxcc(USA);
+        Home {
+            entity,
+            region: entity.region("W", d),
+        }
+    };
+    let dx = |dxcc: u16| Home {
+        entity: by_dxcc(dxcc),
+        region: None,
+    };
     match assoc {
         "W0C" => us(0),
         "W7W" | "W7A" => us(7),
         "W6" => us(6),
         "W4C" => us(4),
-        "G" => dx("ENGLAND"),
-        "GM" => dx("SCOTLAND"),
-        "DL" => dx("GERMANY"),
-        "HB" => dx("SWITZERLAND"),
-        "VE7" => dx("CANADA"),
+        "G" => dx(223),
+        "GM" => dx(279),
+        "DL" => dx(230),
+        "HB" => dx(287),
+        "VE7" => dx(1),
         _ => us(rng.range_u32(0, 9) as u8),
     }
 }
@@ -222,30 +245,49 @@ impl Builder<'_> {
 
     /// Adds a station from `home` (or a random US/DX home), returns its index.
     fn add_station(&mut self, home: Option<Home>, dx_share: f64) -> Result<usize, ScenarioError> {
+        // A station drawn at random may be portable or abroad; one placed
+        // for an activation keeps a plain call (the activation adds `/P`).
+        let random = home.is_none();
         let home = match home {
             Some(h) => h,
             None => {
+                let me = home_of(&self.cfg.my_call);
                 if self.st_rng.chance(dx_share) {
-                    Home::Dx(self.st_rng.pick(DX))
+                    Home::random_dx(&mut self.st_rng, me, self.cfg.difficulty.hf_band)
                 } else {
-                    Home::Us(self.st_rng.pick(US_AREAS))
+                    Home::random_local(&mut self.st_rng, me)
                 }
             }
         };
+        self.place(home, random)
+    }
+
+    /// Adds a station at `home`, its call sometimes portable or abroad if
+    /// `decorate`; returns its index.
+    fn place(&mut self, mut home: Home, decorate: bool) -> Result<usize, ScenarioError> {
         let taken = self.taken();
-        let call = match home {
-            Home::Us(area) => fresh_call(
+        // A home with no call left (a one-call entity already on the air)
+        // gives way to another DX home.
+        let call = loop {
+            let h = home;
+            if let Some(c) = fresh_call(
                 &mut self.st_rng,
-                &mut |r| us_call(r, Some(area)),
+                &mut |r| {
+                    if decorate {
+                        station_call(r, &h)
+                    } else {
+                        call_from(r, &h)
+                    }
+                },
                 &self.cfg.my_call,
                 &taken,
-            ),
-            Home::Dx(e) => fresh_call(
-                &mut self.st_rng,
-                &mut |r| dx_call(r, e),
-                &self.cfg.my_call,
-                &taken,
-            ),
+            ) {
+                break c;
+            }
+            let me = home_of(&self.cfg.my_call);
+            let own = me.map_or(USA, |h| h.entity.dxcc);
+            let not: Vec<u16> = std::iter::once(own).chain(self.avoid).collect();
+            home = Home::random_caller(&mut self.st_rng, me, &not, self.cfg.difficulty.hf_band);
         };
         let p = persona(&mut self.st_rng, call, Some(home), false);
         let signal = self.signal()?;
@@ -296,6 +338,15 @@ impl Builder<'_> {
 
     fn rag_chew(&mut self) -> Result<(), ScenarioError> {
         let them = self.add_station(None, 0.3)?;
+        if self.st_rng.chance(P_MARITIME) {
+            // Maritime mobile: on a ship, in no DXCC entity.
+            let p = &mut self.stations[them].persona;
+            p.call = Callsign::parse(p.call.base())
+                .expect("a base call is a call")
+                .with_suffix("MM");
+            p.qth = "AT SEA".to_string();
+            p.region = "MM".to_string();
+        }
         let t = Party::Them(them);
         let c = self.call_of(them);
         let me = self.me_call();
@@ -466,12 +517,17 @@ impl Builder<'_> {
 
     fn pota(&mut self, p2p: bool, me_rng: &mut Rng) -> Result<(), ScenarioError> {
         let (home, iso) = if self.st_rng.chance(0.75) {
-            (Home::Us(self.st_rng.pick(US_AREAS)), "US")
+            (Home::random_us(&mut self.st_rng), "US")
         } else {
-            let with_parks: Vec<&'static DxEntity> =
-                DX.iter().filter(|e| e.iso.is_some()).collect();
+            let with_parks: Vec<&'static Entity> = WORLD
+                .iter()
+                .filter(|e| e.iso.is_some() && e.dxcc != USA)
+                .collect();
             let e = *self.st_rng.pick(&with_parks);
-            (Home::Dx(e), e.iso.expect("filtered"))
+            (
+                Home::random_in(&mut self.st_rng, e),
+                e.iso.expect("filtered"),
+            )
         };
         let them = self.add_station(Some(home), 0.0)?;
         let park = pota_ref(&mut self.st_rng, iso);
@@ -482,10 +538,9 @@ impl Builder<'_> {
             p.antenna = pick_str(&mut self.st_rng, PORTABLE_ANTENNAS);
         }
         if p2p {
-            let my_iso = match home_of(&self.me.call) {
-                Some(Home::Dx(e)) => e.iso.unwrap_or("US"),
-                _ => "US",
-            };
+            let my_iso = home_of(&self.me.call)
+                .and_then(|h| h.entity.iso)
+                .unwrap_or("US");
             self.me.reference = Some(pota_ref(me_rng, my_iso));
         }
         let t = Party::Them(them);
@@ -530,9 +585,9 @@ impl Builder<'_> {
         let (summit, assoc) = sota_ref(&mut self.st_rng);
         let home = sota_home(assoc, &mut self.st_rng);
         let them = self.add_station(Some(home), 0.0)?;
-        if let (Home::Us(area), Some(state)) = (home, sota_state(assoc)) {
+        if let (Some(area), Some(state)) = (home.region, sota_state(assoc)) {
             // An activator in the association's own state.
-            if let Some((_, towns)) = area.states.iter().find(|(s, _)| *s == state) {
+            if let Some((_, towns)) = area.subdivisions.iter().find(|(s, _)| *s == state) {
                 let town = pick_str(&mut self.st_rng, towns);
                 let p = &mut self.stations[them].persona;
                 p.region = state.to_string();
@@ -586,32 +641,55 @@ impl Builder<'_> {
         Ok(())
     }
 
+    /// The part of `base` that came through a pileup: `DL1?` or `?ABC`.
+    fn partial(&mut self, base: &str) -> String {
+        if self.text.chance(0.5) {
+            let digit = base.find(|ch: char| ch.is_ascii_digit()).unwrap_or(1);
+            format!("{}?", &base[..=digit])
+        } else {
+            format!("?{}", &base[base.len().saturating_sub(3)..])
+        }
+    }
+
+    /// Everyone in `waiting` calls at once, staggered; `you` joins in last.
+    fn all_call(&mut self, waiting: &[usize], you: Option<&str>) {
+        for (k, &i) in waiting.iter().enumerate() {
+            let c = self.call_of(i);
+            let text = if self.text.chance(0.4) {
+                format!("{c} {c}")
+            } else {
+                c
+            };
+            let start = if k == 0 {
+                self.gap()
+            } else {
+                Start::WithPrevious {
+                    delay: Duration::from_millis(u64::from(self.timing.range_u32(0, 700))),
+                }
+            };
+            self.push(Party::Them(i), text, start);
+        }
+        if let Some(me) = you {
+            self.say(Party::You, me.to_string());
+        }
+    }
+
     fn pileup(&mut self, callers: u8) -> Result<(), ScenarioError> {
         let me = self.me_call();
         let my_zone = self.me.zone.to_string();
+        // You are the DX: the callers are the world, never your own entity.
+        let my_home = home_of(&self.cfg.my_call);
+        let not = [my_home.map_or(0, |h| h.entity.dxcc)];
         let mut waiting: Vec<usize> = Vec::new();
         for _ in 0..callers {
-            waiting.push(self.add_station(None, 0.35)?);
+            let h =
+                Home::random_caller(&mut self.st_rng, my_home, &not, self.cfg.difficulty.hf_band);
+            waiting.push(self.place(h, true)?);
         }
         self.say(Party::You, format!("CQ CQ DE {me} {me} K"));
         while !waiting.is_empty() {
             // Everyone still waiting calls at once, staggered.
-            for (k, &i) in waiting.iter().enumerate() {
-                let c = self.call_of(i);
-                let text = if self.text.chance(0.4) {
-                    format!("{c} {c}")
-                } else {
-                    c
-                };
-                let start = if k == 0 {
-                    self.gap()
-                } else {
-                    Start::WithPrevious {
-                        delay: Duration::from_millis(u64::from(self.timing.range_u32(0, 700))),
-                    }
-                };
-                self.push(Party::Them(i), text, start);
-            }
+            self.all_call(&waiting.clone(), None);
             let pick = self.text.range_u32(0, (waiting.len() - 1) as u32) as usize;
             let them = waiting.remove(pick);
             let t = Party::Them(them);
@@ -619,12 +697,7 @@ impl Builder<'_> {
             if self.repeat() || waiting.len() >= 4 {
                 // Only part of it came through.
                 let base = self.stations[them].persona.call.base().to_string();
-                let partial = if self.text.chance(0.5) {
-                    let digit = base.find(|ch: char| ch.is_ascii_digit()).unwrap_or(1);
-                    format!("{}?", &base[..=digit])
-                } else {
-                    format!("?{}", &base[base.len().saturating_sub(3)..])
-                };
+                let partial = self.partial(&base);
                 self.say(Party::You, partial);
                 self.say(t, format!("{c} {c}"));
             }
@@ -648,6 +721,65 @@ impl Builder<'_> {
             self.say(Party::You, next);
         }
         Ok(())
+    }
+
+    /// You chase a rare DX: it calls CQ split, works a few of the other
+    /// callers (everyone, you included, calling over one another), then
+    /// comes back to you.
+    fn chase(&mut self, callers: u8) -> Result<(), ScenarioError> {
+        let me = self.me_call();
+        let my_home = home_of(&self.cfg.my_call);
+        let dx_home = Home::random_rare(&mut self.st_rng, my_home);
+        let dx = self.place(dx_home, false)?;
+        // From here on no station, even a fallback, is the DX's countryman.
+        self.avoid = Some(dx_home.entity.dxcc);
+        let mut waiting: Vec<usize> = Vec::new();
+        for _ in 0..callers {
+            let h = Home::random_caller(
+                &mut self.st_rng,
+                my_home,
+                &[dx_home.entity.dxcc],
+                self.cfg.difficulty.hf_band,
+            );
+            waiting.push(self.place(h, true)?);
+        }
+        let d = Party::Them(dx);
+        let dc = self.call_of(dx);
+        let up = self.text.range_u32(1, 5);
+        let cq = match self.text.range_u32(0, 2) {
+            0 => format!("CQ {dc} UP {up}"),
+            1 => format!("CQ DE {dc} {dc} UP"),
+            _ => format!("{dc} UP {up}"),
+        };
+        self.say(d, cq);
+        // You get through after the DX has worked this many others.
+        let before = self.text.range_u32(1, u32::from(callers).min(3)) as usize;
+        let mut worked = 0;
+        loop {
+            self.all_call(&waiting.clone(), Some(&me));
+            if worked == before || waiting.is_empty() {
+                if self.repeat() {
+                    let base = self.cfg.my_call.base().to_string();
+                    let partial = self.partial(&base);
+                    self.say(d, partial);
+                    self.say(Party::You, format!("{me} {me}"));
+                }
+                self.say(d, format!("{me} 5NN"));
+                let tu = *self.text.pick(&["TU 5NN", "5NN TU", "R 5NN TU"]);
+                self.say(Party::You, tu.to_string());
+                self.say(d, format!("TU {dc} UP"));
+                return Ok(());
+            }
+            let pick = self.text.range_u32(0, (waiting.len() - 1) as u32) as usize;
+            let them = waiting.remove(pick);
+            let c = self.call_of(them);
+            self.say(d, format!("{c} 5NN"));
+            let tu = *self.text.pick(&["TU 5NN", "5NN TU", "R 5NN"]);
+            self.say(Party::Them(them), tu.to_string());
+            let next = *self.text.pick(&["TU UP", "TU", "UP"]);
+            self.say(d, next.to_string());
+            worked += 1;
+        }
     }
 }
 
@@ -676,23 +808,14 @@ mod tests {
     fn tables_are_encodable() {
         use crate::codec::tokenize;
         let mut all: Vec<&str> = Vec::new();
-        all.extend(NAMES_US);
-        all.extend(NAMES_DX);
+        for n in Names::ALL {
+            all.extend(n.pool());
+        }
         all.extend(RIGS);
         all.extend(ANTENNAS);
         all.extend(PORTABLE_ANTENNAS);
         all.extend(WX);
         all.extend(RST);
-        for a in US_AREAS {
-            for (s, towns) in a.states {
-                all.push(s);
-                all.extend(towns.iter());
-            }
-        }
-        for e in DX {
-            all.push(e.country);
-            all.extend(e.towns.iter());
-        }
         for s in all {
             assert!(tokenize(s).is_ok(), "{s}");
         }

@@ -32,22 +32,46 @@
 //! | [`ScenarioKind::Contest`] | search and pounce: `CQ TEST`, `5NN` + zone or serial |
 //! | [`ScenarioKind::Pota`] | a park activator (`US-1234`), state exchange, optional P2P |
 //! | [`ScenarioKind::Sota`] | a summit activator (`W0C/FR-001`), optional S2S |
-//! | [`ScenarioKind::DxPileup`] | you run the DX; callers overlap at different offsets |
+//! | [`ScenarioKind::DxPileup`] | you run the DX; callers from everywhere overlap at different offsets |
+//! | [`ScenarioKind::DxChase`] | you chase a rare DX through its pileup: it runs split, works others, then you |
 //!
 //! [`band_channel`] wraps an over's signals in the band
 //! [`Difficulty::band`] describes: noise, fading, static and QRM.
 //!
 //! Any kind may include repeat requests (`QRZ?`, `AGN?`, `PSE RPT`) at
 //! the rate [`Difficulty::repeat_requests`] sets.
+//!
+//! # Who is on the air
+//!
+//! Stations come from all 340 current DXCC entities, each with its real
+//! ITU prefix blocks, call formats, CQ and ITU zones and continent, and
+//! call areas where the digit means something (US, Canada, Japan,
+//! Russia, China, Australia, New Zealand, Brazil). An entity's activity
+//! sets how often it is heard; stations on the operator's own continent
+//! are heard more, and [`Difficulty::hf_band`] can make that a low-band
+//! or a long-haul lean. The local side of a contact comes from the
+//! operator's own entity. Operators carry given names from their part of
+//! the world. Calls are sometimes `/P`, `/M` or `/QRP`, signed abroad
+//! (`EA8/DL1ABC`), or out of their US call area (`W1ABC/4`), and a
+//! rag-chew is now and then with a ship at sea (`/MM`).
+//!
+//! Where the calls of an entity share another's prefix block (Rotuma in
+//! Fiji's `3D2`, the VP8 dependencies, Bouvet and Peter I in `3Y`), the
+//! trainer tells them apart with a `/` suffix (`3D2AB/R`). That is a
+//! simulation convention; real operations use one-off calls. See ADR 0021.
 
 mod band;
 mod callsign;
 mod data;
 mod qso;
+mod world;
 
 use std::time::Duration;
 
-pub use band::{band_channel, BandConditions, BandReport, QrmOdds, QrmReport, QrnOdds, QsbOdds};
+pub use band::{
+    band_channel, band_channel_for, BandConditions, BandReport, QrmOdds, QrmReport, QrnOdds,
+    QsbOdds,
+};
 pub use callsign::Callsign;
 
 use crate::codec;
@@ -115,6 +139,12 @@ pub enum ScenarioKind {
         /// How many stations call (1–12).
         callers: u8,
     },
+    /// Chasing a rare DX station: it calls CQ split, works some of the
+    /// other callers, and then you.
+    DxChase {
+        /// How many other stations are in the pileup (1–12).
+        callers: u8,
+    },
 }
 
 /// How hard the other stations are to copy.
@@ -136,6 +166,52 @@ pub struct Difficulty {
     pub repeat_requests: f64,
     /// The band the stations are copied through (see [`band_channel`]).
     pub band: BandConditions,
+    /// The HF band the QSOs are on, if it matters: low bands are mostly
+    /// heard close to home, high bands reach out to long-haul DX. `None`
+    /// draws stations with a plain lean toward the operator's continent.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub hf_band: Option<HfBand>,
+}
+
+/// An HF amateur band, for how far away the stations heard on it tend to
+/// be. A coarse path model, not a propagation forecast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum HfBand {
+    /// 160 m.
+    M160,
+    /// 80 m.
+    M80,
+    /// 40 m.
+    M40,
+    /// 30 m.
+    M30,
+    /// 20 m.
+    M20,
+    /// 17 m.
+    M17,
+    /// 15 m.
+    M15,
+    /// 12 m.
+    M12,
+    /// 10 m.
+    M10,
+}
+
+impl HfBand {
+    /// Relative weights for a station on the operator's own continent and
+    /// one farther away, before the station's activity.
+    pub(crate) const fn path_weights(self) -> (u32, u32) {
+        match self {
+            HfBand::M160 => (12, 1),
+            HfBand::M80 => (8, 1),
+            HfBand::M40 => (4, 1),
+            HfBand::M30 => (3, 1),
+            HfBand::M20 => (2, 1),
+            HfBand::M17 => (1, 1),
+            HfBand::M15 | HfBand::M12 | HfBand::M10 => (1, 2),
+        }
+    }
 }
 
 impl Default for Difficulty {
@@ -155,6 +231,7 @@ impl Difficulty {
             pitch_offset_hz: (-30.0, 30.0),
             repeat_requests: 0.05,
             band: BandConditions::beginner(),
+            hf_band: None,
         }
     }
 
@@ -168,6 +245,7 @@ impl Difficulty {
             pitch_offset_hz: (-100.0, 100.0),
             repeat_requests: 0.15,
             band: BandConditions::intermediate(),
+            hf_band: None,
         }
     }
 
@@ -181,6 +259,7 @@ impl Difficulty {
             pitch_offset_hz: (-250.0, 250.0),
             repeat_requests: 0.25,
             band: BandConditions::advanced(),
+            hf_band: None,
         }
     }
 
@@ -348,7 +427,7 @@ impl Script {
 /// Generates the script for `cfg`.
 pub fn generate(cfg: &ScenarioConfig) -> Result<Script, ScenarioError> {
     cfg.difficulty.validate()?;
-    if let ScenarioKind::DxPileup { callers } = cfg.kind {
+    if let ScenarioKind::DxPileup { callers } | ScenarioKind::DxChase { callers } = cfg.kind {
         if !(1..=12).contains(&callers) {
             return Err(ScenarioError::InvalidSetting(
                 "a pileup needs 1 to 12 callers",
@@ -392,6 +471,7 @@ mod tests {
                 summit_to_summit: true,
             },
             ScenarioKind::DxPileup { callers: 6 },
+            ScenarioKind::DxChase { callers: 6 },
         ]
     }
 
@@ -540,7 +620,9 @@ mod tests {
             Callsign::parse("NOTACALL"),
             Err(ScenarioError::InvalidCallsign(_))
         ));
-        let mut c = cfg(ScenarioKind::DxPileup { callers: 0 }, 0);
+        let mut c = cfg(ScenarioKind::DxChase { callers: 13 }, 0);
+        assert!(generate(&c).is_err());
+        c.kind = ScenarioKind::DxPileup { callers: 0 };
         assert!(generate(&c).is_err());
         c.kind = ScenarioKind::RagChew;
         c.difficulty.wpm = (30, 20);
@@ -568,6 +650,150 @@ mod tests {
         let s = generate(&c).unwrap();
         assert_eq!(s.me.zone, 14);
         assert_eq!(s.me.region, "GERMANY");
+    }
+
+    #[test]
+    fn some_rag_chews_are_with_a_ship_at_sea() {
+        let mm: Vec<_> = (0..400)
+            .filter_map(|seed| {
+                let s = generate(&cfg(ScenarioKind::RagChew, seed)).unwrap();
+                let p = s.stations[0].persona.clone();
+                p.call.as_str().ends_with("/MM").then_some(p)
+            })
+            .collect();
+        assert!(!mm.is_empty());
+        for p in mm {
+            assert_eq!(p.qth, "AT SEA");
+            assert!(has_no_home(&p.call));
+        }
+    }
+
+    fn has_no_home(c: &Callsign) -> bool {
+        callsign::home_of(c).is_none()
+    }
+
+    #[test]
+    fn chasing_a_rare_dx_through_the_pileup() {
+        use super::world::Activity;
+        for seed in 0..60 {
+            let s = generate(&cfg(ScenarioKind::DxChase { callers: 5 }, seed)).unwrap();
+            let dx = &s.stations[0].persona.call;
+            let home = callsign::home_of(dx).unwrap_or_else(|| panic!("{dx}"));
+            assert!(
+                matches!(home.entity.activity, Activity::Rare | Activity::Uncommon),
+                "{dx} is not rare"
+            );
+            let dx_says = |needle: &str| {
+                s.transmissions
+                    .iter()
+                    .any(|t| t.from == Party::Them(0) && t.text.contains(needle))
+            };
+            // The DX runs split and, in the end, works you.
+            assert!(dx_says("UP"), "{seed}");
+            assert!(dx_says("KF0UWV 5NN"), "{seed}");
+            assert!(s
+                .transmissions
+                .iter()
+                .any(|t| t.from == Party::You && t.text.contains("TU")));
+            // The other chasers call over one another.
+            let overlapped = s
+                .transmissions
+                .iter()
+                .filter(|t| matches!(t.from, Party::Them(i) if i > 0))
+                .filter(|t| matches!(t.start, Start::WithPrevious { .. }))
+                .count();
+            assert!(overlapped >= 1, "{seed}");
+            // And none of them is the DX's own entity.
+            for st in &s.stations[1..] {
+                let h = callsign::home_of(&st.persona.call);
+                assert_ne!(h.map(|h| h.entity.dxcc), Some(home.entity.dxcc));
+            }
+        }
+    }
+
+    #[test]
+    fn a_rare_dx_operator_s_pileup_comes_from_everywhere() {
+        let mut c = cfg(ScenarioKind::DxPileup { callers: 12 }, 3);
+        c.my_call = Callsign::parse("FT5ZM").unwrap();
+        let s = generate(&c).unwrap();
+        let mut entities = std::collections::HashSet::new();
+        for st in &s.stations {
+            let h = callsign::home_of(&st.persona.call).unwrap();
+            assert_ne!(h.entity.name, "AMSTERDAM ST PAUL");
+            entities.insert(h.entity.dxcc);
+        }
+        assert!(entities.len() >= 4, "{entities:?}");
+    }
+
+    #[test]
+    fn a_top_band_contest_is_mostly_on_your_own_continent() {
+        let eu_share = |band: Option<HfBand>| {
+            let (mut eu, mut all) = (0, 0);
+            for seed in 0..40 {
+                let mut c = cfg(
+                    ScenarioKind::Contest {
+                        exchange: ContestExchange::CqZone,
+                        cut_numbers: false,
+                    },
+                    seed,
+                );
+                c.my_call = Callsign::parse("DL1ABC").unwrap();
+                c.difficulty.hf_band = band;
+                for st in generate(&c).unwrap().stations {
+                    if let Some(h) = callsign::home_of(&st.persona.call) {
+                        all += 1;
+                        if h.entity.continent == world::Continent::Eu {
+                            eu += 1;
+                        }
+                    }
+                }
+            }
+            eu as f64 / all as f64
+        };
+        assert!(eu_share(Some(HfBand::M160)) > eu_share(Some(HfBand::M10)));
+    }
+
+    #[test]
+    fn operators_have_names_from_their_part_of_the_world() {
+        use super::data::Names;
+        let names = |call: &str| -> Vec<String> {
+            (0..20)
+                .map(|seed| {
+                    let mut c = cfg(ScenarioKind::RagChew, seed);
+                    c.my_call = Callsign::parse(call).unwrap();
+                    generate(&c).unwrap().me.name
+                })
+                .collect()
+        };
+        for (call, pool) in [
+            ("JA1ABC", Names::Japanese),
+            ("DL1ABC", Names::German),
+            ("UA3ABC", Names::EastSlavic),
+            ("LU1ABC", Names::LatAm),
+            ("KF0UWV", Names::Us),
+        ] {
+            for n in names(call) {
+                assert!(pool.pool().contains(&n.as_str()), "{call}: {n}");
+            }
+        }
+    }
+
+    #[test]
+    fn call_area_operators_get_their_area_zone_and_region() {
+        let me = |call: &str| {
+            let mut c = cfg(ScenarioKind::RagChew, 2);
+            c.my_call = Callsign::parse(call).unwrap();
+            generate(&c).unwrap().me
+        };
+        // A Canadian sends a two-letter province, as a POTA exchange does.
+        let ve = me("VE7ABC");
+        assert_eq!((ve.zone, ve.region.as_str()), (3, "BC"));
+        assert_eq!(me("VE3ABC").zone, 4);
+        // Elsewhere the region is the entity; the zone is the call area's.
+        let ja = me("JA8ABC");
+        assert_eq!((ja.zone, ja.region.as_str()), (25, "JAPAN"));
+        let ua = me("UA0ABC");
+        assert_eq!((ua.zone, ua.region.as_str()), (19, "ASIATIC RUSSIA"));
     }
 
     #[cfg(feature = "serde")]
