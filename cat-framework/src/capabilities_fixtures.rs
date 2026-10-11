@@ -218,6 +218,30 @@ pub const TS570D: RadioCapabilities = RadioCapabilities {
         if_center_hz: 73_050_000,
         inverted: true,
     },
+    // ADR 0023 §8, from `ts570d/radio/src/ts570d_radio.rs` and the TS-570
+    // manual's CAT appendix. `PT` 00-12 → 400-1000 Hz in 50 Hz steps;
+    // `KS` 010-060; `VX` on/off (whether `SD0000` is Full is unverified,
+    // so Full is not claimed); `KY` takes 24 characters and reports its
+    // buffer busy/free; no documented stop; `PC` 005-100 W.
+    cw: Some(CwCapability {
+        pitch: Some(HzRange::stepped(400, 1_000, 50)),
+        pitch_writable: true,
+        keyer_wpm: Some(WpmRange::new(10, 60)),
+        keyer_wpm_writable: true,
+        break_in: &[BreakInKind::Off, BreakInKind::Semi],
+        send_text: Some(CwSendText {
+            max_chunk_chars: 24,
+            charset: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\"'()+,-./:=?",
+            pacing: CwPacing::BufferFlag,
+            abort: CwAbort::DrainOnly,
+            requires_break_in: None,
+        }),
+        tx_gate: Some(TxGateCapability {
+            low_power_raw: 5,
+            low_power_label: "5 W",
+            power_raw: RawRange::new(5, 100),
+        }),
+    }),
 };
 
 // ---------------------------------------------------------------------------
@@ -455,6 +479,19 @@ pub const FT991A: RadioCapabilities = RadioCapabilities {
     // FT-991A CAT manual: it has menu items for its own scope display, but
     // no command that returns scope DATA (ADR 0010, Context).
     signal: SignalSupport::None,
+    // ADR 0023 §8 and decision 2: read-only CW in v1. `KP` 00-75 →
+    // 300-1050 Hz in 10 Hz steps; `KS` 004-060; `BI` on/off (semi/full is
+    // a menu choice, not claimed here). The FT-991A has no free-text CAT
+    // command at all -- `KY` only plays stored memories -- so no send.
+    cw: Some(CwCapability {
+        pitch: Some(HzRange::stepped(300, 1_050, 10)),
+        pitch_writable: true,
+        keyer_wpm: Some(WpmRange::new(4, 60)),
+        keyer_wpm_writable: true,
+        break_in: &[BreakInKind::Off, BreakInKind::Semi],
+        send_text: None,
+        tx_gate: None,
+    }),
 };
 
 // ---------------------------------------------------------------------------
@@ -549,6 +586,38 @@ mod tests {
     // data instead, and would keep passing if the model strings were
     // swapped.
     // -----------------------------------------------------------------
+
+    #[test]
+    fn both_cw_descriptions_are_coherent() {
+        assert_eq!(TS570D.cw.unwrap().validate(), Ok(()));
+        assert_eq!(FT991A.cw.unwrap().validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_radio_that_cannot_send_text_is_still_a_cw_radio() {
+        // ADR 0023 decision 2: the FT-991A reports pitch and speed for a
+        // copy trainer, and offers no send. `cw: None` would have hidden
+        // the settings a copy trainer needs.
+        let ft = FT991A.cw.unwrap();
+        assert!(ft.send_text.is_none());
+        assert!(ft.tx_gate.is_none());
+        assert!(ft.pitch.unwrap().contains(700));
+
+        let ts = TS570D.cw.unwrap();
+        let send = ts.send_text.unwrap();
+        assert_eq!(send.abort, CwAbort::DrainOnly);
+        assert_eq!(send.pacing, CwPacing::BufferFlag);
+        assert!(send.accepts("cq de n0call k"));
+        assert!(!send.accepts("HI!"));
+    }
+
+    #[test]
+    fn the_same_pitch_is_settable_on_one_radio_and_not_the_other() {
+        // 710 Hz: on the FT-991A's 10 Hz grid, between the TS-570D's
+        // 50 Hz steps. Stepping is a range property, not a UI guess.
+        assert!(FT991A.cw.unwrap().pitch.unwrap().contains(710));
+        assert!(!TS570D.cw.unwrap().pitch.unwrap().contains(710));
+    }
 
     #[test]
     fn both_radios_are_compile_time_constants() {

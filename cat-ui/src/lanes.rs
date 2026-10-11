@@ -490,6 +490,7 @@ mod tests {
                 if_center_hz: 73_050_000,
                 inverted: true,
             },
+            cw: None,
         }
     }
 

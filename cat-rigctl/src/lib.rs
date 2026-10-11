@@ -76,6 +76,7 @@ mod rigctl_windows;
 
 pub mod native_bridge;
 mod protocol;
+pub mod ptt_gate;
 
 use std::io;
 use std::sync::Arc;
@@ -251,6 +252,59 @@ pub struct ServerConfig {
     pub raw_udp_port: Option<u16>,
     /// The Hamlib rigctld-compatible TCP listener, for WSJT-X.
     pub rigctl_port: Option<u16>,
+    /// Ends the server: [`StopHandle::stop`] makes `run_with_native`
+    /// stop any CW send, restore the radio and return.
+    ///
+    /// **Every server application must wire its Ctrl-C / SIGTERM handler
+    /// to this** (ADR 0023). This library installs no process-wide signal
+    /// handler of its own -- that would collide with an application's --
+    /// so a server killed by the default signal disposition runs no
+    /// restore at all and leaves CW power at the clamp.
+    pub stop: StopHandle,
+}
+
+/// The handle a raw TCP/UDP CAT listener uses: refused, frame by frame,
+/// from the moment a console asks to arm CW until the radio's restore is
+/// verified (ADR 0023 §3.9, decision 8). Raw CAT can key the radio
+/// (`TX;`) or undo the clamp (`PC100;`) in its own words, so the only
+/// radio-agnostic rule is to refuse all of it while CW is live.
+pub fn raw_cat_handle(
+    handle: &cat_server::BrokerHandle,
+    cw: Option<&Arc<native_bridge::NativeShared>>,
+) -> cat_server::BrokerHandle {
+    match cw {
+        Some(shared) => {
+            let shared = Arc::clone(shared);
+            handle.gated(Arc::new(move || {
+                shared.cw_blocks_external_ptt().then(|| {
+                    "raw CAT is refused while a console holds the CW transmit arm".to_string()
+                })
+            }))
+        }
+        None => handle.clone(),
+    }
+}
+
+/// A way to end a running server from anywhere: a signal handler, a
+/// console thread, a test. Clone it freely; every clone stops the same
+/// server.
+#[derive(Debug, Clone, Default)]
+pub struct StopHandle(Arc<std::sync::atomic::AtomicBool>);
+
+/// How often a running server checks its [`StopHandle`].
+const STOP_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+impl StopHandle {
+    /// Ask the server to stop. Returns at once; `run_with_native` then
+    /// settles CW (bounded by `native_bridge::CW_SHUTDOWN_TIMEOUT`) and
+    /// returns `Ok(())`.
+    pub fn stop(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 /// How often the state pump reads the radio while a console is watching.
@@ -355,13 +409,15 @@ where
     // and has no opinion about where a spectrum comes from.
     let native_shared = native.filter(|_| config.native_port.is_some());
     let serving_consoles = native_shared.is_some();
+    let cw_shared = native_shared.clone();
 
     let mut tasks = Vec::new();
 
     if let Some(port) = config.raw_tcp_port {
         let listener = TcpListener::bind(("0.0.0.0", port))?;
         info!("Raw CAT TCP listener bound on 0.0.0.0:{port}");
-        let handle = handle.clone();
+        // Silent while a console holds the CW arm (ADR 0023).
+        let handle = raw_cat_handle(&handle, native_shared.as_ref());
         let registry = Rc::new(RefCell::new(ClientRegistry::new()));
         tasks.push(monoio::spawn(async move {
             let result = cat_server::tcp::serve(listener, handle, registry).await;
@@ -375,7 +431,8 @@ where
     if let Some(port) = config.raw_udp_port {
         let socket = UdpSocket::bind(("0.0.0.0", port))?;
         info!("Raw CAT UDP listener bound on 0.0.0.0:{port}");
-        let handle = handle.clone();
+        // Silent while a console holds the CW arm (ADR 0023).
+        let handle = raw_cat_handle(&handle, native_shared.as_ref());
         let registry = Rc::new(RefCell::new(ClientRegistry::new()));
         tasks.push(monoio::spawn(async move {
             let result = cat_server::udp::serve(socket, handle, registry).await;
@@ -399,8 +456,13 @@ where
         tasks.push(monoio::spawn(async move {
             let result = match cache {
                 Some(shared) => {
+                    // Gated too: no rigctl `T 1` while a console holds the
+                    // CW arm (ADR 0023 decision 8).
                     let make = move |session| {
-                        crate::cached::Cached::new(make_radio(session), Arc::clone(&shared))
+                        crate::cached::Cached::new(
+                            crate::ptt_gate::PttGate::new(make_radio(session), Arc::clone(&shared)),
+                            Arc::clone(&shared),
+                        )
                     };
                     rigctl::serve(listener, handle, make).await
                 }
@@ -439,24 +501,38 @@ where
         monoio::spawn(native_bridge::pump(shared, radio, POLL_INTERVAL));
     }
 
-    if tasks.is_empty() {
-        // The console listener is a thread, not a task, so it never
-        // appears in `tasks`. A server bound only to `--console-port` is a
-        // perfectly ordinary server -- a GUI and nothing else -- and used
-        // to be rejected here as if nothing had been asked for.
-        if serving_consoles {
-            std::future::pending::<()>().await;
-        }
+    // The console listener is a thread, not a task, so it never appears
+    // in `tasks`. A server bound only to `--console-port` is a perfectly
+    // ordinary server -- a GUI and nothing else -- and used to be rejected
+    // here as if nothing had been asked for.
+    if tasks.is_empty() && !serving_consoles {
         return Err(io::Error::other(
             "server mode requires at least one of --raw-tcp-port/--raw-udp-port/--rigctl-port/--console-port",
         ));
     }
+
+    // The stop handle ends the wait below like a listener would, so a
+    // stop takes the same restore-and-return path as any other exit.
+    let stop = config.stop.clone();
+    tasks.push(monoio::spawn(async move {
+        while !stop.is_stopped() {
+            monoio::time::sleep(STOP_POLL).await;
+        }
+        info!("Stop requested; shutting the server down");
+        Ok(())
+    }));
 
     // Every listener loop above only returns on a fatal accept()/bind-time
     // error (or never, on the happy path) -- wait for the first one to end,
     // and propagate whatever it returned (already logged above on the
     // `Err` path) instead of hardcoding `Ok(())` regardless of outcome.
     let (result, _index, _remaining) = futures::future::select_all(tasks).await;
+    // The server is ending. Stop any CW send and restore the radio before
+    // returning, so no radio repo has to remember to (ADR 0023). The pump
+    // is a task on this runtime and keeps running while this yields.
+    if let Some(shared) = &cw_shared {
+        native_bridge::settle_cw(shared, native_bridge::CW_SHUTDOWN_TIMEOUT).await;
+    }
     result
 }
 
@@ -549,6 +625,7 @@ where
     // source is the app's business. `cat-rigctl` orchestrates listeners
     // and has no opinion about where a spectrum comes from.
     let native_shared = native.filter(|_| config.native_port.is_some());
+    let cw_shared = native_shared.clone();
 
     if let Some(shared) = native_shared.clone() {
         let handle = handle.clone();
@@ -582,7 +659,8 @@ where
     if let Some(port) = config.raw_tcp_port {
         let listener = TcpListener::bind(("0.0.0.0", port))?;
         info!("Raw CAT TCP listener bound on 0.0.0.0:{port}");
-        let handle = handle.clone();
+        // Silent while a console holds the CW arm (ADR 0023).
+        let handle = raw_cat_handle(&handle, native_shared.as_ref());
         let registry = Arc::new(Mutex::new(ClientRegistry::new()));
         let done_tx = done_tx.clone();
         listener_count += 1;
@@ -598,7 +676,8 @@ where
     if let Some(port) = config.raw_udp_port {
         let socket = UdpSocket::bind(("0.0.0.0", port))?;
         info!("Raw CAT UDP listener bound on 0.0.0.0:{port}");
-        let handle = handle.clone();
+        // Silent while a console holds the CW arm (ADR 0023).
+        let handle = raw_cat_handle(&handle, native_shared.as_ref());
         let registry = Arc::new(Mutex::new(ClientRegistry::new()));
         let done_tx = done_tx.clone();
         listener_count += 1;
@@ -618,8 +697,19 @@ where
         let make_radio = make_radio.clone();
         let done_tx = done_tx.clone();
         listener_count += 1;
+        // No rigctl `T 1` while a console holds the CW arm (ADR 0023
+        // decision 8). Not wrapped in `Cached` here, so gated on its own.
+        let gate = native_shared.clone();
         thread::spawn(move || {
-            let result = rigctl_windows::serve(listener, handle, make_radio);
+            let result = match gate {
+                Some(shared) => {
+                    let make = move |session| {
+                        crate::ptt_gate::PttGate::new(make_radio(session), Arc::clone(&shared))
+                    };
+                    rigctl_windows::serve(listener, handle, make)
+                }
+                None => rigctl_windows::serve(listener, handle, make_radio),
+            };
             if let Err(e) = &result {
                 error!("Rigctld-compatible TCP listener on 0.0.0.0:{port} failed: {e}");
             }
@@ -632,14 +722,35 @@ where
             "server mode requires at least one of --raw-tcp-port/--raw-udp-port/--rigctl-port",
         ));
     }
+
+    // The stop handle ends the wait below like a listener would, so a
+    // stop takes the same restore-and-return path as any other exit.
+    {
+        let stop = config.stop.clone();
+        let done_tx = done_tx.clone();
+        thread::spawn(move || {
+            while !stop.is_stopped() {
+                thread::sleep(STOP_POLL);
+            }
+            info!("Stop requested; shutting the server down");
+            let _ = done_tx.send(Ok(()));
+        });
+    }
     drop(done_tx);
 
     // Wait for the first listener thread to end (accept()/bind-time
     // failure, or never on the happy path), and propagate its result -- the
     // `std` analog of the Linux path's `futures::future::select_all`.
-    done_rx
+    let result = done_rx
         .recv()
-        .unwrap_or(Err(io::Error::other("all listener threads exited")))
+        .unwrap_or(Err(io::Error::other("all listener threads exited")));
+    // The server is ending. Stop any CW send and restore the radio before
+    // returning (ADR 0023); the pump owns its own thread here and keeps
+    // running while this one waits.
+    if let Some(shared) = &cw_shared {
+        shared.settle_cw_blocking(native_bridge::CW_SHUTDOWN_TIMEOUT);
+    }
+    result
 }
 
 // Gated to Linux: exercises the `async fn run` implementation via

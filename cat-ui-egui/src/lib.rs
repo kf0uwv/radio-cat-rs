@@ -60,6 +60,8 @@ pub mod af;
 // duplicating that per radio would have guaranteed three consoles that
 // drifted apart.
 pub mod app;
+/// CW state (ADR 0023), drawn from `cat_ui::cw`.
+pub mod cw;
 pub mod devices;
 pub mod meter;
 pub mod readout;

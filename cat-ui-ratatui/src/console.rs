@@ -270,7 +270,7 @@ pub fn draw(
             draw_rail(f, r.rail, radio, view, caps);
             let body = draw_content(f, r.content, radio, view, caps);
             draw_reference(f, r.reference, radio);
-            draw_status(f, r.status, radio, view);
+            draw_status(f, r.status, radio, view, caps);
             draw_command(f, r.command, view);
             body
         }
@@ -401,7 +401,7 @@ fn draw_layout(
                 }
                 body = r;
             }
-            PanelKind::Status => draw_status(f, r, radio, view),
+            PanelKind::Status => draw_status(f, r, radio, view, caps),
             PanelKind::CommandLine => draw_command(f, r, view),
             // Skipped rather than approximated: drawing something else
             // where a panel was asked for is worse than a gap, because a
@@ -413,10 +413,79 @@ fn draw_layout(
             PanelKind::BandBar => draw_band_bar(f, r, radio, caps),
             PanelKind::ModeBar => draw_mode_bar(f, r, radio, caps),
             PanelKind::Blank => {}
+            // The shared CW panel (ADR 0023), under its reserved name.
+            PanelKind::Custom(ref name) if name == cat_layout::CW_PANEL => {
+                draw_cw(f, r, radio, caps)
+            }
             _ => {}
         }
     }
     body
+}
+
+/// How each CW tone reads on a terminal.
+fn cw_style(tone: cat_ui::cw::Tone) -> Style {
+    use cat_ui::cw::Tone;
+    match tone {
+        Tone::Quiet => Style::default().fg(DIM),
+        Tone::Normal => Style::default().fg(Color::White),
+        Tone::Active => Style::default()
+            .fg(Color::LightRed)
+            .add_modifier(Modifier::BOLD),
+        Tone::Warning => Style::default().fg(SETTING),
+        Tone::Alarm => Style::default()
+            .fg(Color::White)
+            .bg(Color::Red)
+            .add_modifier(Modifier::BOLD),
+    }
+}
+
+/// The shared CW panel: the alert if there is one, then settings, the
+/// arm, and the sender with a progress bar.
+fn draw_cw(f: &mut Frame, area: Rect, radio: &RadioDisplay, caps: &cat_native::CapabilitiesWire) {
+    let Some(state) = &radio.cw else {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "no CW control on this server",
+                Style::default().fg(DIM),
+            )),
+            area,
+        );
+        return;
+    };
+    let panel = cat_ui::cw::CwPanel::new(state, caps.cw.as_ref());
+    let mut lines = Vec::new();
+    if let Some(alert) = &panel.alert {
+        lines.push(Line::from(Span::styled(
+            alert.clone(),
+            cw_style(cat_ui::cw::Tone::Alarm),
+        )));
+    }
+    if let Some(owed) = &panel.id_owed {
+        lines.push(Line::from(Span::styled(
+            owed.clone(),
+            cw_style(cat_ui::cw::Tone::Warning).add_modifier(Modifier::BOLD),
+        )));
+    }
+    for line in panel.lines() {
+        let mut spans = vec![
+            Span::styled(format!("{:<5}", line.label), Style::default().fg(DIM)),
+            Span::styled(line.text.clone(), cw_style(line.tone)),
+        ];
+        if line.label == "SEND" {
+            if let Some(fraction) = panel.progress {
+                const WIDTH: usize = 20;
+                let filled = (fraction * WIDTH as f32).round() as usize;
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    format!("{}{}", "█".repeat(filled), "░".repeat(WIDTH - filled)),
+                    cw_style(line.tone),
+                ));
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 /// The smallest rect containing both.
@@ -1441,7 +1510,13 @@ fn draw_reference(f: &mut Frame, area: Rect, radio: &RadioDisplay) {
 
 // ── status strip and command line ───────────────────────────────────────
 
-fn draw_status(f: &mut Frame, area: Rect, radio: &RadioDisplay, view: &ConsoleView) {
+fn draw_status(
+    f: &mut Frame,
+    area: Rect,
+    radio: &RadioDisplay,
+    view: &ConsoleView,
+    caps: &cat_native::CapabilitiesWire,
+) {
     let link = if radio.initializing {
         Span::styled("connecting", Style::default().fg(SETTING))
     } else if radio.connected {
@@ -1453,6 +1528,22 @@ fn draw_status(f: &mut Frame, area: Rect, radio: &RadioDisplay, view: &ConsoleVi
         )
     };
     let mut spans = vec![link, Span::raw("  ")];
+    // CW first, in every layout (ADR 0023): a failed restore replaces
+    // whatever else the strip would say, and an arm or a send rides in
+    // front of it.
+    let cw = radio
+        .cw
+        .as_ref()
+        .and_then(|state| cat_ui::cw::CwPanel::new(state, caps.cw.as_ref()).status());
+    if let Some((text, tone)) = cw {
+        let alarm = tone == cat_ui::cw::Tone::Alarm;
+        spans.push(Span::styled(text, cw_style(tone)));
+        if alarm {
+            f.render_widget(Paragraph::new(Line::from(spans)), area);
+            return;
+        }
+        spans.push(Span::raw("  "));
+    }
     if let Some(msg) = &view.message {
         spans.push(Span::styled(msg.clone(), Style::default().fg(Color::White)));
     } else if let Some(err) = radio.poll_errors.first() {
@@ -2771,4 +2862,146 @@ mod picker_key_tests {
 #[cfg(test)]
 fn test_caps() -> cat_native::CapabilitiesWire {
     cat_native::testing::stub_capabilities()
+}
+
+#[cfg(test)]
+mod cw_tests {
+    use super::*;
+    use cat_native::{ArmedState, BreakInKind, CwState, RestoreStatus, SenderState};
+
+    fn cw(armed: bool, mine: bool, restore: bool) -> CwState {
+        CwState {
+            pitch_hz: Some(600),
+            keyer_wpm: Some(20),
+            break_in: Some(BreakInKind::Semi),
+            armed: armed.then(|| ArmedState {
+                callsign: "N0CALL".into(),
+                power_raw: 5,
+                mine,
+            }),
+            sender: SenderState::Sending {
+                job: 2,
+                sent_chars: 10,
+                total_chars: 20,
+            },
+            restore: restore.then(|| RestoreStatus {
+                attempts: 3,
+                last_error: "PC write timed out".into(),
+            }),
+            id_owed: None,
+        }
+    }
+
+    fn render(w: u16, h: u16, paint: impl FnOnce(&mut Frame)) -> String {
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(paint).unwrap();
+        let buf = term.backend().buffer();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buf.get(x, y).symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_cw_panel_shows_settings_arm_and_progress() {
+        let radio = RadioDisplay {
+            cw: Some(cw(true, true, false)),
+            ..RadioDisplay::default()
+        };
+        let caps = cat_ui::demo::full();
+        let out = render(70, 6, |f| draw_cw(f, f.size(), &radio, &caps));
+        assert!(out.contains("600 Hz · 20 wpm · break-in semi"), "{out}");
+        assert!(out.contains("ARMED by this console · N0CALL"), "{out}");
+        assert!(out.contains("sending #2 · 10/20"), "{out}");
+    }
+
+    #[test]
+    fn a_cw_panel_with_nothing_to_show_says_why() {
+        let radio = RadioDisplay::default();
+        let caps = cat_ui::demo::full();
+        let out = render(60, 4, |f| draw_cw(f, f.size(), &radio, &caps));
+        assert!(out.contains("no CW control"), "{out}");
+    }
+
+    #[test]
+    fn a_failed_restore_takes_the_status_strip_over_any_message() {
+        let radio = RadioDisplay {
+            cw: Some(cw(true, true, true)),
+            ..RadioDisplay::default()
+        };
+        let view = ConsoleView {
+            message: Some("frequency set".into()),
+            ..ConsoleView::default()
+        };
+        let out = render(200, 1, |f| {
+            draw_status(f, f.size(), &radio, &view, &cat_ui::demo::full())
+        });
+        assert!(out.contains("CW RESTORE FAILED (3 attempts)"), "{out}");
+        assert!(!out.contains("frequency set"), "{out}");
+    }
+
+    #[test]
+    fn an_armed_console_says_so_in_the_strip_in_any_layout() {
+        let radio = RadioDisplay {
+            cw: Some(CwState {
+                sender: SenderState::Idle,
+                ..cw(true, false, false)
+            }),
+            ..RadioDisplay::default()
+        };
+        let out = render(160, 1, |f| {
+            draw_status(
+                f,
+                f.size(),
+                &radio,
+                &ConsoleView::default(),
+                &cat_ui::demo::full(),
+            )
+        });
+        assert!(
+            out.contains("CW armed by another console · N0CALL"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn without_cw_the_strip_is_unchanged() {
+        let radio = RadioDisplay::default();
+        let out = render(120, 1, |f| {
+            draw_status(
+                f,
+                f.size(),
+                &radio,
+                &ConsoleView::default(),
+                &cat_ui::demo::full(),
+            )
+        });
+        assert!(!out.contains("CW"), "{out}");
+    }
+
+    #[test]
+    fn an_owed_id_is_shown_in_the_panel_and_the_strip() {
+        let radio = RadioDisplay {
+            cw: Some(CwState {
+                armed: None,
+                sender: SenderState::Idle,
+                restore: None,
+                id_owed: Some("N0CALL".into()),
+                ..cw(false, false, false)
+            }),
+            ..RadioDisplay::default()
+        };
+        let caps = cat_ui::demo::full();
+        let panel = render(100, 6, |f| draw_cw(f, f.size(), &radio, &caps));
+        assert!(panel.contains("ID OWED"), "{panel}");
+        let strip = render(200, 1, |f| {
+            draw_status(f, f.size(), &radio, &ConsoleView::default(), &caps)
+        });
+        assert!(strip.contains("ID OWED: N0CALL"), "{strip}");
+    }
 }

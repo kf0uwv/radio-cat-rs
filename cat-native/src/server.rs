@@ -30,7 +30,8 @@
 //! already in `NativeSession` and does not get reimplemented per host.
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -40,6 +41,64 @@ use crate::{
     decode_frame, encode_frame, ClientMessage, Command, ErrorCode, FrameKind, NativeSession,
     RadioCapabilities, RadioState, ServerMessage,
 };
+
+/// One console connection, as [`serve`] identifies it to a host.
+///
+/// Opaque and process-unique: two listeners in one process never hand out
+/// the same id, and an id is never reused. A host keys per-console state
+/// on it -- above all the CW transmit arm, which has exactly one owner
+/// and must be released when *that* console goes (ADR 0023 §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ConsoleId(u64);
+
+impl ConsoleId {
+    fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// An id from a number a host already has.
+    ///
+    /// For a host that serves consoles over something other than
+    /// [`serve`], and for tests of per-console state. Ids from [`serve`]
+    /// start at 1 and are never reused; a host mixing the two must keep
+    /// its own numbers out of that range.
+    pub const fn from_raw(n: u64) -> Self {
+        Self(n)
+    }
+
+    /// The number behind the id, for logs.
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for ConsoleId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "console#{}", self.0)
+    }
+}
+
+/// A host's refusal of a command, with the code the client is sent.
+///
+/// [`RadioHost::apply`]'s `String` becomes [`ErrorCode::OutOfRange`], as
+/// it always has. A host that must say "you may not" rather than "not
+/// that value" -- the CW arm held by someone else -- uses
+/// [`ErrorCode::Forbidden`] through [`RadioHost::apply_as`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostRefusal {
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+impl From<String> for HostRefusal {
+    fn from(message: String) -> Self {
+        Self {
+            code: ErrorCode::OutOfRange,
+            message,
+        }
+    }
+}
 
 /// The radio behind a [`serve`] listener.
 ///
@@ -64,6 +123,26 @@ pub trait RadioHost: Send + Sync + 'static {
     /// the thread unwinding. Paired with `console_attached` by a guard, so
     /// a count cannot leak.
     fn console_detached(&self) {}
+
+    /// [`RadioHost::console_attached`], naming the console and its peer.
+    ///
+    /// Defaults to `console_attached`, so a host that does not care which
+    /// console is which is unaffected.
+    fn console_attached_as(&self, _id: ConsoleId, _peer: SocketAddr) {
+        self.console_attached();
+    }
+
+    /// [`RadioHost::console_detached`], naming the console. Called exactly
+    /// once per `console_attached_as`, however the connection ended.
+    fn console_detached_as(&self, _id: ConsoleId) {
+        self.console_detached();
+    }
+
+    /// [`RadioHost::state`], for one console -- so a host can fill fields
+    /// that differ per reader (`ArmedState::mine`).
+    fn state_as(&self, _id: ConsoleId) -> RadioState {
+        self.state()
+    }
 
     /// What the radio is doing right now.
     fn state(&self) -> RadioState;
@@ -115,6 +194,25 @@ pub trait RadioHost: Send + Sync + 'static {
     /// the other program holding the dongle.
     fn apply(&self, command: &Command) -> Result<(), String>;
 
+    /// [`RadioHost::apply`], naming the console that sent it, and able to
+    /// refuse with a code of its own. Defaults to `apply`, with a refusal
+    /// sent as [`ErrorCode::OutOfRange`] exactly as before.
+    fn apply_as(&self, _id: ConsoleId, command: &Command) -> Result<(), HostRefusal> {
+        self.apply(command).map_err(HostRefusal::from)
+    }
+
+    /// Whether this host runs ADR 0023's CW supervisor: arm preconditions,
+    /// power clamp and read-back, key-down cap and callsign ID.
+    ///
+    /// `false` -- the default -- and this server offers no CW: the
+    /// handshake publishes none, and no CW command is ever passed to
+    /// [`RadioHost::apply`]. Return `true` only once every one of those
+    /// rules is enforced, because from then on `apply` receives commands
+    /// that key a transmitter.
+    fn serves_cw(&self) -> bool {
+        false
+    }
+
     /// What signal hardware this machine can see, if this host offers
     /// device selection at all.
     ///
@@ -165,21 +263,23 @@ const PUMP_INTERVAL: Duration = Duration::from_millis(30);
 /// stalls only itself.
 pub fn serve<H: RadioHost>(listener: TcpListener, host: Arc<H>) -> std::io::Result<()> {
     loop {
-        let (stream, _) = listener.accept()?;
+        let (stream, peer) = listener.accept()?;
         let host = Arc::clone(&host);
+        let id = ConsoleId::next();
         std::thread::spawn(move || {
             // A guard rather than a call at each exit: `serve_one` returns
             // early on several error paths, and a leaked count would leave
-            // the radio polled at display rate forever.
-            struct Attached<'a, H: RadioHost>(&'a H);
+            // the radio polled at display rate forever -- or, worse, a CW
+            // arm held by a console that is no longer there.
+            struct Attached<'a, H: RadioHost>(&'a H, ConsoleId);
             impl<H: RadioHost> Drop for Attached<'_, H> {
                 fn drop(&mut self) {
-                    self.0.console_detached();
+                    self.0.console_detached_as(self.1);
                 }
             }
-            host.console_attached();
-            let _guard = Attached(host.as_ref());
-            let _ = serve_one(stream, Arc::clone(&host));
+            host.console_attached_as(id, peer);
+            let _guard = Attached(host.as_ref(), id);
+            let _ = serve_one(stream, Arc::clone(&host), id);
         });
     }
 }
@@ -209,7 +309,11 @@ fn wake_for(last_display: Instant, interval: Duration) -> Duration {
         .clamp(FLOOR, PUMP_INTERVAL)
 }
 
-fn serve_one<H: RadioHost>(mut stream: TcpStream, host: Arc<H>) -> std::io::Result<()> {
+fn serve_one<H: RadioHost>(
+    mut stream: TcpStream,
+    host: Arc<H>,
+    id: ConsoleId,
+) -> std::io::Result<()> {
     stream.set_nodelay(true)?;
     // Bounded so the loop comes back to the spectrum pump even when the
     // client is silent. Without this a connection that only listens would
@@ -223,6 +327,7 @@ fn serve_one<H: RadioHost>(mut stream: TcpStream, host: Arc<H>) -> std::io::Resu
     // arranging.
     session.set_layout(host.layout());
     session.set_theme(host.theme());
+    session.set_serves_cw(host.serves_cw());
     let mut pending: Vec<u8> = Vec::new();
     let mut buf = [0u8; 8192];
     let mut last_display = Instant::now();
@@ -272,7 +377,7 @@ fn serve_one<H: RadioHost>(mut stream: TcpStream, host: Arc<H>) -> std::io::Resu
                         // State is refreshed before every message, so a
                         // read is answered from now rather than from
                         // whenever the last client happened to ask.
-                        session.publish_state(host.state());
+                        session.publish_state(host.state_as(id));
                         // Republished per message for the same reason as
                         // state: an answer assembled from whenever the
                         // last client happened to ask would describe a
@@ -280,19 +385,27 @@ fn serve_one<H: RadioHost>(mut stream: TcpStream, host: Arc<H>) -> std::io::Resu
                         if let Some(devices) = host.devices() {
                             session.publish_devices(devices);
                         }
+                        // Asked afresh for every message: a host may start
+                        // serving CW after this console connected (the pump
+                        // opts in on its first cycle), and an abort sent
+                        // then must still reach it.
+                        session.set_serves_cw(host.serves_cw());
                         let reply = session.handle(message.clone());
                         // Only apply what the session accepted. A command
                         // it refused never reaches the radio, which is the
                         // point of validating against capabilities.
-                        if let (ClientMessage::Command(command), ServerMessage::Ack) =
-                            (&message, &reply)
-                        {
-                            match host.apply(command) {
+                        let applies = match (&message, &reply) {
+                            (ClientMessage::Command(command), ServerMessage::Ack) => {
+                                session.reaches_host(command).then_some(command)
+                            }
+                            _ => None,
+                        };
+                        if let Some(command) = applies {
+                            match host.apply_as(id, command) {
                                 Ok(()) => reply,
-                                Err(message) => ServerMessage::Error {
-                                    code: ErrorCode::OutOfRange,
-                                    message,
-                                },
+                                Err(HostRefusal { code, message }) => {
+                                    ServerMessage::Error { code, message }
+                                }
                             }
                         } else {
                             reply

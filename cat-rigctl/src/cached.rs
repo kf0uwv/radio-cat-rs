@@ -303,6 +303,7 @@ mod tests {
         memory: None,
         menu: None,
         signal: SignalSupport::None,
+        cw: None,
     };
 
     /// What the fake radio was actually asked to do.
@@ -444,6 +445,7 @@ mod tests {
             filter_width_hz: None,
             meters: Vec::new(),
             levels: None,
+            cw: None,
         }
     }
 

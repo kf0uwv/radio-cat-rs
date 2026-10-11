@@ -110,6 +110,10 @@ pub struct Console {
     waterfall_uploaded: Option<u64>,
     /// The occasional settings, once the server has read them.
     levels: Option<cat_native::RadioLevels>,
+    /// CW settings and the transmit session, from a server that serves CW
+    /// (ADR 0023). Replaced, not merged, on every state: an arm released
+    /// elsewhere must disappear here.
+    cw: Option<cat_native::CwState>,
     /// When the waterfall texture last went to the GPU.
     ///
     /// Spectrum frames arrive at about 29 a second, so a
@@ -200,6 +204,7 @@ impl Console {
             command_open: false,
             command_text: String::new(),
             status: String::new(),
+            cw: None,
             last_state_request: std::time::Instant::now(),
             offline_capabilities: None,
             waterfall_texture: None,
@@ -400,6 +405,7 @@ impl Console {
             if state.levels.is_some() {
                 self.levels = state.levels;
             }
+            self.cw = state.cw.clone();
             self.readout.vfo_a_hz.confirm(state.vfo_a_hz);
             self.readout.mode.confirm(state.mode);
             self.readout.split.confirm(state.split);
@@ -646,6 +652,13 @@ impl Console {
             // is no pending value to show. The source panel reflects the
             // attach when the server's next state says it happened.
             Command::AttachDevice { .. } => {}
+            // The console sends no CW commands yet; CW state display is
+            // ADR 0023's T7c, and it reads `RadioState.cw`, not this.
+            Command::SetKeyerSpeed { .. }
+            | Command::ArmCwTransmit { .. }
+            | Command::SendCwText { .. }
+            | Command::AbortCw
+            | Command::DisarmCw => {}
         }
     }
 }
@@ -941,12 +954,43 @@ impl Console {
             PanelKind::Spectrum => self.spectrum(ui),
             PanelKind::Workspace => self.workspace(ui, pending),
             PanelKind::Status => {
-                ui.label(dim(self.status.clone()));
+                // CW first, in every layout (ADR 0023).
+                let cap = self.capabilities().and_then(|c| c.cw.as_ref());
+                let (text, tone) = crate::cw::status_line(&self.status, self.cw.as_ref(), cap);
+                match tone {
+                    Some(cat_ui::cw::Tone::Alarm) => {
+                        egui::Frame::none()
+                            .fill(theme::pal().warning)
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(text)
+                                        .color(theme::pal().bg)
+                                        .strong()
+                                        .size(theme::SIZE_BODY),
+                                );
+                            });
+                    }
+                    Some(tone) => {
+                        ui.label(
+                            RichText::new(text)
+                                .color(crate::cw::colour(tone, &theme::pal()))
+                                .size(theme::SIZE_BODY),
+                        );
+                    }
+                    None => {
+                        ui.label(dim(text));
+                    }
+                }
             }
             PanelKind::CommandLine => self.command_line(ui),
             PanelKind::BandBar => self.band_bar(ui),
             PanelKind::ModeBar => self.mode_bar(ui),
             PanelKind::Blank => {}
+            // The shared CW panel, under its reserved name (ADR 0023).
+            PanelKind::Custom(name) if name == cat_layout::CW_PANEL => {
+                let cap = self.capabilities().and_then(|c| c.cw.clone());
+                crate::cw::panel(ui, self.cw.as_ref(), cap.as_ref());
+            }
             // A widget this radio brought with it, if this build has one.
             PanelKind::Custom(name) => match self.widgets.get(name) {
                 Some(painter) => {

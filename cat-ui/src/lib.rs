@@ -57,6 +57,8 @@ pub mod band;
 /// own tab list from the same capability document would agree until one of
 /// them was edited.
 pub mod command;
+/// CW state for both consoles (ADR 0023 decision 12).
+pub mod cw;
 pub mod demo;
 pub mod display;
 pub mod format;

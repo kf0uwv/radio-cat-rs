@@ -44,7 +44,7 @@ use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cat_signal::SpectrumFrame;
 
@@ -71,6 +71,14 @@ pub enum ClientError {
     },
     /// The peer closed the connection.
     Closed,
+    /// The server refused the command, with its reason (ADR 0023: a CW
+    /// arm held by another console is `Forbidden`, a speed outside the
+    /// radio's range `OutOfRange`). A server that predates a command, or
+    /// does not offer it, is `Unsupported`.
+    Refused {
+        code: crate::ErrorCode,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for ClientError {
@@ -87,6 +95,7 @@ impl std::fmt::Display for ClientError {
                 )
             }
             ClientError::Closed => write!(f, "connection closed by the server"),
+            ClientError::Refused { code, message } => write!(f, "refused ({code:?}): {message}"),
         }
     }
 }
@@ -179,6 +188,11 @@ pub struct Connection {
     /// The newest audio frame, on the same newest-wins terms.
     latest_audio: Option<cat_signal::AudioFrame>,
     streams: Streams,
+    /// While `Some`, every read is armed with the time left until this
+    /// instant, and expiry is an error: one bound over a whole handshake,
+    /// which a server dripping bytes cannot stretch. `None` outside
+    /// [`Connection::connect_timeout`].
+    deadline: Option<Instant>,
 }
 
 impl Connection {
@@ -192,10 +206,50 @@ impl Connection {
         // Nagle would batch small control writes behind each other, which
         // on a request/response protocol is latency for no benefit.
         stream.set_nodelay(true)?;
-        Self::handshake(stream, streams)
+        Self::handshake(stream, streams, None)
     }
 
-    fn handshake(stream: TcpStream, streams: Streams) -> Result<Self> {
+    /// [`Connection::connect`], with connecting **and** the handshake
+    /// bounded together by `timeout`.
+    ///
+    /// For a client that must not hang: a server that accepts and then
+    /// never answers `Hello` -- or answers a byte at a time -- costs at
+    /// most `timeout`, and is reported as `ClientError::Io` with kind
+    /// `TimedOut`. A refused connection fails as soon as the OS says so.
+    /// Once connected the bound is gone: the connection behaves exactly
+    /// as one from `connect`.
+    pub fn connect_timeout<A: ToSocketAddrs>(
+        addr: A,
+        streams: Streams,
+        timeout: Duration,
+    ) -> Result<Self> {
+        let deadline = Instant::now() + timeout;
+        let mut last = None;
+        for target in addr.to_socket_addrs()? {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            match TcpStream::connect_timeout(&target, left) {
+                Ok(stream) => {
+                    stream.set_nodelay(true)?;
+                    stream.set_write_timeout(Some(left))?;
+                    let conn = Self::handshake(stream, streams, Some(deadline))
+                        .map_err(|e| timeout_error(e, timeout))?;
+                    conn.stream.set_read_timeout(None)?;
+                    conn.stream.set_write_timeout(None)?;
+                    return Ok(conn);
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(timeout_error(
+            ClientError::Io(last.unwrap_or_else(|| io::ErrorKind::TimedOut.into())),
+            timeout,
+        ))
+    }
+
+    fn handshake(stream: TcpStream, streams: Streams, deadline: Option<Instant>) -> Result<Self> {
         let mut conn = Self {
             stream,
             capabilities: placeholder_capabilities(),
@@ -204,6 +258,7 @@ impl Connection {
             latest_spectrum: None,
             latest_audio: None,
             streams,
+            deadline,
         };
         conn.send(&ClientMessage::Hello {
             version: PROTOCOL_VERSION,
@@ -223,6 +278,7 @@ impl Connection {
                     });
                 }
                 conn.capabilities = *capabilities;
+                conn.deadline = None;
                 Ok(conn)
             }
             other => Err(ClientError::Unexpected(other)),
@@ -310,6 +366,84 @@ impl Connection {
             ServerMessage::Ack => Ok(()),
             other => Err(ClientError::Unexpected(other)),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // CW (ADR 0023)
+    //
+    // Never probe: a server whose `Welcome` carried no `cw` is not asked,
+    // and every call but `abort_cw` is refused here without a byte sent.
+    // -----------------------------------------------------------------
+
+    /// This server's CW control, or `None` if it offers none -- whether
+    /// the radio has none, the server predates CW, or the host does not
+    /// supervise it. Treat all three alike.
+    pub fn cw_capability(&self) -> Option<&crate::CwCapabilityWire> {
+        self.capabilities.cw.as_ref()
+    }
+
+    /// CW settings and the transmit session, from one `ReadState`.
+    pub fn cw_state(&mut self) -> Result<Option<crate::CwState>> {
+        if self.cw_capability().is_none() {
+            return Ok(None);
+        }
+        Ok(self.read_state()?.cw)
+    }
+
+    /// Set the radio's keyer speed.
+    pub fn set_keyer_speed(&mut self, wpm: u16) -> Result<()> {
+        self.cw_command(Command::SetKeyerSpeed { wpm })
+    }
+
+    /// Take the CW transmit arm. `Ok` once the server has clamped power
+    /// and read it back.
+    ///
+    /// `dummy_load_acknowledged` is the operator's answer to a question
+    /// the trainer must ask every session; it is an explicit argument so
+    /// no caller can arm by default.
+    pub fn arm_cw(
+        &mut self,
+        callsign: &str,
+        dummy_load_acknowledged: bool,
+        key_down_cap_s: Option<u16>,
+    ) -> Result<()> {
+        self.cw_command(Command::ArmCwTransmit {
+            callsign: callsign.to_string(),
+            dummy_load_acknowledged,
+            key_down_cap_s,
+        })
+    }
+
+    /// Queue text for the radio's keyer. `Ok` means queued; progress
+    /// rides [`crate::CwState::sender`].
+    pub fn send_cw(&mut self, text: &str) -> Result<()> {
+        self.cw_command(Command::SendCwText {
+            text: text.to_string(),
+        })
+    }
+
+    /// Stop any CW send now. A server without CW has nothing to stop and
+    /// is not asked.
+    pub fn abort_cw(&mut self) -> Result<()> {
+        if self.cw_capability().is_none() {
+            return Ok(());
+        }
+        cw_reply(self.command(Command::AbortCw)?)
+    }
+
+    /// Release the arm. `Ok` once the server has restored and read back.
+    pub fn disarm_cw(&mut self) -> Result<()> {
+        self.cw_command(Command::DisarmCw)
+    }
+
+    fn cw_command(&mut self, command: Command) -> Result<()> {
+        if self.cw_capability().is_none() {
+            return Err(ClientError::Refused {
+                code: crate::ErrorCode::Unsupported,
+                message: "this server does not offer CW control".to_string(),
+            });
+        }
+        cw_reply(self.command(command)?)
     }
 
     /// Round-trip a ping. Useful as a liveness check that changes nothing.
@@ -431,6 +565,13 @@ impl Connection {
     /// differently — so all three become [`ClientError::Closed`] rather
     /// than making every caller match three ways to say one thing.
     fn fill(&mut self) -> Result<()> {
+        if let Some(deadline) = self.deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(ClientError::Io(io::ErrorKind::TimedOut.into()));
+            }
+            self.stream.set_read_timeout(Some(left))?;
+        }
         let mut buf = [0u8; 16 * 1024];
         match self.stream.read(&mut buf) {
             Ok(0) => Err(ClientError::Closed),
@@ -451,6 +592,43 @@ impl Connection {
             }
             Err(e) => Err(ClientError::Io(e)),
         }
+    }
+}
+
+/// A connect-and-handshake that ran out of time, said as one. A read
+/// timeout surfaces as `WouldBlock` on some platforms and `TimedOut` on
+/// others; a caller should not have to know which.
+fn timeout_error(e: ClientError, timeout: Duration) -> ClientError {
+    match e {
+        ClientError::Io(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) =>
+        {
+            ClientError::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("connect and handshake did not finish within {timeout:?}"),
+            ))
+        }
+        other => other,
+    }
+}
+
+/// A CW command's reply as a result. A server that cannot parse the
+/// command predates it, which a caller treats as "not offered".
+fn cw_reply(reply: ServerMessage) -> Result<()> {
+    match reply {
+        ServerMessage::Ack => Ok(()),
+        ServerMessage::Error {
+            code: crate::ErrorCode::Malformed,
+            ..
+        } => Err(ClientError::Refused {
+            code: crate::ErrorCode::Unsupported,
+            message: "this server predates CW control".to_string(),
+        }),
+        ServerMessage::Error { code, message } => Err(ClientError::Refused { code, message }),
+        other => Err(ClientError::Unexpected(other)),
     }
 }
 
@@ -483,6 +661,7 @@ fn placeholder_capabilities() -> CapabilitiesWire {
         layout: None,
         theme: None,
         installation: cat_framework::installation::Installation::default(),
+        cw: None,
     }
 }
 
@@ -541,7 +720,19 @@ impl Client {
     /// told the radio's capabilities, so a GUI never has to render an
     /// "unknown radio" state that exists for a few milliseconds.
     pub fn connect<A: ToSocketAddrs>(addr: A, streams: Streams) -> Result<Self> {
-        let mut conn = Connection::connect(addr, streams)?;
+        Self::start(Connection::connect(addr, streams)?)
+    }
+
+    /// [`Client::connect`], bounded as [`Connection::connect_timeout`].
+    pub fn connect_timeout<A: ToSocketAddrs>(
+        addr: A,
+        streams: Streams,
+        timeout: Duration,
+    ) -> Result<Self> {
+        Self::start(Connection::connect_timeout(addr, streams, timeout)?)
+    }
+
+    fn start(mut conn: Connection) -> Result<Self> {
         let capabilities = conn.capabilities().clone();
 
         let (command_tx, command_rx) = mpsc::channel::<ClientMessage>();
@@ -623,6 +814,12 @@ impl Client {
         &self.capabilities
     }
 
+    /// This server's CW control, if it offers any. See
+    /// [`Connection::cw_capability`].
+    pub fn cw_capability(&self) -> Option<&crate::CwCapabilityWire> {
+        self.capabilities.cw.as_ref()
+    }
+
     /// Queue a command. Returns `false` if the connection has ended.
     pub fn send(&self, command: Command) -> bool {
         self.commands.send(ClientMessage::Command(command)).is_ok()
@@ -687,5 +884,32 @@ impl Client {
     /// and not a channel.
     pub fn spectrum_slot(&self) -> Arc<Mutex<Option<SpectrumFrame>>> {
         Arc::clone(&self.spectrum)
+    }
+}
+
+#[cfg(test)]
+mod cw_reply_tests {
+    use super::*;
+    use crate::ErrorCode;
+
+    #[test]
+    fn a_server_that_cannot_parse_a_cw_command_predates_it() {
+        let old = ServerMessage::Error {
+            code: ErrorCode::Malformed,
+            message: "unknown variant `arm_cw_transmit`".to_string(),
+        };
+        match cw_reply(old) {
+            Err(ClientError::Refused { code, .. }) => assert_eq!(code, ErrorCode::Unsupported),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_ack_is_ok_and_anything_else_is_unexpected() {
+        assert!(cw_reply(ServerMessage::Ack).is_ok());
+        assert!(matches!(
+            cw_reply(ServerMessage::Pong),
+            Err(ClientError::Unexpected(ServerMessage::Pong))
+        ));
     }
 }

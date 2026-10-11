@@ -72,6 +72,17 @@ use serde::{Deserialize, Serialize};
 /// and the link line was stranded at the bottom of them.
 pub const METER_RAIL_ROWS: u16 = 12;
 
+/// The shared CW panel (ADR 0023): pitch, speed, break-in, the transmit
+/// arm and send progress.
+///
+/// A reserved [`PanelKind::Custom`] name rather than a variant, for the
+/// wire's sake: `PanelKind` has no unknown-variant fallback, so a new
+/// variant in a server's layout would stop every older console decoding
+/// its `Welcome`. A custom name decodes everywhere, and a console that
+/// predates it draws its named placeholder. Names under `cat.` are the
+/// shared consoles' own; a radio's widgets carry the radio's prefix.
+pub const CW_PANEL: &str = "cat.cw";
+
 /// A component a console can place.
 ///
 /// The named variants are the shared vocabulary, and most of a console is
@@ -141,6 +152,16 @@ impl PanelKind {
     /// body where the command line was and expect typing to work.
     pub fn is_furniture(&self) -> bool {
         matches!(self, PanelKind::Status | PanelKind::CommandLine)
+    }
+
+    /// The shared CW panel. See [`CW_PANEL`].
+    pub fn cw() -> Self {
+        PanelKind::Custom(CW_PANEL.to_string())
+    }
+
+    /// Whether this is the shared CW panel.
+    pub fn is_cw(&self) -> bool {
+        self.custom_name() == Some(CW_PANEL)
     }
 
     /// The name a custom panel goes by, if this is one.
@@ -812,5 +833,21 @@ mod tests {
         for f in [PanelKind::Status, PanelKind::CommandLine] {
             assert!(spec.root.places(&f), "{f:?} missing");
         }
+    }
+
+    #[test]
+    fn the_cw_panel_is_a_custom_name_every_deployed_console_can_decode() {
+        // A new `PanelKind` variant in a server's layout would fail to
+        // decode in every console built before it, and `Welcome` with it.
+        // A reserved custom name decodes everywhere; an older console
+        // draws its named placeholder.
+        let kind = PanelKind::cw();
+        assert_eq!(kind.custom_name(), Some(CW_PANEL));
+        assert!(kind.is_cw());
+        assert!(!PanelKind::Custom("ft991a.clarifier".into()).is_cw());
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(json, r#"{"custom":"cat.cw"}"#);
+        let back: PanelKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, kind);
     }
 }
