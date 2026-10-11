@@ -2,7 +2,7 @@
 
 ## Repository status: extracted and in active use
 
-Eighteen crates exist, are implemented, and are consumed by three radio
+Nineteen crates exist, are implemented, and are consumed by three radio
 repositories — `ts570d` (Kenwood), `ft991a` (Yaesu) and `ic7100` (Icom).
 Extraction from `ts570d` (the sibling repo this library was originally
 lifted from) is complete — see
@@ -144,6 +144,11 @@ cat-ui-egui          (depends on: cat-ui) — the GPU console, shared
       paint a PanelKind::Custom panel itself.
 
 cat-diagnostics      (depends on: cat-framework) — shared diagnostic runs
+
+cat-morse            (NO local crate dependencies)
+  └── radio-independent Morse: codec, timing/fists, synth + simulated band,
+      streaming decoder, seeded QSO scenarios, copy scoring (ADR 0021)
+  └── no radio, no device audio, no async runtime; f32 PCM in and out
 ```
 
 ### Rules (violation is a blocking issue)
@@ -209,6 +214,7 @@ cat-diagnostics      (depends on: cat-framework) — shared diagnostic runs
 - `cat-ui/` — renderer-independent console model
 - `cat-ui-ratatui/`, `cat-ui-egui/` — the two shared consoles
 - `cat-diagnostics/` — shared diagnostic runs
+- `cat-morse/` — radio-independent Morse code for trainers and decoders
 - `docs/adr/` — ADRs recording the design (see ADR 0001 for the index)
 - `.claude/agents/` — subagent roster for this repository
 - `planning/` — per-agent planning-with-files directories

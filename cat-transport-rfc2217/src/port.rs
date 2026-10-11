@@ -160,6 +160,18 @@ struct Shared {
 }
 
 impl Shared {
+    /// Drive one control line with `SET-CONTROL`. Shared by the port and
+    /// its release lines, so both speak the same bytes.
+    fn set_line(&self, on: bool, on_value: u8, off_value: u8) -> Result<(), TransportError> {
+        let value = if on { on_value } else { off_value };
+        self.write_raw(&codec::set_control(value))
+    }
+
+    /// The last `NOTIFY-MODEMSTATE` byte.
+    fn modem_state(&self) -> u8 {
+        *self.modem_state.lock().expect("rfc2217 modem lock")
+    }
+
     /// Write raw (already Telnet-encoded) bytes to the peer.
     fn write_raw(&self, bytes: &[u8]) -> Result<(), TransportError> {
         let mut w = self.writer.lock().expect("rfc2217 writer lock");
@@ -304,12 +316,49 @@ impl Rfc2217Port {
     /// The last modem state byte received, for callers that want the raw
     /// RFC 2217 value rather than one line at a time.
     pub fn modem_state(&self) -> u8 {
-        *self.shared.modem_state.lock().expect("rfc2217 modem lock")
+        self.shared.modem_state()
     }
 
     fn set_line(&self, on: bool, on_value: u8, off_value: u8) -> Result<(), TransportError> {
-        let value = if on { on_value } else { off_value };
-        self.shared.write_raw(&codec::set_control(value))
+        self.shared.set_line(on, on_value, off_value)
+    }
+}
+
+/// Release lines for an [`Rfc2217Port`] (ADR 0022): a second owner of the
+/// port's shared state, so a broker can un-key while its worker holds the
+/// port mid-exchange.
+///
+/// Sharing the `Arc` is the RFC 2217 equivalent of a `dup`'d fd: the socket
+/// cannot be closed and reused under it. It does **not** keep the link up --
+/// dropping the port still disconnects (see its `Drop`), after which these
+/// report the write error rather than pretending. Line changes are
+/// `SET-CONTROL` subnegotiations written under the same writer lock as CAT
+/// bytes, so they never split a frame.
+struct Rfc2217ReleaseLines {
+    shared: Arc<Shared>,
+}
+
+impl ModemControlLines for Rfc2217ReleaseLines {
+    fn set_rts(&self, asserted: bool) -> Result<(), TransportError> {
+        self.shared
+            .set_line(asserted, control::RTS_ON, control::RTS_OFF)
+    }
+
+    fn set_dtr(&self, asserted: bool) -> Result<(), TransportError> {
+        self.shared
+            .set_line(asserted, control::DTR_ON, control::DTR_OFF)
+    }
+
+    fn read_cts(&self) -> Result<bool, TransportError> {
+        Ok(codec::modem_cts(self.shared.modem_state()))
+    }
+
+    fn read_dsr(&self) -> Result<bool, TransportError> {
+        Ok(codec::modem_dsr(self.shared.modem_state()))
+    }
+
+    fn read_dcd(&self) -> Result<bool, TransportError> {
+        Ok(codec::modem_dcd(self.shared.modem_state()))
     }
 }
 
@@ -473,6 +522,20 @@ impl Transport for Rfc2217Port {
             .expect("rfc2217 inbox lock")
             .data
             .clear();
+    }
+
+    /// `Some(self)`, as the serial backends do: this port's RTS/DTR are real
+    /// (driven at the device server by `SET-CONTROL`). Without this the
+    /// trait's `None` default hid them from `CatSession::modem_lines`, so a
+    /// broker task job could never key DTR over RFC 2217.
+    fn modem_lines(&self) -> Option<&dyn ModemControlLines> {
+        Some(self)
+    }
+
+    fn release_lines(&self) -> Option<Box<dyn ModemControlLines + Send + Sync>> {
+        Some(Box::new(Rfc2217ReleaseLines {
+            shared: Arc::clone(&self.shared),
+        }))
     }
 }
 

@@ -212,6 +212,7 @@ impl AudioCapture {
     }
 
     fn open_named(name: &str, config: CaptureConfig) -> Result<Self, CaptureError> {
+        let _host_lock = crate::device::host_lock();
         let host = cpal::default_host();
 
         let device = if name.is_empty() {
@@ -464,6 +465,7 @@ impl AudioSource for AudioCapture {
 
 /// The body of [`crate::input_devices`], when the feature is on.
 pub(crate) fn enumerate() -> DeviceList {
+    let _host_lock = crate::device::host_lock();
     let host = cpal::default_host();
     let default_name = host
         .default_input_device()
@@ -602,7 +604,7 @@ fn negotiate<D: DeviceTrait>(device: &D, wanted_hz: u32) -> Result<Chosen, Strin
 /// Only a tie-break: every format is accepted and converted, so this
 /// chooses between otherwise identical offers rather than deciding
 /// anything a user could observe.
-fn format_rank(format: SampleFormat) -> u8 {
+pub(crate) fn format_rank(format: SampleFormat) -> u8 {
     match format {
         SampleFormat::F32 => 0,
         SampleFormat::I16 => 1,

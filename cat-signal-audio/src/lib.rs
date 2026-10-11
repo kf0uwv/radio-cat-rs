@@ -151,12 +151,45 @@
 //! # fn main() {}
 //! ```
 
+//! # Playing audio on a sound card
+//!
+//! [`AudioPlayback`] (with the `device` feature) is the output mirror of
+//! `AudioCapture`: the same `audio:<name>` specs, listed by
+//! [`output_devices`]. It plays locally generated mono audio, such as a
+//! Morse trainer's tone, through a non-blocking queue
+//! ([`sink::PlaybackQueue`]). It keys nothing. See ADR 0017's 2026-10-06
+//! amendment.
+//!
+//! ```no_run
+//! # #[cfg(feature = "device")]
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use cat_signal_audio::{AudioPlayback, PlaybackConfig};
+//!
+//! let out = AudioPlayback::open("audio:", PlaybackConfig::default())?;
+//! let rate = out.format().sample_rate_hz; // render at this rate
+//! let tone: Vec<f32> = (0..rate as usize)
+//!     .map(|n| 0.3 * (2.0 * std::f32::consts::PI * 700.0 * n as f32 / rate as f32).sin())
+//!     .collect();
+//! let mut sent = 0;
+//! while sent < tone.len() {
+//!     sent += out.write(&tone[sent..])?; // never blocks; top up as it drains
+//!     std::thread::sleep(std::time::Duration::from_millis(20));
+//! }
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "device"))]
+//! # fn main() {}
+//! ```
+
 #[cfg(feature = "device")]
 pub mod capture;
 pub mod device;
 pub mod dsp;
 pub mod pcm;
+#[cfg(feature = "device")]
+pub mod playback;
 pub mod ring;
+pub mod sink;
 pub mod stream;
 
 use async_trait::async_trait;
@@ -164,9 +197,12 @@ use cat_signal::{SettingValue, SignalCapability, SpectrumSettings};
 
 #[cfg(feature = "device")]
 pub use capture::{AudioCapture, CaptureConfig, CaptureError, CaptureFormat};
-pub use device::{device_spec, input_devices, AudioEndpoint, DEVICE_SPEC_PREFIX};
+pub use device::{device_spec, input_devices, output_devices, AudioEndpoint, DEVICE_SPEC_PREFIX};
 pub use dsp::{AudioPipeline, AudioPipelineConfig};
+#[cfg(feature = "device")]
+pub use playback::AudioPlayback;
 pub use ring::{PcmRing, RingReader};
+pub use sink::{PlaybackConfig, PlaybackError, PlaybackFormat, PlaybackQueue};
 
 // `AudioFrame` lives in `cat-signal` now, beside the two halves it pairs.
 // Re-exported because it is this crate's own output type and callers

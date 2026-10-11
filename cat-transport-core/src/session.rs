@@ -103,4 +103,12 @@ pub trait CatSession {
     fn modem_lines(&self) -> Option<&dyn crate::ModemControlLines> {
         None
     }
+
+    /// An owned duplicate of the session's modem lines, for de-keying only.
+    ///
+    /// See [`crate::Transport::release_lines`] and ADR 0022. Defaulted to
+    /// `None`; `SerialCatSession` forwards its transport's.
+    fn release_lines(&self) -> Option<Box<dyn crate::ModemControlLines + Send + Sync>> {
+        None
+    }
 }

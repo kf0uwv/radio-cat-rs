@@ -60,6 +60,20 @@ pub trait Transport {
         None
     }
 
+    /// An **owned duplicate** of this transport's modem lines, independent of
+    /// any borrow of the transport, for de-keying only (ADR 0022).
+    ///
+    /// Defaulted to `None`. A transport with real lines returns something
+    /// that holds its own reference to the device (a `dup`'d fd, a
+    /// `DuplicateHandle`'d handle, a shared socket) -- never a raw number
+    /// that could be reused after close. `cat-server` takes this once when it
+    /// builds a broker, so a PTT release can run while the worker holds the
+    /// session mid-exchange. `None` also covers "the duplicate could not be
+    /// made"; the broker then falls back to its ordered queue.
+    fn release_lines(&self) -> Option<Box<dyn crate::ModemControlLines + Send + Sync>> {
+        None
+    }
+
     /// Discard anything the radio is still sending, waiting until the line
     /// goes quiet rather than clearing whatever happens to be buffered at
     /// this instant.

@@ -467,6 +467,31 @@ impl Transport for SerialPort {
         }
     }
 
+    /// `Some(self)`, exactly as `io_uring.rs`'s Linux `SerialPort` does:
+    /// this port really has RTS/DTR (see the [`ModemControlLines`] impl
+    /// below). Without this override the trait's `None` default hid them,
+    /// so a `cat-server` task job on Windows was always told the session
+    /// had no modem lines and DTR PTT was unreachable through the broker.
+    fn modem_lines(&self) -> Option<&dyn ModemControlLines> {
+        Some(self)
+    }
+
+    /// An owned `DuplicateHandle` of the port's handle (ADR 0022). `None`
+    /// only if the duplicate cannot be made; the broker then falls back to
+    /// its ordered queue.
+    fn release_lines(&self) -> Option<Box<dyn ModemControlLines + Send + Sync>> {
+        // SAFETY: `self.handle.0` is a valid open serial-port handle for the
+        // lifetime of `self`, which covers this call.
+        let borrowed = unsafe {
+            std::os::windows::io::BorrowedHandle::borrow_raw(
+                self.handle.0 as std::os::windows::io::RawHandle,
+            )
+        };
+        DuplicatedLines::duplicate(borrowed)
+            .ok()
+            .map(|lines| Box::new(lines) as Box<dyn ModemControlLines + Send + Sync>)
+    }
+
     /// `FlushFileBuffers(handle)`, called directly and synchronously inside
     /// this `async fn`'s body -- NOT routed through the worker thread. This
     /// is a deliberate, narrow exception to the read/write worker-thread
@@ -543,6 +568,53 @@ impl ModemControlLines for SerialPort {
 
     fn read_dcd(&self) -> Result<bool, TransportError> {
         modem_status_bit(self.handle, MS_RLSD_ON)
+    }
+}
+
+/// An owned duplicate of a [`SerialPort`]'s handle, used only to drive its
+/// modem lines (ADR 0022).
+///
+/// `DuplicateHandle` (via `BorrowedHandle::try_clone_to_owned`, same access,
+/// not inheritable): it holds its own reference to the open COM port, so
+/// its value cannot be closed under it and reused for another object.
+/// Dropping it `CloseHandle`s the duplicate. Same Win32 calls as the
+/// primary, made directly on the calling thread (ADR 0004 section 4).
+struct DuplicatedLines {
+    handle: std::os::windows::io::OwnedHandle,
+}
+
+impl DuplicatedLines {
+    fn duplicate(handle: std::os::windows::io::BorrowedHandle<'_>) -> std::io::Result<Self> {
+        Ok(Self {
+            handle: handle.try_clone_to_owned()?,
+        })
+    }
+
+    fn raw(&self) -> RawHandle {
+        use std::os::windows::io::AsRawHandle;
+        RawHandle(self.handle.as_raw_handle() as HANDLE)
+    }
+}
+
+impl ModemControlLines for DuplicatedLines {
+    fn set_rts(&self, asserted: bool) -> Result<(), TransportError> {
+        escape_comm_function(self.raw(), if asserted { SETRTS } else { CLRRTS })
+    }
+
+    fn set_dtr(&self, asserted: bool) -> Result<(), TransportError> {
+        escape_comm_function(self.raw(), if asserted { SETDTR } else { CLRDTR })
+    }
+
+    fn read_cts(&self) -> Result<bool, TransportError> {
+        modem_status_bit(self.raw(), MS_CTS_ON)
+    }
+
+    fn read_dsr(&self) -> Result<bool, TransportError> {
+        modem_status_bit(self.raw(), MS_DSR_ON)
+    }
+
+    fn read_dcd(&self) -> Result<bool, TransportError> {
+        modem_status_bit(self.raw(), MS_RLSD_ON)
     }
 }
 
@@ -771,4 +843,63 @@ fn set_comm_timeouts(handle: HANDLE) -> SerialResult<()> {
         return Err(SerialError::Io(std::io::Error::last_os_error()));
     }
     Ok(())
+}
+
+// No COM port exists on a CI runner, so these exercise the duplicate on an
+// ordinary file: what is being proved is the ownership -- a distinct handle
+// on the *same* object, alive after the original closes -- not the line
+// semantics, which share their Win32 calls with the primary's.
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::mem::ManuallyDrop;
+    use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle};
+
+    use super::*;
+
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "cat-transport-serial-dup-{tag}-{}",
+            std::process::id()
+        ))
+    }
+
+    /// Write through the duplicate's handle without taking ownership of it.
+    fn write_through(lines: &DuplicatedLines, bytes: &[u8]) {
+        // SAFETY: the handle is open for as long as `lines` is; ManuallyDrop
+        // stops this temporary `File` closing it.
+        let mut file = ManuallyDrop::new(unsafe {
+            std::fs::File::from_raw_handle(lines.handle.as_raw_handle())
+        });
+        file.write_all(bytes).expect("write through the duplicate");
+    }
+
+    #[test]
+    fn the_duplicate_is_a_distinct_handle_on_the_same_object() {
+        let path = temp_path("same");
+        let file = std::fs::File::create(&path).expect("create");
+        let lines = DuplicatedLines::duplicate(file.as_handle()).expect("duplicate");
+
+        assert_ne!(lines.handle.as_raw_handle(), file.as_raw_handle());
+        write_through(&lines, b"dup");
+        drop(lines);
+        drop(file);
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"dup");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn the_duplicate_outlives_the_original() {
+        let path = temp_path("outlives");
+        let file = std::fs::File::create(&path).expect("create");
+        let lines = DuplicatedLines::duplicate(file.as_handle()).expect("duplicate");
+        drop(file);
+
+        write_through(&lines, b"after");
+        drop(lines);
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"after");
+        let _ = std::fs::remove_file(path);
+    }
 }

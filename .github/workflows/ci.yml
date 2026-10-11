@@ -86,6 +86,21 @@ jobs:
         # build, on every PR.
         run: cargo check -p cat-signal-rtlsdr --features device
 
+      - name: Build cat-signal-audio's device layer (ALSA)
+        # ADR 0017 sections 10 and 16: capture and playback are behind the
+        # default-off `device` feature, so CI must build it explicitly
+        # (cat-signal-audio/Cargo.toml has long said this job does; until
+        # 2026-10-06 it did not). Built, not run: no runner has a sound card.
+        # Consuming apps ship this feature on.
+        run: |
+          sudo apt-get install -y libasound2-dev
+          cargo check -p cat-signal-audio --features device --all-targets
+
+      - name: Test cat-morse's default-off serde feature
+        # Same reason as the step above: default-off code is code CI does
+        # not otherwise build (ADR 0021).
+        run: cargo test -p cat-morse --features serde
+
   windows-check:
     name: Windows (MSVC)
     runs-on: windows-latest
@@ -112,6 +127,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.93"
+          components: clippy
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
@@ -127,7 +143,19 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: cargo check (workspace)
-        run: cargo check --workspace
+        run: cargo check --workspace --all-targets
+
+      - name: Clippy (Windows-only code)
+        # The Linux job's clippy never sees a `cfg(windows)` line --
+        # worker_windows, tcp_windows, rigctl_windows and the Win32 serial
+        # backend are type-checked here and nowhere else.
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: cargo test (workspace)
         run: cargo test --workspace
+
+      - name: cargo test (cat-morse serde feature)
+        run: cargo test -p cat-morse --features serde
+
+      - name: cargo check (cat-signal-audio device layer, WASAPI)
+        run: cargo check -p cat-signal-audio --features device --all-targets

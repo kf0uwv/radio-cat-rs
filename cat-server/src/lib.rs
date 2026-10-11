@@ -68,6 +68,7 @@ pub mod local_channel;
 // resolves.
 pub use cat_native as native;
 pub mod registry;
+mod release;
 #[cfg(target_os = "linux")]
 pub mod tcp;
 pub mod tcp_windows;

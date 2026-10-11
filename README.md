@@ -93,6 +93,11 @@ applications via git dependency:
   `PanelKind::Custom` panel itself.
 - **`cat-rigctl`** — a generic Hamlib `rigctld`-compatible bridge behind a
   `RigctlRadio` trait.
+- **`cat-morse`** — radio-independent Morse code: the ITU table with
+  prosigns, PARIS/Farnsworth timing and seeded human fists, click-free tone
+  synthesis with a simulated band (AWGN, QSB, QRN, QRM), a streaming tone
+  decoder, seeded QSO scenarios (rag-chew, contest, POTA, SOTA, pileup) and
+  copy scoring. No radio, no device audio, no runtime (ADR 0021).
 
 191 tests passing across the workspace on Linux; the Windows-capable crates
 (`cat-transport-serial`, `cat-transport-tcp`, `cat-transport-udp`,

@@ -53,6 +53,10 @@ cat-transport-udp = { path = "../cat-transport-udp" }
 # Async trait support (compatible with !Send futures for monoio).
 async-trait = { workspace = true }
 
+# The one-time warning when a PTT release has to fall back to the ordered
+# queue because the session offers no release lines (ADR 0022).
+tracing = { workspace = true }
+
 # Error handling
 thiserror = { workspace = true }
 

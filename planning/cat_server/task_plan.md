@@ -274,6 +274,10 @@ is made by the worker from the session it owns, for the duration of the call.
 The closure never holds it, so it cannot outlive it. No `Arc`, no `dup`, no
 fd smuggled past the broker.
 
+> **Superseded for the PTT *release* path only (2026-10-06, user-approved):**
+> see "Decision: release-only modem lines" below and ADR 0022. The assert
+> path (`submit_task`) keeps the borrow-only design.
+
 Also killed: my option (D), "return an error rather than touch a closed fd".
 It is unimplementable — `fcntl(F_GETFD)` succeeds on a *reused* fd. And the
 raw-fd option was worse than use-after-close: this process opens sound cards,
@@ -329,3 +333,188 @@ cost four theories**. Reject at the type or config level.
 - Verification must add: `T 0` **while a CAT read is in flight**; wall-clock
   un-key latency under pump load with a stated maximum; client disconnect
   while keyed.
+
+## Task: fix the Windows build of cat-server, and give release-app.yml features (2026-10-06)
+
+Worktree `radio-cat-rs-winfix`, branch `fix/windows-build` off `main`
+(40cfade). Architect-dispatched; one task, report back.
+
+### Root cause
+`e61bb49` added `BrokerCatSession::submit_task`, calling
+`crate::BrokerHandle::submit_task`. `f57b43b` had added `Work::Task` /
+`submit_task` to the **Linux** broker (`broker.rs`) only. On Windows,
+`crate::BrokerHandle` is `worker_windows::BrokerHandle`, which has no
+`submit_task` -> E0599 at `broker_session.rs:63`. `cargo xwin check
+--workspace --all-targets` on main shows that is the only error.
+
+### Design: the same capability, the same semantics, on OS threads
+- `worker_windows::Job` carries `pub work: Work` (shared `crate::broker::Work`)
+  instead of `pub payload`, mirroring Linux exactly.
+- `worker_windows::BrokerWorker::run` matches `Work::Wire` (dispatch via
+  `block_on`, as today) and `Work::Task` (call the closure with
+  `self.broker.session_modem_lines()`, encode `Err` with the `b"ERR "`
+  convention) -- factor the task-result encoding into one shared
+  `pub(crate) fn` in `broker.rs` so the two backends cannot drift.
+- `worker_windows::BrokerHandle::submit_task(&self, ClientId, TaskFn) ->
+  Option<Vec<u8>>`, identical signature to Linux; enqueues on the same
+  ordered `mpsc` queue (the assert path IS ordered). The doc carries the same
+  "do not route the release through here" warning.
+- **`TaskFn` gains `+ Send`, on every platform.** Forced on Windows: the job
+  crosses a real `std::sync::mpsc` to the worker thread, and the Windows
+  `BrokerHandle` must stay `Send` (it is moved into one OS thread per
+  connection by `tcp_windows`/`udp_windows`/`cat-rigctl`). Applied on Linux
+  too rather than cfg-splitting the alias, so a closure that compiles on
+  Linux compiles on Windows -- the class of bug being fixed here. The one
+  consumer (`ts570d/server/src/ptt_dtr.rs::line_task`) captures only a
+  `bool`, so it is unaffected.
+- `cat-transport-serial/src/windows.rs`: `impl Transport for SerialPort`
+  overrides `modem_lines() -> Some(self)`, as `io_uring.rs` does. Without it
+  a task on Windows is always told `None` and DTR PTT is unreachable --
+  the capability would exist in name only.
+
+### Ordering asymmetry (assert ordered, release must not queue)
+Neither backend implements a queue bypass inside the broker: Linux's
+`submit_task` and `BrokerCatSession::handle()` both enqueue on the ordered
+queue. Windows will match that exactly (no invented semantics). Flag to the
+architect that the bypass recorded in v2 above does not exist on either
+platform, and that ts570d's `PttDtr::release` routes through `submit_task`.
+
+### Tests (cfg(all(test, target_os = "windows")), mirroring broker.rs's four)
+a task runs and returns its own reply; a task is serialised between wire
+jobs; a failing task uses the ERR convention; a session without modem lines
+is told `None`. Plus a compile-time assertion that the Windows
+`BrokerHandle` is `Send + Sync` (the property `+ Send` on `TaskFn` protects).
+
+### CI gap
+Windows CI job was red on main since da90709 (2026-09-06) and on PR #16;
+nothing gates merges on it (main has no branch protection). Report; fix CI
+if a workflow change can close it.
+
+### release-app.yml
+Add `linux_features` / `windows_features` string inputs (default ""), applied
+to `main_binary`'s build only, passed via `env:` (not interpolated into the
+script). Empty -> today's exact command. `--skip-build` packaging then stages
+the featured binary because it is the one in `target/release`.
+
+### Checks
+`cargo test --workspace`; `cargo clippy --workspace --all-targets -D
+warnings`; `cargo fmt --check`; `cargo xwin check --target
+x86_64-pc-windows-msvc --workspace --all-targets`; the same with `-p
+cat-signal-audio --features device`; actionlint if present.
+
+### Addendum (same day, before touching cat-rigctl): a second, older break
+With `submit_task` fixed, `cargo xwin check` reaches `cat-rigctl` and fails
+there -- the errors CI logged on `da90709` (2026-09-06, pushed straight to
+main), masked on every later run because `cat-server` now fails first:
+- `cat-rigctl`'s Windows `run`/`run_with_native` gained a `W` wire-format
+  type parameter (ADR 0009 / CI-V) with no `CatWireFormat` bound, and call
+  `cat_server::build(session, table)` -- but `worker_windows::{build,
+  build_with_timeout, BrokerWorker}` were never made generic over the wire
+  format, so they only accept `CommandTable<C, AsciiLineFormat>`.
+- `rigctl_windows.rs`'s test `FakeRadio` lacks `RigctlRadio::unsupported`.
+- `use std::sync::Arc` / `use cat_framework::wire_format::CatWireFormat` are
+  unused on Windows.
+Fix, mirroring Linux exactly: `worker_windows::{BrokerWorker, build,
+build_with_timeout}` gain `F: CatWireFormat` (default `AsciiLineFormat`)
+like `broker.rs`; Windows `run`/`run_with_native` take the Linux bound
+`W: CatWireFormat + Default + Clone + 'static` (+ whatever `Send` the
+OS-thread hand-off of the worker forces, nothing more); test fake gains
+`unsupported`; imports used/gated so Windows is warning-free.
+
+## Follow-ups from architect review of fix/windows-build (2026-10-06)
+
+### 1. Skip-the-queue PTT release -- STOPPED at design, per instruction
+The architect's requirement: a release must take effect promptly even while
+the worker is mid-exchange (stuck in a read until timeout). v2 above says
+"un-key BYPASSES it" but gives no mechanism, and its only mechanism-level
+statement is "No `Arc`, no `dup`, no fd smuggled past the broker".
+
+What the code makes true: during an in-flight exchange the worker's
+`dispatch` future holds `&mut Broker` -> `&mut CatClient` -> `&mut S`. No
+other code can borrow the session (and so its modem lines) until that
+future yields the borrow at the end of the exchange; racing an "urgent"
+channel inside the worker does not help, because the urgent branch still
+needs `&S` while `&mut S` is live. Promptness therefore *requires* a
+line-control capability whose ownership is independent of the session
+borrow -- an owned duplicate of the port handle (`dup`/`DuplicateHandle`),
+or shared (`Arc`) ownership of the port's handle -- obtained by the broker
+from the transport at build time. That is exactly what v2 ruled out, and it
+needs a new accessor in `cat-transport-core` plus implementations in
+`cat-transport-serial` (Linux + Windows) and `cat-transport-rfc2217` -- outside
+this agent's crate. Conflict with the binding plan: reported, not built.
+
+### 2. RFC2217 hides its modem lines -- do now
+`Rfc2217Port` implements `ModemControlLines` but not `Transport::modem_lines`,
+so through `SerialCatSession` (and so a broker task) it reports `None`.
+Test first (tests/loopback.rs: `CatSession::modem_lines` on a session over a
+port is `Some` and drives DTR at the fake peer), then the one-line override.
+
+### 3. Tracked follow-up (NOT fixing now): Windows rigctl skips the read cache
+`cat-rigctl`'s Linux `run_with_native` wraps each rigctl radio in
+`cached::Cached` (reads served from the native pump's state); the Windows
+`run_with_native` does not, and `cached` is `cfg(target_os = "linux")`. So on
+Windows every rigctl read goes to the wire and competes with the pump.
+Owner: cat_rigctl. Needs `cached` made platform-neutral (it holds an
+`Arc<NativeShared>` already) and the Windows wiring to match Linux.
+
+### 4. Re-run every check (Linux test/clippy/fmt, xwin check/clippy incl.
+cat-signal-audio device, actionlint).
+
+## Decision: release-only modem lines (2026-10-06) -- USER-APPROVED
+
+Supersedes v2's "No `Arc`, no `dup`" for one purpose: de-keying. Recorded in
+`docs/adr/0022-queue-bypassing-ptt-release.md` (and an amendment note on
+ADR 0003).
+
+### Rationale
+- During an exchange the worker's `dispatch` holds `&mut` session; nothing
+  else can borrow the lines until the read returns or times out (2 s read /
+  5 s broker). A release must not wait behind that borrow while the radio
+  transmits.
+- v2's objection was to a *captured raw fd*: after the port closes its
+  number can be reused by another device. An **owned duplicate** (`dup` ->
+  `OwnedFd`; `DuplicateHandle` -> `OwnedHandle`) holds its own reference to
+  the open file description: it cannot be reused while held, and closing it
+  is ours. RFC 2217 shares its `Arc<Shared>` socket state, same property.
+- A line ioctl never touches the byte stream, so no ordering is lost.
+
+### Design (implement exactly)
+- `cat-transport-core`: `Transport::release_lines(&self)` and
+  `CatSession::release_lines(&self)` ->
+  `Option<Box<dyn ModemControlLines + Send + Sync>>`, default `None`.
+  `SerialCatSession` forwards to its transport.
+- `cat-transport-serial`: Linux `SerialPort` -> `dup` (CLOEXEC) into an
+  `OwnedFd` wrapper; Windows `SerialPort` -> `DuplicateHandle` into an
+  `OwnedHandle` wrapper. Each implements `ModemControlLines` with the same
+  ioctl / `EscapeCommFunction` helpers as the primary.
+- `cat-transport-rfc2217`: a lines type holding an `Arc<Shared>` clone.
+- `cat-server`: one shared `release::ReleaseLines` (Arc + Mutex<Option<..>>),
+  taken from the session **once in `build`** before the session moves into
+  the broker. The worker holds a closer whose `Drop` drops the duplicate, so
+  the duplicate never outlives the broker. The mutex is held while a
+  release runs, so a close cannot race a release (use-after-close is not
+  representable).
+- `BrokerHandle::release_now_bypassing_queue(client_id, run: TaskFn)`: runs
+  `run` immediately on the caller's thread against the release lines. If
+  there are none (transport returned `None`, or the duplicate failed),
+  falls back to `submit_task` and logs a warning once per broker. After the
+  broker is gone it returns `None` like every other submit. Docs: only
+  de-keying / safe-state actions may use it. Asserts stay on `submit_task`.
+  `BrokerCatSession` gets the same method minus the client id.
+- New dependency: `tracing` (workspace) in `cat-server`, for the warning.
+
+### Tests (TDD)
+- core: defaults are `None`; `SerialCatSession` forwards.
+- serial Linux: the duplicate is a distinct fd on the same device (fstat
+  rdev), works while the primary is open and after the primary is dropped
+  (ENOTTY on a PTY, never EBADF), and dropping it restores the
+  `/proc/self/fd` count (own integration-test binary, so no parallel test
+  perturbs the count).
+- serial Windows: duplicate is a distinct handle; drop closes it.
+- rfc2217: release lines drive DTR at the fake peer while the reader is
+  parked, with the primary still open.
+- cat-server, Linux (monoio) and Windows (threads), shared fake session:
+  stalled exchange -> release completes < 100 ms and before the stalled
+  submit returns; an assert submitted after a stalled CAT runs after it;
+  no release lines -> queued fallback still delivers; dropping the worker
+  drops the duplicate and a later release returns `None`.
