@@ -1,0 +1,53 @@
+[package]
+name = "cat-ft8"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "FT8 from the published protocol: message packing, CRC-14, LDPC (174,91), Costas/Gray tone mapping and GFSK waveform synthesis, in a no_std, allocation-free core."
+
+# A pure library at the bottom of the graph, beside `cat-morse` and
+# `cat-layout`: no local crate dependencies, no async runtime, no device
+# audio and nothing radio-specific. See docs/adr/0024-cat-ft8.md.
+#
+# The core is `#![no_std]` in every build, allocates nothing and uses only
+# `f32` arithmetic, so it runs on microcontrollers as well as hosts. CI
+# proves that with a thumbv8m library build and a bare-metal link with no
+# allocator that rejects f64 helpers (`embedded-check/check.sh`).
+#
+# No dependencies. The waveform needs only `f32` `+ − ×` and integer
+# operations: the GFSK pulse and a quarter-wave sine are tables in static
+# data, generated with `libm` and checked bit-for-bit by a test, so `libm`
+# is a dev-dependency only (ADR 0024).
+[dependencies]
+
+[features]
+# `std` (default) adds conveniences only: `std::error::Error`, WAV output
+# and the `cat-ft8-encode` binary. The core never depends on it.
+# `profile` builds the `encode_bench` example (CPU time per stage, the
+# memory account, a heap-allocation count) and does not change the
+# library; CI builds it with `cargo test -p cat-ft8 --features profile`.
+default = ["std"]
+std = []
+profile = ["std"]
+
+[dev-dependencies]
+serde_json = { workspace = true }
+# Regenerates and checks the static waveform tables.
+libm = { version = "=0.2.16", default-features = false }
+
+[[bin]]
+name = "cat-ft8-encode"
+path = "src/bin/cat-ft8-encode.rs"
+required-features = ["std"]
+
+[[example]]
+name = "encode_bench"
+required-features = ["profile"]
+
+[[example]]
+name = "noisy_slot"
+required-features = ["std"]

@@ -1,0 +1,30 @@
+# A bare-metal link check for cat-ft8 (ADR 0024): a `#![no_std]`,
+# `#![no_main]` program with no allocator that calls every public entry
+# point of the core, linked for thumbv8m.main-none-eabihf. If anything in the
+# core needed an allocator, `std`, or `f64` soft-float helpers, `check.sh`
+# fails. Not a workspace member: it only builds for the bare-metal target.
+#
+#     cat-ft8/embedded-check/check.sh            # build, size, symbol checks
+#     cat-ft8/embedded-check/check.sh --stack    # also per-function stack sizes
+[package]
+name = "cat-ft8-embedded-check"
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+cat-ft8 = { path = "..", default-features = false }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1
+debug = false
+
+# Its own workspace, so the main workspace (host targets) never builds it.
+[workspace]

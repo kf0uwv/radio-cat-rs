@@ -27,9 +27,12 @@ Agents working in this repository now touch real source under every
 ## Planning-with-Files Requirement
 - Each agent and subagent must maintain their own planning-with-files in a
   directory under `./planning/` with their name
-- Directories: `./planning/architect/`, `./planning/cat_framework/`,
-  `./planning/cat_transport/`, `./planning/cat_server/`,
-  `./planning/code_review/`
+- Directories (one per agent or work stream): `./planning/architect/`,
+  `./planning/cat_framework/`, `./planning/cat_transport/`,
+  `./planning/cat_server/`, `./planning/code_review/`, and one per crate
+  or feature since, such as `./planning/cat_morse/`,
+  `./planning/cat_ft8/` and `./planning/cw_capability/` (see
+  `ls planning/`)
 - Planning files include: `task_plan.md`, `findings.md`, `progress.md` in
   each agent's directory
 - This prevents conflicts between agents working on different aspects of the
@@ -149,6 +152,13 @@ cat-morse            (NO local crate dependencies)
   └── radio-independent Morse: codec, timing/fists, synth + simulated band,
       streaming decoder, seeded QSO scenarios, copy scoring (ADR 0021)
   └── no radio, no device audio, no async runtime; f32 PCM in and out
+
+cat-ft8              (NO dependencies at all)
+  └── FT8 from the QEX 2020 protocol: message pack/unpack, CRC-14,
+      LDPC (174,91), tones, GFSK waveform (ADR 0024)
+  └── `#![no_std]` core, no allocation, f32 only; `std` feature adds WAV
+      output and the `cat-ft8-encode` binary; `profile` builds the bench
+      example; `cat-ft8/embedded-check` is a bare-metal link check
 ```
 
 ### Rules (violation is a blocking issue)
@@ -215,6 +225,7 @@ cat-morse            (NO local crate dependencies)
 - `cat-ui-ratatui/`, `cat-ui-egui/` — the two shared consoles
 - `cat-diagnostics/` — shared diagnostic runs
 - `cat-morse/` — radio-independent Morse code for trainers and decoders
+- `cat-ft8/` — FT8 encoder (and later decoder), `no_std` core
 - `docs/adr/` — ADRs recording the design (see ADR 0001 for the index)
 - `.claude/agents/` — subagent roster for this repository
 - `planning/` — per-agent planning-with-files directories

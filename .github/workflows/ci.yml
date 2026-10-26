@@ -31,7 +31,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.93"
-          components: rustfmt, clippy
+          # llvm-tools and the bare-metal target are for cat-ft8's no_std
+          # link check (ADR 0024).
+          components: rustfmt, clippy, llvm-tools
+          targets: thumbv8m.main-none-eabihf
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
@@ -101,6 +104,30 @@ jobs:
         # not otherwise build (ADR 0021).
         run: cargo test -p cat-morse --features serde
 
+      - name: cat-ft8 no_std core on a microcontroller target
+        # ADR 0024: the core is no_std, allocation-free and f32-only. The
+        # library builds and lints for thumbv8m; then embedded-check links a
+        # #![no_main] program with no allocator that packs, encodes,
+        # unpacks and synthesizes, prints its flash size, and fails if any
+        # f64 soft-float helper (__aeabi_d*, __*df3) is linked.
+        run: |
+          cargo build -p cat-ft8 --no-default-features --target thumbv8m.main-none-eabihf
+          cargo clippy -p cat-ft8 --no-default-features --target thumbv8m.main-none-eabihf -- -D warnings
+          CARGO_TARGET_DIR=target/embedded-check cat-ft8/embedded-check/check.sh
+
+      - name: cat-ft8 feature combinations and docs
+        # Default-off code is code CI does not otherwise build (ADR 0024):
+        # the profile feature (bench example) and the host build without
+        # std. Docs must have no broken links in either configuration.
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: |
+          cargo clippy -p cat-ft8 --all-targets --all-features -- -D warnings
+          cargo test -p cat-ft8 --features profile
+          cargo test -p cat-ft8 --no-default-features
+          cargo doc -p cat-ft8 --no-deps
+          cargo doc -p cat-ft8 --no-deps --no-default-features
+
   windows-check:
     name: Windows (MSVC)
     runs-on: windows-latest
@@ -156,6 +183,11 @@ jobs:
 
       - name: cargo test (cat-morse serde feature)
         run: cargo test -p cat-morse --features serde
+
+      - name: cargo test (cat-ft8 profile feature)
+        # The workspace test above already ran cat-ft8's golden waveform
+        # hashes here: they must match the Linux job bit for bit.
+        run: cargo test -p cat-ft8 --features profile
 
       - name: cargo check (cat-signal-audio device layer, WASAPI)
         run: cargo check -p cat-signal-audio --features device --all-targets

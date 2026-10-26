@@ -98,19 +98,25 @@ applications via git dependency:
   synthesis with a simulated band (AWGN, QSB, QRN, QRM), a streaming tone
   decoder, seeded QSO scenarios (rag-chew, contest, POTA, SOTA, pileup) and
   copy scoring. No radio, no device audio, no runtime (ADR 0021).
+- **`cat-ft8`** — FT8 implemented from the published protocol (QEX 2020):
+  message packing and unpacking, CRC-14, LDPC (174,91), Costas/Gray tone
+  mapping and continuous-phase GFSK synthesis at 12 kHz, streamed into
+  caller buffers. The core is `no_std`, allocation-free, dependency-free
+  and `f32`-only, so it runs on microcontrollers as well as hosts. Output
+  is bit-identical on every platform with IEEE-754 binary32
+  round-to-nearest arithmetic (not x87-only targets). This release is the
+  encoder (ADR 0024).
 
-191 tests passing across the workspace on Linux; the Windows-capable crates
-(`cat-transport-serial`, `cat-transport-tcp`, `cat-transport-udp`,
-`cat-transport-core`, `cat-diagnostics`) are additionally verified via
-`cargo check` on a `windows-latest` CI runner targeting
-`x86_64-pc-windows-msvc` (per [ADR 0012](docs/adr/0012-native-msvc-windows-target.md),
-which retired the previous `x86_64-pc-windows-gnu` cross-check); `cat-server`'s
-Windows backend is verified the same way for
-its listener/worker modules specifically (see
-[ADR 0006](docs/adr/0006-windows-network-transport.md) §4 for why those
-modules' *tests* — as opposed to production code — stay Windows-only).
-Actual runtime behavior against physical Windows hardware has not been
-validated in this environment.
+About 1 380 tests pass across the workspace on Linux (2026-10-25). CI
+also builds, lints and tests the whole workspace on a `windows-latest`
+runner targeting `x86_64-pc-windows-msvc` (per
+[ADR 0012](docs/adr/0012-native-msvc-windows-target.md), which retired
+the previous `x86_64-pc-windows-gnu` cross-check): `cargo check`,
+`cargo clippy` and `cargo test`. That job is where the Windows-only code —
+the Win32 serial backend and `cat-server`'s Windows listener/worker
+modules (see [ADR 0006](docs/adr/0006-windows-network-transport.md) §4) —
+is compiled and its tests run. Actual runtime behavior against physical
+Windows hardware has not been validated in this environment.
 
 A shared, reusable GitHub Actions release workflow
 (`.github/workflows/release-app.yml`) is available for consuming
