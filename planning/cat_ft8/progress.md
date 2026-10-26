@@ -346,6 +346,11 @@
   tables by a test); `exp2` coefficients E1–E7 pinned by bit pattern and
   checked against (ln 2)^k / k!. Tests 89 (87 without std); link check
   `.text` 30 666 B, `.bss` 208 512 B, `_start` frame 4 184 B.
+- D4–D6 and D6a committed (2546586). D6b: the 16-bit level type
+  deleted (decision and evidence in findings, "D6 decision: 8-bit levels
+  only"); `Level` sealed with `u8` only; the decode bench's `levels` mode
+  and the front-end bench's level-width section and 16-bit timing
+  removed; tests that compared or used 16-bit levels now use 8-bit.
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |

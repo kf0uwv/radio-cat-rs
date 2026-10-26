@@ -22,8 +22,7 @@
 //! MODE: `sweep` (decode rate against SNR, plus noise-only and
 //! carrier-plus-noise false decodes, for one check-node rule and LLR
 //! scale), `compare` (the two check-node rules and LLR scales near the
-//! 50% point), `levels` (8- against 16-bit levels on the
-//! same slots) or `cost` (host time per stage). SLOTS is per point.
+//! 50% point) or `cost` (host time per stage). SLOTS is per point.
 //!
 //! The decoder here is the first pass only: candidates on the coarse
 //! (half-symbol, half-tone) grid, without refinement or subtraction.
@@ -39,7 +38,7 @@ use std::time::Instant;
 
 use cat_ft8::decode::{
     decode_soft, find_candidates, soft_bits, sync, Band, BpFailure, BpScratch, Candidate,
-    CheckRule, FrontEnd, Level, Spectrogram,
+    CheckRule, FrontEnd, Spectrogram,
 };
 use cat_ft8::message::{pack, NoHashes, Payload};
 use cat_ft8::waveform::{synthesize, Placement};
@@ -138,11 +137,11 @@ impl Tally {
     }
 }
 
-/// Decodes one slot with level type `L`.
-fn decode_slot<L: Level>(samples: &[f32], truth: Option<Payload>, cfg: Config) -> Tally {
+/// Decodes one slot.
+fn decode_slot(samples: &[f32], truth: Option<Payload>, cfg: Config) -> Tally {
     let band = Band::DEFAULT;
     let mut front = Box::new(FrontEnd::new());
-    let mut levels = vec![L::default(); band.spectrogram_len()];
+    let mut levels = vec![0u8; band.spectrogram_len()];
     let mut spec = Spectrogram::new(&mut front, &mut levels, band).unwrap();
     spec.feed(samples);
     let mut scratch = vec![0i32; sync::scratch_len(band.base_bins())];
@@ -177,7 +176,7 @@ fn decode_slot<L: Level>(samples: &[f32], truth: Option<Payload>, cfg: Config) -
 }
 
 /// Runs `n` slots of `content` in parallel threads; sums the tallies.
-fn run<L: Level>(messages: &[String], content: Content, n: u64, seed0: u64, cfg: Config) -> Tally {
+fn run(messages: &[String], content: Content, n: u64, seed0: u64, cfg: Config) -> Tally {
     let threads = std::thread::available_parallelism().map_or(4, |x| x.get()) as u64;
     std::thread::scope(|s| {
         let handles: Vec<_> = (0..threads)
@@ -187,7 +186,7 @@ fn run<L: Level>(messages: &[String], content: Content, n: u64, seed0: u64, cfg:
                     let mut i = t;
                     while i < n {
                         let (samples, truth) = make_slot(messages, content, seed0 + i);
-                        acc.add(&decode_slot::<L>(&samples, truth, cfg));
+                        acc.add(&decode_slot(&samples, truth, cfg));
                         i += threads;
                     }
                     acc
@@ -243,7 +242,7 @@ fn main() {
             for snr in [
                 -24.0, -22.0, -21.0, -20.0, -19.5, -19.0, -18.5, -18.0, -17.0, -16.0, -14.0,
             ] {
-                let o = run::<u8>(&msgs, Content::Signal(snr), n, (snr * -1000.0) as u64, cfg);
+                let o = run(&msgs, Content::Signal(snr), n, (snr * -1000.0) as u64, cfg);
                 println!(
                     "  SNR {snr:>5}: decoded {:>4}/{n}  false {}  all-zero rejected {}",
                     o.decoded, o.false_decodes, o.all_zero_rejected
@@ -253,7 +252,7 @@ fn main() {
                 ("noise only", Content::NoiseOnly),
                 ("carriers + noise", Content::Carriers),
             ] {
-                let o = run::<u8>(&msgs, content, n * 10, 900_000, cfg);
+                let o = run(&msgs, content, n * 10, 900_000, cfg);
                 println!(
                     "  {name}: {} slots, false decodes {}, all-zero rejected {}, mean candidates {:.0}",
                     n * 10,
@@ -281,31 +280,10 @@ fn main() {
                     };
                     let mut line = format!("  {name:<14} target {target:<3}:");
                     for snr in [-20.0, -19.0, -18.0] {
-                        let o =
-                            run::<u8>(&msgs, Content::Signal(snr), n, (snr * -1000.0) as u64, cfg);
+                        let o = run(&msgs, Content::Signal(snr), n, (snr * -1000.0) as u64, cfg);
                         line += &format!("  {snr}: {:>4} ({})", o.decoded, o.false_decodes);
                     }
                     println!("{line}");
-                }
-            }
-        }
-        "levels" => {
-            println!("8- versus 16-bit levels, decoded / {n} slots (false decodes)");
-            for (name, rule) in [
-                ("sum-product", CheckRule::SumProduct),
-                ("min-sum", CheckRule::MinSum),
-            ] {
-                let cfg = Config { rule, ..base };
-                for snr in [-20.0, -19.0, -18.0, -17.0] {
-                    let seed = (snr * -1000.0) as u64;
-                    let o8 = run::<u8>(&msgs, Content::Signal(snr), n, seed, cfg);
-                    let d8 = o8.decoded;
-                    let o16 = run::<u16>(&msgs, Content::Signal(snr), n, seed, cfg);
-                    let d16 = o16.decoded;
-                    println!(
-                        "  {name:<12} SNR {snr:>5}: 8-bit {d8:>4} ({})   16-bit {d16:>4} ({})",
-                        o8.false_decodes, o16.false_decodes
-                    );
                 }
             }
         }

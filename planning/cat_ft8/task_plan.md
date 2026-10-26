@@ -343,7 +343,7 @@ D6a. [x] D6 checkpoint corrections: a direct `hard_decide` tie test (all-zero in
          `PARITY_CHECKS` counted in a decoder-level `TABLE_BYTES`
          (`DECODE_COUNTED`); `exp2` coefficients E2–E7 pinned by bit
          pattern. Then all checks; stop for the D4–D6 commit.
-D6b. [ ] Delete the 16-bit level type in its own change (bench `levels`
+D6b. [x] Delete the 16-bit level type in its own change (bench `levels`
          mode removed; sealed `Level` with `u8` only), after go-ahead.
 D7a. [ ] Decoder API and merge: borrowed workspace, split API, `finish`
          and `finish_payloads` keyed by candidate index, `DecodeReport`

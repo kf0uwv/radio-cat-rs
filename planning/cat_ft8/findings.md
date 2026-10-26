@@ -219,3 +219,34 @@ decode); until then those figures stay estimates.
   150 MHz, against 4% in the ADR (budget 25%). If above about 10%,
   schedule radix-specific kernels. Measure stack (`check.sh --stack`) at
   every checkpoint from D4 on.
+
+## D6 decision: 8-bit levels only (2026-10-26)
+
+- Recheck with soft bits and belief propagation at the D6 checkpoint
+  (`examples/decode_bench.rs -- levels 2000` at commit 2546586; first pass
+  on the coarse grid, one signal per slot at a random off-grid frequency
+  and time offset, seeded white noise, LLR scale 4, 30 rounds, K = 200,
+  band 100–3100 Hz; the same 2 000 slots for both widths at each SNR):
+
+  | Rule | SNR dB | 8-bit | 16-bit |
+  |---|---|---|---|
+  | sum-product | −20 | 80 | 86 |
+  | sum-product | −19 | 615 | 622 |
+  | sum-product | −18 | 1 423 | 1 428 |
+  | sum-product | −17 | 1 849 | 1 845 |
+  | min-sum 0.75 | −20 | 72 | 77 |
+  | min-sum 0.75 | −19 | 571 | 581 |
+  | min-sum 0.75 | −18 | 1 394 | 1 401 |
+  | min-sum 0.75 | −17 | 1 840 | 1 837 |
+
+  Totals over 8 000 slots: sum-product 3 967 against 3 981, min-sum
+  3 877 against 3 896, about +0.2 points for 16-bit, within noise (no
+  false decodes either way). This agrees with the D3 hard-decision
+  result (+0.05 points with ties split).
+- Decision: delete the 16-bit level type (it doubled the largest buffer
+  for no measurable gain). `Level` stays a sealed trait, implemented for
+  `u8` only, so a wider form could return later without an API change;
+  the `levels` bench mode and the front-end bench's level-width section
+  are removed with it. The measurement remains reproducible at
+  2546586.
+

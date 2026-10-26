@@ -73,12 +73,11 @@ const _: () = assert!(ROWS == 184);
 mod sealed {
     pub trait Sealed {}
     impl Sealed for u8 {}
-    #[cfg(any(test, feature = "profile"))]
-    impl Sealed for u16 {}
 }
 
 /// A quantised spectrogram level: `u8`, in 0.5 dB steps, with 0 dB (a
-/// full-scale sine centred in a bin) as the top value. Sealed.
+/// full-scale sine centred in a bin) as the top value. Sealed; `u8` is
+/// the only implementation (a 16-bit form measured no better).
 pub trait Level: sealed::Sealed + Copy + Default + Ord + core::fmt::Debug + 'static {
     /// Level steps per dB.
     const STEPS_PER_DB: u32;
@@ -112,23 +111,6 @@ impl Level for u8 {
     #[inline]
     fn from_log2_power(l2: f32) -> Self {
         quantise(l2 * (DB_PER_LOG2 * 2.0) + 255.0, <Self as Level>::MAX) as u8
-    }
-    #[inline]
-    fn value(self) -> u32 {
-        u32::from(self)
-    }
-}
-
-// A 16-bit level, kept only as a measurement baseline for tests and the
-// `profile` bench until belief propagation can show whether it helps.
-#[cfg(any(test, feature = "profile"))]
-#[doc(hidden)]
-impl Level for u16 {
-    const STEPS_PER_DB: u32 = 512;
-    const MAX: u32 = 65_535;
-    #[inline]
-    fn from_log2_power(l2: f32) -> Self {
-        quantise(l2 * (DB_PER_LOG2 * 512.0) + 65_535.0, <Self as Level>::MAX) as u16
     }
     #[inline]
     fn value(self) -> u32 {

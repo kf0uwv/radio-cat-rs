@@ -15,19 +15,12 @@
 //! Decoder front-end measurements:
 //!
 //! ```text
-//! cargo run --release -p cat-ft8 --features profile --example frontend_bench -- [SLOTS_PER_SNR]
+//! cargo run --release -p cat-ft8 --features profile --example frontend_bench
 //! ```
 //!
-//! 1. `feed` cost per 80 ms hop (whole slot and 480-sample blocks), for
-//!    8-bit and 16-bit levels.
-//! 2. Level clipping: the share of 8-bit levels at the floor or the top for
+//! 1. `feed` cost per 80 ms hop (whole slot and 480-sample blocks).
+//! 2. Level clipping: the share of levels at the floor or the top for
 //!    white noise at input levels from −110 to −10 dBFS.
-//! 3. Level width: with a signal at the nominal start on the bin grid and
-//!    white noise at a given SNR (2500 Hz), the share of the 58 data
-//!    symbols whose transmitted tone has the highest level among the
-//!    eight (ties count as wrong and are also counted separately), from
-//!    8-bit levels and 16-bit levels (the 16-bit form is a measurement
-//!    baseline only; it gave the same decisions as unquantised power).
 //!
 //! The last line is one `{"profile": {...}}` JSON object.
 
@@ -36,7 +29,6 @@ use std::time::Instant;
 
 use cat_ft8::decode::{Band, FrontEnd, Level, Spectrogram, ROWS};
 use cat_ft8::message::NoHashes;
-use cat_ft8::symbols::data_index;
 use cat_ft8::waveform::{synthesize, Placement};
 use cat_ft8::{encode, SLOT_SAMPLES, SYMBOL_COUNT};
 
@@ -105,44 +97,7 @@ fn feed_time<L: Level>(samples: &[f32], block: usize, reps: u32) -> f64 {
     t.elapsed().as_secs_f64() / f64::from(reps) / ROWS as f64
 }
 
-/// Hard-decision accuracy over the data symbols: (correct, ties, total,
-/// tie-split correct). Tie-split credits a k-way tie that includes the
-/// transmitted tone with 1/k (the expected accuracy of breaking ties at
-/// random).
-fn accuracy(
-    symbols: &[u8; SYMBOL_COUNT],
-    base_bin: usize,
-    level: impl Fn(usize, usize) -> f64,
-) -> (u32, u32, u32, f64) {
-    let (mut ok, mut ties, mut total, mut split) = (0, 0, 0, 0.0);
-    for (k, &tone) in symbols.iter().enumerate() {
-        if data_index(k).is_none() {
-            continue;
-        }
-        let row = 5 + 2 * k;
-        let vals: Vec<f64> = (0..8).map(|t| level(row, base_bin + 2 * t)).collect();
-        let truth = vals[usize::from(tone)];
-        let others_max = (0..8)
-            .filter(|&t| t != usize::from(tone))
-            .map(|t| vals[t])
-            .fold(f64::MIN, f64::max);
-        if truth > others_max {
-            ok += 1;
-            split += 1.0;
-        } else if truth == others_max {
-            ties += 1;
-            split += 1.0 / vals.iter().filter(|&&v| v == truth).count() as f64;
-        }
-        total += 1;
-    }
-    (ok, ties, total, split)
-}
-
 fn main() {
-    let per_snr: u64 = std::env::args()
-        .nth(1)
-        .and_then(|a| a.parse().ok())
-        .unwrap_or(40);
     let band = Band::DEFAULT;
 
     // 1. feed cost per hop.
@@ -150,13 +105,15 @@ fn main() {
     let slot0 = make_slot(&symbols0, 1_500.0, -10.0, NOISE_RMS, 1);
     let t8 = feed_time::<u8>(&slot0, SLOT_SAMPLES, 20);
     let t8b = feed_time::<u8>(&slot0, 480, 20);
-    let t16 = feed_time::<u16>(&slot0, SLOT_SAMPLES, 20);
-    println!("feed per 80 ms hop (100–3100 Hz): 8-bit {:.1} µs (whole slot), {:.1} µs (480-sample blocks); 16-bit {:.1} µs",
-        t8 * 1e6, t8b * 1e6, t16 * 1e6);
-    println!("  = {:.3}% of real time (8-bit)", t8 / 0.08 * 100.0);
+    println!(
+        "feed per 80 ms hop (100–3100 Hz): {:.1} µs (whole slot), {:.1} µs (480-sample blocks)",
+        t8 * 1e6,
+        t8b * 1e6
+    );
+    println!("  = {:.3}% of real time", t8 / 0.08 * 100.0);
 
-    // 2. clipping of 8-bit levels against input level.
-    println!("8-bit levels at the floor / top, white noise only:");
+    // 2. clipping of levels against input level.
+    println!("levels at the floor / top, white noise only:");
     let mut front = Box::new(FrontEnd::new());
     let mut lv8 = vec![0u8; band.spectrogram_len()];
     for dbfs in [-110.0f64, -100.0, -90.0, -80.0, -60.0, -40.0, -20.0, -10.0] {
@@ -173,77 +130,11 @@ fn main() {
             floor * 100.0, top * 100.0, mean / 2.0 - 127.5);
     }
 
-    // 3. level width: hard-symbol accuracy.
-    let vectors = include_str!("../tests/data/encoder-vectors.jsonl");
-    let messages: Vec<String> = vectors
-        .lines()
-        .map(|l| {
-            serde_json::from_str::<serde_json::Value>(l).unwrap()["message"]
-                .as_str()
-                .unwrap()
-                .to_string()
-        })
-        .filter(|m| encode(m, &mut NoHashes).is_ok())
-        .collect();
-    let mut lv16 = vec![0u16; band.spectrogram_len()];
-    let width = band.stored_bins();
-    println!("data-symbol hard decisions correct (ties), {per_snr} slots per SNR:");
-    println!("  SNR dB    8-bit (ties) tie-split            16-bit (ties)");
-    let mut diffs = Vec::new();
-    for snr in [-26.0f64, -24.0, -22.0, -20.0, -18.0, -16.0] {
-        let mut acc = [(0u32, 0u32, 0u32, 0.0f64); 2];
-        for i in 0..per_snr {
-            let msg = &messages[(i as usize * 7 + snr as usize) % messages.len()];
-            let symbols = encode(msg, &mut NoHashes).unwrap().symbols;
-            // A base bin on the grid inside the band, varied per slot.
-            let base_bin = 40 + ((i as usize * 97) % 900);
-            let slot = make_slot(&symbols, base_bin as f32 * 3.125, snr, NOISE_RMS, 1_000 + i);
-            spectrogram(&slot, band, SLOT_SAMPLES, &mut lv8, &mut front);
-            spectrogram(&slot, band, SLOT_SAMPLES, &mut lv16, &mut front);
-            let rel = base_bin - band.first_bin();
-            let a8 = accuracy(&symbols, rel, |r, b| f64::from(lv8[r * width + b]));
-            let a16 = accuracy(&symbols, rel, |r, b| f64::from(lv16[r * width + b]));
-            for (slot_acc, a) in acc.iter_mut().zip([a8, a16]) {
-                slot_acc.0 += a.0;
-                slot_acc.1 += a.1;
-                slot_acc.2 += a.2;
-                slot_acc.3 += a.3;
-            }
-        }
-        type Acc = (u32, u32, u32, f64);
-        let pct = |a: Acc| 100.0 * f64::from(a.0) / f64::from(a.2);
-        let tie = |a: Acc| 100.0 * f64::from(a.1) / f64::from(a.2);
-        let split = |a: Acc| 100.0 * a.3 / f64::from(a.2);
-        println!(
-            "  {snr:>6}   {:6.2}% ({:4.2}%) split {:6.2}%   {:6.2}% ({:4.2}%)",
-            pct(acc[0]),
-            tie(acc[0]),
-            split(acc[0]),
-            pct(acc[1]),
-            tie(acc[1])
-        );
-        diffs.push((
-            pct(acc[1]) - pct(acc[0]),
-            split(acc[1]) - split(acc[0]),
-            f64::from(acc[0].2),
-        ));
-    }
-    let n = diffs.len() as f64;
-    let strict = diffs.iter().map(|d| d.0).sum::<f64>() / n;
-    let split = diffs.iter().map(|d| d.1).sum::<f64>() / n;
-    // Binomial standard error of one accuracy figure near 60%, per SNR.
-    let se = (0.6 * 0.4 / diffs[0].2).sqrt() * 100.0;
     println!(
-        "mean gain of 16-bit over 8-bit: {strict:+.3} points counting ties as wrong, \
-         {split:+.3} points with ties split (one figure's standard error ≈ {se:.2} points)"
-    );
-
-    println!(
-        "{{\"profile\": {{\"feed_per_hop_u8\": {t8:.3e}, \"feed_per_hop_u8_blocks\": {t8b:.3e}, \"feed_per_hop_u16\": {t16:.3e}, \
-         \"front_end_bytes\": {}, \"spectrogram_u8_bytes\": {}, \"spectrogram_u16_bytes\": {}, \"spectrogram_small_u8_bytes\": {}}}}}",
+        "{{\"profile\": {{\"feed_per_hop_u8\": {t8:.3e}, \"feed_per_hop_u8_blocks\": {t8b:.3e}, \
+         \"front_end_bytes\": {}, \"spectrogram_u8_bytes\": {}, \"spectrogram_small_u8_bytes\": {}}}}}",
         std::mem::size_of::<FrontEnd>(),
         band.spectrogram_len(),
-        band.spectrogram_len() * 2,
         Band::SMALL.spectrogram_len()
     );
 }

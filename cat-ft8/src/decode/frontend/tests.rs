@@ -88,16 +88,14 @@ fn geometry_constants() {
 #[test]
 fn level_scales() {
     assert_eq!(<u8 as Level>::from_log2_power(0.0), 255);
-    assert_eq!(<u16 as Level>::from_log2_power(0.0), 65_535);
     // −10 dB = log2 power −3.3219: 20 steps below the top for u8.
     let l2 = -10.0 / 3.010_3;
     assert_eq!(<u8 as Level>::from_log2_power(l2), 235);
-    assert_eq!(<u16 as Level>::from_log2_power(l2), 65_535 - 5_120);
     assert_eq!(<u8 as Level>::from_log2_power(-100.0), 0); // the floor
     assert_eq!(<u8 as Level>::from_log2_power(10.0), 255); // clamped
     let mut last = 0;
     for k in 0..2_000 {
-        let v = <u16 as Level>::from_log2_power(-45.0 + k as f32 * 0.02).value();
+        let v = <u8 as Level>::from_log2_power(-45.0 + k as f32 * 0.02).value();
         assert!(v >= last);
         last = v;
     }
@@ -131,7 +129,7 @@ fn row_origin_puts_nominal_symbol_centres_on_rows_5_7_9() {
     // either side (where the neighbouring symbols' tones share the window).
     let base = 1_500.0; // bin 480
     let samples = slot("CQ K1ABC FN42", base, 0.0, 0.5, 0.0, 1);
-    let (levels, _) = spectrogram_of::<u16>(&samples, Band::DEFAULT, 4_096);
+    let (levels, _) = spectrogram_of::<u8>(&samples, Band::DEFAULT, 4_096);
     let width = Band::DEFAULT.stored_bins();
     let at =
         |row: usize, tone: u8| levels[row * width + (480 - 32) + 2 * usize::from(tone)].value();
@@ -157,9 +155,9 @@ fn rows_do_not_depend_on_block_sizes() {
         assert_eq!(rows, ROWS);
         assert!(got == whole, "block {block}");
     }
-    let (w16, _) = spectrogram_of::<u16>(&samples, Band::SMALL, SLOT_SAMPLES);
-    let (g16, _) = spectrogram_of::<u16>(&samples, Band::SMALL, 333);
-    assert!(g16 == w16);
+    let (small, _) = spectrogram_of::<u8>(&samples, Band::SMALL, SLOT_SAMPLES);
+    let (small_333, _) = spectrogram_of::<u8>(&samples, Band::SMALL, 333);
+    assert!(small_333 == small);
 }
 
 #[test]
