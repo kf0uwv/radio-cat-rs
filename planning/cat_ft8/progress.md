@@ -185,6 +185,38 @@
   `perf stat -e instructions:u` (subtract REPEATS = 0 for setup): crc
   about 121 instructions per message, symbols about 802.
 
+## Session: 2026-10-26 (decoder plan)
+
+- Phase 1 committed; ADR 0024 accepted.
+- Phase 2 (single-pass decoder) planned: task_plan.md "Phase 2" (steps
+  D0–D11, checkpoints), ADR 0024 "Proposed amendment: single-pass
+  decoder", sizing notes in findings.md. No decoder code written; waiting
+  for architect and user approval (D0).
+- Both architecture reviews: approve with changes. Plan, ADR amendment
+  and findings revised: row geometry and dt range with partial sync, band
+  definition, text rendered in `finish` with the caller's call table,
+  exact determinism contract, scope rule 3 restated, D7 split with a
+  checkpoint, link check from D2, all-zero rejection, local-maximum
+  suppression, slot framing, payloads-only finish, command output
+  conventions, aarch64 golden hash, time-budget definition. Open questions
+  reduced to two.
+- Confirmation (approve with two edits) applied: local-maximum tie rule
+  and grid edges with a plateau test (D4); explicit `ubuntu-24.04-arm` CI
+  task (D8b). Also: integer 6 / n normalisation of partial-sync scores,
+  separate entry point for later audio input, hand-written JSON with
+  escaping, no `sqrt`, sync operation count corrected, "every symbol
+  centre has a row" wording.
+
+## Session: 2026-10-26 (D0)
+
+- The user approved the Phase 2 plan with the final edits (2026-10-26)
+  and decided both open questions: QEMU (MPS2 Cortex-M33 model) now for
+  instruction counts, no microcontroller speed claims until measured on a
+  board chosen later; on a 256 KiB part, the small configuration plus a
+  1 s i16 FIFO and a 1 s decode budget.
+- ADR 0024 amendment accepted with estimated figures; measured values
+  replace them at D11. D0 done; waiting for the go-ahead to start D1.
+
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
 |-----------|-------|---------|------------|

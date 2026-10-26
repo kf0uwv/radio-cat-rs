@@ -99,3 +99,73 @@ the probe used `N7QQ`, `G4XYZ`, `W1AW`):
 
 - `Instant::now()` costs about 3 µs on the development host, so stage
   times are measured as batches.
+
+## Decoder sizing (planning, 2026-10-26, revised after review; estimates until measured)
+
+Geometry (12 kHz, 15 s slot = 180 000 samples):
+- Window 3 840 samples (3.125 Hz bins), hop 960 (half a symbol). With
+  the row origin at sample 240, row k covers [240 + 960k, +3 840):
+  ⌊(180 000 − 240 − 3 840) / 960⌋ + 1 = 184 rows. A signal starting at
+  the nominal 0.5 s (sample 6 000) has its first symbol centre at 6 960 =
+  240 + 960·5 + 1 920, the centre of row 5; with a zero origin it would
+  fall a quarter hop (240 samples) off the grid.
+- Every symbol centre has a row for dt ∈ [−0.40, +1.76] s; the sample
+  extent alone (a symbol's 1 920 samples overlapping some row) would
+  allow [−0.48, +1.84] s.
+- Row centres run from 2 160 to 177 840. The 79-symbol signal (151 680
+  samples; last symbol centre 149 760 after the first) fits entirely for
+  dt ∈ [−0.40, +1.76] s. At dt = −2.5 s about 13 leading symbols fall
+  before row 0 (the first Costas array and six data symbols); at +2.5 s
+  about 5 trailing symbols fall after the last row (most of the last
+  Costas array). Hence partial sync: at least two of three Costas arrays
+  scored, and erasures for absent data symbols.
+- Band 100–3100 Hz: 961 base bins; stored spectrum adds 43.75 Hz (14
+  bins) and a guard bin: 976 bins. Band 200–2900 Hz: 865 base, 880 stored.
+- Local-maximum ties: integer scores make plateaus likely. Rule: keep a
+  point if ≥ every later neighbour in (row, bin) order and > every
+  earlier one; a plateau keeps its first point; outside-grid neighbours
+  impose nothing. Partial-sync scores × 6 / n (n arrays present) keep one
+  integer scale.
+- Spectrogram: 184 × 976 × 1 B = 179 584 B (8-bit); × 2 = 359 168 B
+  (16-bit); small band 8-bit 161 920 B.
+- Sync scores for local-maximum suppression: a rolling buffer of three
+  rows of base bins, i32: 3 × 961 × 4 = 11 532 B (small: 10 380 B). A full
+  score grid would be 961 × 63 time positions × 4 B ≈ 242 KB.
+- FFT in place with a digit-reversal table (1 920 u16 = 3 840 B flash);
+  Stockham would add 15 360 B RAM.
+- Decode entries without text ≈ 40 B (payload 16, frequency, time offset,
+  SNR, score, candidate index, hard errors, rounds, flags). `MessageText`
+  is 65 B; rendering text in `finish` avoids 64–128 of them.
+- Totals: default (100–3100 Hz, 8-bit, 128 decodes) ≈ 233 812 B; small
+  (200–2900 Hz, 8-bit, 64 decodes) ≈ 212 436 B; default with 16-bit
+  levels ≈ 413 396 B. Caller-owned and not counted: call table (1 552 B
+  for 64), audio, slot-boundary FIFO (i16: 24 000 B per second).
+- Flash tables ≈ 35 KB (twiddles 15 360, real-split twiddles 7 680, half
+  Hann window 7 684, digit reversal 3 840).
+
+All-zero codeword: with a zero initial value the CRC of the all-zero
+payload is zero, and the all-zero word satisfies every parity check, so
+a carrier near a candidate can "decode" as an all-zero payload. It must
+be rejected explicitly.
+
+`ft8_lib` (consulted) uses the same two-fold oversampling in time and
+frequency, keeps up to 140 candidates, runs 25 message-passing rounds and
+drops candidates under a sync score of 10; it stores 8-bit levels.
+
+Operation-count estimates for a Cortex-M33-class part at about 150 MHz:
+- 1 920-point complex FFT ≈ 1 920 × log2(1 920) × 5 ≈ 105 000 flops, a
+  few hundred thousand cycles: about 3 ms per 80 ms hop (≈ 4% of real
+  time); log2 of about 976 bins per hop adds well under 1 ms.
+- Sync search: about 961 base bins (already on the half-bin grid) × 63
+  time positions × 21 Costas symbols × about 4 operations ≈ 5 million
+  operations: well under 0.1 s. (An earlier note multiplied by 2
+  sub-bins again, overcounting.)
+- Belief propagation: 25 rounds × 522 edges × 2 directions × ~20 cycles
+  ≈ 0.5 M cycles per candidate; 140 candidates ≈ 0.5 s.
+
+No QEMU is installed on the development host (the user will install it;
+work does not wait for it). QEMU gives instruction counts, not timing;
+timing needs a development board, chosen later. QEMU counts are needed
+from D2 (FFT per hop) and D3 (front end per 80 ms hop), and again at D4–D6
+(sync search, belief propagation per candidate) and D10–D11 (whole
+decode); until then those figures stay estimates.

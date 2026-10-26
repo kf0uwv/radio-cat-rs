@@ -10,9 +10,10 @@ plan is approved.
 
 ## Current Phase
 
-Fix round and cleanup addendum complete (plan approved by the user
-2026-10-25), uncommitted on branch `feat/cat-ft8`. Planning goes in its
-own commit; ADR 0024 accepted 2026-10-26.
+Phase 1 (encoder) committed on `feat/cat-ft8`; ADR 0024 accepted
+2026-10-26. Phase 2 (single-pass decoder): plan approved by the user
+2026-10-26 (D0 done; ADR amendment accepted with estimated figures).
+Next: D1–D3, stopping at the D3 checkpoint.
 
 ## Hard constraints
 
@@ -178,6 +179,190 @@ F6. [x] progress.md corrections (table bytes; the T4 ldpc swing).
 F7. [x] (optional) `encode_bench` single-stage mode for instruction
         counts.
 
+## Phase 2: decoder (single pass) — PLAN, revised after review (2026-10-26)
+
+Design decisions are in ADR 0024, "Proposed amendment: single-pass
+decoder" (to be accepted at D0 with its estimates, and updated with
+measured values at D11). Sizing notes are in findings.md. One task at a
+time, test first; each task ends with tests, clippy (four
+configurations), fmt, docs, the bare-metal link check (from D2 on, grown
+each step) and a progress entry. Architect checkpoints are marked ◆;
+the user decides at ◆◆.
+
+### Scope
+
+In: slot framing and a block-fed spectrogram front end, Costas sync
+search with local-maximum suppression, single-symbol soft bits, LDPC
+belief propagation, CRC check, all-zero rejection, unpacking (or payloads
+only), frequency / time / SNR estimates, a capacity-limited decode list in
+a defined order, a JSON-lines decode command, and the link check.
+
+Out (each needs its own plan later): signal subtraction and further
+passes, multi-symbol block detection, ordered-statistics decoding,
+a-priori decoding, decoding before the slot ends, Field Day and RTTY
+Roundup unpacking.
+
+Single-pass headroom, also later and each measured as its own change:
+sum-product versus min-sum (whichever D6 does not choose), more message-
+passing rounds and candidates, per-bin noise normalisation, window
+choice, and sub-grid time and frequency refinement. The first measured
+result is expected near the external reference decoder's single-pass
+level, not above it.
+
+### Decisions this plan rests on (details in the ADR draft)
+
+- **Geometry.** Row k is the 3 840-sample Hann window over samples
+  [240 + 960k, 240 + 960k + 3 840), k = 0..184 (184 rows). The 240-sample
+  origin puts dt = 0 symbol centres exactly on the row grid (a zero origin
+  leaves them a quarter hop off). Frequency bins are 3.125 Hz.
+- **Time offsets.** Every symbol centre has a row for dt ∈
+  [−0.40, +1.76] s (the sample extent alone would allow [−0.48, +1.84] s;
+  the row centres are what count). The search covers dt ∈ [−2.5, +2.5] s: outside the
+  full-fit range, symbols that fall outside the rows are absent — not
+  scored in sync, and their bits are erasures (LLR 0). A candidate needs
+  at least two of the three Costas arrays inside the rows. Scores are
+  normalised exactly in integers: the summed score of the n arrays
+  present (n = 2 or 3) is multiplied by 6 / n (× 3 or × 2), so partial and
+  full candidates compare on one scale.
+- **Band** = the base (tone 0) frequencies searched: default 100–3100 Hz
+  (961 base bins). The stored spectrum covers the band plus the 43.75 Hz
+  above the top base frequency and one guard bin: 976 bins.
+- **Levels.** 8-bit log-magnitude (0.5 dB steps) by default. A 16-bit
+  option is kept only if it measurably improves decoding at the D3
+  checkpoint; otherwise there is one configuration. Level type is a
+  sealed trait (`u8`, `u16`).
+- **Workspace.** One caller-owned workspace (spectrogram slice and
+  front-end buffers, all borrowed, const-constructible). Across a slot
+  boundary the caller buffers the next slot's first samples in a short
+  FIFO while `decode`/`finish` run, then feeds them. Host: 2 s FIFO,
+  128 decodes. Small target: see open question 2.
+- **Slot framing.** `start_slot()` resets the front end (rows filled = 0)
+  and keeps nothing else: decodes have already been handed to the caller,
+  and the call table is the caller's. `skip(n)` advances over a gap
+  (missing samples are zeros, counted); `rows_filled()` reports progress;
+  decoding a partial slot is allowed and treats missing rows as absent.
+  Non-finite samples are replaced by 0.0 and counted in the report.
+- **Text and call table.** Decode entries hold no text (payload, type,
+  frequency, time offset, SNR, sync score, candidate index, hard-error
+  count, message-passing rounds: about 40 B). Text is rendered by
+  `finish` into caller storage through a callback, using the caller's
+  `CallHashes`, which persists across slots and may be shared with
+  transmitting. `finish_payloads` returns payloads without unpacking.
+- **Later audio input** (subtraction, block detection) gets its own,
+  additive entry point; `decode_candidate` keeps its signature.
+- **Determinism contract.** Candidates are ordered by integer sync score
+  (descending), then row, then base bin. `decode_candidate` fully
+  re-initialises its scratch and includes refinement and SNR; it is a pure
+  function of the spectrogram and the candidate. `finish` takes results
+  indexed by candidate index and processes them in index order: all-zero
+  rejection, duplicate removal (lowest index kept), truncation to
+  capacity, then unpacking on one thread. `decode()` is defined as
+  `find_candidates`, then `decode_candidate` for each candidate in order,
+  then `finish`, and a test checks they are identical. Output is
+  identical for the same samples, configuration and starting call-table
+  state, on IEEE-754 binary32 round-to-nearest platforms without
+  flush-to-zero.
+- **False-decode guards.** The all-zero codeword (which passes CRC with
+  zero initial value and every parity check) is rejected. Each decode
+  records its hard-error count and message-passing rounds for later
+  gating.
+- **Command output** (`cat-ft8-decode`, format version 0, documented in
+  the crate): one JSON object per decode, `{"freq": Hz, "dt": s, "snr":
+  dB, "message": "..."}`, where `freq` is the tone 0 frequency, `dt` the
+  start relative to the nominal 0.5 s and `snr` the 2500 Hz SNR. Only
+  unpacked decodes by default. `--raw` adds payloads that did not unpack,
+  as `"payload"` (hex), `"type"` and `"unpacked": false`. `--profile`
+  adds one `{"profile": {...}}` line.
+- **Time budget** = the profile's total from the first `feed` of a slot
+  to the return of `finish`, excluding file I/O and one-time start-up,
+  single-threaded; the host CPU is named in results.
+
+### Steps (TDD, one at a time)
+
+D0. [x] ◆◆ Plan and ADR amendment accepted (with estimates) by architect
+    and user (2026-10-26).
+D1. [ ] Deterministic numeric helpers: `log2` from IEEE bits plus a fixed
+        polynomial, with a power floor (no subnormal reaches it); tests
+        against `libm` (tolerance) and pinned bit patterns.
+D2. [ ] FFT: 1 920-point complex mixed-radix, in place with a static
+        digit-reversal table, plus the real split for 3 840 samples;
+        static twiddle, real-split and window tables (generator test,
+        bit-exact); accuracy against an f64 DFT in tests; no allocation.
+        Bare-metal link check starts calling it.
+D3. [ ] Front end and slot framing: `start_slot`, `feed` (f32 and i16),
+        `skip`, `rows_filled`, non-finite sanitising, log levels into the
+        caller's spectrogram; tests: tone lands in the right bin, row
+        origin (dt = 0 on grid), block-size invariance (1, 7, 960, 1 921,
+        whole slot), gaps, slot end, partial slot, memory sizes; 8-bit
+        versus 16-bit measured on synthetic slots.
+    ◆ Checkpoint: measured memory table; level-width decision.
+D4. [ ] Sync search: integer Costas score over the half-symbol,
+        half-bin grid; dt ±2.5 s with partial sync (≥ 2 Costas arrays
+        present, score × 6 / n); 3 × 3 local-maximum suppression on a
+        rolling three-row score buffer before top-K, with the tie rule:
+        a point is kept if its score is ≥ every neighbour that comes
+        later in (row, bin) order and > every neighbour that comes
+        earlier, so a plateau of equal scores keeps its first point;
+        neighbours outside the grid (before the first or after the last
+        time position, below or above the band) impose no condition;
+        deterministic order; minimum score; truncation count; tests:
+        encoder-made signals at random offsets found at the exact grid
+        point, edges of the dt range, a strong signal beside weak ones
+        (every weak one still a candidate), plateaus (flat 1 × 2, 2 × 1,
+        2 × 2 and L-shaped regions keep exactly their first point; a
+        plateau at a grid edge).
+D5. [ ] Soft bits: single-symbol max-log metric (QEX §6, N = 1), Gray
+        demapping, variance normalisation, erasures for absent symbols;
+        tests: noise-free → every sign right; erased symbols give LLR 0.
+D6. [ ] LDPC belief propagation over the parity-check table, per-thread
+        scratch, round limit, early stop on zero syndrome, CRC check,
+        all-zero rejection, hard-error count; check-node rule chosen by
+        measurement (sum-product with rational approximations versus
+        normalised min-sum); tests: random codewords with noise,
+        error-correction counts, no false CRC passes on random input, the
+        all-zero codeword rejected.
+    ◆ Checkpoint: D4–D6 on synthetic slots.
+D7a. [ ] Decoder API and merge: borrowed workspace, split API, `finish`
+         and `finish_payloads` keyed by candidate index, `DecodeReport`
+         (candidates found / kept / decoded / rejected, truncation,
+         sanitised samples), `decode()` ≡ the split calls (tested).
+D7b. [ ] Refinement and SNR: frequency and time refinement on the grid
+         neighbours, SNR estimate in 2500 Hz calibrated on synthetic
+         slots of known SNR.
+    ◆ Checkpoint: API, merge and estimates.
+D8. [ ] WSJT-X-free end-to-end tests with the encoder and seeded noise:
+        SNR sweep with pinned rate floors; noise-only slots (thousands,
+        release build, separate CI job) including carrier-plus-noise
+        slots, with zero decodes; non-overlapping and overlapping (10–30 Hz
+        apart) signals; dt and frequency ranges; partial and late input;
+        block-size and thread-count invariance; golden decode output hash
+        on Linux and Windows CI.
+D8b. [ ] CI: a new `ubuntu-24.04-arm` (aarch64) job running
+         `cargo test -p cat-ft8` (golden waveform and decode hashes; the
+         bulk noise-only test stays in its own job), so the determinism
+         promise is checked on a second architecture.
+D9. [ ] `cat-ft8-decode` (std): reads a 12 kHz mono 16-bit WAV; output as
+        above; format documented as version 0; JSON written by hand with
+        string escaping (`serde_json` stays a dev-dependency); tests parse
+        the output with `serde_json`.
+D10. [ ] Link check final form: decoder fed a synthesized slot in blocks
+         from a static workspace, no allocator, no f64 helpers; flash,
+         `.bss` and stack reported.
+D11. [ ] Measurement against an external reference decoder on synthetic
+         slots across SNR, time offset, frequency, crowding and fading
+         (external harness); profile and memory; ADR amendment updated
+         with measured values.
+    ◆◆ Results to the user; then optimisation passes under the existing
+       rules (results identical, at most five).
+
+### Decisions by the user (2026-10-26, at approval)
+
+1. **Microcontroller timing:** QEMU (an MPS2 Cortex-M33 model) for
+   instruction counts now; no microcontroller speed claims until measured
+   on a board, chosen later.
+2. **Slot boundary on a 256 KiB part:** the small configuration plus a
+   1 s i16 FIFO, with a 1 s microcontroller decode budget.
+
 ## Later (not in this round)
 
 - Contiguous codeword layout and table CRC, as profiled optimisations that
@@ -187,7 +372,3 @@ F7. [x] (optional) `encode_bench` single-stage mode for instruction
   section/state with the oracle and read the index from its payload bits.
 - A field-level payload API (bit offsets and widths, the `c28` of one
   call) for a-priori decoding.
-- Decoder: needs its own approved plan first (memory per stage against a
-  named microcontroller class, FFT source, API with caller-owned
-  workspace, time budgets, provenance per stage, oracle tests,
-  determinism of decodes).
