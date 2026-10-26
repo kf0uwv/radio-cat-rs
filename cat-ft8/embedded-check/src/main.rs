@@ -16,8 +16,10 @@
 //! LDPC, tones), `unpack`, and every public floating-point entry point: `Placement::slot`, `synthesize` (at a negative start, into a small
 //! buffer), `Synth::new`, `fill`, `mix`, `skip` and `fill_phase`, plus
 //! `sin_turns`/`cos_turns`; and, from the decoder, the front end
-//! (`Spectrogram::new`, `feed`, `feed_i16`, `skip`, `row`), with its
-//! buffers in statics. Linking at all proves the core needs neither an
+//! (`Spectrogram::new`, `feed`, `feed_i16`, `skip`, `row`), the sync
+//! search (`find_candidates`), soft bits (`soft_bits`) and belief
+//! propagation with the CRC check (`decode_soft`, both check-node rules),
+//! with their buffers in statics. Linking at all proves the core needs neither an
 //! allocator nor `std`; `check.sh` then rejects any soft-double helper
 //! (`__aeabi_d*`, `__*df*`) in the image. Only code reachable from here is
 //! linked, so a new floating-point entry point must be called here too.
@@ -29,7 +31,10 @@ use core::hint::black_box;
 use core::panic::PanicInfo;
 use core::ptr::addr_of_mut;
 
-use cat_ft8::decode::{Band, FrontEnd, Spectrogram};
+use cat_ft8::decode::{
+    decode_soft, find_candidates, soft_bits, sync, Band, BpScratch, Candidate, CheckRule, FrontEnd,
+    Spectrogram,
+};
 use cat_ft8::encode;
 use cat_ft8::message::{unpack, CallTable};
 use cat_ft8::waveform::{cos_turns, sin_turns, synthesize, Placement, Synth};
@@ -39,6 +44,13 @@ use cat_ft8::waveform::{cos_turns, sin_turns, synthesize, Placement, Synth};
 // this class of part.
 static mut FRONT: FrontEnd = FrontEnd::new();
 static mut LEVELS: [u8; Band::SMALL.spectrogram_len()] = [0; Band::SMALL.spectrogram_len()];
+static mut SYNC_SCRATCH: [i32; 3 * 865] = [0; 3 * 865];
+static mut CANDIDATES: [Candidate; 200] = [Candidate {
+    score: 0,
+    start_row: 0,
+    base: 0,
+}; 200];
+static mut BP: BpScratch = BpScratch::new();
 
 #[panic_handler]
 fn panic(_: &PanicInfo) -> ! {
@@ -113,6 +125,31 @@ pub extern "C" fn _start() -> ! {
             sink += f32::from(black_box(row)[100]);
         }
         rows += spec.floored_levels() + spec.top_levels() + spec.clamped_samples();
+
+        // Sync search into a static candidate list.
+        // SAFETY: as for the other statics: `_start` runs alone, once.
+        let (scratch, cands) = unsafe {
+            (
+                &mut *addr_of_mut!(SYNC_SCRATCH),
+                &mut *addr_of_mut!(CANDIDATES),
+            )
+        };
+        debug_assert_eq!(scratch.len(), sync::scratch_len(Band::SMALL.base_bins()));
+        if let Ok(report) = find_candidates(&spec, black_box(0), scratch, cands) {
+            rows += report.kept + cands[0].base as usize;
+            // Soft bits for the best candidate.
+            let mut llr = [0.0f32; 174];
+            rows += soft_bits(&spec, &cands[0], black_box(4.0), &mut llr);
+            sink += black_box(&llr)[100];
+            // Belief propagation and the CRC, with each check-node rule.
+            // SAFETY: as above.
+            let bp = unsafe { &mut *addr_of_mut!(BP) };
+            for rule in [CheckRule::SumProduct, CheckRule::MinSum] {
+                if let Ok(d) = decode_soft(&llr, black_box(rule), black_box(30), bp) {
+                    rows += usize::from(d.rounds) + d.payload.bits() as usize;
+                }
+            }
+        }
     }
 
     black_box((sink, text_len, rows));

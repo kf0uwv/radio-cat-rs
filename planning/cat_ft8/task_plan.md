@@ -306,7 +306,7 @@ D3a. [x] D3 fix-up: non-finite samples counted in the first 240 too;
          input-level documentation (−127.5…0 dB relative to full scale,
          no enforced minimum) and counters for levels at the floor and at
          the top.
-D4. [ ] Sync search: integer Costas score over the half-symbol,
+D4. [x] Sync search: integer Costas score over the half-symbol,
         half-bin grid; dt ±2.5 s with partial sync (≥ 2 Costas arrays
         present, score × 6 / n); 3 × 3 local-maximum suppression on a
         rolling three-row score buffer before top-K, with the tie rule:
@@ -321,14 +321,14 @@ D4. [ ] Sync search: integer Costas score over the half-symbol,
         (every weak one still a candidate), plateaus (flat 1 × 2, 2 × 1,
         2 × 2 and L-shaped regions keep exactly their first point; a
         plateau at a grid edge).
-D5. [ ] Soft bits: single-symbol max-log metric (QEX §6, N = 1), Gray
+D5. [x] Soft bits: single-symbol max-log metric (QEX §6, N = 1), Gray
         demapping, variance normalisation, erasures for absent symbols;
         tests: noise-free → every sign right; erased symbols give LLR 0.
         Review checklist (D5 and D6): every argmax or hard decision on
         8-bit levels splits ties without bias (no systematic first-index
         win), and soft bits are zero on ties; stack measured
         (`check.sh --stack`) at every checkpoint from D4 on.
-D6. [ ] LDPC belief propagation over the parity-check table, per-thread
+D6. [x] LDPC belief propagation over the parity-check table, per-thread
         scratch, round limit, early stop on zero syndrome, CRC check,
         all-zero rejection, hard-error count; check-node rule chosen by
         measurement (sum-product with rational approximations versus
@@ -336,6 +336,15 @@ D6. [ ] LDPC belief propagation over the parity-check table, per-thread
         error-correction counts, no false CRC passes on random input, the
         all-zero codeword rejected.
     ◆ Checkpoint: D4–D6 on synthetic slots.
+D6a. [x] D6 checkpoint corrections: a direct `hard_decide` tie test (all-zero input
+         gives `hard[i] == i % 2`; −0.0 is a tie); `hard_errors` counts
+         only bits whose soft value is not 0 (documented);
+         `CheckRule::MinSum` fieldless with `const ALPHA: f32 = 0.75`;
+         `PARITY_CHECKS` counted in a decoder-level `TABLE_BYTES`
+         (`DECODE_COUNTED`); `exp2` coefficients E2–E7 pinned by bit
+         pattern. Then all checks; stop for the D4–D6 commit.
+D6b. [ ] Delete the 16-bit level type in its own change (bench `levels`
+         mode removed; sealed `Level` with `u8` only), after go-ahead.
 D7a. [ ] Decoder API and merge: borrowed workspace, split API, `finish`
          and `finish_payloads` keyed by candidate index, `DecodeReport`
          (candidates found / kept / decoded / rejected, truncation,

@@ -135,7 +135,7 @@ mod tests {
     use std::vec::Vec;
 
     /// Tables counted in `STATIC_TABLE_BYTES` (encoder) or in
-    /// `decode::fft::TABLE_BYTES` (decoder), and arrays deliberately not
+    /// `decode::TABLE_BYTES` (decoder), and arrays deliberately not
     /// counted (with why). Every array `static`/`const` in `src/` must be
     /// in one list, so a new table cannot go uncounted.
     const COUNTED: &[&str] = &[
@@ -149,13 +149,19 @@ mod tests {
         "PULSE_HALF",
         "QUARTER_SINE",
     ];
-    const DECODE_COUNTED: &[&str] = &["TWIDDLES", "SPLIT_TWIDDLES", "HANN_HALF", "DIGIT_REV"];
+    const DECODE_COUNTED: &[&str] = &[
+        "TWIDDLES",
+        "SPLIT_TWIDDLES",
+        "HANN_HALF",
+        "DIGIT_REV",
+        "PARITY_CHECKS",
+    ];
     const NOT_COUNTED: &[&str] = &[
         "GENERATOR",        // compile-time input to GENERATOR_ROWS only
-        "PARITY_CHECKS",    // linked only if satisfies_parity_checks is used
         "COSTAS_POSITIONS", // frame-layout constants, folded into code
         "DATA_BLOCKS",
         "STAGES", // FFT stage radices, folded into code
+        "ONES",   // Gray bit masks for soft bits, folded into code
     ];
 
     #[test]
@@ -223,6 +229,13 @@ mod tests {
             + size_of_val(&crate::symbols::GRAY_UNMAP)
             + crate::waveform::table_bytes_of_statics();
         assert_eq!(super::STATIC_TABLE_BYTES, parts);
+    }
+
+    #[test]
+    fn decode_table_bytes_matches_the_tables() {
+        let parts = crate::decode::fft::table_bytes_of_statics()
+            + size_of_val(&crate::ldpc_tables::PARITY_CHECKS);
+        assert_eq!(crate::decode::TABLE_BYTES, parts);
     }
 }
 

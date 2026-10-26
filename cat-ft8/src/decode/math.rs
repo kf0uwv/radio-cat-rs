@@ -63,6 +63,36 @@ pub(crate) fn log2_power(p: f32) -> f32 {
     log2(p.max(POWER_FLOOR).min(f32::MAX))
 }
 
+/// log2(e).
+pub(crate) const LOG2_E: f32 = core::f32::consts::LOG2_E;
+
+// Taylor coefficients (ln 2)^k / k! for 2^f = e^(f ln 2), k = 1..7.
+const E1: f32 = core::f32::consts::LN_2;
+const E2: f32 = 0.240_226_5;
+const E3: f32 = 0.055_504_11;
+const E4: f32 = 0.009_618_129;
+const E5: f32 = 0.001_333_355_8;
+const E6: f32 = 0.000_154_035_3;
+const E7: f32 = 0.000_015_252_734;
+
+/// `2^y` for `y ≤ 0`: exactly 0.0 below −126 (no subnormal results).
+///
+/// y = n + f with n = ⌊y⌋ and f ∈ [0, 1): 2ⁿ is built from the IEEE bits
+/// and 2ᶠ from the Taylor series of e^(f ln 2) to the 7th power (first
+/// omitted term below 1.5e-6 relative).
+#[inline]
+pub(crate) fn exp2_neg(y: f32) -> f32 {
+    if y.is_nan() || y < -126.0 {
+        return 0.0;
+    }
+    let y = if y > 0.0 { 0.0 } else { y };
+    let t = y as i32; // truncates toward zero
+    let n = if (t as f32) > y { t - 1 } else { t };
+    let f = y - n as f32;
+    let p = 1.0 + f * (E1 + f * (E2 + f * (E3 + f * (E4 + f * (E5 + f * (E6 + f * E7))))));
+    p * f32::from_bits(((n + 127) as u32) << 23)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +131,44 @@ mod tests {
         for (v, want) in pinned {
             assert_eq!(log2(v).to_bits(), want, "log2({v}) = {}", log2(v));
         }
+    }
+
+    #[test]
+    fn exp2_coefficients_are_pinned_and_correctly_rounded() {
+        let pinned: [(f32, u32); 6] = [
+            (E2, 0x3e75_fdf0),
+            (E3, 0x3d63_5847),
+            (E4, 0x3c1d_955b),
+            (E5, 0x3aae_c3ff),
+            (E6, 0x3921_8489),
+            (E7, 0x377f_e5fe),
+        ];
+        let mut term = 1.0f64; // (ln 2)^k / k! in f64
+        let ln2 = core::f64::consts::LN_2;
+        term *= ln2; // k = 1
+        assert_eq!(E1.to_bits(), (term as f32).to_bits());
+        for (k, (value, bits)) in (2..).zip(pinned) {
+            term *= ln2 / f64::from(k);
+            assert_eq!(value.to_bits(), bits, "E{k}");
+            assert_eq!(bits, (term as f32).to_bits(), "E{k} not (ln 2)^k / k!");
+        }
+    }
+
+    #[test]
+    fn exp2_matches_libm_closely() {
+        let mut worst = 0.0f64;
+        let mut y = 0.0f32;
+        while y > -126.0 {
+            let exact = libm::exp2(f64::from(y));
+            worst = worst.max((f64::from(exp2_neg(y)) - exact).abs() / exact);
+            y -= 0.013;
+        }
+        assert!(worst < 3.0e-6, "{worst}");
+        assert_eq!(exp2_neg(0.0), 1.0);
+        assert_eq!(exp2_neg(-1.0), 0.5);
+        assert_eq!(exp2_neg(-127.0), 0.0);
+        assert_eq!(exp2_neg(f32::NAN), 0.0);
+        assert_eq!(exp2_neg(3.0), 1.0); // positive arguments are clamped to 0
     }
 
     #[test]

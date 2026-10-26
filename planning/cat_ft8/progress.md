@@ -278,6 +278,75 @@
   largest library frame `Spectrogram::finish_row` 232 B. Golden hashes
   unchanged. Waiting for the commit of D1–D3 and the go-ahead for D4.
 
+## Session: 2026-10-26 (D4–D6)
+
+- D1–D3 and D3a committed (8eebc3b); go-ahead for D4–D6, stopping at the
+  D6 checkpoint.
+- D4 done: `decode::sync` — integer Costas score (8·L[expected] − Σ L
+  over the eight tones per symbol), arrays counted only when all seven rows
+  are filled, ≥ 2 arrays, × 6 / n; start rows −26…36 (±2.48 s); generic
+  `select` with 3 × 3 local-maximum suppression (≥ later neighbours, >
+  earlier ones; outside-grid or unscored neighbours impose nothing) on a
+  rolling three-row buffer, then top-K by (score desc, row, bin) with
+  found/kept/dropped counts. Tests: plateaus 1 × 2, 2 × 1, 2 × 2, two
+  L-shapes, both grid edges keep exactly their first point; order, ties
+  and truncation; encoder-made signals found at their exact grid point;
+  both ends of the time range via partial sync; weak signals 20 bins
+  beside a 0 dB signal at −15 dB still candidates; partial slot scoring.
+  Link check: `.bss` 204 620 B (+10 380 scratch, +1 600 candidates).
+- D5 done: `decode::soft::soft_bits` — max-log per bit over the Gray
+  masks on integer levels (ties give exactly 0, no tone or bit value
+  favoured), erasures (exactly 0) for symbols without a filled row,
+  scaling to a target mean magnitude over bits not erased (no square
+  root). Tests: Gray masks; a clean signal gives every sign right and the
+  target mean; a start row of −20 erases exactly the 3 data symbols before
+  row 0 and the rest are right; silence (all ties) gives all zeros. Link
+  check `.text` 28 362 B, `.bss` unchanged.
+- D6 done: `decode::bp::decode_soft` — flooding message passing over the
+  parity-check table, fixed summation order, early stop when every check
+  holds, round limit, CRC, all-zero rejection, round and hard-error
+  counts; `CheckRule::SumProduct` (tanh through the in-crate `exp2`, a
+  7-term polynomial; atanh through the in-crate `log2`) and
+  `CheckRule::MinSum { alpha }`. Exact ties (0) in hard decisions go to the
+  bit's index parity, so erasures do not pull towards the all-zero word.
+  Statics: `BpScratch` (3 892 B). Tests: clean codeword in 0 rounds;
+  all-zero codeword rejected; an all-erased input never decodes; noisy
+  codewords (mean 2, sigma 1.4) 91/100 sum-product, 95/100 min-sum 0.75;
+  erasures recovered; 300 pure-noise inputs never pass; reused scratch
+  gives the same result; tanh/atanh helpers; `exp2` within 3e-6 relative.
+- D6 measurements (`examples/decode_bench.rs`, first pass on the coarse
+  grid only, single signal, seeded noise, 300 slots per point,
+  sum-product, LLR scale 4, 30 rounds, K = 200): decoded 17 / 50 / 101 /
+  158 / 215 / 277 / 292 / 300 of 300 at −20 / −19.5 / −19 / −18.5 / −18 /
+  −17 / −16 / −14 dB, 0 at −21 dB and below; 50% near −18.6 dB. False
+  decodes 0 in every signal slot, 0 in 3 000 noise-only slots, 0 in 3 000
+  slots with three carriers 10 dB above the noise (16 460 all-zero
+  codewords rejected there, none in noise). Min-sum 0.75: 15 / 38 / 98 /
+  152 / 213 / 275 / 293 / 300, the same false-decode counts. Over 8 000
+  paired slots (−20…−17 dB) sum-product decodes 1.1 points more than
+  min-sum 0.75 (3 967 against 3 877); min-sum 0.875 ties 0.75, 0.625 is
+  worse; sum-product scale 3–6 is flat, 2 loses, 1.5 collapses. 8- against
+  16-bit levels on the same 8 000 slots: 3 967 against 3 981
+  (sum-product), 3 877 against 3 896 (min-sum), +0.2 points, within
+  noise; decision: delete the 16-bit level type. Host cost (one thread,
+  Threadripper 3970X, all 200 candidates failing, 30 rounds each): soft
+  bits + BP 375 µs per candidate sum-product, 131 µs min-sum; feed 14.6 ms
+  per slot, sync search 4.6 ms. Link check: `.text` 30 658 B, `.rodata`
+  49 058 B, `.bss` 208 512 B; largest frames `_start` 4 200 B (BP inlined),
+  library `finish_row` 232 B, `hard_decide` 96 B. Golden hashes unchanged.
+- D6 checkpoint reviewed: proceed. Before the D4–D6 commit, D6a
+  (checkpoint corrections) is recorded in the plan; D6b (delete 16-bit levels) waits for a
+  go-ahead, then D7a/D7b with the review decisions.
+- D6a done: `hard_decide` tie test (all 0.0 and all −0.0 give
+  `hard[i] == i % 2`; signs decide elsewhere); `hard_errors` counts only
+  bits with a non-zero soft value (documented; test: 24 erased bits give
+  0, one flipped bit gives 1); `CheckRule::MinSum` fieldless with
+  `bp::ALPHA = 0.75` (the bench's α comparison removed); `decode::TABLE_BYTES`
+  now adds `PARITY_CHECKS` (581 B; `DECODE_COUNTED`, checked against the
+  tables by a test); `exp2` coefficients E1–E7 pinned by bit pattern and
+  checked against (ln 2)^k / k!. Tests 89 (87 without std); link check
+  `.text` 30 666 B, `.bss` 208 512 B, `_start` frame 4 184 B.
+
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
 |-----------|-------|---------|------------|

@@ -55,3 +55,7 @@ required-features = ["std"]
 [[example]]
 name = "frontend_bench"
 required-features = ["profile"]
+
+[[example]]
+name = "decode_bench"
+required-features = ["profile"]

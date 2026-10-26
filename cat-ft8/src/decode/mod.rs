@@ -14,14 +14,24 @@
 
 //! The decoder (single pass), being built step by step (ADR 0024,
 //! amendment "single-pass decoder"). So far: numeric helpers, the
-//! spectrum of one analysis window, and the block-fed front end.
+//! spectrum of one analysis window, the block-fed front end and the sync
+//! search.
 
+pub mod bp;
 pub(crate) mod fft;
 pub mod frontend;
 pub(crate) mod math;
+pub mod soft;
+pub mod sync;
 mod tables;
+#[cfg(test)]
+pub(crate) mod testutil;
 
+pub use bp::{decode_soft, BpDecode, BpFailure, BpScratch, CheckRule};
 /// Bytes of the decoder's static tables (FFT twiddles, real-split
-/// twiddles, half Hann window, digit-reversal table), in flash.
-pub use fft::TABLE_BYTES;
+/// twiddles, half Hann window, digit-reversal table, and the parity-check
+/// list used by belief propagation), in flash.
+pub const TABLE_BYTES: usize = fft::TABLE_BYTES + core::mem::size_of::<[[u8; 7]; 83]>();
 pub use frontend::{Band, FrontEnd, Level, Spectrogram, HOP, ROWS, ROW_ORIGIN};
+pub use soft::soft_bits;
+pub use sync::{find_candidates, Candidate, SyncReport};
