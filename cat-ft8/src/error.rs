@@ -51,6 +51,11 @@ pub enum Error {
     FrequencyOutOfRange,
     /// A time offset or amplitude that is NaN or infinite.
     NonFinite,
+    /// A decoder band that is not a whole number of 3.125 Hz bins, is
+    /// empty, or reaches the Nyquist frequency.
+    InvalidBand,
+    /// A caller-provided buffer smaller than the configuration needs.
+    BufferTooSmall,
 }
 
 impl fmt::Display for Error {
@@ -65,6 +70,8 @@ impl fmt::Display for Error {
             Error::InvalidSymbol => f.write_str("tone index above 7"),
             Error::FrequencyOutOfRange => f.write_str("base frequency out of range"),
             Error::NonFinite => f.write_str("time offset or amplitude is not finite"),
+            Error::InvalidBand => f.write_str("invalid decoder band"),
+            Error::BufferTooSmall => f.write_str("buffer too small for the configuration"),
         }
     }
 }

@@ -51,3 +51,7 @@ required-features = ["profile"]
 [[example]]
 name = "noisy_slot"
 required-features = ["std"]
+
+[[example]]
+name = "frontend_bench"
+required-features = ["profile"]

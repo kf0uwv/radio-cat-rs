@@ -169,3 +169,53 @@ timing needs a development board, chosen later. QEMU counts are needed
 from D2 (FFT per hop) and D3 (front end per 80 ms hop), and again at D4–D6
 (sync search, belief propagation per candidate) and D10–D11 (whole
 decode); until then those figures stay estimates.
+
+## Front end, measured at the D3 checkpoint (2026-10-26)
+
+- Sizes (`size_of`): `FrontEnd` 30 720 B; spectrogram default (100–3100
+  Hz) 8-bit 179 584 B, 16-bit 359 168 B; small (200–2900 Hz) 8-bit
+  161 920 B. Static tables of the front end (flash): 34 572 B.
+- Link check (thumbv8m, small configuration in statics): `.bss` 223 360 B
+  = 161 920 + 30 720 + 30 720 (the last only for the stand-alone
+  `power_spectrum` call); `.text` 27 042 B; `.rodata` 48 466 B. The
+  library's own frames stay small (the FFT's `spectrum` 152 B); `_start`
+  is 4 216 B including the check program's two 1 920 B sample blocks.
+- FFT accuracy against an f64 DFT: complex 1.3e-7 of peak; windowed real
+  power 2.7e-7 of peak, ≤ 2.9e-5 dB within 60 dB of peak.
+- `feed`: 77–80 µs per 80 ms hop on an AMD Threadripper 3970X (≈ 0.1% of
+  real time), dominated by the FFT, which uses a generic small-DFT kernel
+  with an index modulo per term (a candidate for a later optimisation
+  pass: radix-specific kernels, incremental twiddle indices).
+- 8-bit versus 16-bit: for hard decisions, 8-bit loses only through ties
+  (2–5% of symbols at −26…−20 dB); split fairly, the difference is
+  +0.05 points (within noise). Soft bits work on level differences, where
+  ties give zero rather than wrong. To recheck with soft bits and belief
+  propagation at the D6 checkpoint.
+- Clipping: the −128…0 dB range (both widths) floors input noise below
+  about −80 dBFS RMS; 16 bits do not change that. Inputs that quiet are
+  rare (16-bit audio's own dither is near −101 dBFS) but possible.
+- QEMU instruction counts are still to come (the user is installing it):
+  first for `feed` per hop (now), then D4–D6 and D10–D11.
+
+## D3 checkpoint decisions and follow-ups (2026-10-26)
+
+- One public level width: 8-bit. The 16-bit form exists only for tests
+  and the `profile` bench, as the baseline for D6; delete it at D6 unless
+  belief propagation shows a gain beyond noise.
+- The level range stays −127.5…0 dB relative to full scale (a full-scale
+  sine centred in a bin). Shifting it 20 dB lower would clip strong
+  signals. Levels start to floor when per-bin noise is below about
+  −105 dB (about −80 dBFS RMS for white noise); in practice the audio
+  codec's noise floor is the real lower limit. Typical operating range:
+  −40…−15 dBFS RMS, peaks at or below −6 dBFS. No minimum is enforced;
+  the spectrogram counts levels at the floor and at the top (and the
+  decode report will).
+- D5/D6 review checklist: every argmax or hard decision on 8-bit levels
+  splits ties without bias (no systematic first-index win); soft bits are
+  zero on ties.
+- Before D6: the QEMU instruction count for `feed` per hop. The generic
+  FFT kernel does about 42 000 complex multiply-adds per hop with an
+  integer modulo per term; one estimate puts it at 10–15% of real time at
+  150 MHz, against 4% in the ADR (budget 25%). If above about 10%,
+  schedule radix-specific kernels. Measure stack (`check.sh --stack`) at
+  every checkpoint from D4 on.

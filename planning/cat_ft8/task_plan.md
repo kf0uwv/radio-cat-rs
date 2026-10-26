@@ -281,21 +281,31 @@ level, not above it.
 
 D0. [x] ◆◆ Plan and ADR amendment accepted (with estimates) by architect
     and user (2026-10-26).
-D1. [ ] Deterministic numeric helpers: `log2` from IEEE bits plus a fixed
+D1. [x] Deterministic numeric helpers: `log2` from IEEE bits plus a fixed
         polynomial, with a power floor (no subnormal reaches it); tests
         against `libm` (tolerance) and pinned bit patterns.
-D2. [ ] FFT: 1 920-point complex mixed-radix, in place with a static
+D2. [x] FFT: 1 920-point complex mixed-radix, in place with a static
         digit-reversal table, plus the real split for 3 840 samples;
         static twiddle, real-split and window tables (generator test,
         bit-exact); accuracy against an f64 DFT in tests; no allocation.
         Bare-metal link check starts calling it.
-D3. [ ] Front end and slot framing: `start_slot`, `feed` (f32 and i16),
+D3. [x] Front end and slot framing: `start_slot`, `feed` (f32 and i16),
         `skip`, `rows_filled`, non-finite sanitising, log levels into the
         caller's spectrogram; tests: tone lands in the right bin, row
         origin (dt = 0 on grid), block-size invariance (1, 7, 960, 1 921,
         whole slot), gaps, slot end, partial slot, memory sizes; 8-bit
         versus 16-bit measured on synthetic slots.
     ◆ Checkpoint: measured memory table; level-width decision.
+      (Reached 2026-10-26; reviewed: proceed after a fix-up.)
+D3a. [x] D3 fix-up: non-finite samples counted in the first 240 too;
+         finite input clamped to ±2¹⁶ (counted); `power_spectrum`,
+         `FftBuffer` and `WINDOW` crate-private (the link check's `.bss`
+         then shows the real configuration); `row()` returns `Option`,
+         levels readable through `&self`; one public level width (8-bit),
+         `u16` only for tests and the `profile` bench as the D6 baseline;
+         input-level documentation (−127.5…0 dB relative to full scale,
+         no enforced minimum) and counters for levels at the floor and at
+         the top.
 D4. [ ] Sync search: integer Costas score over the half-symbol,
         half-bin grid; dt ±2.5 s with partial sync (≥ 2 Costas arrays
         present, score × 6 / n); 3 × 3 local-maximum suppression on a
@@ -314,6 +324,10 @@ D4. [ ] Sync search: integer Costas score over the half-symbol,
 D5. [ ] Soft bits: single-symbol max-log metric (QEX §6, N = 1), Gray
         demapping, variance normalisation, erasures for absent symbols;
         tests: noise-free → every sign right; erased symbols give LLR 0.
+        Review checklist (D5 and D6): every argmax or hard decision on
+        8-bit levels splits ties without bias (no systematic first-index
+        win), and soft bits are zero on ties; stack measured
+        (`check.sh --stack`) at every checkpoint from D4 on.
 D6. [ ] LDPC belief propagation over the parity-check table, per-thread
         scratch, round limit, early stop on zero syndrome, CRC check,
         all-zero rejection, hard-error count; check-node rule chosen by

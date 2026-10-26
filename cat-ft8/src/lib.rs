@@ -82,6 +82,7 @@
 extern crate std;
 
 pub mod crc;
+pub mod decode;
 mod error;
 pub mod ldpc;
 mod ldpc_tables;
@@ -133,7 +134,8 @@ mod tests {
     use core::mem::size_of_val;
     use std::vec::Vec;
 
-    /// Tables counted in `STATIC_TABLE_BYTES`, and arrays deliberately not
+    /// Tables counted in `STATIC_TABLE_BYTES` (encoder) or in
+    /// `decode::fft::TABLE_BYTES` (decoder), and arrays deliberately not
     /// counted (with why). Every array `static`/`const` in `src/` must be
     /// in one list, so a new table cannot go uncounted.
     const COUNTED: &[&str] = &[
@@ -147,11 +149,13 @@ mod tests {
         "PULSE_HALF",
         "QUARTER_SINE",
     ];
+    const DECODE_COUNTED: &[&str] = &["TWIDDLES", "SPLIT_TWIDDLES", "HANN_HALF", "DIGIT_REV"];
     const NOT_COUNTED: &[&str] = &[
         "GENERATOR",        // compile-time input to GENERATOR_ROWS only
         "PARITY_CHECKS",    // linked only if satisfies_parity_checks is used
         "COSTAS_POSITIONS", // frame-layout constants, folded into code
         "DATA_BLOCKS",
+        "STAGES", // FFT stage radices, folded into code
     ];
 
     #[test]
@@ -194,11 +198,13 @@ mod tests {
         }
         for name in &found {
             assert!(
-                COUNTED.contains(&name.as_str()) || NOT_COUNTED.contains(&name.as_str()),
+                COUNTED.contains(&name.as_str())
+                    || DECODE_COUNTED.contains(&name.as_str())
+                    || NOT_COUNTED.contains(&name.as_str()),
                 "array item {name} is not in STATIC_TABLE_BYTES's lists"
             );
         }
-        for name in COUNTED.iter().chain(NOT_COUNTED) {
+        for name in COUNTED.iter().chain(DECODE_COUNTED).chain(NOT_COUNTED) {
             assert!(
                 found.iter().any(|f| f == name),
                 "{name} listed but not found"

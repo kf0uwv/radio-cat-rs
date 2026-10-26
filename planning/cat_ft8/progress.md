@@ -217,6 +217,67 @@
 - ADR 0024 amendment accepted with estimated figures; measured values
   replace them at D11. D0 done; waiting for the go-ahead to start D1.
 
+## Session: 2026-10-26 (D1–D3)
+
+- Plan and ADR committed (264ee4c); go-ahead for D1–D3, stopping at the
+  D3 checkpoint.
+- D1 done: `decode::math::log2` from the IEEE exponent and the atanh
+  series on [√½, √2] (z⁹ term), `log2_power` with a 2⁻¹⁰⁰ floor and an
+  `f32::MAX` cap (NaN maps to the floor). Tests: within a few ulps of
+  `libm` over 2⁻¹⁰⁰…10³⁰ (scaled tolerance: the result's ulp grows with
+  |log2|), exact at powers of two, four pinned bit patterns, floor/cap.
+- D2 done: `decode::fft` — 1 920-point complex mixed-radix FFT (stages
+  4, 4, 4, 2, 3, 5; in place; compile-time digit-reversal table checked
+  against the recursive definition), real split for 3 840 samples, Hann
+  window; tables (twiddles, real-split twiddles, half window) generated
+  and checked bit-for-bit; public `power_spectrum` and `FftBuffer`.
+  Accuracy against an f64 DFT (tests only): complex transform max error
+  1.3e-7 of peak; real windowed power 2.7e-7 of peak, ≤ 2.9e-5 dB in bins
+  within 60 dB of peak; a full-scale sine centred in a bin reads 1.0.
+  Link check calls `power_spectrum` from statics: `.rodata` 13 662 →
+  48 338 B (+34 572 B of FFT tables), `.bss` 30 720 B, no f64 helpers.
+- D3 done: `decode::frontend` — `Band` (base bins; stored = base + 15),
+  sealed `Level` (u8 0.5 dB steps, u16 1/512 dB steps; 0 dB = full-scale
+  sine in a bin), `FrontEnd` (30 720 B, const), `Spectrogram` borrowing
+  it and the caller's level slice: `start_slot`, `feed`, `feed_i16`,
+  `skip`, `rows_filled`, sanitised/skipped counts, `row`. Rows from sample
+  240, hop 960, 184 rows. Tests: tone in its bin; nominal-start Costas
+  symbols peak on rows 5 + 2j; identical rows for block sizes 1, 7, 960,
+  1 921, 4 096 and whole slot; `skip` and non-finite input equal zeros and
+  are counted; i16 equals scaled f32; partial slot, slot end, start_slot;
+  band validation; buffer size check. New errors `InvalidBand`,
+  `BufferTooSmall`. Link check feeds a synthesized slot (with `skip`)
+  into a small-configuration spectrogram in statics: `.text` 27 042 B,
+  `.rodata` 48 466 B, `.bss` 223 360 B (levels 161 920 + front end
+  30 720 + 30 720 for the separate `power_spectrum` call), no f64.
+- D3 checkpoint measurements (`examples/frontend_bench.rs`, release,
+  AMD Threadripper 3970X): `feed` 77–80 µs per 80 ms hop (≈ 0.1% of real
+  time), same for 8- and 16-bit and for 480-sample blocks. Level width,
+  100 slots per SNR, data-symbol hard decisions on the known rows: 16-bit
+  equals unquantised f32; 8-bit is 1.8 points lower if ties count as
+  wrong, but +0.05 points behind with ties split (within noise; at
+  −26 dB 8-bit is ahead). Clipping: both widths cover −128…0 dB; 8-bit
+  levels start to floor for input noise below about −80 dBFS RMS (1.2% at
+  −80, 11% at −90, 70% at −100). Golden hashes unchanged. Stopped at the
+  D3 ◆ checkpoint.
+- D3 checkpoint reviewed: proceed after a small fix-up (D3a in the plan).
+  Decisions: one public 8-bit configuration (`u16` kept only as the D6
+  baseline, deleted at D6 unless belief propagation shows a gain beyond
+  noise); the level range is not shifted (a shift would clip strong
+  signals); input levels documented with no enforced minimum.
+- D3a done: non-finite samples before row 0 counted; finite samples
+  clamped to ±2¹⁶ and counted (`clamped_samples`); `power_spectrum`,
+  `FftBuffer`, `WINDOW` and the `fft` module crate-private (`decode::
+  TABLE_BYTES` re-exported for the memory account); `row()` returns
+  `Option` and works through `&self`; `u16` levels only under `cfg(test)`
+  or `profile` (hidden); input-level section in the module docs; counters
+  `floored_levels` and `top_levels`. New tests: shared-reference reads,
+  early counting and clamping, floor/top counters. Tests 75 (73 without
+  std); link check `.text` 26 766 B, `.rodata` 48 466 B, `.bss` 192 640 B
+  (levels 161 920 + front end 30 720: the real small configuration),
+  largest library frame `Spectrogram::finish_row` 232 B. Golden hashes
+  unchanged. Waiting for the commit of D1–D3 and the go-ahead for D4.
+
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
 |-----------|-------|---------|------------|
