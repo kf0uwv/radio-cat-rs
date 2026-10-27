@@ -200,7 +200,8 @@ pub struct Decode {
     /// Start relative to the nominal 0.5 s, seconds.
     pub dt: f32,
     /// Signal-to-noise ratio in 2500 Hz, dB, against the noise near the
-    /// signal (25–50 Hz either side). Where the receiver's passband is
+    /// signal (25–100 Hz either side; see the `snr` estimator's notes in
+    /// the ADR). Where the receiver's passband is
     /// not flat this can differ from figures taken against a band-wide
     /// noise reference, most near the passband's edges.
     pub snr_db: f32,
@@ -663,8 +664,8 @@ impl<'a> DecodeList<'a> {
         Ok(())
     }
 
-    /// Pushes `results[i]` as candidate `i`, in order, after any results
-    /// already pushed (so `results` continues from [`DecodeList::pushed`]).
+    /// Pushes `results[i]` as candidate `pushed() + i`, in order: `results`
+    /// continues from the results already pushed ([`DecodeList::pushed`]).
     pub fn merge(&mut self, results: &[CandidateResult]) -> Result<(), Error> {
         for r in results {
             self.push(self.next, r)?;

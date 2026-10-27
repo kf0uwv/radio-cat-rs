@@ -46,8 +46,9 @@ const LN2: f32 = core::f32::consts::LN_2;
 const MAX_PRODUCT: f32 = 1.0 - 1.192_092_9e-7;
 
 /// The normalisation factor α of [`CheckRule::MinSum`]. Chosen by
-/// measurement on synthetic slots: 0.875 decoded as many signals and
-/// 0.625 fewer.
+/// measurement on synthetic slots: 0.875 decoded as many signals (a tie
+/// within the measurement's noise) and 0.625 fewer; 0.75, the value in use
+/// when they were compared, was kept.
 pub const ALPHA: f32 = 0.75;
 
 /// The check-node rule.
@@ -209,6 +210,8 @@ fn accept(hard: &[u8; N]) -> Result<Payload, BpFailure> {
     if !crc::check(a91) {
         return Err(BpFailure::Crc);
     }
+    // Cannot fail: `a91 >> 14` has at most 77 bits. The `Crc` arm only
+    // avoids a panic path.
     Payload::from_bits(a91 >> 14).ok_or(BpFailure::Crc)
 }
 

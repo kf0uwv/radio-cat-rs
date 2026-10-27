@@ -7,7 +7,7 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "FT8 from the published protocol: message packing, CRC-14, LDPC (174,91), Costas/Gray tone mapping and GFSK waveform synthesis, in a no_std, allocation-free core."
+description = "FT8 from the published protocol: message packing, CRC-14, LDPC (174,91), Costas/Gray tone mapping, GFSK waveform synthesis and a single-pass decoder, in a no_std, allocation-free core."
 
 # A pure library at the bottom of the graph, beside `cat-morse` and
 # `cat-layout`: no local crate dependencies, no async runtime, no device
@@ -15,21 +15,27 @@ description = "FT8 from the published protocol: message packing, CRC-14, LDPC (1
 #
 # The core is `#![no_std]` in every build, allocates nothing and uses only
 # `f32` arithmetic, so it runs on microcontrollers as well as hosts. CI
-# proves that with a thumbv8m library build and a bare-metal link with no
-# allocator that rejects f64 helpers (`embedded-check/check.sh`).
+# proves that with a thumbv8m library build, a build on the minimum Rust,
+# and a bare-metal link with no allocator that rejects f64 helpers
+# (`embedded-check/check.sh`).
 #
-# No dependencies. The waveform needs only `f32` `+ − ×` and integer
-# operations: the GFSK pulse and a quarter-wave sine are tables in static
-# data, generated with `libm` and checked bit-for-bit by a test, so `libm`
+# No dependencies. The waveform and decoder need only `f32` `+ − × ÷`,
+# comparisons, integer operations and in-crate polynomials: the GFSK
+# pulse, sine, FFT twiddles, window and level-to-power table are static
+# data generated with `libm` and checked bit-for-bit by tests, so `libm`
 # is a dev-dependency only (ADR 0024).
 [dependencies]
 
 [features]
 # `std` (default) adds conveniences only: `std::error::Error`, WAV input
-# and output, and the `cat-ft8-encode` and `cat-ft8-decode` binaries. The core never depends on it.
-# `profile` builds the `encode_bench` example (CPU time per stage, the
-# memory account, a heap-allocation count) and does not change the
-# library; CI builds it with `cargo test -p cat-ft8 --features profile`.
+# and output, and the `cat-ft8-encode` and `cat-ft8-decode` binaries. The
+# core never depends on it.
+# `profile` builds the measurement examples (`encode_bench`,
+# `frontend_bench`, `decode_bench`) and makes the decoder's stage modules
+# (`decode::sync`, `decode::soft`, `decode::bp`) public for them. Those
+# modules are UNSTABLE: not part of the crate's API, and they may change in
+# any release. The feature does not change results; CI builds it with
+# `cargo test -p cat-ft8 --features profile`.
 default = ["std"]
 std = []
 profile = ["std"]

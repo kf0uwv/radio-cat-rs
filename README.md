@@ -101,13 +101,16 @@ applications via git dependency:
 - **`cat-ft8`** — FT8 implemented from the published protocol (QEX 2020):
   message packing and unpacking, CRC-14, LDPC (174,91), Costas/Gray tone
   mapping and continuous-phase GFSK synthesis at 12 kHz, streamed into
-  caller buffers. The core is `no_std`, allocation-free, dependency-free
-  and `f32`-only, so it runs on microcontrollers as well as hosts. Output
-  is bit-identical on every platform with IEEE-754 binary32
-  round-to-nearest arithmetic (not x87-only targets). This release is the
-  encoder (ADR 0024).
+  caller buffers; and a single-pass decoder (block-fed spectrogram, Costas
+  sync search, sub-grid refinement, soft bits, belief propagation, CRC,
+  frequency, time offset and local-noise SNR) with a `cat-ft8-decode`
+  command that prints JSON lines. The core is `no_std`, allocation-free,
+  dependency-free and `f32`-only, so it runs on microcontrollers as well
+  as hosts. Output is bit-identical on every platform with IEEE-754
+  binary32 round-to-nearest arithmetic (not x87-only targets; the decoder
+  also needs no flush-to-zero) (ADR 0024).
 
-About 1 380 tests pass across the workspace on Linux (2026-10-25). CI
+About 1 470 tests pass across the workspace on Linux (2026-10-27). CI
 also builds, lints and tests the whole workspace on a `windows-latest`
 runner targeting `x86_64-pc-windows-msvc` (per
 [ADR 0012](docs/adr/0012-native-msvc-windows-target.md), which retired

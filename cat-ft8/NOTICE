@@ -27,6 +27,15 @@ ft8_lib — https://github.com/kgoba/ft8_lib (commit 9fec6ca398)
   originate in WSJT-X; they are interoperability constants of the protocol,
   used here as facts.
 
+  Decoder (src/decode/): ft8_lib's spectrogram (its 2x oversampling in
+  time and frequency), sync scoring, soft-bit normalisation and LDPC
+  belief-propagation decoder were consulted. The decoder was written from
+  the QEX paper and the literature cited in the repository's ADR 0024 (the
+  short-time Fourier transform, Cooley-Tukey FFT, Costas arrays, max-log
+  soft bits, belief propagation and normalised min-sum); its scores,
+  suppression rule, scaling, refinement and SNR estimate are its own, and
+  no ft8_lib function was translated.
+
   MIT License
 
   Copyright (c) 2018 Kārlis Goba

@@ -54,6 +54,17 @@
 //! symbols, frequency, amplitude and position give bit-identical samples on
 //! every platform. Tests pin hashes of synthesized audio.
 //!
+//! The decoder uses `f32` `+ − × ÷` and comparisons, integer arithmetic,
+//! in-crate polynomial helpers and static tables, each in a fixed order.
+//! For the same input samples (bit patterns), configuration and starting
+//! call-table state, its output — order, payloads, text, frequency, time
+//! offset, SNR and report — is identical for any feed block sizes and any
+//! thread count on the split API, on every platform with IEEE-754
+//! binary32 round-to-nearest arithmetic **and without flush-to-zero or
+//! denormals-are-zero** (subnormal values can reach the FFT before the
+//! logarithm's floor; a target that flushes them may differ). Tests pin
+//! hashes of the decode output for seeded synthetic slots.
+//!
 //! # Example
 //!
 //! ```
@@ -121,7 +132,12 @@
 //! tables, the callsign-hash multiplier and the callsign alphabet order were
 //! taken from it, and the waveform's first/last-tone edge extension
 //! follows it. The tables are interoperability constants that originate in
-//! WSJT-X and are used here as facts. See the crate's `NOTICE` file.
+//! WSJT-X and are used here as facts. For the decoder, `ft8_lib`'s
+//! spectrogram (2× oversampling in time and frequency), sync scoring,
+//! soft-bit normalisation and belief-propagation decoder were consulted;
+//! the decoder was written from the QEX paper and the literature cited in
+//! the ADR, and no `ft8_lib` function was translated. See the crate's
+//! `NOTICE` file.
 
 #![no_std]
 #![forbid(unsafe_code)]

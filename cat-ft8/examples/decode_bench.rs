@@ -24,8 +24,9 @@
 //! scale), `compare` (the two check-node rules and LLR scales near the
 //! 50% point) or `cost` (host time per stage). SLOTS is per point.
 //!
-//! The decoder here is the first pass only: candidates on the coarse
-//! (half-symbol, half-tone) grid, without refinement or subtraction.
+//! The decoder here is the single pass, with sub-grid refinement and no
+//! subtraction (the `grid` and `refine` modes compare it with soft bits
+//! taken on the coarse half-symbol, half-tone grid).
 //!
 //! Each slot holds one signal at a random off-grid frequency (200–2800 Hz)
 //! and time offset (−0.3…+0.7 s), from the encoder vector messages, with

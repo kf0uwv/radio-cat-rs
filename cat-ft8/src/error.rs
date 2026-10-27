@@ -22,7 +22,7 @@ use crate::message::MessageType;
 
 /// Why packing, unpacking or synthesis failed.
 ///
-/// Non-exhaustive: later releases (the decoder) will add variants.
+/// Non-exhaustive: later releases may add variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
