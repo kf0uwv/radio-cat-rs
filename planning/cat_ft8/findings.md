@@ -370,3 +370,56 @@ point unless stated, host AMD Threadripper 3970X.
 `CHECKS` and `DEGREES`). Flash moves by a few bytes with each change;
 the ADR gives it rounded.
 
+## Phase 3 E0 baseline (2026-10-27, tip 176a49b + E0)
+
+Produced with `examples/paired_bench.rs` (`run host|small DIR`, main block
+all sets, fresh block sweep and crowded). Slots are deterministic from set,
+block and index, so the baseline can be regenerated with the same command;
+the saved files are not in the repository. Configurations: `host` =
+100–3100 Hz, sum-product, 128 decodes; `small` = 200–2900 Hz, min-sum, 64
+decodes; both 30 rounds, LLR scale 4, 200 candidates.
+
+**Sweep** (1 000 slots per point; messages decoded, host / small):
+
+| SNR dB | −21.0 | −20.5 | −20.0 | −19.5 | −19.0 | −18.5 | −18.0 | −17.5 | −17.0 | ≥ −16.5 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| main | 5 / 3 | 30 / 24 | 107 / 100 | 307 / 282 | 571 / 562 | 812 / 785 | 938 / 933 | 987 / 987 | 996 / 997 | 1000 / 1000 |
+| fresh | 7 / 5 | 33 / 28 | 113 / 100 | 300 / 277 | 587 / 557 | 804 / 785 | 948 / 937 | 988 / 985 | 998 / 998 | 1000 / 1000 |
+
+(−22.0 dB: 0 / 0; −21.5 dB main 2 / 1, fresh 0 / 0.) 50% point (bootstrap
+95% interval): host main −19.134 dB [−19.177, −19.091], fresh −19.152 dB
+[−19.188, −19.108]; small main −19.111 dB [−19.150, −19.069], fresh
+−19.102 dB [−19.144, −19.051].
+
+**Crowded** (200 slots per size; transmitted messages decoded, host /
+small): main 10 → 1754 / 1754 of 2 000, 20 → 3101 / 3098 of 4 000, 40 →
+4809 / 4794 of 8 000; fresh 1755 / 1755, 3081 / 3079, 4835 / 4820.
+
+**Edges** (−18 dB, 100 slots per case; host / small): dt −2.4 s 90 / 91,
+−2.0 s 93 / 94, −1.6 s 96 / 95, +1.6 s 97 / 98, +2.0 s 97 / 97, +2.4 s
+96 / 96; tone 0 at 100 Hz 91 / 0 and 3 090 Hz 83 / 0 (outside the small
+band), 200 Hz 98 / 93, 2 890 Hz 89 / 88; input cut at 13.5 s 98 / 98;
+input starting 1 s late 99 / 98; dt 0 98 / 99.
+
+**False decodes:** none in any set, block or configuration (sweep,
+crowded, edges, and 2 300 empty slots: noise, weak and strong carriers,
+clipped, floored, impulsive). No findings entries are needed yet; every
+false decode from E1 on gets one.
+
+**Deterministic cost:** 200 candidates through belief propagation per
+slot; rounds per candidate 29.92 (sweep), 27.61 (crowded), 29.88 (edges),
+29.59 (empty), the same for both rules to two decimals (almost every
+candidate fails and runs all 30 rounds).
+
+**Time** (`paired_bench cost host small 40 5`: median of five interleaved
+single-thread runs over 40 crowded slots, ms per slot): host total 66.9
+(belief propagation 45.1, feed 14.4, soft bits 3.2, sync 2.9, refine 1.3,
+SNR 0.1); small total 45.2 (belief propagation 24.2). Run time of the
+baselines on 16 threads: host 186 s, small 134 s (all sets, both blocks).
+
+The paired comparison of host against small (as a demonstration of the
+gates) flags small's loss on sweep (b − c = 81 main, 106 fresh, against
+limits 23 and 24), crowded 40-message slots and the band-edge cases, with
+its 50% point 0.02–0.05 dB worse; a re-run of host against itself pairs
+with zero discordant messages.
+

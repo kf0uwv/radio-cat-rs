@@ -584,6 +584,20 @@
   within about 0.05 dB; cost as medians of five runs plus deterministic
   counts, thresholds against the previous step; "off" pins kept, new pins
   for new defaults; `stall_rounds: u8` API; no CLI flag. E0 not started.
+- E0 done (results identical): `examples/paired_bench.rs` (`run`,
+  `compare`, `cost`): sets sweep, crowded (with ground truth), edges,
+  empty and a fresh seed block; per-slot JSON lines keyed by set, block,
+  index and seed with the transmitted messages, decodes, report counts,
+  rounds and stage times; paired tables per point and per set with the
+  noise gate, the false-decode gate and the 50% point with bootstrap
+  intervals; deterministic counts; interleaved medians for cost. For
+  exact rounds per candidate, `BpScratch::rounds()` and
+  `CandidateScratch::last_rounds()` record the rounds a decode ran,
+  whatever its result (test added). Edges set at −18 dB, so a loss can
+  show. Baselines for host and small in findings ("Phase 3 E0
+  baseline"); no false decodes anywhere. Checks: tests 115 (108 without
+  std), golden hashes and floors unchanged, bulk identical, clippy, fmt,
+  docs, thumbv8m, 1.75, link check (flash 83 504 B, `.bss` unchanged).
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |

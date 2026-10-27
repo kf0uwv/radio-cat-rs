@@ -70,3 +70,7 @@ required-features = ["profile"]
 [[example]]
 name = "decode_bench"
 required-features = ["profile"]
+
+[[example]]
+name = "paired_bench"
+required-features = ["profile"]

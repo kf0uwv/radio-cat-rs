@@ -348,6 +348,14 @@ impl core::fmt::Debug for DecodeList<'_> {
     }
 }
 
+impl CandidateScratch {
+    /// Message-passing rounds the last candidate decoded with this scratch
+    /// ran, whatever its result (for cost measurement).
+    pub fn last_rounds(&self) -> u8 {
+        self.bp.rounds()
+    }
+}
+
 impl Default for CandidateScratch {
     fn default() -> Self {
         Self::new()

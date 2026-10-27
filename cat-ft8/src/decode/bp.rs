@@ -68,6 +68,8 @@ pub struct BpScratch {
     next: [f32; N],
     msg: [[f32; MAX_DEGREE]; M],
     hard: [u8; N],
+    /// Message-passing rounds run by the last decode, whatever its result.
+    rounds: u8,
 }
 
 impl BpScratch {
@@ -78,7 +80,14 @@ impl BpScratch {
             next: [0.0; N],
             msg: [[0.0; MAX_DEGREE]; M],
             hard: [0; N],
+            rounds: 0,
         }
+    }
+
+    /// Message-passing rounds the last decode ran, converged or not (for
+    /// cost measurement).
+    pub fn rounds(&self) -> u8 {
+        self.rounds
     }
 }
 
@@ -238,7 +247,9 @@ pub fn decode_soft(
         next,
         msg,
         hard,
+        rounds: rounds_run,
     } = scratch;
+    *rounds_run = 0;
     *total = *llr;
     for row in msg.iter_mut() {
         *row = [0.0; MAX_DEGREE];
@@ -260,6 +271,7 @@ pub fn decode_soft(
         });
     }
     for round in 1..=max_rounds {
+        *rounds_run = round;
         *next = *llr;
         for (c, row) in msg.iter_mut().enumerate() {
             let (v, n) = check(c);

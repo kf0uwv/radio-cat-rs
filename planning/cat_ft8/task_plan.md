@@ -721,7 +721,7 @@ weighs more than a saved millisecond.
 
 ### Steps
 
-E0. [ ] **Paired measurement tooling and baseline** (results identical).
+E0. [x] **Paired measurement tooling and baseline** (results identical).
         Bench modes that run two configurations on the same seeded slots
         of each set, save per-slot and per-message results keyed by set
         and seed, and print the paired tables (b, c, the sign-test

@@ -244,3 +244,32 @@ fn message_passing_state_is_pinned_bit_for_bit() {
         assert_eq!(got, want, "{rule:?}: {got:#018x}");
     }
 }
+
+#[test]
+fn the_scratch_records_the_rounds_run() {
+    let (_, cw) = codeword("CQ K1ABC FN42");
+    let mut scratch = BpScratch::new();
+    let clean = channel(&cw, 4.0, 0.0, 1);
+    assert_eq!(
+        decode_soft(&clean, CheckRule::SumProduct, 30, &mut scratch)
+            .unwrap()
+            .rounds,
+        0
+    );
+    assert_eq!(scratch.rounds(), 0);
+    let mut llr = [0.0f32; N];
+    for (i, l) in llr.iter_mut().enumerate() {
+        *l = ((i * 7_919) % 1_000) as f32 / 125.0 - 4.0;
+    }
+    for rule in RULES {
+        assert_eq!(
+            decode_soft(&llr, rule, 7, &mut scratch),
+            Err(BpFailure::NotConverged)
+        );
+        assert_eq!(scratch.rounds(), 7);
+    }
+    let noisy = channel(&cw, 2.0, 1.4, 105);
+    if let Ok(d) = decode_soft(&noisy, CheckRule::SumProduct, 30, &mut scratch) {
+        assert_eq!(scratch.rounds(), d.rounds);
+    }
+}
