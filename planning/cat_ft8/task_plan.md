@@ -11,9 +11,11 @@ plan is approved.
 ## Current Phase
 
 Phase 1 (encoder) committed on `feat/cat-ft8`; ADR 0024 accepted
-2026-10-26. Phase 2 (single-pass decoder): plan approved by the user
-2026-10-26 (D0 done; ADR amendment accepted with estimated figures).
-Next: D1–D3, stopping at the D3 checkpoint.
+2026-10-26. Phase 2 (single-pass decoder): D1–D10 committed (D11, the
+comparison with an external reference decoder, is not part of this
+repository's CI). Review of the whole decoder done; fix round D12 (A and
+B, results identical) approved by the user 2026-10-27, then up to five
+optimisation passes (C). Now: D12.
 
 ## Hard constraints
 
@@ -505,6 +507,81 @@ D11. [x] Measurement against an external reference decoder on synthetic
    on a board, chosen later.
 2. **Slot boundary on a 256 KiB part:** the small configuration plus a
    1 s i16 FIFO, with a 1 s microcontroller decode budget.
+
+## D12: fix round after the decoder review (approved 2026-10-27)
+
+Every item leaves decode results identical: golden decode hashes, pinned
+rate floors, the bulk test and the golden waveform hashes are checked
+after each item. An item that would change results stops the round and
+is reported instead (expected exception: stronger golden-slot asserts may
+expose a false decode, which is reported).
+
+A. Required:
+A1. [x] MSRV: `frontend.rs` `x.abs()` (core `f32::abs` needs 1.85) →
+        comparisons; CI step `cargo +1.75 build -p cat-ft8
+        --no-default-features` (library on the MSRV).
+A2. [x] Provenance: `NOTICE` and the crate docs name the decoder stages
+        for which `ft8_lib` was consulted (spectrogram oversampling, sync
+        scoring, soft-bit normalisation, belief-propagation decoder; no
+        function translated); ADR provenance table: 2× oversampling
+        consulted, a row for the `math` helpers (log2, exp2), soft bits
+        "scaled by mean magnitude".
+A3. [x] Crate docs state the decode determinism condition.
+A4. [x] ADR memory/flash table with measured values; measured rate and
+        cost evidence recorded generically (external benchmark on
+        synthetic slots; reference-decoder comparison outside this
+        repository; CPU named); the host time budget states its statistic
+        and load, and that it has no margin today.
+A5. [x] Docs drift: README, CLAUDE.md, Cargo `description` and feature
+        comments cover the decoder; profile-exposed modules marked
+        unstable; `Decode::snr_db` (25–100 Hz); `Error` doc; decode bench
+        header; `merge` doc; α 0.75 tie-break stated; comment that
+        `Payload::from_bits(..)` after the CRC cannot fail; plan wording
+        (Current Phase, D10 rule wording, D11 not part of CI); a `Decoder`
+        lives across the whole slot; BP stopping at the first CRC-failing
+        codeword added to the later single-pass list.
+A6. [x] Tests: golden slots assert exactly the transmitted decodes per
+        configuration and none on the carrier slot; `feed_i16(x)` equals
+        `feed(x / 32 768)`; bulk run adds strong carriers, clipped
+        full-scale noise, very low-level noise and impulsive noise;
+        `llr_scale` bounded (0 < s ≤ 1 000) with a test.
+A7. [x] CLI: `--config small` uses `Band::SMALL` and `SMALL_DECODES` and
+        the profile reports band and capacity; `--help` prints usage to
+        stdout and exits 0; the WAV reader reads only the chunks it needs
+        and at most the samples asked for.
+B. Simplicity:
+B8. [x] Delete the `Level` trait and generics (`u8` levels only).
+B9. [x] One per-symbol soft-bit fill and a shared metric-and-scale tail;
+        `DATA_SYMBOLS` (= 79 − 21) instead of the literal 21.
+B10. [x] Belief propagation reads a const 0-based check table with
+         degrees, derived at compile time from `PARITY_CHECKS`.
+B11. [x] One `classify` helper for sample sanitising and clamping in
+         `Spectrogram::take`.
+B12. [x] `Debug` for `Spectrogram` and `Decoder` without the buffers; the
+         decode bench counts rounds only for converged candidates.
+B13. [x] Profile split: refinement, soft bits, belief propagation and SNR
+         timed separately (a stage callback on the candidate decode, used
+         by `cat-ft8-decode --profile`).
+D12a. [x] Cleanup after the D12 re-review (results identical except a
+          new pinned golden entry): `Stage` matched exhaustively with
+          `Stage::ALL` and `name()` (no catch-all; documented as for
+          timing); `CHECKS`/`DEGREES` static; a third golden entry for the
+          real small setup (Band::SMALL, SMALL, 64 decodes) with exact
+          count and hash, the existing "SMALL" entry renamed min-sum on the
+          default band, golden doc lines fixed; ADR/plan (D11 done outside
+          this repository, stale plan line, flash figure with toolchain,
+          time-budget sentence per process with parallel load as an upper
+          bound, long lines, D12 sizes in findings, bulk-seed note);
+          `NOTICE` names ADR 0024 not a path; stale 25–50 Hz test comment;
+          bench prints n/a when nothing converged. Then all checks and the
+          bulk run; then local commits by topic on `feat/cat-ft8`
+          (authorised), no push.
+C (after re-review, not in this round): up to five optimisation passes
+with identical results, starting with radix-specific FFT butterflies.
+Later single-pass work (changes results, each measured): early stopping of
+failing candidates, then sum-product versus min-sum as the host default;
+continuing past a CRC-failing codeword; normalised sync threshold with a
+smaller K; multi-pass API additions.
 
 ## Later (not in this round)
 

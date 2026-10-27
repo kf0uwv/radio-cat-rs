@@ -432,7 +432,7 @@
   the Linux and Windows jobs run the decode tests through the workspace
   tests. Bulk run checked locally; aarch64 and Windows need a real CI
   run (no local runtime for either).
-- D8/D8b committed (dd51ea1). D9/D10 go-ahead (D11 runs elsewhere);
+- D8/D8b committed (dd51ea1). D9/D10 go-ahead (D11 is not part of this repository's CI);
   design recorded in the plan.
 - D9 done: `wav::read_wav` (16-bit PCM, plain or extensible, any rate
   and channels, unknown chunks skipped, over-long data chunk read to the
@@ -447,6 +447,65 @@
   encoder-only), each checked for unresolved symbols and f64 helpers and
   sized; the decoder path is a separate, non-inlined function so its
   stack frame is reported. Results in findings ("D10 sizes").
+
+## Session: 2026-10-27 (D12 fix round)
+
+- Six reviews of the whole decoder consolidated into fix list sections
+  A (required, results identical), B (simplicity, results identical)
+  and C (optimisation passes, later). The user approved A and B followed
+  by C on 2026-10-27. D12 plan written into the task plan before code;
+  C waits for re-review.
+- D12 done, one item at a time; after each, every test (golden waveform
+  and decode hashes, pinned floors) and the release bulk run were checked
+  (bulk counts compared line by line with a baseline taken after A6
+  extended the run). Decode results identical throughout.
+  - A1: the one `f32::abs` in the core replaced (a range check); the
+    library builds on 1.75 with and without std; CI step added.
+  - A2: decoder provenance in `NOTICE`, the crate docs and the ADR table
+    (oversampling, numeric helpers row, mean-magnitude scaling).
+  - A3: the decode determinism condition (no flush-to-zero) in the crate
+    docs.
+  - A4: ADR memory table measured (host 234 680 B, 236 232 B with the call
+    table; small `.bss` 212 280 B; tables 36 260 B), link-check sizes and
+    frames, the external benchmark's figures stated generically, the host
+    budget's statistic and load, and its lack of margin.
+  - A5: README (decoder, about 1 470 workspace tests), CLAUDE.md, Cargo
+    description and feature comments (profile modules unstable), `snr_db`
+    doc, `Error` doc, bench header, `merge` doc, α tie-break, the
+    cannot-fail comment, `Decoder` lifetime note, plan wording.
+  - A6: golden slots assert only transmitted decodes, exact counts (HOST
+    8/0/8, SMALL 7/0/7 of 8 sent; no false decode exposed); `feed_i16`
+    test; bulk run extended (strong carriers, clipped, floored,
+    impulsive: 0 decodes); `llr_scale` ≤ 1 000 with a test.
+  - A7: `--config small` = 200–2900 Hz, min-sum, 64 decodes, reported in
+    the profile; `--help` to stdout, exit 0; `wav::read_wav_prefix` reads
+    only the needed chunks and frames (test).
+  - B8: `Level` trait and generics removed (`u8` levels, `level_of`).
+  - B9: shared `fill_and_scale` for both soft-bit forms; the grid form's
+    bench counts reproduce D7 exactly.
+  - B10: compile-time 0-based `CHECKS` and `DEGREES` (test against the
+    matrix); `TABLE_BYTES` 36 260.
+  - B11: `classify` helper in the front end.
+  - B12: `Debug` without buffers (test); bench rounds for converged
+    candidates only.
+  - B13: `Stage` and `decode_candidate_staged` (same result, test); the
+    command's profile adds `refine`, `soft_bits`, `belief_propagation`
+    and `snr` seconds.
+- D12 re-reviewed (six approvals). D12a cleanup recorded in the plan;
+  the coordinator authorised local commits by topic (no push).
+- Note: A6 changed the bulk run's seeds, so its zero decodes from then on
+  are a new sample of noise and carriers, not a re-run of the earlier
+  slots.
+- D12a done: `Stage` exhaustive with `ALL`, `index()` and `name()` (the
+  command builds its keys from them; no catch-all); `CHECKS`/`DEGREES`
+  static; golden setups now HOST, min-sum on the default band (renamed
+  from "SMALL") and the real small setup (Band::SMALL, SMALL, 64
+  decodes: 6 / 0 / 6 of 8 sent, hash 0xdd6e4bf08d7d91f9, new); ADR flash
+  rounded with the toolchain named, time-budget sentence per process
+  under parallel load as an upper bound, D11 marked done (outside this
+  repository), two long lines wrapped, D12 sizes in findings; `NOTICE`
+  names ADR 0024; stale test comment; bench prints n/a. Existing golden
+  hashes, floors and bulk counts unchanged.
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
