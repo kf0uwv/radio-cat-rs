@@ -528,6 +528,22 @@
   cargo tests, bulk run, crowded and sweep `--identical` (0 slots
   differ; harness CPU −24% / −25%), golden 60/60. Link check: flash
   +112 B (+0.13%), decoder-path frame 2 496 → 2 568 B (+2.9%).
+- Pass 2 (rejected, reverted): FFT twiddle index stepped by d and
+  wrapped instead of a modulo per term (same twiddles, same order;
+  radix-specific butterflies were ruled out because the table's
+  quarter-turn twiddles are not exactly ±1, ±i, so specialised kernels
+  would round differently). Results identical (cargo tests). Feed-only
+  bench, ten interleaved rounds of 100 feeds: 14.51 → 14.09 ms (−2.9%,
+  sd 0.13 ms); per-feed instructions 212.2 → 203.0 M (−4.3%). The CPU
+  gain is real but under 3%, so rejected. On a microcontroller the
+  modulo is a hardware divide per term; worth re-measuring there.
+- Pass 3 (rejected, reverted): belief propagation swaps its two total
+  buffers by reference instead of copying their contents each round
+  (the memmove seen in the profile). Results identical (cargo tests);
+  A/B: belief propagation −0.5%, total −0.2%.
+- Two passes in a row under 3%: stopped (passes 4–5 not run). Kept: pass
+  1 only. Tooling kept: `decode_bench stage feed|sync|bp` for
+  single-stage instruction counts.
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |

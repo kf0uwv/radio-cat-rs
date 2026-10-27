@@ -599,11 +599,15 @@ P1. [x] Belief propagation inner loops (same operations in the same
         order): layout, bounds checks, hoisting, the static check tables.
         Kept: sum-product check updates over fixed eight lanes with
         branch-free `exp2`/`log2` selects, so they vectorise; BP −35.5%.
-P2. [ ] FFT: radix-specific butterflies with incremental twiddle
+P2. [x] FFT: radix-specific butterflies with incremental twiddle
         indices instead of the generic small DFT with a modulo per term,
-        only if the rounding is identical.
-P3–P5. [ ] Refined soft bits, sync search and others, as the profile
-        shows.
+        only if the rounding is identical. Radix-specific butterflies
+        would change rounding (the table's quarter-turn twiddles are not
+        exactly ±1, ±i), so only the incremental indices were tried:
+        rejected, feed −2.9% (instructions −4.3%).
+P3. [x] Belief propagation: swap the two total buffers by reference
+        instead of by content. Rejected, BP −0.5%.
+P4–P5. [x] Not run: two passes in a row under 3% (stopping rule).
 Later single-pass work (changes results, each measured): early stopping of
 failing candidates, then sum-product versus min-sum as the host default;
 continuing past a CRC-failing codeword; normalised sync threshold with a

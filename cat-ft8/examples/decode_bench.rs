@@ -710,6 +710,53 @@ fn main() {
                 );
             }
         }
+        "stage" => {
+            // One stage only, repeated, for instruction counts with
+            // `perf stat -e instructions:u` (args: stage name, repeats).
+            let which = args.next().unwrap_or_else(|| "feed".into());
+            let (samples, _) = make_slot(&msgs, Content::Signal(-20.0), 7);
+            let band = Band::DEFAULT;
+            let mut front = Box::new(FrontEnd::new());
+            let mut levels = vec![0u8; band.spectrogram_len()];
+            let mut spec = Spectrogram::new(&mut front, &mut levels, band).unwrap();
+            spec.feed(&samples);
+            let mut scratch = vec![0i32; sync::scratch_len(band.base_bins())];
+            let mut cands = vec![Candidate::default(); CANDIDATES];
+            let kept = find_candidates(&spec, 0, &mut scratch, &mut cands)
+                .unwrap()
+                .kept;
+            let mut bp = Box::new(BpScratch::new());
+            let mut llr = [0.0f32; 174];
+            let mut sink = 0usize;
+            let t = Instant::now();
+            for _ in 0..n {
+                match which.as_str() {
+                    "feed" => {
+                        spec.start_slot();
+                        sink += spec.feed(std::hint::black_box(&samples));
+                    }
+                    "sync" => {
+                        sink += find_candidates(&spec, 0, &mut scratch, &mut cands)
+                            .unwrap()
+                            .kept;
+                    }
+                    "bp" => {
+                        for c in &cands[..kept] {
+                            let (fr, fb) = sync::refine(&spec, c);
+                            soft_bits_at(&spec, c, fr, fb, 4.0, &mut llr);
+                            sink += usize::from(
+                                decode_soft(&llr, CheckRule::SumProduct, 30, &mut bp).is_ok(),
+                            );
+                        }
+                    }
+                    other => panic!("unknown stage {other}"),
+                }
+            }
+            println!(
+                "stage {which}: {n} repeats, {:.3} ms each ({sink})",
+                t.elapsed().as_secs_f64() * 1e3 / n as f64
+            );
+        }
         "cost" => {
             let (samples, _) = make_slot(&msgs, Content::Signal(-20.0), 7);
             let band = Band::DEFAULT;
