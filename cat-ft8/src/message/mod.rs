@@ -93,6 +93,9 @@ const PAYLOAD_MASK: u128 = (1u128 << 77) - 1;
 pub struct Payload(u128);
 
 impl Payload {
+    /// All 77 bits zero (a placeholder for empty storage).
+    pub(crate) const ZERO: Payload = Payload(0);
+
     /// A payload from its 77 bits held in the low end of `bits`; `None` if
     /// any higher bit is set.
     pub fn from_bits(bits: u128) -> Option<Self> {

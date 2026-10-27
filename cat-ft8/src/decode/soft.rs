@@ -30,7 +30,9 @@
 //! deviation, so no square root is needed.
 
 use super::frontend::{Level, Spectrogram};
+use super::math::log2_power;
 use super::sync::Candidate;
+use super::tables::LEVEL_POWER;
 use crate::ldpc::N;
 use crate::symbols::{data_index, GRAY_UNMAP};
 use crate::SYMBOL_COUNT;
@@ -55,7 +57,10 @@ const ONES: [u8; 3] = {
 
 /// Soft bits for a candidate: `llr[i]` for codeword bit `i` (positive
 /// favours 0), scaled so the mean magnitude of the bits that are not
-/// erased is `target`. Returns the number of erased symbols.
+/// erased is `target`. Returns the number of erased symbols. (The
+/// decoder uses [`soft_bits_at`]; this grid form is kept for tests and
+/// measurement.)
+#[cfg(any(test, feature = "profile"))]
 pub fn soft_bits<L: Level>(
     spec: &Spectrogram<'_, L>,
     candidate: &Candidate,
@@ -92,6 +97,114 @@ pub fn soft_bits<L: Level>(
                 }
             }
             let l = (max0 - max1) as f32;
+            llr[3 * d + j] = l;
+            sum += if l < 0.0 { -l } else { l };
+        }
+    }
+    let live = (3 * (SYMBOL_COUNT - 21 - erased)) as f32;
+    if sum > 0.0 {
+        let scale = target * live / sum;
+        for x in llr.iter_mut() {
+            *x *= scale;
+        }
+    }
+    erased
+}
+
+/// Linear power (relative to the top level) of a level value `v`.
+#[inline]
+pub(crate) fn level_power(v: u32) -> f32 {
+    LEVEL_POWER[(v as usize).min(255)]
+}
+
+/// The two grid indices around `i + f` (|f| ≤ ½) and their weights.
+#[inline]
+pub(crate) fn straddle(i: i32, f: f32) -> [(i32, f32); 2] {
+    if f < 0.0 {
+        [(i - 1, -f), (i, 1.0 + f)]
+    } else {
+        [(i, 1.0 - f), (i + 1, f)]
+    }
+}
+
+/// The power of `tone` for the symbol centred on row `centre`,
+/// interpolated with the row and bin weights `rows` (offsets from
+/// `centre`) and `bins` (base bins); `None` if no row of non-zero weight
+/// is filled.
+#[inline]
+pub(crate) fn interpolated_tone_power<L: Level>(
+    spec: &Spectrogram<'_, L>,
+    centre: i32,
+    rows: &[(i32, f32); 2],
+    bins: &[(i32, f32); 2],
+    tone: u8,
+    stored: i32,
+) -> Option<f32> {
+    let mut p = 0.0f32;
+    let mut any = false;
+    for &(dr, wr) in rows.iter() {
+        let row = centre + dr;
+        if wr == 0.0 || row < 0 {
+            continue;
+        }
+        let Some(levels) = spec.row(row as usize) else {
+            continue;
+        };
+        any = true;
+        for &(b, wb) in bins.iter() {
+            let bin = b + 2 * i32::from(tone);
+            if (0..stored).contains(&bin) {
+                p += wr * wb * level_power(levels[bin as usize].value());
+            }
+        }
+    }
+    any.then_some(p)
+}
+
+/// Soft bits as [`soft_bits`], at a position refined by `frac_row` rows
+/// and `frac_bin` bins (each in −½…½) from the candidate's grid point:
+/// each tone's power is interpolated bilinearly from the four
+/// surrounding grid values (in linear power), and the metric is taken
+/// on its logarithm. A symbol is erased if none of its rows is filled.
+pub fn soft_bits_at<L: Level>(
+    spec: &Spectrogram<'_, L>,
+    candidate: &Candidate,
+    frac_row: f32,
+    frac_bin: f32,
+    target: f32,
+    llr: &mut [f32; N],
+) -> usize {
+    let stored = spec.band().stored_bins() as i32;
+    let rows = straddle(0, frac_row);
+    let bins = straddle(i32::from(candidate.base), frac_bin);
+    let mut erased = 0;
+    let mut sum = 0.0f32;
+    for k in 0..SYMBOL_COUNT {
+        let Some(d) = data_index(k) else { continue };
+        let centre = i32::from(candidate.start_row) + 2 * k as i32;
+        let mut v = [0.0f32; 8];
+        let mut filled = true;
+        for (t, x) in v.iter_mut().enumerate() {
+            match interpolated_tone_power(spec, centre, &rows, &bins, t as u8, stored) {
+                Some(p) => *x = log2_power(p),
+                None => filled = false,
+            }
+        }
+        if !filled {
+            llr[3 * d..3 * d + 3].fill(0.0);
+            erased += 1;
+            continue;
+        }
+        for (j, &ones) in ONES.iter().enumerate() {
+            let (mut max0, mut max1) = (f32::MIN, f32::MIN);
+            for (t, &x) in v.iter().enumerate() {
+                if ones & (1 << t) != 0 {
+                    max1 = if x > max1 { x } else { max1 };
+                } else {
+                    max0 = if x > max0 { x } else { max0 };
+                }
+            }
+            let l = max0 - max1;
             llr[3 * d + j] = l;
             sum += if l < 0.0 { -l } else { l };
         }
@@ -189,6 +302,38 @@ mod tests {
         for (i, &l) in llr.iter().enumerate().skip(9) {
             assert_eq!(if l > 0.0 { 0 } else { 1 }, cw.bit(i), "bit {i}");
         }
+    }
+
+    #[test]
+    fn interpolated_bits_at_the_grid_point_follow_the_integer_bits() {
+        // At zero offsets the interpolated form reads the same levels: the
+        // same signs, the same zeros and the same erasures, at a start row
+        // that leaves the first symbols outside the rows.
+        let mut slot = empty_slot();
+        let cand = Candidate {
+            score: 0,
+            start_row: -21,
+            base: 300,
+        };
+        add_signal(
+            &mut slot,
+            &symbols_of("K1ABC W9XYZ -11"),
+            (32 + 300) as f32 * 3.125,
+            dt_of(-21),
+            0.01,
+        );
+        add_noise(&mut slot, 0.03, 9);
+        let mut built = Built::<u8>::new(Band::DEFAULT);
+        built.with(&slot, |spec| {
+            let (mut grid, mut interp) = ([0.0f32; N], [0.0f32; N]);
+            let e1 = soft_bits(spec, &cand, 4.0, &mut grid);
+            let e2 = soft_bits_at(spec, &cand, 0.0, 0.0, 4.0, &mut interp);
+            assert_eq!((e1, e2), (4, 4)); // data symbols 7–10
+            for (i, (&g, &v)) in grid.iter().zip(interp.iter()).enumerate() {
+                assert_eq!(g > 0.0, v > 0.0, "bit {i}");
+                assert_eq!(g == 0.0, v == 0.0, "bit {i}");
+            }
+        });
     }
 
     #[test]

@@ -351,6 +351,69 @@
   only"); `Level` sealed with `u8` only; the decode bench's `levels` mode
   and the front-end bench's level-width section and 16-bit timing
   removed; tests that compared or used 16-bit levels now use 8-bit.
+- D6b committed (24e9070). D7a/D7b go-ahead with the D6 checkpoint
+  decisions; D7 design recorded in the plan.
+- D7a done: `decode::decoder` — `DecodeConfig` (`HOST` sum-product,
+  `SMALL` min-sum; `Error::InvalidConfig`), `Decoder` over the caller's
+  buffers with the split API (`find_candidates`, `decode_candidate(&self,
+  index, &mut CandidateScratch)`, `DecodeList::push`/`merge` in index
+  order, `Error::OutOfOrder`), `decode()` as exactly those calls,
+  `DecodeList::finish` (callback, caller's `CallHashes`, unpack errors
+  reported) and `finish_payloads`, `DecodeReport` (with all-zero
+  rejections, CRC failures, not converged, duplicates, truncation and
+  the front-end counters). `sync`/`soft`/`bp` crate-private, public with
+  `profile` only. Tests (9): configuration and buffer checks; three
+  signals with their fields; split API identical to `decode()` for 1, 3,
+  4 and 7 threads, either order, feed blocks 1/777/4 096/whole; push
+  order enforced; duplicates keep the lowest index, truncation counted;
+  a carrier gives all-zero rejections and no decode; `finish` reports a
+  payload it cannot unpack; the caller's hash table resolves a hashed
+  call; a reused decoder matches a fresh one, and a 14 s partial slot
+  decodes. The bench sweep through `Decoder` reproduces the D6 figures
+  exactly. Link check on the `Decoder` API: `.text` 31 806 B, `.bss`
+  211 772 B, `_start` 4 096 B, `unpack` 464 B.
+- D7b done: `sync::refine` (parabola through the sync scores of the
+  grid neighbours, clamped to ±½ step), `soft::soft_bits_at` (power
+  interpolated bilinearly at the refined position, from a 256-entry
+  level-to-power table generated with `libm` and checked bit-for-bit;
+  zero-weight rows ignored), refined frequency and dt in `Decode`, and
+  `snr::estimate` (decoded tones against the median of 8 reference bins
+  each side, 25–50 Hz from the signal; +2.3 dB calibration; floor −30
+  dB). The grid soft bits remain for tests and `profile` only. Tests
+  (+5): refinement moves towards sub-grid offsets; interpolated bits at
+  the grid point follow the integer bits (signs, zeros, erasures); SNR
+  with local noise on a one-pole-shaped noise floor (two signals −10 dB
+  locally, read within 1.5 dB); SNR tracks the level −16…+20 dB within
+  1 dB; memory per item. Field tolerances in the three-signal test
+  tightened (0.8 Hz, 20 ms, SNR ±1 dB). Decoder doctest added. Results in
+  findings ("D7 measurements").
+- ◆ D7 checkpoint reached (2026-10-26): tests 103 (101 without std),
+  2 ignored, integration 2 + 5, doctests 3; clippy (four
+  configurations), fmt, docs, thumbv8m build; link check `.text`
+  33 734 B, `.rodata` 50 118 B, `.bss` 212 284 B, `_start` 4 216 B;
+  golden hashes unchanged.
+- D7 checkpoint reviewed: proceed after D7c (recorded in the plan with
+  the D8 notes).
+- D7c done: `push` rejects a decode carrying another index (nothing
+  changed); `#[non_exhaustive]` on `Decode`, `DecodeReport`, `BpFailure`
+  and `DecodeConfig`, with const `with_rule`/`with_max_rounds`/
+  `with_llr_scale`/`with_min_score`/`with_candidates` setters (decision:
+  callers start from `HOST`/`SMALL`; fields stay public for reading;
+  doctest); `const fn` `Band::first_bin`/`base_bins`/`stored_bins`,
+  `sync::scratch_len`, `Decoder::sync_scratch_len`, and the link check's
+  sync scratch is sized from it; stale-candidate note on `feed`; counters:
+  exact counting would need the truncated payloads (up to the candidate
+  capacity), so `decoded` is documented as exact until truncation and an
+  upper bound after; `snr_db` documented as against local noise; ADR
+  drift fixed (merge does rejection, dedup and truncation; `decode()`
+  excludes `finish`; capacity constants; level-to-power table in the
+  rule-3 tables); Hann doc comment moved back to its generator. Tests:
+  `SMALL` end to end in the split/determinism test, chunked `merge`
+  equals one merge, mismatched candidate index rejected, the setters.
+  Checks: tests 103 (101 without std), 2 ignored, integration 2 + 5,
+  doctests 4; clippy (four configurations), fmt, docs, thumbv8m build;
+  link check `.text` 33 706 B, `.rodata` 50 118 B, `.bss` 212 284 B,
+  `_start` 4 216 B; golden hashes unchanged.
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |

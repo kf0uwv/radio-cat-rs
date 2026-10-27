@@ -207,3 +207,55 @@ fn a_partial_slot_scores_only_the_arrays_it_has() {
     assert_eq!(partial, rows_needed);
     assert_eq!(none, None); // start row 30: only array 0 is filled
 }
+
+#[test]
+fn refinement_moves_towards_sub_grid_offsets() {
+    // A noise-free signal placed off the grid by known fractions. Along
+    // each axis the refined offset moves from the grid point towards the
+    // true position (it may stop short: a parabola through three sync
+    // scores is a rough model), and stays near 0 when the signal is on the
+    // grid along that axis.
+    for &(fb, fr) in &[
+        (0.0f32, 0.0f32),
+        (0.25, 0.0),
+        (0.0, 0.25),
+        (-0.3, 0.4),
+        (0.45, -0.45),
+    ] {
+        let mut slot = empty_slot();
+        let bin = 480.0 + fb;
+        let start = dt(5) + fr * ROW_SECONDS;
+        add_signal(
+            &mut slot,
+            &symbols_of("CQ K1ABC FN42"),
+            bin * 3.125,
+            start,
+            0.3,
+        );
+        let mut built = Built::<u8>::new(Band::DEFAULT);
+        let (got, want) = built.with(&slot, |spec| {
+            let mut scratch = vec![0i32; scratch_len(spec.band().base_bins())];
+            let mut out = vec![Candidate::default(); 4];
+            find_candidates(spec, 0, &mut scratch, &mut out).unwrap();
+            let c = out[0];
+            let true_row = 5.0 + fr - f32::from(c.start_row);
+            let true_bin = bin - (spec.band().first_bin() + usize::from(c.base)) as f32;
+            let (r, b) = refine(spec, &c);
+            ([r, b], [true_row, true_bin])
+        });
+        for axis in 0..2 {
+            let (g, w) = (got[axis], want[axis]);
+            if w.abs() < 0.05 {
+                assert!(
+                    g.abs() <= 0.15,
+                    "offset ({fb}, {fr}) axis {axis}: {g} for {w}"
+                );
+            } else {
+                assert!(
+                    g * w > 0.0 && (g - w).abs() < w.abs(),
+                    "offset ({fb}, {fr}) axis {axis}: {g} for {w}"
+                );
+            }
+        }
+    }
+}

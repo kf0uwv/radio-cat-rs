@@ -13,25 +13,49 @@
 // limitations under the License.
 
 //! The decoder (single pass), being built step by step (ADR 0024,
-//! amendment "single-pass decoder"). So far: numeric helpers, the
-//! spectrum of one analysis window, the block-fed front end and the sync
-//! search.
+//! amendment "single-pass decoder"): a block-fed spectrogram, the Costas
+//! sync search, soft bits, belief propagation and the CRC, behind the
+//! [`Decoder`] and [`DecodeList`] API (see the [`decoder`] module).
+//!
+//! The stages (`sync`, `soft`, `bp`) are crate-private; the `profile`
+//! feature makes them public for measurement benches only.
 
+#[cfg(feature = "profile")]
+#[doc(hidden)]
 pub mod bp;
+#[cfg(not(feature = "profile"))]
+pub(crate) mod bp;
+pub mod decoder;
 pub(crate) mod fft;
 pub mod frontend;
 pub(crate) mod math;
+pub(crate) mod snr;
+#[cfg(feature = "profile")]
+#[doc(hidden)]
 pub mod soft;
+#[cfg(not(feature = "profile"))]
+pub(crate) mod soft;
+#[cfg(feature = "profile")]
+#[doc(hidden)]
 pub mod sync;
-mod tables;
+#[cfg(not(feature = "profile"))]
+pub(crate) mod sync;
+pub(crate) mod tables;
 #[cfg(test)]
 pub(crate) mod testutil;
 
-pub use bp::{decode_soft, BpDecode, BpFailure, BpScratch, CheckRule};
+pub use bp::{BpFailure, CheckRule};
+pub use decoder::{
+    CandidateResult, CandidateScratch, Decode, DecodeConfig, DecodeList, DecodeReport, Decoder,
+    CANDIDATES, HOST_DECODES, SMALL_DECODES,
+};
+pub use frontend::{Band, FrontEnd, Level, Spectrogram, BIN_HZ, HOP, ROWS, ROW_ORIGIN};
+pub use snr::SNR_FLOOR_DB;
+pub use sync::{Candidate, SyncReport};
+
 /// Bytes of the decoder's static tables (FFT twiddles, real-split
-/// twiddles, half Hann window, digit-reversal table, and the parity-check
-/// list used by belief propagation), in flash.
-pub const TABLE_BYTES: usize = fft::TABLE_BYTES + core::mem::size_of::<[[u8; 7]; 83]>();
-pub use frontend::{Band, FrontEnd, Level, Spectrogram, HOP, ROWS, ROW_ORIGIN};
-pub use soft::soft_bits;
-pub use sync::{find_candidates, Candidate, SyncReport};
+/// twiddles, half Hann window, digit-reversal table, the parity-check
+/// list used by belief propagation, and the level-to-power table), in
+/// flash.
+pub const TABLE_BYTES: usize =
+    fft::TABLE_BYTES + core::mem::size_of::<[[u8; 7]; 83]>() + core::mem::size_of::<[f32; 256]>();

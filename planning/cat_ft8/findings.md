@@ -250,3 +250,47 @@ decode); until then those figures stay estimates.
   are removed with it. The measurement remains reproducible at
   2546586.
 
+## D7 measurements (2026-10-26)
+
+Decode bench (`examples/decode_bench.rs`, `profile`), one signal per slot
+from this crate's encoder, seeded noise, band 100–3100 Hz, 300 slots per
+point unless stated, host AMD Threadripper 3970X.
+
+- **Grid offset costs** (grid soft bits, decodes of 300 at −20 / −19 /
+  −18 dB): on the grid 61 / 223 / 292; half a bin off 3 / 57 / 211; half
+  a row off 1 / 19 / 132; both 0 / 1 / 15. The 50% point on the grid is
+  about −19.4 dB against about −18.6 dB for random offsets.
+- **Refinement** (interpolated soft bits at the estimated offsets): half
+  a bin 52 / 203 / 293; half a row 24 / 137 / 275; both 12 / 104 / 251;
+  random offsets 29 / 179 / 285 (grid: 17 / 101 / 215). True offsets
+  (oracle) gave 32 / 174 / 259 for random offsets — no better, since the
+  oracle refines only candidates within half a step of the signal.
+- **Decode rate, sum-product, before → after refinement** (decodes of
+  300): −21 dB 0 → 1, −20 dB 17 → 29, −19.5 dB 50 → 98, −19 dB 101 → 179,
+  −18.5 dB 158 → 247, −18 dB 215 → 285, −17 dB 277 → 299, −16 dB 292 →
+  300, −14 dB 300 → 300. 50% point about −18.6 → −19.2 dB. Min-sum after:
+  0 / 27 / 90 / 174 / 245 / 284 / 299 / 300 / 300 at −21…−14 dB. False
+  decodes: 0 at every point; 0 in 3 000 noise-only slots; 0 in 3 000
+  carrier-plus-noise slots (17 601 all-zero codewords rejected there).
+- **SNR estimate** after calibration (200 slots per SNR, mean error by
+  500 Hz band 200–2 800 Hz): white noise −0.3…+0.1 dB from −18 to +20 dB
+  (RMS about 0.5 dB); shaped noise (2nd-order high-pass at 400 Hz,
+  4th-order low-pass at 1 800 Hz: −12 dB at 200 Hz, −20 dB at 2 800 Hz)
+  −0.3…+0.5 dB, the 200–700 Hz band reading +0.3…+0.5 dB on the steepest
+  slope. At −20 dB only the decodes that succeed are counted, so the mean
+  reads +0.1…+1.2 dB high (selection). A 2-bin gap before the reference
+  compressed the estimate (−4.2 dB at +20 dB, uncalibrated) through the
+  signal's own skirts; the 8-bin gap keeps it linear.
+- **Frequency and dt** (same runs): RMS 0.22–0.47 Hz (max 1.22 Hz),
+  RMS 5–8 ms (max 27 ms).
+- **Cost** (one thread): refined soft bits 9.4 µs per candidate (grid
+  1.2 µs; 26.6 µs before the level-to-power table); sum-product BP 375 µs
+  and min-sum 130 µs per candidate at 30 rounds; whole decoder (feed +
+  `decode()`, 200 candidates) 94 ms per slot with `HOST`, 45 ms with
+  `SMALL`.
+- **Memory**: `Decode` 48 B, `CandidateScratch` 5 100 B, `Candidate` 8 B;
+  link check (small band, 64 decodes, all buffers static) `.bss`
+  212 284 B: 262 144 − 212 284 ≈ 49.9 KB left on a 256 KiB part before
+  the stack (≈ 4.2 KB measured for `_start`) and the 1 s i16 FIFO
+  (24 000 B), so about 21 KB spare.
+

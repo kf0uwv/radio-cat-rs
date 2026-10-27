@@ -156,17 +156,17 @@ impl Band {
     }
 
     /// First stored bin (the lowest base frequency), in 3.125 Hz units.
-    pub fn first_bin(&self) -> usize {
-        usize::from(self.lo_bin)
+    pub const fn first_bin(&self) -> usize {
+        self.lo_bin as usize
     }
 
     /// Number of base (tone 0) bins searched.
-    pub fn base_bins(&self) -> usize {
-        usize::from(self.hi_bin - self.lo_bin) + 1
+    pub const fn base_bins(&self) -> usize {
+        (self.hi_bin - self.lo_bin) as usize + 1
     }
 
     /// Number of bins stored per row.
-    pub fn stored_bins(&self) -> usize {
+    pub const fn stored_bins(&self) -> usize {
         self.base_bins() + BINS_ABOVE_BAND
     }
 

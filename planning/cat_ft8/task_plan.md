@@ -345,14 +345,83 @@ D6a. [x] D6 checkpoint corrections: a direct `hard_decide` tie test (all-zero in
          pattern. Then all checks; stop for the D4–D6 commit.
 D6b. [x] Delete the 16-bit level type in its own change (bench `levels`
          mode removed; sealed `Level` with `u8` only), after go-ahead.
-D7a. [ ] Decoder API and merge: borrowed workspace, split API, `finish`
+D7a. [x] Decoder API and merge: borrowed workspace, split API, `finish`
          and `finish_payloads` keyed by candidate index, `DecodeReport`
          (candidates found / kept / decoded / rejected, truncation,
          sanitised samples), `decode()` ≡ the split calls (tested).
-D7b. [ ] Refinement and SNR: frequency and time refinement on the grid
+D7b. [x] Refinement and SNR: frequency and time refinement on the grid
          neighbours, SNR estimate in 2500 Hz calibrated on synthetic
          slots of known SNR.
+    D7 design (2026-10-26, after the D6 checkpoint decisions):
+    - `DecodeConfig { rule, max_rounds, llr_scale, min_score, candidates }`
+      with `HOST` (sum-product) and `SMALL` (min-sum, provisional until
+      instruction counts) presets; LLR scale 4, 30 rounds, 200
+      candidates. `Error::InvalidConfig` for a bad configuration.
+    - `Decoder<'a>`: borrows the front end, levels, sync scratch and
+      candidate list (checked against the band and configuration);
+      forwards `start_slot`/`feed`/`feed_i16`/`skip`/`rows_filled`.
+      Split API: `find_candidates(&mut self)`, then
+      `decode_candidate(&self, index, &mut CandidateScratch)` (pure, any
+      thread), then `DecodeList::push(index, &result)` in index order
+      (out of order is an error) or `merge(&results)`; `decode()` is
+      exactly those calls. `DecodeList` borrows the caller's `[Decode]`:
+      duplicate removal (lowest index kept), truncation counted.
+      `finish` unpacks into a callback with the caller's `CallHashes`;
+      `finish_payloads` returns the entries.
+    - `Decode`: payload, message type, frequency, dt, SNR, sync score,
+      candidate index, hard errors, rounds. `DecodeReport`: candidates
+      found/kept/dropped, decoded, duplicates, all-zero rejected, CRC
+      failures, not converged, decodes truncated, rows filled, sanitised
+      / clamped / skipped samples, floored / top levels.
+    - `CandidateScratch { llr, bp }`, const-constructible, one per worker.
+    - `sync`, `soft` and `bp` become crate-private; public only with
+      `profile` (benches). `Candidate`, `CheckRule` and `BpFailure` stay
+      public through re-exports.
+    - D7b: sub-grid offsets from the sync scores of the four grid
+      neighbours (parabolic, clamped to ±½ step); soft bits from power
+      interpolated at the refined position (measured against the grid
+      soft bits; kept only if better); frequency and dt from the refined
+      position. SNR: signal power on the decoded tones (re-encoded
+      payload) against a local noise reference — the median level of the
+      bins just outside the signal over its rows — in 2500 Hz;
+      calibrated and checked by frequency on white and on shaped
+      (non-white) noise.
     ◆ Checkpoint: API, merge and estimates.
+      (Reached 2026-10-26; reviewed: proceed after D7c.)
+D7c. [x] Before the API freeze: `push` rejects `Ok(d)` whose candidate
+         index differs from `index`; `#[non_exhaustive]` on `DecodeReport`,
+         `Decode` and `BpFailure`; `DecodeConfig` gains const `with_*`
+         setters (decision: callers build from `HOST`/`SMALL` with
+         setters, so later fields are not breaking; the fields stay public
+         for reading); `const fn` `Decoder::sync_scratch_len`,
+         `Band::base_bins` and `sync::scratch_len`, and the link check
+         sizes its statics from them; document that feeding after
+         `find_candidates` leaves the candidates stale until `start_slot`
+         or a new search; exact counters (a repeat of a truncated payload
+         is a duplicate; `decoded` = distinct decodes) if free in memory,
+         otherwise `decoded` documented as an upper bound after
+         truncation; SNR documented as against local noise (it can differ
+         from figures against a band-wide noise reference near passband
+         edges); ADR drift (merge does rejection, dedup and truncation;
+         `decode()` excludes `finish`; capacities are consts; the
+         level-to-power table in the rule-3 tables list); the misplaced
+         Hann doc comment in `fft/tests.rs`; tests: `DecodeConfig::SMALL`
+         end to end in the split/determinism test, multi-chunk `merge`.
+D8 notes (2026-10-26, from the D7 review; not started):
+    - SNR in busy slots: neighbours fill the reference bins, so crowded
+      slots read 1.5–2.5 dB low with outliers far lower. Make the
+      reference robust (a lower quantile corrected for the exponential
+      distribution, a wider reference, or a band-wide low-percentile
+      fallback when the reference is busy); test with a neighbour 30–60 Hz
+      away.
+    - SNR tests on a steep passband (e.g. 600–1 600 Hz at −6 dB, about
+      44 dB down by 2 kHz).
+    - Add to the D8 tests: overlaps 10–30 Hz apart; partial, late and
+      early decode; workspace reuse; two alternating workspaces;
+      repeatability with a seeded call table; the bulk noise-only and
+      carrier-plus-noise jobs.
+    - No further tuning against crowded multi-signal performance (that is
+      subtraction work, later).
 D8. [ ] WSJT-X-free end-to-end tests with the encoder and seeded noise:
         SNR sweep with pinned rate floors; noise-only slots (thousands,
         release build, separate CI job) including carrier-plus-noise

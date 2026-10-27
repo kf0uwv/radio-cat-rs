@@ -55,7 +55,7 @@ pub const ALPHA: f32 = 0.75;
 pub enum CheckRule {
     /// Sum-product (the tanh rule).
     SumProduct,
-    /// Normalised min-sum with scale [`ALPHA`].
+    /// Normalised min-sum with scale α = 0.75.
     MinSum,
 }
 
@@ -103,6 +103,7 @@ pub struct BpDecode {
 
 /// Why a decode failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BpFailure {
     /// No codeword within the round limit.
     NotConverged,

@@ -56,6 +56,11 @@ pub enum Error {
     InvalidBand,
     /// A caller-provided buffer smaller than the configuration needs.
     BufferTooSmall,
+    /// A decoder configuration out of range (see `DecodeConfig`).
+    InvalidConfig,
+    /// A candidate result pushed out of candidate-index order, or a
+    /// decode pushed under another candidate's index.
+    OutOfOrder,
 }
 
 impl fmt::Display for Error {
@@ -72,6 +77,8 @@ impl fmt::Display for Error {
             Error::NonFinite => f.write_str("time offset or amplitude is not finite"),
             Error::InvalidBand => f.write_str("invalid decoder band"),
             Error::BufferTooSmall => f.write_str("buffer too small for the configuration"),
+            Error::InvalidConfig => f.write_str("invalid decoder configuration"),
+            Error::OutOfOrder => f.write_str("candidate result out of order"),
         }
     }
 }

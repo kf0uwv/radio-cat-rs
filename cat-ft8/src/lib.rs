@@ -155,6 +155,7 @@ mod tests {
         "HANN_HALF",
         "DIGIT_REV",
         "PARITY_CHECKS",
+        "LEVEL_POWER",
     ];
     const NOT_COUNTED: &[&str] = &[
         "GENERATOR",        // compile-time input to GENERATOR_ROWS only
@@ -234,7 +235,8 @@ mod tests {
     #[test]
     fn decode_table_bytes_matches_the_tables() {
         let parts = crate::decode::fft::table_bytes_of_statics()
-            + size_of_val(&crate::ldpc_tables::PARITY_CHECKS);
+            + size_of_val(&crate::ldpc_tables::PARITY_CHECKS)
+            + size_of_val(&crate::decode::tables::LEVEL_POWER);
         assert_eq!(crate::decode::TABLE_BYTES, parts);
     }
 }

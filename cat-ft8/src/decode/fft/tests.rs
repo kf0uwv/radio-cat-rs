@@ -18,6 +18,7 @@ use std::string::String;
 use std::vec::Vec;
 
 use super::*;
+use crate::decode::tables::LEVEL_POWER;
 
 /// e^(−2πit/1920) as (cos, −sin), computed in f64 and rounded.
 fn generate_twiddles() -> Vec<[f32; 2]> {
@@ -36,6 +37,14 @@ fn generate_split_twiddles() -> Vec<[f32; 2]> {
             let a = 2.0 * core::f64::consts::PI * k as f64 / WINDOW as f64;
             [libm::cos(a) as f32, -libm::sin(a) as f32]
         })
+        .collect()
+}
+
+/// Linear power of each 8-bit level: 10^((v − 255) / 20) (0.5 dB steps,
+/// 1.0 at the top level).
+fn generate_level_power() -> Vec<f32> {
+    (0..256)
+        .map(|v| libm::pow(10.0, (f64::from(v) - 255.0) / 20.0) as f32)
         .collect()
 }
 
@@ -112,6 +121,24 @@ fn tables_source() -> String {
         let line: Vec<String> = chunk.iter().map(|x| std::format!("{x:?}")).collect();
         writeln!(s, "    {},", line.join(", ")).unwrap();
     }
+    writeln!(s, "];\n").unwrap();
+    let power = generate_level_power();
+    writeln!(
+        s,
+        "/// Linear power of each 8-bit spectrogram level v: 10^((v − 255) / 20), v = 0..=255."
+    )
+    .unwrap();
+    writeln!(s, "#[rustfmt::skip]").unwrap();
+    writeln!(
+        s,
+        "pub(crate) static LEVEL_POWER: [f32; {}] = [",
+        power.len()
+    )
+    .unwrap();
+    for chunk in power.chunks(6) {
+        let line: Vec<String> = chunk.iter().map(|x| std::format!("{x:?}")).collect();
+        writeln!(s, "    {},", line.join(", ")).unwrap();
+    }
     writeln!(s, "];").unwrap();
     s
 }
@@ -140,6 +167,7 @@ fn decode_tables_match_their_definitions() {
     assert_eq!(bits2(&SPLIT_TWIDDLES), bits2(&generate_split_twiddles()));
     let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(&HANN_HALF), bits(&generate_hann_half()));
+    assert_eq!(bits(&LEVEL_POWER), bits(&generate_level_power()));
 }
 
 /// The recursive definition of the input order: the top-level stage splits

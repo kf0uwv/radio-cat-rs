@@ -15,11 +15,9 @@
 //! Calls the core with no allocator and no `std`: `encode` (pack, CRC,
 //! LDPC, tones), `unpack`, and every public floating-point entry point: `Placement::slot`, `synthesize` (at a negative start, into a small
 //! buffer), `Synth::new`, `fill`, `mix`, `skip` and `fill_phase`, plus
-//! `sin_turns`/`cos_turns`; and, from the decoder, the front end
-//! (`Spectrogram::new`, `feed`, `feed_i16`, `skip`, `row`), the sync
-//! search (`find_candidates`), soft bits (`soft_bits`) and belief
-//! propagation with the CRC check (`decode_soft`, both check-node rules),
-//! with their buffers in statics. Linking at all proves the core needs neither an
+//! `sin_turns`/`cos_turns`; and the decoder (`Decoder::new`, `feed`,
+//! `feed_i16`, `skip`, `decode` with each check-node rule, `DecodeList`,
+//! `finish`), with every buffer in statics. Linking at all proves the core needs neither an
 //! allocator nor `std`; `check.sh` then rejects any soft-double helper
 //! (`__aeabi_d*`, `__*df*`) in the image. Only code reachable from here is
 //! linked, so a new floating-point entry point must be called here too.
@@ -32,8 +30,8 @@ use core::panic::PanicInfo;
 use core::ptr::addr_of_mut;
 
 use cat_ft8::decode::{
-    decode_soft, find_candidates, soft_bits, sync, Band, BpScratch, Candidate, CheckRule, FrontEnd,
-    Spectrogram,
+    Band, Candidate, CandidateScratch, Decode, DecodeConfig, DecodeList, Decoder, FrontEnd,
+    CANDIDATES, SMALL_DECODES,
 };
 use cat_ft8::encode;
 use cat_ft8::message::{unpack, CallTable};
@@ -44,13 +42,15 @@ use cat_ft8::waveform::{cos_turns, sin_turns, synthesize, Placement, Synth};
 // this class of part.
 static mut FRONT: FrontEnd = FrontEnd::new();
 static mut LEVELS: [u8; Band::SMALL.spectrogram_len()] = [0; Band::SMALL.spectrogram_len()];
-static mut SYNC_SCRATCH: [i32; 3 * 865] = [0; 3 * 865];
-static mut CANDIDATES: [Candidate; 200] = [Candidate {
+static mut SYNC_SCRATCH: [i32; Decoder::sync_scratch_len(Band::SMALL)] =
+    [0; Decoder::sync_scratch_len(Band::SMALL)];
+static mut CANDIDATE_LIST: [Candidate; CANDIDATES] = [Candidate {
     score: 0,
     start_row: 0,
     base: 0,
-}; 200];
-static mut BP: BpScratch = BpScratch::new();
+}; CANDIDATES];
+static mut SCRATCH: CandidateScratch = CandidateScratch::new();
+static mut DECODES: [Decode; SMALL_DECODES] = [Decode::EMPTY; SMALL_DECODES];
 
 #[panic_handler]
 fn panic(_: &PanicInfo) -> ! {
@@ -100,56 +100,52 @@ pub extern "C" fn _start() -> ! {
             }
         }
     }
-    // Decoder front end: a synthesized slot fed in blocks (with `skip` for
-    // the silence before and after) into a spectrogram in statics.
+    // The decoder: a synthesized slot fed in blocks (with `skip` for the
+    // silence before and after), decoded with each check-node rule.
     // SAFETY: `_start` is the only code that runs and it is not
     // re-entered, so these are the only references to the statics.
-    let (front, levels) = unsafe { (&mut *addr_of_mut!(FRONT), &mut *addr_of_mut!(LEVELS)) };
+    let (front, levels, sync_scratch, cands, scratch, decodes) = unsafe {
+        (
+            &mut *addr_of_mut!(FRONT),
+            &mut *addr_of_mut!(LEVELS),
+            &mut *addr_of_mut!(SYNC_SCRATCH),
+            &mut *addr_of_mut!(CANDIDATE_LIST),
+            &mut *addr_of_mut!(SCRATCH),
+            &mut *addr_of_mut!(DECODES),
+        )
+    };
     let mut rows = 0;
-    if let Ok(mut spec) = Spectrogram::new(front, levels, Band::SMALL) {
-        spec.skip(black_box(6_000));
+    let mut list = DecodeList::new(decodes);
+    for config in [DecodeConfig::SMALL, DecodeConfig::HOST] {
+        let Ok(mut dec) = Decoder::new(
+            &mut *front,
+            &mut *levels,
+            &mut *sync_scratch,
+            &mut *cands,
+            Band::SMALL,
+            black_box(config),
+        ) else {
+            continue;
+        };
+        dec.skip(black_box(6_000));
         let mut feed_block = [0.0f32; 480];
         if let Ok(mut synth) = Synth::new(&[3; 79], black_box(1500.0), black_box(0.25)) {
             loop {
                 let n = synth.fill(&mut feed_block);
-                spec.feed(&feed_block[..n]);
+                dec.feed(&feed_block[..n]);
                 if n < feed_block.len() {
                     break;
                 }
             }
         }
-        spec.feed_i16(black_box(&[0i16; 64]));
-        spec.skip(usize::MAX);
-        rows = spec.rows_filled();
-        if let Some(row) = spec.row(rows - 1) {
-            sink += f32::from(black_box(row)[100]);
-        }
-        rows += spec.floored_levels() + spec.top_levels() + spec.clamped_samples();
-
-        // Sync search into a static candidate list.
-        // SAFETY: as for the other statics: `_start` runs alone, once.
-        let (scratch, cands) = unsafe {
-            (
-                &mut *addr_of_mut!(SYNC_SCRATCH),
-                &mut *addr_of_mut!(CANDIDATES),
-            )
-        };
-        debug_assert_eq!(scratch.len(), sync::scratch_len(Band::SMALL.base_bins()));
-        if let Ok(report) = find_candidates(&spec, black_box(0), scratch, cands) {
-            rows += report.kept + cands[0].base as usize;
-            // Soft bits for the best candidate.
-            let mut llr = [0.0f32; 174];
-            rows += soft_bits(&spec, &cands[0], black_box(4.0), &mut llr);
-            sink += black_box(&llr)[100];
-            // Belief propagation and the CRC, with each check-node rule.
-            // SAFETY: as above.
-            let bp = unsafe { &mut *addr_of_mut!(BP) };
-            for rule in [CheckRule::SumProduct, CheckRule::MinSum] {
-                if let Ok(d) = decode_soft(&llr, black_box(rule), black_box(30), bp) {
-                    rows += usize::from(d.rounds) + d.payload.bits() as usize;
-                }
-            }
-        }
+        dec.feed_i16(black_box(&[0i16; 64]));
+        dec.skip(usize::MAX);
+        let report = dec.decode(scratch, &mut list);
+        rows += report.rows_filled + report.candidates_kept + report.all_zero_rejected;
+        list.finish(&mut table, |d, text| {
+            sink += d.snr_db + d.freq_hz;
+            rows += text.map_or(0, str::len);
+        });
     }
 
     black_box((sink, text_len, rows));

@@ -83,7 +83,7 @@ pub struct SyncReport {
 }
 
 /// Scratch for one search: three rows of scores (`3 × base bins` values).
-pub fn scratch_len(base_bins: usize) -> usize {
+pub const fn scratch_len(base_bins: usize) -> usize {
     3 * base_bins
 }
 
@@ -140,6 +140,37 @@ pub(crate) fn costas_score<L: Level>(
     }
     // 6 / n with n = 2 or 3: × 3 or × 2, exact.
     (present >= 2).then(|| sum * (6 / present))
+}
+
+/// Sub-grid offsets of a candidate, in rows and bins (each −½…½): the
+/// vertex of the parabola through the sync scores of the candidate and
+/// its two neighbours along each axis (0 along an axis where a neighbour
+/// has no score or the scores are not peaked).
+pub fn refine<L: Level>(spec: &Spectrogram<'_, L>, c: &Candidate) -> (f32, f32) {
+    let row = i32::from(c.start_row);
+    let base = usize::from(c.base);
+    let cols = spec.band().base_bins();
+    let s0 = c.score;
+    let vertex = |a: Option<i32>, b: Option<i32>| -> f32 {
+        let (Some(a), Some(b)) = (a, b) else {
+            return 0.0;
+        };
+        let den = a - 2 * s0 + b;
+        if den >= 0 {
+            return 0.0;
+        }
+        // Finite: integers over a negative denominator.
+        ((a - b) as f32 / (2 * den) as f32).clamp(-0.5, 0.5)
+    };
+    let fr = vertex(
+        costas_score(spec, row - 1, base),
+        costas_score(spec, row + 1, base),
+    );
+    let left = base.checked_sub(1).and_then(|b| costas_score(spec, row, b));
+    let right = (base + 1 < cols)
+        .then(|| costas_score(spec, row, base + 1))
+        .flatten();
+    (fr, vertex(left, right))
 }
 
 /// Local-maximum suppression and top-K selection over a `rows × cols`

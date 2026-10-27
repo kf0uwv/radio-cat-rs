@@ -36,9 +36,12 @@
 
 use std::time::Instant;
 
+use cat_ft8::decode::bp::{decode_soft, BpFailure, BpScratch};
+use cat_ft8::decode::soft::{soft_bits, soft_bits_at};
+use cat_ft8::decode::sync::{self, find_candidates};
 use cat_ft8::decode::{
-    decode_soft, find_candidates, soft_bits, sync, Band, BpFailure, BpScratch, Candidate,
-    CheckRule, FrontEnd, Spectrogram,
+    Band, Candidate, CandidateScratch, CheckRule, Decode, DecodeConfig, DecodeList, Decoder,
+    FrontEnd, Spectrogram, HOST_DECODES,
 };
 use cat_ft8::message::{pack, NoHashes, Payload};
 use cat_ft8::waveform::{synthesize, Placement};
@@ -46,14 +49,6 @@ use cat_ft8::{encode, SLOT_SAMPLES};
 
 const NOISE_RMS: f64 = 0.03;
 const CANDIDATES: usize = 200;
-
-#[derive(Clone, Copy, Debug)]
-struct Config {
-    rule: CheckRule,
-    target: f32,
-    rounds: u8,
-    min_score: i32,
-}
 
 struct Noise(u64);
 
@@ -75,26 +70,54 @@ impl Noise {
 #[derive(Clone, Copy)]
 enum Content {
     Signal(f64),
+    /// SNR, then the offset from the analysis grid in bins and rows
+    /// (0 = on the grid, 0.5 = half-way between grid points).
+    Placed(f64, f64, f64),
+    /// A signal at this SNR against the local noise density, in noise
+    /// shaped by a receiver-like passband ([`passband`]).
+    Shaped(f64),
     NoiseOnly,
     Carriers,
 }
 
-/// Builds slot `seed`: returns samples and the transmitted payload.
-fn make_slot(messages: &[String], content: Content, seed: u64) -> (Vec<f32>, Option<Payload>) {
+/// The transmitted signal of a slot.
+#[derive(Clone, Copy)]
+struct Truth {
+    payload: Payload,
+    snr: f64,
+    base_hz: f64,
+    dt: f64,
+}
+
+/// Builds slot `seed`: returns samples and the transmitted signal.
+fn make_slot(messages: &[String], content: Content, seed: u64) -> (Vec<f32>, Option<Truth>) {
     let mut rng = Noise(seed.wrapping_mul(0x2545_f491_4f6c_dd1d));
     let mut out = vec![0.0f32; SLOT_SAMPLES];
     let mut payload = None;
     match content {
-        Content::Signal(snr) => {
+        Content::Signal(snr) | Content::Placed(snr, ..) | Content::Shaped(snr) => {
             let msg = &messages[(rng.uniform() * messages.len() as f64) as usize % messages.len()];
             let enc = encode(msg, &mut NoHashes).unwrap();
-            payload = Some(enc.payload);
-            let base = 200.0 + 2_600.0 * rng.uniform();
-            let dt = -0.3 + rng.uniform();
-            let noise_2500 = NOISE_RMS * NOISE_RMS * 2500.0 / 6000.0;
+            let (mut base, mut dt) = (200.0 + 2_600.0 * rng.uniform(), -0.3 + rng.uniform());
+            if let Content::Placed(_, dbin, drow) = content {
+                let bin = 64 + (rng.uniform() * 832.0) as i32;
+                let row = -3 + (rng.uniform() * 12.0) as i32;
+                base = (f64::from(bin) + dbin) * 3.125;
+                dt = (f64::from(row) + drow) * 0.08;
+            }
+            let mut noise_2500 = NOISE_RMS * NOISE_RMS * 2500.0 / 6000.0;
+            if let Content::Shaped(_) = content {
+                noise_2500 *= passband_gain2(base + 21.875);
+            }
             let mut p = Placement::slot(base as f32, dt as f32).unwrap();
             p.amplitude = (2.0 * noise_2500 * 10f64.powf(snr / 10.0)).sqrt() as f32;
             synthesize(&enc.symbols, &p, &mut out).unwrap();
+            payload = Some(Truth {
+                payload: enc.payload,
+                snr,
+                base_hz: base,
+                dt,
+            });
         }
         Content::NoiseOnly => {}
         Content::Carriers => {
@@ -113,10 +136,84 @@ fn make_slot(messages: &[String], content: Content, seed: u64) -> (Vec<f32>, Opt
         }
     }
     let mut n = Noise(seed);
-    for x in out.iter_mut() {
-        *x += (NOISE_RMS * n.gauss()) as f32;
+    if let Content::Shaped(_) = content {
+        let mut filters = passband();
+        for x in out.iter_mut() {
+            let mut v = NOISE_RMS * n.gauss();
+            for f in filters.iter_mut() {
+                v = f.run(v);
+            }
+            *x += v as f32;
+        }
+    } else {
+        for x in out.iter_mut() {
+            *x += (NOISE_RMS * n.gauss()) as f32;
+        }
     }
     (out, payload)
+}
+
+/// A second-order section (RBJ cookbook form), f64, for test noise only.
+#[derive(Clone, Copy)]
+struct Biquad {
+    b: [f64; 3],
+    a: [f64; 2],
+    z: [f64; 2],
+}
+
+impl Biquad {
+    fn new(high: bool, f0: f64, q: f64) -> Self {
+        let w = std::f64::consts::TAU * f0 / 12_000.0;
+        let (sn, cs) = w.sin_cos();
+        let alpha = sn / (2.0 * q);
+        let a0 = 1.0 + alpha;
+        let b = if high {
+            [(1.0 + cs) / 2.0, -(1.0 + cs), (1.0 + cs) / 2.0]
+        } else {
+            [(1.0 - cs) / 2.0, 1.0 - cs, (1.0 - cs) / 2.0]
+        };
+        Biquad {
+            b: [b[0] / a0, b[1] / a0, b[2] / a0],
+            a: [-2.0 * cs / a0, (1.0 - alpha) / a0],
+            z: [0.0; 2],
+        }
+    }
+    fn run(&mut self, x: f64) -> f64 {
+        let y = self.b[0] * x + self.z[0];
+        self.z[0] = self.b[1] * x - self.a[0] * y + self.z[1];
+        self.z[1] = self.b[2] * x - self.a[1] * y;
+        y
+    }
+    fn gain2(&self, f: f64) -> f64 {
+        let w = std::f64::consts::TAU * f / 12_000.0;
+        let z1 = (w.cos(), -w.sin());
+        let z2 = ((2.0 * w).cos(), -(2.0 * w).sin());
+        let num = (
+            self.b[0] + self.b[1] * z1.0 + self.b[2] * z2.0,
+            self.b[1] * z1.1 + self.b[2] * z2.1,
+        );
+        let den = (
+            1.0 + self.a[0] * z1.0 + self.a[1] * z2.0,
+            self.a[0] * z1.1 + self.a[1] * z2.1,
+        );
+        (num.0 * num.0 + num.1 * num.1) / (den.0 * den.0 + den.1 * den.1)
+    }
+}
+
+/// A receiver-like audio passband: 2nd-order high-pass at 400 Hz and
+/// 4th-order low-pass at 1800 Hz (about −1 dB at 1 kHz, −15 dB at
+/// 2 800 Hz, −13 dB at 200 Hz).
+fn passband() -> [Biquad; 3] {
+    [
+        Biquad::new(true, 400.0, std::f64::consts::FRAC_1_SQRT_2),
+        Biquad::new(false, 1_800.0, 0.541_196),
+        Biquad::new(false, 1_800.0, 1.306_563),
+    ]
+}
+
+/// Power gain of [`passband`] at `f` Hz.
+fn passband_gain2(f: f64) -> f64 {
+    passband().iter().map(|b| b.gain2(f)).product()
 }
 
 /// Counts summed over slots.
@@ -126,6 +223,14 @@ struct Tally {
     false_decodes: u32,
     all_zero_rejected: u32,
     candidates: u32,
+    /// Per 500 Hz band from 200 Hz (signal tone 0): count, sum and sum of
+    /// squares of the SNR error (estimate − truth, dB).
+    snr_err: [(u32, f64, f64); 6],
+    /// Sums of squared frequency (Hz) and time (s) errors, and maxima.
+    freq_err2: f64,
+    dt_err2: f64,
+    freq_err_max: f64,
+    dt_err_max: f64,
 }
 
 impl Tally {
@@ -134,18 +239,81 @@ impl Tally {
         self.false_decodes += o.false_decodes;
         self.all_zero_rejected += o.all_zero_rejected;
         self.candidates += o.candidates;
+        for (a, b) in self.snr_err.iter_mut().zip(o.snr_err.iter()) {
+            a.0 += b.0;
+            a.1 += b.1;
+            a.2 += b.2;
+        }
+        self.freq_err2 += o.freq_err2;
+        self.dt_err2 += o.dt_err2;
+        self.freq_err_max = self.freq_err_max.max(o.freq_err_max);
+        self.dt_err_max = self.dt_err_max.max(o.dt_err_max);
     }
 }
 
-/// Decodes one slot.
-fn decode_slot(samples: &[f32], truth: Option<Payload>, cfg: Config) -> Tally {
+/// Decodes one slot with the decoder API.
+fn decode_slot(samples: &[f32], truth: Option<Truth>, cfg: DecodeConfig) -> Tally {
+    let snr_true = truth.map_or(0.0, |t| t.snr);
+    let band = Band::DEFAULT;
+    let mut front = Box::new(FrontEnd::new());
+    let mut levels = vec![0u8; band.spectrogram_len()];
+    let mut scratch = vec![0i32; Decoder::sync_scratch_len(band)];
+    let mut cands = vec![Candidate::default(); cfg.candidates];
+    let mut dec =
+        Decoder::new(&mut front, &mut levels, &mut scratch, &mut cands, band, cfg).unwrap();
+    dec.feed(samples);
+    let mut store = vec![Decode::EMPTY; HOST_DECODES];
+    let mut list = DecodeList::new(&mut store);
+    let report = dec.decode(&mut Box::new(CandidateScratch::new()), &mut list);
+    let mut out = Tally {
+        candidates: report.candidates_kept as u32,
+        all_zero_rejected: report.all_zero_rejected as u32,
+        ..Tally::default()
+    };
+    for d in list.finish_payloads() {
+        if let Some(t) = truth.filter(|t| t.payload == d.payload) {
+            out.decoded = 1;
+            let band = (((t.base_hz - 200.0) / 500.0) as usize).min(5);
+            let e = f64::from(d.snr_db) - snr_true;
+            out.snr_err[band] = (1, e, e * e);
+            let (fe, te) = (f64::from(d.freq_hz) - t.base_hz, f64::from(d.dt) - t.dt);
+            out.freq_err2 = fe * fe;
+            out.dt_err2 = te * te;
+            out.freq_err_max = fe.abs();
+            out.dt_err_max = te.abs();
+        } else {
+            out.false_decodes += 1;
+        }
+    }
+    out
+}
+
+/// How soft bits are taken in [`decode_low`].
+#[derive(Clone, Copy, PartialEq)]
+enum Path {
+    /// The decoder API.
+    Api,
+    /// Integer levels at the grid point.
+    Grid,
+    /// Interpolated at offsets estimated from the sync scores.
+    Estimated,
+    /// Interpolated at the true offsets (for candidates within half a
+    /// grid step of the signal; others at the grid point).
+    Oracle,
+}
+
+/// Decodes one slot with the stages directly.
+fn decode_low(samples: &[f32], truth: Option<Truth>, cfg: DecodeConfig, path: Path) -> Tally {
+    if path == Path::Api {
+        return decode_slot(samples, truth, cfg);
+    }
     let band = Band::DEFAULT;
     let mut front = Box::new(FrontEnd::new());
     let mut levels = vec![0u8; band.spectrogram_len()];
     let mut spec = Spectrogram::new(&mut front, &mut levels, band).unwrap();
     spec.feed(samples);
     let mut scratch = vec![0i32; sync::scratch_len(band.base_bins())];
-    let mut cands = vec![Candidate::default(); CANDIDATES];
+    let mut cands = vec![Candidate::default(); cfg.candidates];
     let rep = find_candidates(&spec, cfg.min_score, &mut scratch, &mut cands).unwrap();
     let mut bp = Box::new(BpScratch::new());
     let mut seen: Vec<Payload> = Vec::new();
@@ -155,14 +323,33 @@ fn decode_slot(samples: &[f32], truth: Option<Payload>, cfg: Config) -> Tally {
     };
     let mut llr = [0.0f32; 174];
     for c in &cands[..rep.kept] {
-        soft_bits(&spec, c, cfg.target, &mut llr);
-        match decode_soft(&llr, cfg.rule, cfg.rounds, &mut bp) {
+        match path {
+            Path::Api | Path::Grid => {
+                soft_bits(&spec, c, cfg.llr_scale, &mut llr);
+            }
+            Path::Estimated => {
+                let (fr, fb) = sync::refine(&spec, c);
+                soft_bits_at(&spec, c, fr, fb, cfg.llr_scale, &mut llr);
+            }
+            Path::Oracle => {
+                let (mut fr, mut fb) = (0.0, 0.0);
+                if let Some(t) = truth {
+                    let row = 5.0 + t.dt / 0.08 - f64::from(c.start_row);
+                    let bin = t.base_hz / 3.125 - band.first_bin() as f64 - f64::from(c.base);
+                    if row.abs() <= 0.5 && bin.abs() <= 0.5 {
+                        (fr, fb) = (row as f32, bin as f32);
+                    }
+                }
+                soft_bits_at(&spec, c, fr, fb, cfg.llr_scale, &mut llr);
+            }
+        }
+        match decode_soft(&llr, cfg.rule, cfg.max_rounds, &mut bp) {
             Ok(d) => {
                 if seen.contains(&d.payload) {
                     continue;
                 }
                 seen.push(d.payload);
-                if Some(d.payload) == truth {
+                if Some(d.payload) == truth.map(|t| t.payload) {
                     out.decoded = 1;
                 } else {
                     out.false_decodes += 1;
@@ -176,7 +363,19 @@ fn decode_slot(samples: &[f32], truth: Option<Payload>, cfg: Config) -> Tally {
 }
 
 /// Runs `n` slots of `content` in parallel threads; sums the tallies.
-fn run(messages: &[String], content: Content, n: u64, seed0: u64, cfg: Config) -> Tally {
+fn run(messages: &[String], content: Content, n: u64, seed0: u64, cfg: DecodeConfig) -> Tally {
+    run_path(messages, content, n, seed0, cfg, Path::Api)
+}
+
+/// [`run`] with soft bits taken along `path`.
+fn run_path(
+    messages: &[String],
+    content: Content,
+    n: u64,
+    seed0: u64,
+    cfg: DecodeConfig,
+    path: Path,
+) -> Tally {
     let threads = std::thread::available_parallelism().map_or(4, |x| x.get()) as u64;
     std::thread::scope(|s| {
         let handles: Vec<_> = (0..threads)
@@ -186,7 +385,7 @@ fn run(messages: &[String], content: Content, n: u64, seed0: u64, cfg: Config) -
                     let mut i = t;
                     while i < n {
                         let (samples, truth) = make_slot(messages, content, seed0 + i);
-                        acc.add(&decode_slot(&samples, truth, cfg));
+                        acc.add(&decode_low(&samples, truth, cfg, path));
                         i += threads;
                     }
                     acc
@@ -219,25 +418,18 @@ fn main() {
     let mode = args.next().unwrap_or_else(|| "sweep".into());
     let n: u64 = args.next().and_then(|a| a.parse().ok()).unwrap_or(100);
     let msgs = messages();
-    let base = Config {
-        rule: CheckRule::SumProduct,
-        target: 4.0,
-        rounds: 30,
-        min_score: 0,
-    };
+    let base = DecodeConfig::HOST;
     match mode.as_str() {
         "sweep" => {
             let rule = args.next().unwrap_or_else(|| "sp".into());
             let target: f32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(4.0);
-            let cfg = Config {
-                rule: if rule == "ms" {
+            let cfg = base
+                .with_rule(if rule == "ms" {
                     CheckRule::MinSum
                 } else {
                     CheckRule::SumProduct
-                },
-                target,
-                ..base
-            };
+                })
+                .with_llr_scale(target);
             println!("config {cfg:?}, {n} slots per point, 8-bit levels, band 100–3100 Hz");
             for snr in [
                 -24.0, -22.0, -21.0, -20.0, -19.5, -19.0, -18.5, -18.0, -17.0, -16.0, -14.0,
@@ -273,16 +465,110 @@ fn main() {
                     if rule == CheckRule::MinSum && target != 4.0 {
                         continue; // min-sum is scale-free apart from rounding
                     }
-                    let cfg = Config {
-                        rule,
-                        target,
-                        ..base
-                    };
+                    let cfg = base.with_rule(rule).with_llr_scale(target);
                     let mut line = format!("  {name:<14} target {target:<3}:");
                     for snr in [-20.0, -19.0, -18.0] {
                         let o = run(&msgs, Content::Signal(snr), n, (snr * -1000.0) as u64, cfg);
                         line += &format!("  {snr}: {:>4} ({})", o.decoded, o.false_decodes);
                     }
+                    println!("{line}");
+                }
+            }
+        }
+        "grid" => {
+            println!("decoded / {n} slots by offset from the analysis grid (bins, rows)");
+            for (db, dr) in [(0.0, 0.0), (0.5, 0.0), (0.0, 0.5), (0.5, 0.5), (0.25, 0.25)] {
+                let mut line = format!("  offset ({db}, {dr}):");
+                for snr in [-21.0, -20.0, -19.0, -18.0] {
+                    let o = run(
+                        &msgs,
+                        Content::Placed(snr, db, dr),
+                        n,
+                        (snr * -1000.0) as u64,
+                        base,
+                    );
+                    line += &format!("  {snr}: {:>4} ({})", o.decoded, o.false_decodes);
+                }
+                println!("{line}");
+            }
+        }
+        "refine" => {
+            println!("decoded / {n} slots (false decodes) by soft-bit path");
+            let offsets = [(0.0, 0.0), (0.5, 0.0), (0.0, 0.5), (0.5, 0.5), (0.25, 0.25)];
+            for path in [Path::Grid, Path::Estimated, Path::Oracle] {
+                let name = match path {
+                    Path::Grid => "grid",
+                    Path::Estimated => "estimated",
+                    _ => "oracle",
+                };
+                for (db, dr) in offsets {
+                    let mut line = format!("  {name:<9} offset ({db}, {dr}):");
+                    for snr in [-20.0, -19.0, -18.0] {
+                        let c = Content::Placed(snr, db, dr);
+                        let o = run_path(&msgs, c, n, (snr * -1000.0) as u64, base, path);
+                        line += &format!("  {snr}: {:>4} ({})", o.decoded, o.false_decodes);
+                    }
+                    println!("{line}");
+                }
+                let mut line = format!("  {name:<9} random offsets:");
+                for snr in [-20.0, -19.0, -18.0] {
+                    let o = run_path(
+                        &msgs,
+                        Content::Signal(snr),
+                        n,
+                        (snr * -1000.0) as u64,
+                        base,
+                        path,
+                    );
+                    line += &format!("  {snr}: {:>4} ({})", o.decoded, o.false_decodes);
+                }
+                println!("{line}");
+            }
+        }
+        "snr" => {
+            for f in [
+                100.0, 200.0, 500.0, 1_000.0, 1_500.0, 2_000.0, 2_500.0, 2_800.0, 3_100.0,
+            ] {
+                print!(" {f}: {:+.1} dB", 10.0 * passband_gain2(f).log10());
+            }
+            println!(" (shaped-noise passband)");
+            println!("SNR estimate error (dB, estimate − truth) by signal frequency; {n} slots per point");
+            let names = [
+                "200-700",
+                "700-1200",
+                "1200-1700",
+                "1700-2200",
+                "2200-2700",
+                "2700-2800",
+            ];
+            for (noise, shaped) in [("white", false), ("shaped", true)] {
+                println!("  {noise} noise: mean (RMS) error per band, then decoded; freq / dt RMS and max error");
+                for snr in [-20.0, -18.0, -15.0, -10.0, -5.0, 0.0, 10.0, 20.0] {
+                    let content = if shaped {
+                        Content::Shaped(snr)
+                    } else {
+                        Content::Signal(snr)
+                    };
+                    let o = run(&msgs, content, n, (snr * -1000.0 + 77.0) as u64, base);
+                    let mut line = format!("    SNR {snr:>5}:");
+                    for (name, e) in names.iter().zip(o.snr_err.iter()) {
+                        if e.0 > 0 {
+                            let mean = e.1 / f64::from(e.0);
+                            let rms = (e.2 / f64::from(e.0)).sqrt();
+                            line += &format!(" {name} {mean:+5.1} ({rms:3.1})");
+                        } else {
+                            line += &format!(" {name}   -  ");
+                        }
+                    }
+                    let k = f64::from(o.decoded.max(1));
+                    line += &format!(
+                        "  dec {:>4}  f {:.2}/{:.2} Hz  dt {:.3}/{:.3} s",
+                        o.decoded,
+                        (o.freq_err2 / k).sqrt(),
+                        o.freq_err_max,
+                        (o.dt_err2 / k).sqrt(),
+                        o.dt_err_max
+                    );
                     println!("{line}");
                 }
             }
@@ -310,8 +596,28 @@ fn main() {
                     .kept;
             }
             let t_sync = t.elapsed().as_secs_f64() / f64::from(reps);
-            let mut bp = Box::new(BpScratch::new());
             let mut llr = [0.0f32; 174];
+            let t = Instant::now();
+            for _ in 0..reps {
+                for c in &cands[..kept] {
+                    soft_bits(&spec, c, 4.0, &mut llr);
+                }
+            }
+            let t_grid = t.elapsed().as_secs_f64() / f64::from(reps) / kept as f64;
+            let t = Instant::now();
+            for _ in 0..reps {
+                for c in &cands[..kept] {
+                    let (fr, fb) = sync::refine(&spec, c);
+                    soft_bits_at(&spec, c, fr, fb, 4.0, &mut llr);
+                }
+            }
+            let t_refined = t.elapsed().as_secs_f64() / f64::from(reps) / kept as f64;
+            println!(
+                "  soft bits per candidate: grid {:.1} µs, refined (offsets + interpolation) {:.1} µs",
+                t_grid * 1e6,
+                t_refined * 1e6
+            );
+            let mut bp = Box::new(BpScratch::new());
             for (name, rule) in [
                 ("sum-product", CheckRule::SumProduct),
                 ("min-sum", CheckRule::MinSum),
@@ -340,6 +646,30 @@ fn main() {
                 t_feed * 1e3,
                 t_sync * 1e3
             );
+            // The whole decoder, one thread: feed, then decode().
+            for (name, cfg) in [("HOST", DecodeConfig::HOST), ("SMALL", DecodeConfig::SMALL)] {
+                let mut front = Box::new(FrontEnd::new());
+                let mut levels = vec![0u8; band.spectrogram_len()];
+                let mut scratch = vec![0i32; Decoder::sync_scratch_len(band)];
+                let mut cands = vec![Candidate::default(); cfg.candidates];
+                let mut dec =
+                    Decoder::new(&mut front, &mut levels, &mut scratch, &mut cands, band, cfg)
+                        .unwrap();
+                let mut store = vec![Decode::EMPTY; HOST_DECODES];
+                let mut list = DecodeList::new(&mut store);
+                let mut cs = Box::new(CandidateScratch::new());
+                let t = Instant::now();
+                for _ in 0..reps {
+                    dec.start_slot();
+                    dec.feed(&samples);
+                    dec.decode(&mut cs, &mut list);
+                }
+                let per = t.elapsed().as_secs_f64() / f64::from(reps);
+                println!(
+                    "  decoder {name} (feed + decode, one thread): {:.1} ms per slot",
+                    per * 1e3
+                );
+            }
         }
         other => eprintln!("unknown mode {other}"),
     }
