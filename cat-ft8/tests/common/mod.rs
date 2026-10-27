@@ -168,9 +168,15 @@ pub struct Output {
     pub texts: Vec<String>,
 }
 
-/// Runs `decode()` and `finish` with `hashes`.
+/// Runs `decode()` and `finish` with `hashes`, into a list of
+/// [`HOST_DECODES`] entries.
 pub fn run(dec: &mut Decoder<'_>, hashes: &mut impl CallHashes) -> Output {
-    let mut store = vec![Decode::EMPTY; HOST_DECODES];
+    run_into(dec, hashes, HOST_DECODES)
+}
+
+/// [`run`] into a list of `capacity` entries.
+pub fn run_into(dec: &mut Decoder<'_>, hashes: &mut impl CallHashes, capacity: usize) -> Output {
+    let mut store = vec![Decode::EMPTY; capacity];
     let mut list = DecodeList::new(&mut store);
     let report = dec.decode(&mut Box::new(CandidateScratch::new()), &mut list);
     let mut texts = Vec::new();
@@ -187,12 +193,18 @@ pub fn run(dec: &mut Decoder<'_>, hashes: &mut impl CallHashes) -> Output {
     }
 }
 
-/// Feeds `samples` in one block to a fresh decoder and decodes.
+/// Feeds `samples` in one block to a fresh decoder (default band) and
+/// decodes.
 pub fn decode(samples: &[f32], config: DecodeConfig) -> Output {
-    let mut w = Work::new(Band::DEFAULT);
+    decode_setup(samples, Band::DEFAULT, config, HOST_DECODES)
+}
+
+/// [`decode`] over `band` into a list of `capacity` entries.
+pub fn decode_setup(samples: &[f32], band: Band, config: DecodeConfig, capacity: usize) -> Output {
+    let mut w = Work::new(band);
     let mut dec = w.decoder(config);
     dec.feed(samples);
-    run(&mut dec, &mut NoHashes)
+    run_into(&mut dec, &mut NoHashes, capacity)
 }
 
 /// `f(i)` for `i` in `0..n`, on all available threads, in index order.

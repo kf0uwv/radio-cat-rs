@@ -25,15 +25,20 @@
 
 mod common;
 
-use cat_ft8::decode::{Band, DecodeConfig, Decoder};
-use cat_ft8::message::{CallHashes, CallTable, NoHashes};
+use cat_ft8::decode::{Band, DecodeConfig, Decoder, HOST_DECODES, SMALL_DECODES};
+use cat_ft8::message::{CallHashes, CallTable, NoHashes, Payload};
 use cat_ft8::SLOT_SAMPLES;
 use common::*;
 
-const CONFIGS: [(&str, DecodeConfig); 2] =
-    [("HOST", DecodeConfig::HOST), ("SMALL", DecodeConfig::SMALL)];
+/// The rate floors' configurations, both on the default band (the small
+/// setup's own band and capacity are covered by the golden entry).
+const CONFIGS: [(&str, DecodeConfig); 2] = [
+    ("HOST", DecodeConfig::HOST),
+    ("min-sum on the default band", DecodeConfig::SMALL),
+];
 
-/// (SNR dB, slots, minimum decodes with `HOST`, with `SMALL`): the
+/// (SNR dB, slots, minimum decodes with `HOST`, with min-sum on the default
+/// band): the
 /// counts measured when the floors were pinned (2026-10-26). Results are
 /// deterministic, so a lower count is a regression; raise a floor when a
 /// change improves it.
@@ -67,7 +72,7 @@ fn decode_rates_meet_their_pinned_floors() {
 /// The golden slots: a busy slot (weak, strong, overlapping, early and
 /// late signals, band edges), carriers in noise, and the busy slot cut at
 /// 13.5 s.
-fn golden_slots() -> Vec<Vec<f32>> {
+fn golden_slots() -> (Vec<Vec<f32>>, Vec<Payload>) {
     let busy = [
         Signal {
             message: "CQ K1ABC FN42",
@@ -118,7 +123,7 @@ fn golden_slots() -> Vec<Vec<f32>> {
             snr_db: -6.0,
         },
     ];
-    let (busy, _) = slot(&busy, 1);
+    let (busy, sent) = slot(&busy, 1);
     let mut carriers = vec![0.0f32; SLOT_SAMPLES];
     for (f, a) in [(777.7, 0.05), (1_900.0, 0.02), (2_450.3, 0.1)] {
         for (n, x) in carriers.iter_mut().enumerate() {
@@ -127,17 +132,52 @@ fn golden_slots() -> Vec<Vec<f32>> {
     }
     add_noise(&mut carriers, NOISE_RMS, 2);
     let partial = busy[..27 * SLOT_SAMPLES / 30].to_vec();
-    vec![busy, carriers, partial]
+    (vec![busy, carriers, partial], sent)
 }
 
-/// Golden hashes of [`golden_slots`] for `HOST` and `SMALL`.
-const GOLDEN: [u64; 2] = [0x5eea_3477_73cf_df7d, 0x1c82_6afc_8074_f291];
+/// A decoder setup: name, band, configuration and decode capacity.
+type Setup = (&'static str, Band, DecodeConfig, usize);
+
+/// The golden setups: the host configuration; min-sum on the default band
+/// (the host buffers with the small configuration's rule); and the real
+/// small setup (200–2900 Hz, min-sum, 64 decodes).
+const SETUPS: [Setup; 3] = [
+    ("HOST", Band::DEFAULT, DecodeConfig::HOST, HOST_DECODES),
+    (
+        "min-sum on the default band",
+        Band::DEFAULT,
+        DecodeConfig::SMALL,
+        HOST_DECODES,
+    ),
+    (
+        "small setup",
+        Band::SMALL,
+        DecodeConfig::SMALL,
+        SMALL_DECODES,
+    ),
+];
+
+/// Decodes in each golden slot (busy, carriers, cut) for each setup, all of
+/// them transmitted. Min-sum misses the −19 dB signal; the small band also
+/// excludes the signal at 3 090 Hz.
+const GOLDEN_COUNTS: [[usize; 3]; 3] = [[8, 0, 8], [7, 0, 7], [6, 0, 6]];
+
+/// Golden hashes of the decode output of [`golden_slots`] for each setup.
+const GOLDEN: [u64; 3] = [
+    0x5eea_3477_73cf_df7d,
+    0x1c82_6afc_8074_f291,
+    0xdd6e_4bf0_8d7d_91f9,
+];
 
 #[test]
 fn golden_decode_hashes() {
-    let slots = golden_slots();
-    for ((name, config), want) in CONFIGS.iter().zip(GOLDEN) {
-        let outs = par_map(slots.len(), |i| decode(&slots[i], *config));
+    let (slots, sent) = golden_slots();
+    for (((name, band, config, capacity), want), counts) in
+        SETUPS.into_iter().zip(GOLDEN).zip(GOLDEN_COUNTS)
+    {
+        let outs = par_map(slots.len(), |i| {
+            decode_setup(&slots[i], band, config, capacity)
+        });
         let mut hash = 0xcbf2_9ce4_8422_2325u64;
         for out in &outs {
             hash_output(&mut hash, out);
@@ -146,13 +186,36 @@ fn golden_decode_hashes() {
             println!("{name} slot {i}: {:?} {:?}", out.texts, out.report);
         }
         // Feed blocks do not matter: the busy slot in 1 013-sample blocks.
-        let mut w = Work::new(Band::DEFAULT);
-        let mut dec = w.decoder(*config);
+        let mut w = Work::new(band);
+        let mut dec = w.decoder(config);
         for block in slots[0].chunks(1_013) {
             dec.feed(block);
         }
-        assert_eq!(run(&mut dec, &mut NoHashes), outs[0], "{name}");
-        assert!(outs[0].decodes.len() >= 6, "{name}");
+        assert_eq!(
+            run_into(&mut dec, &mut NoHashes, capacity),
+            outs[0],
+            "{name}"
+        );
+        // Only transmitted messages decode, exactly as many as when the
+        // hashes were pinned, and none in the carrier slot.
+        for (i, out) in outs.iter().enumerate() {
+            for d in &out.decodes {
+                assert!(
+                    sent.contains(&d.payload),
+                    "{name} slot {i}: false decode {d:?}"
+                );
+            }
+        }
+        let got = [
+            outs[0].decodes.len(),
+            outs[1].decodes.len(),
+            outs[2].decodes.len(),
+        ];
+        println!(
+            "{name}: decodes per golden slot {got:?} of {} sent",
+            sent.len()
+        );
+        assert_eq!(got, counts, "{name}");
         assert_eq!(hash, want, "{name}: golden decode hash {hash:#018x}");
     }
 }

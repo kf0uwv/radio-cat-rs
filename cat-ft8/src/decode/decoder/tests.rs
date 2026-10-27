@@ -83,6 +83,8 @@ fn configuration_and_buffer_sizes_are_checked() {
     for bad in [
         DecodeConfig::HOST.with_llr_scale(0.0),
         DecodeConfig::HOST.with_llr_scale(f32::NAN),
+        DecodeConfig::HOST.with_llr_scale(DecodeConfig::MAX_LLR_SCALE * 1.001),
+        DecodeConfig::HOST.with_llr_scale(f32::INFINITY),
         DecodeConfig::HOST.with_candidates(0),
         DecodeConfig::HOST.with_candidates(70_000),
     ] {
@@ -125,6 +127,16 @@ fn configuration_and_buffer_sizes_are_checked() {
         DecodeConfig::HOST,
     );
     assert_eq!(r.err(), Some(Error::BufferTooSmall));
+    let edge = DecodeConfig::HOST.with_llr_scale(DecodeConfig::MAX_LLR_SCALE);
+    assert!(Decoder::new(
+        &mut b.front,
+        &mut b.levels,
+        &mut b.scratch,
+        &mut b.cands,
+        band,
+        edge
+    )
+    .is_ok());
     assert_eq!(DecodeConfig::default(), DecodeConfig::HOST);
     assert_eq!(
         DecodeConfig::SMALL,
@@ -456,7 +468,7 @@ fn the_snr_estimate_uses_local_noise() {
     assert_eq!(entries.len(), 2);
     for e in entries {
         std::println!("{:.0} Hz: {:.2} dB", e.freq_hz, e.snr_db);
-        // The reference spans 25–50 Hz either side, so on a slope this
+        // The reference spans 25–100 Hz either side, so on a slope this
         // steep it can be off by about 1 dB.
         assert!((e.snr_db + 10.0).abs() <= 1.5, "{e:?}");
     }

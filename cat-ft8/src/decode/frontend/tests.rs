@@ -320,3 +320,27 @@ fn buffers_are_checked() {
         Err(Error::BufferTooSmall)
     ));
 }
+
+#[test]
+fn feed_i16_equals_feed_of_the_scaled_samples() {
+    // A noisy slot quantised to 16 bits, including both extremes.
+    let f = slot("CQ K1ABC FN42", 1_000.0, 0.0, 0.2, 0.05, 11);
+    let mut ints: Vec<i16> = f
+        .iter()
+        .map(|&x| (x * 32_768.0).clamp(-32_768.0, 32_767.0) as i16)
+        .collect();
+    ints[1_000] = i16::MIN;
+    ints[2_000] = i16::MAX;
+    let scaled: Vec<f32> = ints.iter().map(|&x| f32::from(x) / 32_768.0).collect();
+    let (want, _) = spectrogram_of(&scaled, Band::DEFAULT, 1_013);
+    let mut front = FrontEnd::new();
+    let mut levels = vec![0u8; Band::DEFAULT.spectrogram_len()];
+    {
+        let mut s = Spectrogram::new(&mut front, &mut levels, Band::DEFAULT).unwrap();
+        for chunk in ints.chunks(777) {
+            s.feed_i16(chunk);
+        }
+        assert_eq!(s.rows_filled(), ROWS);
+    }
+    assert!(levels == want);
+}

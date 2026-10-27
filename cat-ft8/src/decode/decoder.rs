@@ -113,7 +113,8 @@ pub struct DecodeConfig {
     /// Message-passing rounds before a candidate is given up.
     pub max_rounds: u8,
     /// Mean magnitude the soft bits are scaled to (the reliability scale
-    /// belief propagation sees); finite and positive.
+    /// belief propagation sees): above 0 and at most
+    /// [`DecodeConfig::MAX_LLR_SCALE`].
     pub llr_scale: f32,
     /// Lowest sync score a candidate may have.
     pub min_score: i32,
@@ -165,8 +166,14 @@ impl DecodeConfig {
         DecodeConfig { candidates, ..self }
     }
 
+    /// The largest soft-bit scale accepted. Far beyond any useful value
+    /// (4 is the default); much larger scales overflow belief propagation's
+    /// sums and give meaningless results.
+    pub const MAX_LLR_SCALE: f32 = 1_000.0;
+
     fn check(&self) -> Result<(), Error> {
-        let scale_ok = self.llr_scale.is_finite() && self.llr_scale > 0.0;
+        // NaN fails both comparisons.
+        let scale_ok = self.llr_scale > 0.0 && self.llr_scale <= Self::MAX_LLR_SCALE;
         let count_ok = (1..=usize::from(u16::MAX)).contains(&self.candidates);
         if scale_ok && count_ok {
             Ok(())
