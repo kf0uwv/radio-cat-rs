@@ -128,6 +128,70 @@ jobs:
           cargo doc -p cat-ft8 --no-deps
           cargo doc -p cat-ft8 --no-deps --no-default-features
 
+  ft8-bulk:
+    name: cat-ft8 bulk false-decode run (release)
+    runs-on: ubuntu-latest
+    # ADR 0024: thousands of slots with no signal (white noise, and noise
+    # with steady carriers) must give no decodes with either decoder
+    # configuration. Too slow for a debug build, so the test is #[ignore]d
+    # and runs here, in release, as its own job.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93"
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-ft8-bulk-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ft8-bulk-
+
+      - name: No decodes in noise or carriers
+        run: cargo test --release -p cat-ft8 --test decode_bulk -- --ignored --nocapture
+
+  ft8-aarch64:
+    name: cat-ft8 on aarch64 (Linux)
+    runs-on: ubuntu-24.04-arm
+    # ADR 0024's determinism promise: the golden waveform hashes and the
+    # golden decode hashes (both configurations) must match the x86-64
+    # Linux and Windows jobs bit for bit on a second architecture.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93"
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-aarch64-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-aarch64-
+
+      - name: cargo test (cat-ft8)
+        run: cargo test -p cat-ft8
+
+      - name: cargo test (cat-ft8, no std)
+        run: cargo test -p cat-ft8 --no-default-features
+
   windows-check:
     name: Windows (MSVC)
     runs-on: windows-latest
@@ -186,7 +250,7 @@ jobs:
 
       - name: cargo test (cat-ft8 profile feature)
         # The workspace test above already ran cat-ft8's golden waveform
-        # hashes here: they must match the Linux job bit for bit.
+        # and decode hashes here: they must match the Linux job bit for bit.
         run: cargo test -p cat-ft8 --features profile
 
       - name: cargo check (cat-signal-audio device layer, WASAPI)

@@ -294,3 +294,47 @@ point unless stated, host AMD Threadripper 3970X.
   the stack (≈ 4.2 KB measured for `_start`) and the 1 s i16 FIFO
   (24 000 B), so about 21 KB spare.
 
+## D8 measurements (2026-10-26)
+
+- **SNR in busy slots** (decode bench mode `busy`, 200 slots per row,
+  estimate − truth over the decoded signals, same seeds before and after):
+
+  | Slot | D7 reference (pooled median, 8 bins/side, 25–50 Hz) | D8 reference (per-side lower octile, 24 bins/side, 25–100 Hz, sides averaged) |
+  |---|---|---|
+  | one signal at −10 dB, a 10 dB stronger one 30–60 Hz above | mean −2.99, RMS 3.13, min −5.0; 58 of 109 below −3 dB | mean −0.75, RMS 0.97, min −2.0; none below −3 dB |
+  | 10 signals (−16…+6 dB) | mean −0.79, RMS 1.77, min −14.6 | mean −0.73, RMS 1.34, min −8.2 |
+  | 20 signals | mean −1.75, RMS 3.17, min −21.5 | mean −1.47, RMS 2.14, min −10.1 |
+  | 40 signals | mean −3.80, RMS 5.59, min −23.6 | mean −2.96, RMS 3.74, min −20.3 |
+
+  With 40 signals in 2 600 Hz (one per 65 Hz) the whole reference is
+  raised and the estimate still reads low: that is interference, which a
+  local reference cannot separate from noise.
+- **Rejected alternatives** (same runs): a pooled lower quartile over 16
+  bins was better in crowds (40 signals −2.65) but read 13 dB high on a
+  steep passband edge, where the quieter side decides; an in-band
+  reference (unsent tones of each symbol) compressed badly (−15 dB at
+  +20 dB) from the signal's own leakage, and was worse in crowds.
+- **Steep passband** (noise through a 600–1 600 Hz windowed-sinc
+  band-pass, −6 dB at the edges, −43 dB 100 Hz outside, over a floor 45 dB
+  down; signals 10 dB below the local noise; three seeds): in the
+  passband (900, 1 250 Hz) within ±0.6 dB; at the edges 650 Hz +2.3…+2.8,
+  1 500 Hz +2.0…+3.3, 1 560 Hz −1.9…−2.5 dB (D7 reference: 650 Hz
+  +1.8…+2.7, 1 500 Hz −0.6…−1.6, 1 560 Hz +3.5…+4.4).
+- **Calibration** unchanged (+2.3 dB): white noise −0.3…+0.1 dB in every
+  500 Hz band from −18 to +20 dB, shaped noise −0.6…+0.1 dB.
+- **Decode rates unchanged** (SNR is computed after decoding): the sweep
+  reproduces D7 exactly for both rules, as do the carrier all-zero counts.
+- **Pinned floors** (`tests/decode.rs`, 20 slots per SNR): HOST 6 / 16 /
+  20 and SMALL 6 / 15 / 20 at −19.5 / −18.5 / −17 dB, no false decodes.
+- **Golden decode hashes** (busy slot, carrier slot, busy slot cut at
+  13.5 s): HOST `0x5eea347773cfdf7d`, SMALL `0x1c826afc8074f291`
+  (Linux x86-64; Windows and aarch64 to be confirmed by CI).
+- **Overlaps** 10, 20 and 30 Hz apart, same or 0.5 s different start:
+  equal signals at −8 dB both decode; with 12 dB between them only the
+  strong one decodes (the weak one needs subtraction), with no false
+  decode.
+- **Bulk** (release, all threads of the 3970X, 32 s): 2 000 noise-only and
+  1 000 carrier-plus-noise slots per configuration, 0 decodes; 5 162
+  (HOST) and 5 173 (SMALL) all-zero codewords rejected in the carrier
+  slots.
+

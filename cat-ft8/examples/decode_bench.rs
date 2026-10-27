@@ -216,6 +216,93 @@ fn passband_gain2(f: f64) -> f64 {
     passband().iter().map(|b| b.gain2(f)).product()
 }
 
+/// A crowded slot: `signals` signals at random frequencies (200–2 800 Hz),
+/// time offsets (−0.3…+0.7 s) and SNRs (−16…+6 dB) in white noise. With
+/// `neighbour`, instead one signal at −10 dB and a second 10 dB stronger
+/// 30–60 Hz above it.
+fn make_busy(
+    messages: &[String],
+    signals: usize,
+    neighbour: bool,
+    seed: u64,
+) -> (Vec<f32>, Vec<Truth>) {
+    let mut rng = Noise(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x5555);
+    let mut out = vec![0.0f32; SLOT_SAMPLES];
+    let mut truths = Vec::new();
+    let noise_2500 = NOISE_RMS * NOISE_RMS * 2500.0 / 6000.0;
+    let count = if neighbour { 2 } else { signals };
+    let first_base = 300.0 + 2_300.0 * rng.uniform();
+    for i in 0..count {
+        let msg = &messages[(rng.uniform() * messages.len() as f64) as usize % messages.len()];
+        let enc = encode(msg, &mut NoHashes).unwrap();
+        if truths.iter().any(|t: &Truth| t.payload == enc.payload) {
+            continue;
+        }
+        let (base, dt, snr) = if neighbour {
+            if i == 0 {
+                (first_base, -0.3 + rng.uniform(), -10.0)
+            } else {
+                (
+                    first_base + 30.0 + 30.0 * rng.uniform(),
+                    -0.3 + rng.uniform(),
+                    0.0,
+                )
+            }
+        } else {
+            (
+                200.0 + 2_600.0 * rng.uniform(),
+                -0.3 + rng.uniform(),
+                -16.0 + 22.0 * rng.uniform(),
+            )
+        };
+        let mut p = Placement::slot(base as f32, dt as f32).unwrap();
+        p.amplitude = (2.0 * noise_2500 * 10f64.powf(snr / 10.0)).sqrt() as f32;
+        synthesize(&enc.symbols, &p, &mut out).unwrap();
+        truths.push(Truth {
+            payload: enc.payload,
+            snr,
+            base_hz: base,
+            dt,
+        });
+    }
+    let mut n = Noise(seed);
+    for x in out.iter_mut() {
+        *x += (NOISE_RMS * n.gauss()) as f32;
+    }
+    (out, truths)
+}
+
+/// SNR errors (estimate − truth) of the decoded signals of a busy slot,
+/// and the count of decodes that match no signal.
+fn busy_errors(
+    samples: &[f32],
+    truths: &[Truth],
+    cfg: DecodeConfig,
+    only_first: bool,
+) -> (Vec<f64>, u32) {
+    let band = Band::DEFAULT;
+    let mut front = Box::new(FrontEnd::new());
+    let mut levels = vec![0u8; band.spectrogram_len()];
+    let mut scratch = vec![0i32; Decoder::sync_scratch_len(band)];
+    let mut cands = vec![Candidate::default(); cfg.candidates];
+    let mut dec =
+        Decoder::new(&mut front, &mut levels, &mut scratch, &mut cands, band, cfg).unwrap();
+    dec.feed(samples);
+    let mut store = vec![Decode::EMPTY; HOST_DECODES];
+    let mut list = DecodeList::new(&mut store);
+    dec.decode(&mut Box::new(CandidateScratch::new()), &mut list);
+    let mut errs = Vec::new();
+    let mut false_decodes = 0;
+    for d in list.finish_payloads() {
+        match truths.iter().position(|t| t.payload == d.payload) {
+            Some(i) if !only_first || i == 0 => errs.push(f64::from(d.snr_db) - truths[i].snr),
+            Some(_) => {}
+            None => false_decodes += 1,
+        }
+    }
+    (errs, false_decodes)
+}
+
 /// Counts summed over slots.
 #[derive(Default, Clone, Copy)]
 struct Tally {
@@ -571,6 +658,55 @@ fn main() {
                     );
                     println!("{line}");
                 }
+            }
+        }
+        "busy" => {
+            println!("SNR error in busy slots (estimate − truth, dB); {n} slots per row");
+            for (name, signals, neighbour) in [
+                ("one neighbour +10 dB, 30–60 Hz above", 2, true),
+                ("10 signals", 10, false),
+                ("20 signals", 20, false),
+                ("40 signals", 40, false),
+            ] {
+                let threads = std::thread::available_parallelism().map_or(4, |x| x.get()) as u64;
+                let msgs = &msgs;
+                let (errs, falses) = std::thread::scope(|s| {
+                    let hs: Vec<_> = (0..threads)
+                        .map(|t| {
+                            s.spawn(move || {
+                                let (mut e, mut f) = (Vec::new(), 0u32);
+                                let mut i = t;
+                                while i < n {
+                                    let (slot, truths) =
+                                        make_busy(msgs, signals, neighbour, 4_000 + i);
+                                    let (ee, ff) = busy_errors(&slot, &truths, base, neighbour);
+                                    e.extend(ee);
+                                    f += ff;
+                                    i += threads;
+                                }
+                                (e, f)
+                            })
+                        })
+                        .collect();
+                    let mut e = Vec::new();
+                    let mut f = 0;
+                    for h in hs {
+                        let (ee, ff) = h.join().unwrap();
+                        e.extend(ee);
+                        f += ff;
+                    }
+                    (e, f)
+                });
+                let k = errs.len().max(1) as f64;
+                let mean = errs.iter().sum::<f64>() / k;
+                let rms = (errs.iter().map(|e| e * e).sum::<f64>() / k).sqrt();
+                let min = errs.iter().copied().fold(f64::MAX, f64::min);
+                let max = errs.iter().copied().fold(f64::MIN, f64::max);
+                let low3 = errs.iter().filter(|&&e| e < -3.0).count();
+                println!(
+                    "  {name:<38}: {} decodes, mean {mean:+.2}, RMS {rms:.2}, min {min:+.1}, max {max:+.1}, below −3 dB {low3}; false {falses}",
+                    errs.len()
+                );
             }
         }
         "cost" => {

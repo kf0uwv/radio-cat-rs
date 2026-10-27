@@ -414,6 +414,24 @@
   doctests 4; clippy (four configurations), fmt, docs, thumbv8m build;
   link check `.text` 33 706 B, `.rodata` 50 118 B, `.bss` 212 284 B,
   `_start` 4 216 B; golden hashes unchanged.
+- D7 committed (a3adafb). D8/D8b go-ahead; D8 design recorded in the
+  plan.
+- D8 done: SNR noise reference per side (24 bins, 25–100 Hz, lower
+  octile corrected for the exponential distribution, sides averaged);
+  bench mode `busy`; `tests/common` (libm noise, buffers, parallel map,
+  output hash), `tests/decode.rs` (10 tests: pinned floors; golden
+  hashes for HOST and SMALL with a block-size check; overlaps 10–30 Hz;
+  early/late/band-edge; partial input and decoding before the slot ends;
+  input starting late; reusable and alternating workspaces; seeded call
+  table; SNR on a steep passband; SNR beside a strong neighbour) and
+  `tests/decode_bulk.rs` (ignored; release job). Two library SNR
+  tolerances widened from 1.0 to 1.5 dB (single-slot, about 3 σ).
+  Results in findings ("D8 measurements").
+- D8b done: CI jobs `ft8-bulk` (release, the bulk run) and `ft8-aarch64`
+  (`ubuntu-24.04-arm`, `cargo test -p cat-ft8` with and without std);
+  the Linux and Windows jobs run the decode tests through the workspace
+  tests. Bulk run checked locally; aarch64 and Windows need a real CI
+  run (no local runtime for either).
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |

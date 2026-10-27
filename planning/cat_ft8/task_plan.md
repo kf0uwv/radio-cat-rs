@@ -422,14 +422,40 @@ D8 notes (2026-10-26, from the D7 review; not started):
       carrier-plus-noise jobs.
     - No further tuning against crowded multi-signal performance (that is
       subtraction work, later).
-D8. [ ] WSJT-X-free end-to-end tests with the encoder and seeded noise:
+    D8 design (2026-10-26):
+    - Busy-slot SNR: the noise reference becomes a low quantile of the
+      reference levels, corrected for the exponential distribution
+      (as built: each side's lower octile over 24 bins, 25–100 Hz from
+      the signal, sides averaged; measured against pooled and in-band
+      alternatives, see findings); checked on white and shaped noise; measured before
+      and after on busy synthetic slots (bench mode `busy`); tests with a
+      neighbour 30–60 Hz away and on a steep passband (one-pole sections
+      giving about −6 dB at the band edges of 600–1 600 Hz and about 40 dB
+      down by 2 kHz). SNR is computed after decoding, so decode rates
+      must not change (checked: the sweep reproduces exactly).
+    - `tests/decode.rs` (integration, public API, debug-build sized,
+      slots spread over threads; inputs from the encoder and `libm`
+      noise, which is the same on every platform): pinned rate floors
+      for `HOST` and `SMALL`; golden decode hashes (FNV-1a over every
+      output field's bits, the text and the report) for both
+      configurations; overlaps 10–30 Hz apart; early and late signals;
+      partial input and decoding before the slot ends; input that starts
+      late (`skip`); workspace reuse and two alternating workspaces;
+      repeatability with a seeded call table.
+    - `tests/decode_bulk.rs` (`#[ignore]`, release, its own CI job):
+      thousands of noise-only and carrier-plus-noise slots, zero decodes,
+      for both configurations.
+    - D8b: an `ubuntu-24.04-arm` job running `cargo test -p cat-ft8`
+      (golden waveform and decode hashes). Linux and Windows already run
+      the workspace tests, so the decode hashes run there too.
+D8. [x] WSJT-X-free end-to-end tests with the encoder and seeded noise:
         SNR sweep with pinned rate floors; noise-only slots (thousands,
         release build, separate CI job) including carrier-plus-noise
         slots, with zero decodes; non-overlapping and overlapping (10–30 Hz
         apart) signals; dt and frequency ranges; partial and late input;
         block-size and thread-count invariance; golden decode output hash
         on Linux and Windows CI.
-D8b. [ ] CI: a new `ubuntu-24.04-arm` (aarch64) job running
+D8b. [x] CI: a new `ubuntu-24.04-arm` (aarch64) job running
          `cargo test -p cat-ft8` (golden waveform and decode hashes; the
          bulk noise-only test stays in its own job), so the determinism
          promise is checked on a second architecture.

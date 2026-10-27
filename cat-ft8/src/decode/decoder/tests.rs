@@ -171,7 +171,8 @@ fn signals_decode_with_their_fields() {
         // Refined: well inside the grid's half steps (1.56 Hz, 40 ms).
         assert!((e.freq_hz - f).abs() <= 0.8, "{e:?}");
         assert!((e.dt - dt).abs() <= 0.02, "{e:?}");
-        assert!((e.snr_db + 12.0).abs() <= 1.0, "{e:?}");
+        // One slot: within about 3 σ of the estimate's spread (~0.5 dB).
+        assert!((e.snr_db + 12.0).abs() <= 1.5, "{e:?}");
         assert_eq!(e.message_type(), e.payload.message_type());
         assert_eq!(e.score, dec.candidates()[usize::from(e.candidate)].score);
     }
@@ -481,7 +482,7 @@ fn the_snr_estimate_tracks_the_signal_level() {
         let mut list = DecodeList::new(&mut store);
         dec.decode(&mut CandidateScratch::new(), &mut list);
         let e = list.finish_payloads()[0];
-        assert!((f64::from(e.snr_db) - snr).abs() <= 1.0, "{snr}: {e:?}");
+        assert!((f64::from(e.snr_db) - snr).abs() <= 1.5, "{snr}: {e:?}");
         assert!(e.snr_db > last);
         last = e.snr_db;
     }
