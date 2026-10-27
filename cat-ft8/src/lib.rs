@@ -73,9 +73,11 @@
 //! `cat-ft8-decode FILE.wav [--config host|small] [--raw] [--profile]`
 //! reads a 12 kHz mono 16-bit PCM WAV file. Its first 15 s are the slot: a
 //! shorter file is decoded as a partial slot, and samples after 15 s are
-//! ignored. Other sample rates and channel counts are errors (exit status
-//! 1; usage errors exit with 2). `--config` picks
-//! `decode::DecodeConfig::HOST` (the default) or `SMALL`.
+//! ignored (and not read). Other sample rates and channel counts are
+//! errors (exit status 1; usage errors exit with 2; `--help` prints the
+//! usage on standard output and exits with 0). `--config host` (the
+//! default) is `decode::DecodeConfig::HOST` over 100–3100 Hz with 128
+//! decodes; `--config small` is `SMALL` over 200–2900 Hz with 64 decodes.
 //!
 //! Output is one JSON object per line, in candidate order, one per
 //! distinct decode whose payload unpacked:
@@ -99,9 +101,11 @@
 //! `"error"` in place of `"message"`.
 //!
 //! `--profile` adds one last line, `{"profile": {...}}`, with `"format": 0`,
-//! `"config"`, stage times in keys ending `_seconds` (`read`, `feed`,
-//! `sync`, `candidates`, `finish`, and `total` from the first feed to the
-//! end of `finish`, single-threaded), memory in keys ending `_bytes` (each
+//! `"config"`, `"band_lo_hz"`, `"band_hi_hz"`, `"decode_capacity"`, stage
+//! times in keys ending `_seconds` (`read`, `feed`, `sync`, `candidates` —
+//! split into `refine`, `soft_bits`, `belief_propagation` and `snr` —
+//! `finish`, and `total` from the first feed to the end of `finish`,
+//! single-threaded), memory in keys ending `_bytes` (each
 //! buffer, `peak_bytes` their sum, `static_table_bytes`), and every
 //! `decode::DecodeReport` count under its field name.
 //!

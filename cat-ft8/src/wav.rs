@@ -88,27 +88,35 @@ fn invalid(msg: &str) -> io::Error {
 /// that claims more bytes than the file holds (as some streaming writers
 /// leave it) is read to the end of the file. Other encodings are an
 /// [`io::ErrorKind::InvalidData`] error naming what was found.
-pub fn read_wav<R: Read>(mut r: R) -> io::Result<Wav> {
-    let mut bytes = std::vec::Vec::new();
-    r.read_to_end(&mut bytes)?;
-    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+pub fn read_wav<R: Read>(r: R) -> io::Result<Wav> {
+    read_wav_prefix(r, usize::MAX)
+}
+
+/// As [`read_wav`], but reads at most `max_frames` frames (samples per
+/// channel) and nothing after them: the rest of the file is not read.
+pub fn read_wav_prefix<R: Read>(mut r: R, max_frames: usize) -> io::Result<Wav> {
+    let mut head = [0u8; 12];
+    if read_full(&mut r, &mut head)? < 12 || &head[..4] != b"RIFF" || &head[8..12] != b"WAVE" {
         return Err(invalid("not a RIFF/WAVE file"));
     }
     let u16_at = |b: &[u8], i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
     let u32_at = |b: &[u8], i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
     let mut format: Option<(u32, u16)> = None;
-    let mut pos = 12;
-    while pos + 8 <= bytes.len() {
-        let id = &bytes[pos..pos + 4];
-        let len = u32_at(&bytes, pos + 4) as usize;
-        let body_start = pos + 8;
-        let body_end = body_start.saturating_add(len).min(bytes.len());
-        let body = &bytes[body_start..body_end];
-        match id {
+    loop {
+        let mut chunk = [0u8; 8];
+        if read_full(&mut r, &mut chunk)? < 8 {
+            return Err(invalid("WAV file has no data chunk"));
+        }
+        let len = u64::from(u32_at(&chunk, 4));
+        match &chunk[..4] {
             b"fmt " => {
-                if body.len() < 16 {
+                let mut body = std::vec![0u8; len.min(64) as usize];
+                let got = read_full(&mut r, &mut body)?;
+                skip(&mut r, len - got as u64 + (len & 1))?;
+                if got < 16 {
                     return Err(invalid("WAV fmt chunk too short"));
                 }
+                let body = &body[..got];
                 let mut tag = u16_at(body, 0);
                 let channels = u16_at(body, 2);
                 let rate = u32_at(body, 4);
@@ -134,7 +142,13 @@ pub fn read_wav<R: Read>(mut r: R) -> io::Result<Wav> {
             b"data" => {
                 let (sample_rate, channels) =
                     format.ok_or_else(|| invalid("WAV data chunk before its fmt chunk"))?;
-                let samples = body
+                let want = (max_frames as u64)
+                    .saturating_mul(u64::from(channels))
+                    .saturating_mul(2)
+                    .min(len);
+                let mut bytes = std::vec::Vec::new();
+                r.by_ref().take(want).read_to_end(&mut bytes)?;
+                let samples = bytes
                     .chunks_exact(2)
                     .map(|p| i16::from_le_bytes([p[0], p[1]]))
                     .collect();
@@ -144,12 +158,30 @@ pub fn read_wav<R: Read>(mut r: R) -> io::Result<Wav> {
                     samples,
                 });
             }
-            _ => {}
+            // Chunks are padded to an even length.
+            _ => skip(&mut r, len + (len & 1))?,
         }
-        // Chunks are padded to an even length.
-        pos = body_start.saturating_add(len).saturating_add(len & 1);
     }
-    Err(invalid("WAV file has no data chunk"))
+}
+
+/// Reads until `buf` is full or the input ends; returns the bytes read.
+fn read_full<R: Read>(r: &mut R, buf: &mut [u8]) -> io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(n)
+}
+
+/// Reads and discards `n` bytes (fewer if the input ends).
+fn skip<R: Read>(r: &mut R, n: u64) -> io::Result<()> {
+    io::copy(&mut r.by_ref().take(n), &mut io::sink())?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -224,6 +256,19 @@ mod tests {
         let n = b.len();
         b[n - 9..n - 5].copy_from_slice(&u32::MAX.to_le_bytes());
         assert_eq!(read_wav(&b[..]).unwrap().samples, [5, 6]);
+    }
+
+    #[test]
+    fn a_prefix_reads_only_the_frames_asked_for() {
+        let data: std::vec::Vec<u8> = (0u8..40).collect();
+        let b = build(1, 2, 12_000, 16, true, &data);
+        let wav = read_wav_prefix(&b[..], 3).unwrap();
+        assert_eq!(wav.samples.len(), 6); // 3 frames of 2 channels
+        assert_eq!(wav.samples[0], i16::from_le_bytes([0, 1]));
+        // Nothing past the frames asked for is read.
+        let mut reader = &b[..];
+        read_wav_prefix(&mut reader, 3).unwrap();
+        assert_eq!(reader.len(), 40 - 12);
     }
 
     #[test]

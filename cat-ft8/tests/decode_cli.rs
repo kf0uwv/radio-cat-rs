@@ -197,7 +197,18 @@ fn profile_adds_one_line_of_timings_memory_and_counts() {
     assert_eq!(keys(&got[1]), ["profile"]);
     assert_eq!(p["format"], 0);
     assert_eq!(p["config"], "small");
-    for stage in ["read", "feed", "sync", "candidates", "finish", "total"] {
+    for stage in [
+        "read",
+        "feed",
+        "sync",
+        "candidates",
+        "refine",
+        "soft_bits",
+        "belief_propagation",
+        "snr",
+        "finish",
+        "total",
+    ] {
         assert!(
             p[format!("{stage}_seconds")].as_f64().unwrap() >= 0.0,
             "{stage}"
@@ -211,7 +222,14 @@ fn profile_adds_one_line_of_timings_memory_and_counts() {
         .map(|(_, v)| v.as_u64().unwrap())
         .sum();
     assert_eq!(p["peak_bytes"].as_u64().unwrap(), parts);
-    assert_eq!(p["spectrogram_bytes"], 179_584);
+    // The small configuration's band and capacity.
+    assert_eq!(p["spectrogram_bytes"], 161_920);
+    assert_eq!(
+        (p["band_lo_hz"].as_f64(), p["band_hi_hz"].as_f64()),
+        (Some(200.0), Some(2_900.0))
+    );
+    assert_eq!(p["decode_capacity"], 64);
+    assert_eq!(p["decode_list_bytes"].as_u64().unwrap() % 64, 0);
     for count in [
         "candidates_found",
         "candidates_kept",
@@ -303,5 +321,22 @@ fn unusable_files_and_arguments_are_errors() {
     fail(decode_cmd(&rate, &["--bogus"]), 2, "unknown option");
     for p in [rate, stereo_path, text] {
         std::fs::remove_file(p).unwrap();
+    }
+}
+
+#[test]
+fn help_goes_to_stdout_and_succeeds() {
+    for flag in ["--help", "-h"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_cat-ft8-decode"))
+            .arg(flag)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(
+            text.starts_with("usage: cat-ft8-decode") && text.contains("--config small"),
+            "{text}"
+        );
+        assert!(out.stderr.is_empty());
     }
 }

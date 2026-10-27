@@ -29,7 +29,7 @@ use std::time::Instant;
 
 use cat_ft8::decode::{
     Band, Candidate, CandidateScratch, Decode, DecodeConfig, DecodeList, DecodeReport, Decoder,
-    FrontEnd, CANDIDATES, HOST_DECODES, TABLE_BYTES,
+    FrontEnd, Stage, CANDIDATES, HOST_DECODES, SMALL_DECODES, TABLE_BYTES,
 };
 use cat_ft8::message::CallTable;
 use cat_ft8::{wav, SAMPLE_RATE, SLOT_SAMPLES};
@@ -39,28 +39,58 @@ const USAGE: &str = "usage: cat-ft8-decode FILE.wav [--config host|small] [--raw
 /// Calls remembered for hashed-call messages within the file.
 const CALLS: usize = 64;
 
+/// A configuration as the command uses it: decoder settings, band and
+/// decode capacity.
+#[derive(Clone, Copy)]
+struct Setup {
+    name: &'static str,
+    config: DecodeConfig,
+    band: Band,
+    decodes: usize,
+}
+
+/// The host configuration: 100–3100 Hz, sum-product, 128 decodes.
+const HOST: Setup = Setup {
+    name: "host",
+    config: DecodeConfig::HOST,
+    band: Band::DEFAULT,
+    decodes: HOST_DECODES,
+};
+
+/// The small-target configuration: 200–2900 Hz, min-sum, 64 decodes.
+const SMALL: Setup = Setup {
+    name: "small",
+    config: DecodeConfig::SMALL,
+    band: Band::SMALL,
+    decodes: SMALL_DECODES,
+};
+
 struct Args {
     path: String,
-    config_name: &'static str,
-    config: DecodeConfig,
+    setup: Setup,
     raw: bool,
     profile: bool,
 }
 
-fn parse() -> Result<Args, String> {
+/// What the command line asks for.
+enum Parsed {
+    Run(Args),
+    Help,
+}
+
+fn parse() -> Result<Parsed, String> {
     let mut it = std::env::args().skip(1);
     let mut a = Args {
         path: String::new(),
-        config_name: "host",
-        config: DecodeConfig::HOST,
+        setup: HOST,
         raw: false,
         profile: false,
     };
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--config" => match it.next().as_deref() {
-                Some("host") => (a.config_name, a.config) = ("host", DecodeConfig::HOST),
-                Some("small") => (a.config_name, a.config) = ("small", DecodeConfig::SMALL),
+                Some("host") => a.setup = HOST,
+                Some("small") => a.setup = SMALL,
                 other => {
                     return Err(format!(
                         "--config needs host or small, not {other:?}\n{USAGE}"
@@ -69,7 +99,7 @@ fn parse() -> Result<Args, String> {
             },
             "--raw" => a.raw = true,
             "--profile" => a.profile = true,
-            "-h" | "--help" => return Err(USAGE.into()),
+            "-h" | "--help" => return Ok(Parsed::Help),
             s if s.starts_with("--") => return Err(format!("unknown option {s}\n{USAGE}")),
             s if a.path.is_empty() => a.path = s.to_string(),
             s => return Err(format!("unexpected argument {s}\n{USAGE}")),
@@ -78,7 +108,7 @@ fn parse() -> Result<Args, String> {
     if a.path.is_empty() {
         return Err(USAGE.into());
     }
-    Ok(a)
+    Ok(Parsed::Run(a))
 }
 
 /// `s` as a JSON string literal.
@@ -170,12 +200,8 @@ fn raw_line(d: &Decode, error: &str) -> String {
 }
 
 /// The `--profile` line.
-fn profile_line(
-    config: &str,
-    band: Band,
-    seconds: &[(&str, f64)],
-    report: &DecodeReport,
-) -> String {
+fn profile_line(setup: &Setup, seconds: &[(&str, f64)], report: &DecodeReport) -> String {
+    let band = setup.band;
     let memory = [
         ("front_end_bytes", std::mem::size_of::<FrontEnd>()),
         ("spectrogram_bytes", band.spectrogram_len()),
@@ -190,14 +216,18 @@ fn profile_line(
         ),
         (
             "decode_list_bytes",
-            HOST_DECODES * std::mem::size_of::<Decode>(),
+            setup.decodes * std::mem::size_of::<Decode>(),
         ),
         ("call_table_bytes", std::mem::size_of::<CallTable<CALLS>>()),
     ];
     let peak: usize = memory.iter().map(|m| m.1).sum();
+    let (lo, hi) = band.range_hz();
     let mut out = format!(
-        "{{\"profile\": {{\"format\": 0, \"config\": {}",
-        json_string(config)
+        "{{\"profile\": {{\"format\": 0, \"config\": {}, \"band_lo_hz\": {}, \"band_hi_hz\": {}, \"decode_capacity\": {}",
+        json_string(setup.name),
+        json_number(f64::from(lo), 1),
+        json_number(f64::from(hi), 1),
+        setup.decodes
     );
     for (k, v) in seconds {
         let _ = write!(out, ", \"{k}_seconds\": {}", json_number(*v, 6));
@@ -236,7 +266,9 @@ fn profile_line(
 fn run(a: &Args) -> Result<(), String> {
     let t_read = Instant::now();
     let file = File::open(&a.path).map_err(|e| format!("{}: {e}", a.path))?;
-    let w = wav::read_wav(BufReader::new(file)).map_err(|e| format!("{}: {e}", a.path))?;
+    // Only the first slot's samples are read.
+    let w = wav::read_wav_prefix(BufReader::new(file), SLOT_SAMPLES)
+        .map_err(|e| format!("{}: {e}", a.path))?;
     if w.sample_rate != SAMPLE_RATE {
         return Err(format!(
             "{}: sample rate {} Hz; cat-ft8-decode needs {SAMPLE_RATE} Hz (resample first)",
@@ -251,7 +283,7 @@ fn run(a: &Args) -> Result<(), String> {
     }
     let read = t_read.elapsed().as_secs_f64();
 
-    let band = Band::DEFAULT;
+    let band = a.setup.band;
     let mut front = Box::new(FrontEnd::new());
     let mut levels = vec![0u8; band.spectrogram_len()];
     let mut sync = vec![0i32; Decoder::sync_scratch_len(band)];
@@ -262,25 +294,33 @@ fn run(a: &Args) -> Result<(), String> {
         &mut sync,
         &mut candidates,
         band,
-        a.config,
+        a.setup.config,
     )
     .map_err(|e| e.to_string())?;
     let mut scratch = Box::new(CandidateScratch::new());
-    let mut entries = vec![Decode::EMPTY; HOST_DECODES];
+    let mut entries = vec![Decode::EMPTY; a.setup.decodes];
     let mut list = DecodeList::new(&mut entries);
 
     // The split API, to time each stage; the same result as `decode()`.
     let t = Instant::now();
-    for block in w.samples[..w.samples.len().min(SLOT_SAMPLES)].chunks(1_920) {
+    for block in w.samples.chunks(1_920) {
         decoder.feed_i16(block);
     }
     let feed = t.elapsed().as_secs_f64();
     let t = Instant::now();
     let kept = decoder.find_candidates().kept;
     let search = t.elapsed().as_secs_f64();
+    // Each candidate's stages timed separately (`Stage::ALL`).
+    let mut stage_seconds = [0.0f64; Stage::ALL.len()];
     let t = Instant::now();
     for i in 0..kept {
-        if let Some(result) = decoder.decode_candidate(i, &mut scratch) {
+        let mut last = Instant::now();
+        let result = decoder.decode_candidate_staged(i, &mut scratch, |stage| {
+            let now = Instant::now();
+            stage_seconds[stage.index()] += (now - last).as_secs_f64();
+            last = now;
+        });
+        if let Some(result) = result {
             list.push(i, &result).map_err(|e| e.to_string())?;
         }
     }
@@ -303,27 +343,35 @@ fn run(a: &Args) -> Result<(), String> {
         writeln!(out, "{line}").map_err(|e| e.to_string())?;
     }
     if a.profile {
-        let seconds = [
+        let mut seconds = vec![
             ("read", read),
             ("feed", feed),
             ("sync", search),
             ("candidates", candidates_time),
-            ("finish", finish),
-            ("total", feed + search + candidates_time + finish),
         ];
-        writeln!(
-            out,
-            "{}",
-            profile_line(a.config_name, band, &seconds, &report)
-        )
-        .map_err(|e| e.to_string())?;
+        // The candidate stage split up; these sum to about `candidates`.
+        for stage in Stage::ALL {
+            seconds.push((stage.name(), stage_seconds[stage.index()]));
+        }
+        seconds.push(("finish", finish));
+        seconds.push(("total", feed + search + candidates_time + finish));
+        writeln!(out, "{}", profile_line(&a.setup, &seconds, &report))
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 fn main() -> ExitCode {
     let args = match parse() {
-        Ok(a) => a,
+        Ok(Parsed::Run(a)) => a,
+        Ok(Parsed::Help) => {
+            println!("{USAGE}");
+            println!("  --config host   100–3100 Hz, sum-product, 128 decodes (the default)");
+            println!("  --config small  200–2900 Hz, min-sum, 64 decodes");
+            println!("  --raw           also print decodes whose payload did not unpack");
+            println!("  --profile       add one line of timings, memory and counts");
+            return ExitCode::SUCCESS;
+        }
         Err(e) => {
             eprintln!("{e}");
             return ExitCode::from(2);
