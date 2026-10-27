@@ -358,3 +358,15 @@ point unless stated, host AMD Threadripper 3970X.
   scratch 11 532, decode list 6 144, candidate scratch 5 100, candidates
   1 600, call table 1 552); total 94 ms on the 3970X with `host`.
 
+## D12 sizes (2026-10-27, thumbv8m.main-none-eabihf, Rust 1.93, opt-level s, LTO)
+
+| Image | flash | `.bss` | largest frames |
+|---|---|---|---|
+| small (200–2900 Hz, min-sum, 64 decodes) | 83 412 B (83 404 B in the `--stack` build; before `CHECKS`/`DEGREES` became statics, 83 404 B and 83 408 B) | 212 280 B | `_start` 4 096, decoder path 2 496, `unpack` 464, `finish_row` 232 |
+| host (100–3100 Hz, sum-product, 128 decodes) | 83 412 B (83 404 B with `--stack`) | 233 656 B | the same |
+| encoder alone | 35 848 B | 0 | `_start` 4 216 |
+
+`decode::TABLE_BYTES` is 36 260 B (the parity-check list replaced by
+`CHECKS` and `DEGREES`). Flash moves by a few bytes with each change;
+the ADR gives it rounded.
+

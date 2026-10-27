@@ -182,8 +182,8 @@ F7. [x] (optional) `encode_bench` single-stage mode for instruction
 ## Phase 2: decoder (single pass) — PLAN, revised after review (2026-10-26)
 
 Design decisions are in ADR 0024, "Proposed amendment: single-pass
-decoder" (to be accepted at D0 with its estimates, and updated with
-measured values at D11). Sizing notes are in findings.md. One task at a
+decoder" (accepted at D0 with its estimates; measured memory, flash,
+stack, rate and cost figures replaced them on 2026-10-27). Sizing notes are in findings.md. One task at a
 time, test first; each task ends with tests, clippy (four
 configurations), fmt, docs, the bare-metal link check (from D2 on, grown
 each step) and a progress entry. Architect checkpoints are marked ◆;
@@ -486,13 +486,15 @@ D10. [x] Link check final form: decoder fed a synthesized slot in blocks
       documented in the crate docs and the ADR.
     - D10: the link check builds two images — `small` (Band::SMALL,
       DecodeConfig::SMALL, 64 decodes; default) and `host` (Band::DEFAULT,
-      DecodeConfig::HOST, 128 decodes) — each with only its own rule
-      linked, and reports flash (`.text` + `.rodata`), `.bss` and stack for
+      DecodeConfig::HOST, 128 decodes) — the check-node rule is a run-time
+      field, so both rules are linked in either image — and reports flash (`.text` + `.rodata`), `.bss` and stack for
       each.
-D11. [ ] Measurement against an external reference decoder on synthetic
+D11. [x] Measurement against an external reference decoder on synthetic
          slots across SNR, time offset, frequency, crowding and fading
          (external harness); profile and memory; ADR amendment updated
          with measured values.
+         Done 2026-10-27: run outside this repository (an external
+         benchmark on synthetic slots); figures in the ADR.
     ◆◆ Results to the user; then optimisation passes under the existing
        rules (results identical, at most five).
 
