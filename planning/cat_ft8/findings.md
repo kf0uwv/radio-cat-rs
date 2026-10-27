@@ -370,56 +370,82 @@ point unless stated, host AMD Threadripper 3970X.
 `CHECKS` and `DEGREES`). Flash moves by a few bytes with each change;
 the ADR gives it rounded.
 
-## Phase 3 E0 baseline (2026-10-27, tip 176a49b + E0)
+## Phase 3 E0 baseline (2026-10-27, re-recorded at E0a)
 
-Produced with `examples/paired_bench.rs` (`run host|small DIR`, main block
-all sets, fresh block sweep and crowded). Slots are deterministic from set,
-block and index, so the baseline can be regenerated with the same command;
-the saved files are not in the repository. Configurations: `host` =
-100–3100 Hz, sum-product, 128 decodes; `small` = 200–2900 Hz, min-sum, 64
-decodes; both 30 rounds, LLR scale 4, 200 candidates.
+**Provenance.** `examples/paired_bench.rs` as of the E0a commit, decoder
+library identical to 255876b (each `config.txt` says
+`255876b…+dirty` because the bench changes were not yet committed);
+rustc 1.93.0 (254b59607 2026-01-19); AMD Ryzen Threadripper 3970X; 16
+threads for `run`. Commands: `run host|small DIR sweep,crowded,edges,empty
+main` and `run host|small DIR sweep,crowded fresh`. Files (outside the
+repository, regenerated bit-for-bit by the same commands) in
+`~/.cache/cat-ft8-paired/e0a/{host,small}/`, sha256:
+
+| file | host | small |
+|---|---|---|
+| sweep-main | 07751db2983edc4d786c159980d170d1ff1e8d8784234847f054f31cd4eb3ecc | 98f8e1c1e160e31228ac78ed1e30236ebb1536d926fcd84b23daec2a3b7c1d8e |
+| sweep-fresh | e4afa7c01ba7a25be1da052d0412546070b3b0cad45a79f96a0fd5bb7252ce76 | 7947cb3bbc913a48ffc64f7dab3bd49f173ffb6806c60cc77ffdbfd5316f932f |
+| crowded-main | c875d8215d0fc6944c748bbeb041045a6e56238229a78ee6391e67e648f46b78 | 015f31a08f4e955eed735003861f4aa8338a49e5f7cb883147d9ec205b15602e |
+| crowded-fresh | 1a1a7a762db78b60c58eb062b81ff876680a3483072772ba078229619690cdbe | 294138c179c503d7c74bce4b1872a312c7016df1754d311e35d032d7cc8027ca |
+| edges-main | 8ca4d6bef5ae98db332f7e4125cc62364540108fa28bdc56620ab68dd47df3c0 | 1b311324821f2d223e9076d2cb222333bcb032e9b583c6b5bdc62030ce5a284d |
+| empty-main | 4c0a8404e1fc8722888efa5968d5abb4cf2907bfd9d08960b214cb0865d2facd | 4a696c70619a5af57df5935b5c4a421e323ae7564d1be3b267f7711f6ed5f295 |
+
+(The stage times inside the files vary run to run, so a re-run has other
+sha256 values; the decode content does not change — a re-run of host
+pairs with zero discordant messages on every set.) The slots differ from
+the first E0 recording because slot construction now uses the
+integration tests' shared helpers (their uniform draw differs from the
+bench's former copy); each slot's sample hash now pins its input.
+
+Configurations: `host` = 100–3100 Hz, sum-product, 128 decodes; `small`
+= 200–2900 Hz, min-sum, 64 decodes; both 30 rounds, LLR scale 4, 200
+candidates.
 
 **Sweep** (1 000 slots per point; messages decoded, host / small):
 
-| SNR dB | −21.0 | −20.5 | −20.0 | −19.5 | −19.0 | −18.5 | −18.0 | −17.5 | −17.0 | ≥ −16.5 |
-|---|---|---|---|---|---|---|---|---|---|---|
-| main | 5 / 3 | 30 / 24 | 107 / 100 | 307 / 282 | 571 / 562 | 812 / 785 | 938 / 933 | 987 / 987 | 996 / 997 | 1000 / 1000 |
-| fresh | 7 / 5 | 33 / 28 | 113 / 100 | 300 / 277 | 587 / 557 | 804 / 785 | 948 / 937 | 988 / 985 | 998 / 998 | 1000 / 1000 |
+| SNR dB | −22.0 | −21.5 | −21.0 | −20.5 | −20.0 | −19.5 | −19.0 | −18.5 | −18.0 | −17.5 | ≥ −17.0 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| main | 0 / 0 | 1 / 1 | 8 / 6 | 41 / 34 | 124 / 109 | 292 / 280 | 567 / 544 | 795 / 788 | 949 / 949 | 988 / 987 | 1000 / 1000 |
+| fresh | 1 / 0 | 0 / 0 | 12 / 10 | 35 / 30 | 114 / 102 | 322 / 305 | 533 / 519 | 835 / 823 | 941 / 934 | 981 / 979 | 998–1000 / 998–1000 |
 
-(−22.0 dB: 0 / 0; −21.5 dB main 2 / 1, fresh 0 / 0.) 50% point (bootstrap
-95% interval): host main −19.134 dB [−19.177, −19.091], fresh −19.152 dB
-[−19.188, −19.108]; small main −19.111 dB [−19.150, −19.069], fresh
-−19.102 dB [−19.144, −19.051].
+50% point (paired bootstrap 95% interval, no resample dropped): host main
+−19.122 dB [−19.163, −19.072], fresh −19.078 dB [−19.133, −19.010];
+small main −19.083 dB [−19.128, −19.024], fresh −19.044 dB [−19.101,
+−18.981].
 
 **Crowded** (200 slots per size; transmitted messages decoded, host /
-small): main 10 → 1754 / 1754 of 2 000, 20 → 3101 / 3098 of 4 000, 40 →
-4809 / 4794 of 8 000; fresh 1755 / 1755, 3081 / 3079, 4835 / 4820.
+small): main 10 → 1755 / 1753 of 2 000, 20 → 3102 / 3099 of 4 000, 40 →
+4815 / 4804 of 8 000; fresh 1758 / 1756, 3082 / 3080, 4829 / 4812.
 
-**Edges** (−18 dB, 100 slots per case; host / small): dt −2.4 s 90 / 91,
-−2.0 s 93 / 94, −1.6 s 96 / 95, +1.6 s 97 / 98, +2.0 s 97 / 97, +2.4 s
-96 / 96; tone 0 at 100 Hz 91 / 0 and 3 090 Hz 83 / 0 (outside the small
-band), 200 Hz 98 / 93, 2 890 Hz 89 / 88; input cut at 13.5 s 98 / 98;
-input starting 1 s late 99 / 98; dt 0 98 / 99.
+**Edges** (−18 dB, 100 slots per case; host / small): dt −2.4 s 94 / 92,
+−2.0 s 85 / 84, −1.6 s 96 / 96, +1.6 s 98 / 97, +2.0 s 97 / 97, +2.4 s
+98 / 98; tone 0 at 100 Hz 90 / 0 and 3 090 Hz 93 / 0 (outside the small
+band), 200 Hz 90 / 91, 2 890 Hz 92 / 90; cut at 13.5 s 99 / 98; 1 s late
+97 / 97; dt 0 99 / 98.
 
 **False decodes:** none in any set, block or configuration (sweep,
-crowded, edges, and 2 300 empty slots: noise, weak and strong carriers,
-clipped, floored, impulsive). No findings entries are needed yet; every
-false decode from E1 on gets one.
+crowded, edges, and 2 300 empty slots). No decodes truncated.
 
 **Deterministic cost:** 200 candidates through belief propagation per
-slot; rounds per candidate 29.92 (sweep), 27.61 (crowded), 29.88 (edges),
-29.59 (empty), the same for both rules to two decimals (almost every
-candidate fails and runs all 30 rounds).
+slot; rounds per candidate 29.92 (sweep), 27.61 (crowded host; 27.62
+small), 29.87 (edges), 29.59 (empty).
 
-**Time** (`paired_bench cost host small 40 5`: median of five interleaved
-single-thread runs over 40 crowded slots, ms per slot): host total 66.9
-(belief propagation 45.1, feed 14.4, soft bits 3.2, sync 2.9, refine 1.3,
-SNR 0.1); small total 45.2 (belief propagation 24.2). Run time of the
-baselines on 16 threads: host 186 s, small 134 s (all sets, both blocks).
+**Time** (`paired_bench cost host small 42 5`, loop-aligned build
+(`-C llvm-args=-align-loops=64`), median of five interleaved
+single-thread runs over 42 crowded slots — 14 each of the 10-, 20- and
+40-message sizes, indices 0–13, 200–213 and 400–413 — ms per slot): host
+total 67.1 (belief propagation 44.7, feed 14.8, soft bits 3.2, sync 2.9,
+refine 1.4, SNR 0.2); small total 45.3 (belief propagation 23.6). This is
+the reference for E1's belief-propagation target.
 
-The paired comparison of host against small (as a demonstration of the
-gates) flags small's loss on sweep (b − c = 81 main, 106 fresh, against
-limits 23 and 24), crowded 40-message slots and the band-edge cases, with
-its 50% point 0.02–0.05 dB worse; a re-run of host against itself pairs
-with zero discordant messages.
+**Sizes** (thumbv8m.main-none-eabihf, Rust 1.93, opt-level s, LTO): small
+image flash 83 504 B (83 496 B in the `--stack` build), `.bss`
+212 280 B; host image 83 504 B, 233 656 B; frames `_start` 4 096 B,
+decoder path 2 544 B, `unpack` 464 B, `finish_row` 232 B.
+
+**Gate demonstration:** host against small flags small's real losses —
+sweep b − c 67 (main) and 72 (fresh) against limits 22 and 21, crowded
+over a set, the band-edge cases — with its 50% point 0.034–0.038 dB
+worse. Failure cases exit with status 1: a set missing from one run, an
+empty directory, one slot's sample hash changed.
 

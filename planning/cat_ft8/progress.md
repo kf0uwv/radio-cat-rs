@@ -598,6 +598,21 @@
   baseline"); no false decodes anywhere. Checks: tests 115 (108 without
   std), golden hashes and floors unchanged, bulk identical, clippy, fmt,
   docs, thumbv8m, 1.75, link check (flash 83 504 B, `.bss` unchanged).
+- E0 checkpoint reviewed (four reviews; open-source clean). E0a recorded
+  in the plan: gate defects, traceable baseline, shared helpers, typed
+  records; `last_rounds()` kept public as a deliberate addition.
+- E0a done (decoder library untouched): `compare` fails on MISSING sets,
+  on nothing compared, on missing main sets (unless `--partial`), on a
+  missing 50% point and on any input difference (seed, sample hash,
+  messages); reports dropped resamples, truncation and dropped
+  candidates; exits 1 on FAIL and 2 on usage or I/O errors. Slots reuse
+  `tests/common` (so the slots changed and the baseline was re-recorded);
+  typed `SlotResult` with its own JSON writer; statistics documented;
+  `cost` spreads 42 slots over the three sizes; `run` records commit,
+  rustc and CPU. Baseline re-recorded (findings, "Phase 3 E0 baseline"),
+  re-run of host pairs zero-discordant, PASS; failure cases exit 1.
+  `last_rounds()` recorded as a deliberate public addition in the plan
+  and ADR 0024.
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |

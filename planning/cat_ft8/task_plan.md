@@ -718,6 +718,10 @@ weighs more than a saved millisecond.
   on the small target exist; it is enabled only if it passes its own
   gates.
 - `bp::decode_soft` (profile-exposed, unstable) may change signature.
+- `CandidateScratch::last_rounds()` (and `BpScratch::rounds()`) are a
+  deliberate public addition (E0): a read-only count of the rounds the
+  last candidate ran, whatever its result, for callers that measure or
+  budget decoding cost; it costs nothing on the decode path.
 
 ### Steps
 
@@ -732,6 +736,20 @@ E0. [x] **Paired measurement tooling and baseline** (results identical).
         (50% point, crowded rates per size, edges, false decodes with an
         entry each, rounds per candidate, time).
     ◆ Checkpoint E0 (results identical; reviewed before E1).
+E0a. [x] E0 corrections after its checkpoint (decoder results identical):
+         `compare` fails on a (set, block) present on one side only
+         (MISSING) or when nothing was compared; a missing 50% point
+         fails the shift gate and dropped resamples are reported; exit
+         status 1 on FAIL and on usage errors; a per-slot hash of the
+         input samples saved and required equal; `decodes_truncated` and
+         `candidates_dropped` saved and reported; `cost` spreads its slots
+         over the three crowded sizes; `run` records commit, rustc and
+         CPU; slot construction reuses the integration tests' helpers
+         (the slot bytes change, so the baseline is re-recorded); a typed
+         slot record with its own JSON writer; the statistics explained in
+         the module docs; percentile sorts once and handles empty input.
+         Baseline re-recorded with file hashes, toolchain, CPU, flash,
+         `.bss` and stack in findings.
 E1. [ ] **Early stop of failing candidates.**
         - Hypothesis: a candidate that will not converge shows it early —
           its unsatisfied-check count stops improving — so stopping after
