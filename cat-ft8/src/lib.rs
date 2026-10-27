@@ -211,6 +211,7 @@ mod tests {
         "DATA_BLOCKS",
         "STAGES", // FFT stage radices, folded into code
         "ONES",   // Gray bit masks for soft bits, folded into code
+        "ALL",    // the decoder's profiling stages, folded into code
     ];
 
     #[test]

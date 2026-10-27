@@ -232,6 +232,55 @@ impl Default for Decode {
     }
 }
 
+/// The stages of one candidate's decode, reported in this order by
+/// [`Decoder::decode_candidate_staged`]. It exists for timing: a profiler
+/// books the time since the previous report to the stage reported.
+/// Adding a stage is a breaking change on purpose, so that every match
+/// on it is revisited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    /// Sub-grid refinement of the candidate's position.
+    Refine,
+    /// Soft bits at the refined position.
+    SoftBits,
+    /// Belief propagation, the CRC and the all-zero test.
+    BeliefPropagation,
+    /// Re-encoding the decoded payload and estimating the SNR (decodes
+    /// only).
+    Snr,
+}
+
+impl Stage {
+    /// Every stage, in the order they run.
+    pub const ALL: [Stage; 4] = [
+        Stage::Refine,
+        Stage::SoftBits,
+        Stage::BeliefPropagation,
+        Stage::Snr,
+    ];
+
+    /// The stage's position in [`Stage::ALL`].
+    pub const fn index(self) -> usize {
+        match self {
+            Stage::Refine => 0,
+            Stage::SoftBits => 1,
+            Stage::BeliefPropagation => 2,
+            Stage::Snr => 3,
+        }
+    }
+
+    /// A short snake-case name (`refine`, `soft_bits`,
+    /// `belief_propagation`, `snr`).
+    pub const fn name(self) -> &'static str {
+        match self {
+            Stage::Refine => "refine",
+            Stage::SoftBits => "soft_bits",
+            Stage::BeliefPropagation => "belief_propagation",
+            Stage::Snr => "snr",
+        }
+    }
+}
+
 /// The result of one candidate.
 pub type CandidateResult = Result<Decode, BpFailure>;
 
@@ -451,9 +500,22 @@ impl<'a> Decoder<'a> {
         index: usize,
         scratch: &mut CandidateScratch,
     ) -> Option<CandidateResult> {
+        self.decode_candidate_staged(index, scratch, |_| {})
+    }
+
+    /// [`Decoder::decode_candidate`], calling `done` as each [`Stage`]
+    /// ends, in order (the SNR stage only for a decode), so a caller can
+    /// time the stages. The result is the same.
+    pub fn decode_candidate_staged(
+        &self,
+        index: usize,
+        scratch: &mut CandidateScratch,
+        mut done: impl FnMut(Stage),
+    ) -> Option<CandidateResult> {
         let c = *self.candidates().get(index)?;
         let CandidateScratch { llr, bp, hist } = scratch;
         let (frac_row, frac_bin) = sync::refine(&self.spec, &c);
+        done(Stage::Refine);
         soft_bits_at(
             &self.spec,
             &c,
@@ -462,14 +524,19 @@ impl<'a> Decoder<'a> {
             self.config.llr_scale,
             llr,
         );
-        let result = decode_soft(llr, self.config.rule, self.config.max_rounds, bp).map(|d| {
+        done(Stage::SoftBits);
+        let decoded = decode_soft(llr, self.config.rule, self.config.max_rounds, bp);
+        done(Stage::BeliefPropagation);
+        let result = decoded.map(|d| {
             let base = (self.spec.band().first_bin() + usize::from(c.base)) as f32 + frac_bin;
             let tones = crate::encode_payload(&d.payload);
+            let snr_db = snr::estimate(&self.spec, &c, frac_row, frac_bin, &tones, hist);
+            done(Stage::Snr);
             Decode {
                 payload: d.payload,
                 freq_hz: base * BIN_HZ,
                 dt: c.dt() + frac_row * ROW_SECONDS,
-                snr_db: snr::estimate(&self.spec, &c, frac_row, frac_bin, &tones, hist),
+                snr_db,
                 score: c.score,
                 candidate: index as u16,
                 hard_errors: d.hard_errors,

@@ -47,7 +47,7 @@ pub(crate) mod testutil;
 pub use bp::{BpFailure, CheckRule};
 pub use decoder::{
     CandidateResult, CandidateScratch, Decode, DecodeConfig, DecodeList, DecodeReport, Decoder,
-    CANDIDATES, HOST_DECODES, SMALL_DECODES,
+    Stage, CANDIDATES, HOST_DECODES, SMALL_DECODES,
 };
 pub use frontend::{Band, FrontEnd, Spectrogram, BIN_HZ, HOP, ROWS, ROW_ORIGIN};
 pub use snr::SNR_FLOOR_DB;

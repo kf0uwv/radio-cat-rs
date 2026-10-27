@@ -524,3 +524,41 @@ fn debug_output_leaves_out_the_buffers() {
         "{text}"
     );
 }
+
+#[test]
+fn staged_decoding_reports_its_stages_and_gives_the_same_result() {
+    let mut b = Bufs::new(Band::DEFAULT);
+    let mut dec = b.decoder(DecodeConfig::HOST);
+    dec.feed(&busy_slot(4));
+    let kept = dec.find_candidates().kept;
+    let mut scratch = CandidateScratch::new();
+    let mut decoded = 0;
+    for i in 0..kept {
+        let mut stages = Vec::new();
+        let staged = dec
+            .decode_candidate_staged(i, &mut scratch, |s| stages.push(s))
+            .unwrap();
+        assert_eq!(
+            staged,
+            dec.decode_candidate(i, &mut scratch).unwrap(),
+            "candidate {i}"
+        );
+        let mut want = vec![Stage::Refine, Stage::SoftBits, Stage::BeliefPropagation];
+        if staged.is_ok() {
+            want.push(Stage::Snr);
+            decoded += 1;
+        }
+        assert_eq!(stages, want, "candidate {i}");
+    }
+    assert!(decoded >= 3);
+    assert!(dec
+        .decode_candidate_staged(kept, &mut scratch, |_| {})
+        .is_none());
+    for (i, stage) in Stage::ALL.into_iter().enumerate() {
+        assert_eq!(stage.index(), i);
+    }
+    assert_eq!(
+        Stage::ALL.map(Stage::name),
+        ["refine", "soft_bits", "belief_propagation", "snr"]
+    );
+}
