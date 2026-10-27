@@ -613,6 +613,16 @@
   re-run of host pairs zero-discordant, PASS; failure cases exit 1.
   `last_rounds()` recorded as a deliberate public addition in the plan
   and ADR 0024.
+- E0 checkpoint passed. E1 started: the stall mechanism committed first
+  with stall off as the default (results identical): `DecodeConfig::
+  stall_rounds` (0 = off, at most `max_rounds`, `with_stall_rounds`),
+  `bp::decode_soft_stall` (`decode_soft` is the stall-off case, now
+  tests and benches only); the unsatisfied-check count is computed only
+  when stall is on. Tests: config bound; stall-on state pin with its stop
+  round (both rules stop after round 5 at stall 3, in the same state as
+  five stall-off rounds); stall changes no decode that converges. Golden
+  hashes, floors, stall-off state pin and bulk unchanged; off-path A/B
+  total −0.1%; flash +200 B, stack unchanged. Bench config key `stall=K`.
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |

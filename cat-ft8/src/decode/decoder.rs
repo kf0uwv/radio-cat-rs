@@ -78,7 +78,7 @@
 //! });
 //! ```
 
-use super::bp::{decode_soft, BpFailure, BpScratch, CheckRule};
+use super::bp::{decode_soft_stall, BpFailure, BpScratch, CheckRule};
 use super::frontend::BIN_HZ;
 use super::frontend::{Band, FrontEnd, Spectrogram};
 use super::snr;
@@ -118,6 +118,10 @@ pub struct DecodeConfig {
     pub llr_scale: f32,
     /// Lowest sync score a candidate may have.
     pub min_score: i32,
+    /// Give a candidate up when its unsatisfied-check count has not
+    /// improved for this many message-passing rounds (0 = never; at most
+    /// `max_rounds`).
+    pub stall_rounds: u8,
     /// Candidates kept by the sync search (1–65 535); the candidate buffer
     /// needs at least this many entries.
     pub candidates: usize,
@@ -130,6 +134,7 @@ impl DecodeConfig {
         max_rounds: 30,
         llr_scale: 4.0,
         min_score: 0,
+        stall_rounds: 0,
         candidates: CANDIDATES,
     };
 
@@ -161,6 +166,15 @@ impl DecodeConfig {
         DecodeConfig { min_score, ..self }
     }
 
+    /// With early stop after `stall_rounds` rounds without improvement (0 =
+    /// off).
+    pub const fn with_stall_rounds(self, stall_rounds: u8) -> Self {
+        DecodeConfig {
+            stall_rounds,
+            ..self
+        }
+    }
+
     /// With a candidate capacity of `candidates`.
     pub const fn with_candidates(self, candidates: usize) -> Self {
         DecodeConfig { candidates, ..self }
@@ -174,7 +188,8 @@ impl DecodeConfig {
     fn check(&self) -> Result<(), Error> {
         // NaN fails both comparisons.
         let scale_ok = self.llr_scale > 0.0 && self.llr_scale <= Self::MAX_LLR_SCALE;
-        let count_ok = (1..=usize::from(u16::MAX)).contains(&self.candidates);
+        let count_ok = (1..=usize::from(u16::MAX)).contains(&self.candidates)
+            && self.stall_rounds <= self.max_rounds;
         if scale_ok && count_ok {
             Ok(())
         } else {
@@ -541,7 +556,13 @@ impl<'a> Decoder<'a> {
             llr,
         );
         done(Stage::SoftBits);
-        let decoded = decode_soft(llr, self.config.rule, self.config.max_rounds, bp);
+        let decoded = decode_soft_stall(
+            llr,
+            self.config.rule,
+            self.config.max_rounds,
+            self.config.stall_rounds,
+            bp,
+        );
         done(Stage::BeliefPropagation);
         let result = decoded.map(|d| {
             let base = (self.spec.band().first_bin() + usize::from(c.base)) as f32 + frac_bin;
