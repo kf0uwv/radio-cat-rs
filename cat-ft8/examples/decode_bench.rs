@@ -22,7 +22,16 @@
 //! MODE: `sweep` (decode rate against SNR, plus noise-only and
 //! carrier-plus-noise false decodes, for one check-node rule and LLR
 //! scale), `compare` (the two check-node rules and LLR scales near the
-//! 50% point) or `cost` (host time per stage). SLOTS is per point.
+//! 50% point), `cost` (host time per stage) or `stage` (one stage
+//! repeated, for instruction counts). SLOTS is per point.
+//!
+//! `decode_bench stage N feed|sync|bp` repeats one stage N times on one
+//! synthetic slot (`bp` covers refinement, soft bits and belief
+//! propagation for every candidate; the slot never decodes, so `bp`
+//! measures the failure path). Counts taken with
+//! `perf stat -e instructions:u` include the set-up (making the slot, one
+//! feed and one search): subtract a run with N = 0, or take the difference
+//! of two values of N.
 //!
 //! The decoder here is the single pass, with sub-grid refinement and no
 //! subtraction (the `grid` and `refine` modes compare it with soft bits
@@ -752,10 +761,12 @@ fn main() {
                     other => panic!("unknown stage {other}"),
                 }
             }
-            println!(
-                "stage {which}: {n} repeats, {:.3} ms each ({sink})",
-                t.elapsed().as_secs_f64() * 1e3 / n as f64
-            );
+            let each = if n == 0 {
+                "n/a".to_string()
+            } else {
+                format!("{:.3}", t.elapsed().as_secs_f64() * 1e3 / n as f64)
+            };
+            println!("stage {which}: {n} repeats, {each} ms each ({sink})");
         }
         "cost" => {
             let (samples, _) = make_slot(&msgs, Content::Signal(-20.0), 7);

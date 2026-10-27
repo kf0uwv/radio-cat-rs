@@ -534,16 +534,37 @@
   quarter-turn twiddles are not exactly ±1, ±i, so specialised kernels
   would round differently). Results identical (cargo tests). Feed-only
   bench, ten interleaved rounds of 100 feeds: 14.51 → 14.09 ms (−2.9%,
-  sd 0.13 ms); per-feed instructions 212.2 → 203.0 M (−4.3%). The CPU
-  gain is real but under 3%, so rejected. On a microcontroller the
-  modulo is a hardware divide per term; worth re-measuring there.
+  sd 0.13 ms); per-feed instructions 212.2 → 203.0 M (−4.3%), taken as
+  the difference of N = 40 and N = 20 runs divided by 20, so the set-up
+  is subtracted. The CPU gain is real but under 3%, so rejected. (An
+  earlier note here said the modulo is a hardware divide on a
+  microcontroller: wrong. N = 1 920 is a constant, so `% N` compiles to a
+  multiply-high on thumbv8m as on the host, and the gain there would be
+  about the host's.)
 - Pass 3 (rejected, reverted): belief propagation swaps its two total
   buffers by reference instead of copying their contents each round
   (the memmove seen in the profile). Results identical (cargo tests);
   A/B: belief propagation −0.5%, total −0.2%.
 - Two passes in a row under 3%: stopped (passes 4–5 not run). Kept: pass
-  1 only. Tooling kept: `decode_bench stage feed|sync|bp` for
-  single-stage instruction counts.
+  1 only. Tooling kept: `decode_bench stage N feed|sync|bp` (the
+  argument order the code takes; commit a0b5961's message gives it
+  reversed) for single-stage instruction counts.
+- Pass reviews (QA, and a review for simplicity): both pass with
+  small changes; close-out C1 recorded in the plan.
+- C1 done (results identical): `exp2_neg` pinned at 19 inputs (edges
+  included) plus a pinned hash over a 10 001-point sweep of −126…0; a
+  belief-propagation test runs five rounds on a fixed non-converging
+  vector and pins a hash of the final totals and messages for each rule.
+  Mutations, each reverted: E7 × 1.001 fails both new tests; `exp2_neg`
+  result × (1 + 2⁻²³) fails both; one ulp on each `twice_atanh` message
+  fails the state hash; α one ulp up fails the state hash. (E7's last
+  digit 4 → 6 rounds to the same f32, so it is no mutation.) `LANES` and
+  `MAX_DEGREE` with a compile-time bound, `q` built in `LANES` lanes, the
+  scalar-FPU cost and SMALL's rule noted at the lanes; `math.rs` comment
+  and `tanh_half` explained; bench `stage` usage documented (set-up
+  included in counts, `bp` covers refine and soft bits, failure path
+  only) and "n/a" for N = 0; ADR frame (2 544 B now that `q` is built
+  in place; 2 568 B after pass 1) and post-pass cost.
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |

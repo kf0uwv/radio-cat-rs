@@ -608,6 +608,14 @@ P2. [x] FFT: radix-specific butterflies with incremental twiddle
 P3. [x] Belief propagation: swap the two total buffers by reference
         instead of by content. Rejected, BP −0.5%.
 P4–P5. [x] Not run: two passes in a row under 3% (stopping rule).
+C1. [x] Close-out after the pass reviews (results identical): pinned
+        `exp2_neg` bit patterns and a belief-propagation state hash for
+        both rules (each shown by mutation to catch a one-ulp change);
+        `LANES` constant with a compile-time bound and `q` built in eight
+        lanes; comments (scalar-FPU cost of the lanes, SMALL's rule to be
+        re-checked with instruction counts, `math.rs` wording,
+        `tanh_half`); bench `stage` usage and N = 0; progress corrections;
+        ADR frame and crowded-slot time.
 Later single-pass work (changes results, each measured): early stopping of
 failing candidates, then sum-product versus min-sum as the host default;
 continuing past a CRC-failing codeword; normalised sync threshold with a

@@ -66,7 +66,7 @@ pub enum CheckRule {
 pub struct BpScratch {
     total: [f32; N],
     next: [f32; N],
-    msg: [[f32; 7]; M],
+    msg: [[f32; MAX_DEGREE]; M],
     hard: [u8; N],
 }
 
@@ -76,7 +76,7 @@ impl BpScratch {
         BpScratch {
             total: [0.0; N],
             next: [0.0; N],
-            msg: [[0.0; 7]; M],
+            msg: [[0.0; MAX_DEGREE]; M],
             hard: [0; N],
         }
     }
@@ -117,13 +117,13 @@ pub enum BpFailure {
 /// The parity checks with 0-based variable indices (unused entries 0),
 /// derived at compile time from the 1-based, 0-padded `PARITY_CHECKS`,
 /// in the same order.
-pub(crate) static CHECKS: [[u8; 7]; M] = {
+pub(crate) static CHECKS: [[u8; MAX_DEGREE]; M] = {
     let mut out = [[0u8; 7]; M];
     let mut c = 0;
     while c < M {
         let mut n = 0;
         let mut j = 0;
-        while j < 7 {
+        while j < MAX_DEGREE {
             if PARITY_CHECKS[c][j] != 0 {
                 out[c][n] = PARITY_CHECKS[c][j] - 1;
                 n += 1;
@@ -141,7 +141,7 @@ pub(crate) static DEGREES: [u8; M] = {
     let mut c = 0;
     while c < M {
         let mut j = 0;
-        while j < 7 {
+        while j < MAX_DEGREE {
             out[c] += (PARITY_CHECKS[c][j] != 0) as u8;
             j += 1;
         }
@@ -150,15 +150,24 @@ pub(crate) static DEGREES: [u8; M] = {
     out
 };
 
+/// The largest check degree: the width of the parity-check table's rows.
+const MAX_DEGREE: usize = 7;
+
+/// Lanes of the vectorised sum-product check update (see `decode_soft`).
+const LANES: usize = 8;
+const _: () = assert!(LANES >= MAX_DEGREE);
+
 /// Variable indices (0-based) and count of check `c`.
 #[inline]
-fn check(c: usize) -> (&'static [u8; 7], usize) {
+fn check(c: usize) -> (&'static [u8; MAX_DEGREE], usize) {
     (&CHECKS[c], usize::from(DEGREES[c]))
 }
 
 /// tanh(x / 2) for any finite x.
 #[inline]
 fn tanh_half(x: f32) -> f32 {
+    // One comparison for both the magnitude and the sign, so the two
+    // selects share a mask when a loop over lanes vectorises.
     let negative = x < 0.0;
     let a = if negative { -x } else { x };
     let e = exp2_neg(-a * LOG2_E); // e^(−|x|)
@@ -232,7 +241,7 @@ pub fn decode_soft(
     } = scratch;
     *total = *llr;
     for row in msg.iter_mut() {
-        *row = [0.0; 7];
+        *row = [0.0; MAX_DEGREE];
     }
     let hard_errors = |hard: &[u8; N]| {
         let n = hard
@@ -254,34 +263,39 @@ pub fn decode_soft(
         *next = *llr;
         for (c, row) in msg.iter_mut().enumerate() {
             let (v, n) = check(c);
-            let mut q = [0.0f32; 7];
+            // Unused lanes stay 0.0 (their results are discarded).
+            let mut q = [0.0f32; LANES];
             for j in 0..n {
                 q[j] = total[usize::from(v[j])] - row[j];
             }
             match rule {
                 CheckRule::SumProduct => {
-                    // Fixed eight lanes (unused ones hold 0.0 and are
-                    // discarded) so the tanh and atanh passes vectorise;
-                    // each used lane's arithmetic is unchanged.
-                    let mut t = [0.0f32; 8];
-                    let mut qq = [0.0f32; 8];
-                    qq[..7].copy_from_slice(&q);
-                    for (tj, &x) in t.iter_mut().zip(qq.iter()) {
+                    // All `LANES` lanes, used or not, so the tanh and atanh
+                    // passes vectorise on hosts with f32 SIMD; each used
+                    // lane's arithmetic is unchanged. On a scalar FPU the
+                    // padding costs about one lane in seven of extra
+                    // tanh/atanh work (checks have degree 6 or 7). The
+                    // small configuration uses min-sum, which has no
+                    // transcendentals; whether small targets should use
+                    // sum-product is to be re-checked with instruction
+                    // counts on such a target.
+                    let mut t = [0.0f32; LANES];
+                    for (tj, &x) in t.iter_mut().zip(q.iter()) {
                         *tj = tanh_half(x);
                     }
                     // Products of all the others, by prefix and suffix, in
                     // the same order as before.
-                    let mut prefix = [1.0f32; 8];
+                    let mut prefix = [1.0f32; LANES + 1];
                     for j in 0..n {
                         prefix[j + 1] = prefix[j] * t[j];
                     }
-                    let mut others = [0.0f32; 8];
+                    let mut others = [0.0f32; LANES];
                     let mut suffix = 1.0f32;
                     for j in (0..n).rev() {
                         others[j] = prefix[j] * suffix;
                         suffix *= t[j];
                     }
-                    let mut m = [0.0f32; 8];
+                    let mut m = [0.0f32; LANES];
                     for (mj, &p) in m.iter_mut().zip(others.iter()) {
                         *mj = twice_atanh(p);
                     }

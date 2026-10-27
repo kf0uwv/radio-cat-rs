@@ -206,3 +206,41 @@ fn the_check_table_is_the_parity_check_matrix_0_based() {
         assert!(v[n..].iter().all(|&x| x == 0));
     }
 }
+
+/// FNV-1a over the bits of the scratch's totals and messages.
+fn state_hash(s: &BpScratch) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let words = s.total.iter().chain(s.msg.iter().flatten());
+    for x in words {
+        for b in x.to_bits().to_le_bytes() {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    h
+}
+
+#[test]
+fn message_passing_state_is_pinned_bit_for_bit() {
+    // A fixed soft-bit vector that is no codeword and does not converge in
+    // five rounds, so every round runs; the final totals and messages are
+    // hashed bit for bit. Any change in the arithmetic of a round, the
+    // check-node rules or `exp2`/`log2` (even one ulp) changes the hash.
+    let mut llr = [0.0f32; N];
+    for (i, l) in llr.iter_mut().enumerate() {
+        *l = ((i * 7_919) % 1_000) as f32 / 125.0 - 4.0;
+    }
+    let pinned = [
+        (CheckRule::SumProduct, 0x59dd_5a55_fda7_edc7u64),
+        (CheckRule::MinSum, 0xc981_1426_8889_7698u64),
+    ];
+    for (rule, want) in pinned {
+        let mut scratch = BpScratch::new();
+        assert_eq!(
+            decode_soft(&llr, rule, 5, &mut scratch),
+            Err(BpFailure::NotConverged)
+        );
+        let got = state_hash(&scratch);
+        assert_eq!(got, want, "{rule:?}: {got:#018x}");
+    }
+}

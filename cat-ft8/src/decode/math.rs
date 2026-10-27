@@ -42,8 +42,9 @@ const C9: f32 = 0.320_598_9;
 pub(crate) fn log2(x: f32) -> f32 {
     let bits = x.to_bits();
     let e0 = ((bits >> 23) & 0xff) as i32 - 127;
-    let m0 = f32::from_bits((bits & 0x007f_ffff) | 0x3f80_0000); // [1, 2)
-                                                                 // Selects rather than a branch, so a loop over values can vectorise.
+    // The mantissa in [1, 2).
+    let m0 = f32::from_bits((bits & 0x007f_ffff) | 0x3f80_0000);
+    // Selects rather than a branch, so a loop over values can vectorise.
     let high = m0 > SQRT2;
     let m = if high { m0 * 0.5 } else { m0 }; // exact
     let e = e0 + i32::from(high);
@@ -183,5 +184,46 @@ mod tests {
         assert_eq!(log2_power(f32::NAN), -100.0);
         assert_eq!(log2_power(1.0e-40), -100.0); // subnormal floored
         assert!(log2_power(f32::INFINITY) > 127.9);
+    }
+
+    #[test]
+    fn exp2_pinned_bits() {
+        // Bit patterns of `exp2_neg` at fixed inputs, including the edges;
+        // any change in its arithmetic (even one ulp) fails here.
+        let pinned: [(f32, u32); 19] = [
+            (0.0, 0x3f80_0000),
+            (-0.0, 0x3f80_0000),
+            (-1.0e-7, 0x3f7f_fff3),
+            (-0.25, 0x3f57_44fc),
+            (-0.5, 0x3f35_04f3),
+            (-0.999_999_9, 0x3f00_0001),
+            (-1.0, 0x3f00_0000),
+            (-1.3, 0x3ecf_efc6),
+            (-3.7, 0x3d9d_9624),
+            (-10.25, 0x3a57_44fc),
+            (-27.5, 0x31b5_04f3),
+            (-50.123, 0x266b_1416),
+            (-100.0, 0x0d80_0000),
+            (-125.9, 0x0089_2fd6),
+            (-126.0, 0x0080_0000),
+            (-126.000_01, 0x0000_0000), // below −126: exactly 0
+            (-1.0e9, 0x0000_0000),
+            (1.0, 0x3f80_0000), // positive inputs are taken as 0
+            (f32::NAN, 0x0000_0000),
+        ];
+        for (x, want) in pinned {
+            assert_eq!(exp2_neg(x).to_bits(), want, "exp2_neg({x})");
+        }
+        // And a hash over a sweep of −126…0, which reaches the fractional
+        // parts where the series' last terms matter.
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for k in 0..=10_000u32 {
+            let y = -(k as f32) * 0.0126;
+            for b in exp2_neg(y).to_bits().to_le_bytes() {
+                h ^= u64::from(b);
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        assert_eq!(h, 0x0d68_2590_515e_d35b, "sweep hash {h:#018x}");
     }
 }
