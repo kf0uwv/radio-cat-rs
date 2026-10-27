@@ -338,3 +338,23 @@ point unless stated, host AMD Threadripper 3970X.
   (HOST) and 5 173 (SMALL) all-zero codewords rejected in the carrier
   slots.
 
+## D10 sizes (2026-10-26, thumbv8m.main-none-eabihf, opt-level s, LTO)
+
+| Image | `.text` | `.rodata` | flash | `.bss` (static RAM) | largest frames |
+|---|---|---|---|---|---|
+| small (200–2900 Hz, min-sum, 64 decodes) | 33 334 | 50 102 | 83 436 | 212 280 | `_start` 4 096, decoder path 2 512, `unpack` 464, `finish_row` 232, `encode_payload` 192 |
+| host (100–3100 Hz, sum-product, 128 decodes) | 33 330 | 50 102 | 83 432 | 233 656 | the same |
+| encoder alone | 22 186 | 13 666 | 35 852 | 0 | `_start` 4 216 |
+
+- The decoder adds 47.6 KB of flash (36.2 KB of it static tables). Both
+  check-node rules are in either image (the rule is a run-time field).
+- The decoder path's 2 512 B frame includes the check program's 1 920 B
+  feed block, which a real device would hold in its FIFO instead.
+- On a 256 KiB part the small image leaves 49.9 KB of RAM; less the 1 s
+  i16 FIFO (24 000 B) and a few KB of stack, about 21 KB is spare. The
+  host configuration's 233.7 KB does not leave room for the FIFO.
+- Host command (`cat-ft8-decode --profile`, one slot, one signal):
+  `peak_bytes` 236 232 (spectrogram 179 584, front end 30 720, sync
+  scratch 11 532, decode list 6 144, candidate scratch 5 100, candidates
+  1 600, call table 1 552); total 94 ms on the 3970X with `host`.
+

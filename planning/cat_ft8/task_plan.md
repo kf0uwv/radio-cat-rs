@@ -459,13 +459,36 @@ D8b. [x] CI: a new `ubuntu-24.04-arm` (aarch64) job running
          `cargo test -p cat-ft8` (golden waveform and decode hashes; the
          bulk noise-only test stays in its own job), so the determinism
          promise is checked on a second architecture.
-D9. [ ] `cat-ft8-decode` (std): reads a 12 kHz mono 16-bit WAV; output as
+D9. [x] `cat-ft8-decode` (std): reads a 12 kHz mono 16-bit WAV; output as
         above; format documented as version 0; JSON written by hand with
         string escaping (`serde_json` stays a dev-dependency); tests parse
         the output with `serde_json`.
-D10. [ ] Link check final form: decoder fed a synthesized slot in blocks
+D10. [x] Link check final form: decoder fed a synthesized slot in blocks
          from a static workspace, no allocator, no f64 helpers; flash,
          `.bss` and stack reported.
+    D9/D10 design (2026-10-26):
+    - `wav::read_wav` (std): RIFF/WAVE, PCM 16-bit (format 1 or
+      extensible with the PCM subtype); returns rate, channels and
+      samples; unknown chunks skipped (odd sizes padded); clear errors for
+      anything else. The command requires 12 000 Hz mono and says so.
+    - `cat-ft8-decode FILE.wav [--config host|small] [--raw] [--profile]`:
+      feeds the first 180 000 samples in 1 920-sample blocks (a shorter
+      file is a partial slot; samples past 15 s are ignored), decodes with
+      the split API (to time each stage; identical to `decode()`), unpacks
+      with a 64-call table. Output format version 0, one JSON object per
+      line: `freq` (Hz, 0.1), `dt` (s, 0.01), `snr` (dB, integer),
+      `message`, `candidate`, `hard_errors`, `rounds`, `score`; `--raw`
+      adds lines for payloads that did not unpack (`payload` hex of the
+      10 bytes, `type` "i3.n3", `error`, `"unpacked": false`); `--profile`
+      adds one `{"profile": {...}}` line (`format`, `config`, per-stage
+      `*_seconds`, `*_bytes` memory with `peak_bytes`, every report
+      count). JSON by hand with escaping (unit-tested); the format is
+      documented in the crate docs and the ADR.
+    - D10: the link check builds two images — `small` (Band::SMALL,
+      DecodeConfig::SMALL, 64 decodes; default) and `host` (Band::DEFAULT,
+      DecodeConfig::HOST, 128 decodes) — each with only its own rule
+      linked, and reports flash (`.text` + `.rodata`), `.bss` and stack for
+      each.
 D11. [ ] Measurement against an external reference decoder on synthetic
          slots across SNR, time offset, frequency, crowding and fading
          (external harness); profile and memory; ADR amendment updated

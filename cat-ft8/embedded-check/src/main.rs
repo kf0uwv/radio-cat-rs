@@ -16,41 +16,68 @@
 //! LDPC, tones), `unpack`, and every public floating-point entry point: `Placement::slot`, `synthesize` (at a negative start, into a small
 //! buffer), `Synth::new`, `fill`, `mix`, `skip` and `fill_phase`, plus
 //! `sin_turns`/`cos_turns`; and the decoder (`Decoder::new`, `feed`,
-//! `feed_i16`, `skip`, `decode` with each check-node rule, `DecodeList`,
-//! `finish`), with every buffer in statics. Linking at all proves the core needs neither an
-//! allocator nor `std`; `check.sh` then rejects any soft-double helper
-//! (`__aeabi_d*`, `__*df*`) in the image. Only code reachable from here is
-//! linked, so a new floating-point entry point must be called here too.
+//! `feed_i16`, `skip`, `decode`, `DecodeList`, `finish`) in one
+//! configuration, with every buffer in statics: the small configuration by
+//! default, the host configuration with the `host` feature, none with
+//! `encoder-only` (a baseline for the decoder's size); `check.sh` builds
+//! every image. The check-node rule is a run-time field of the
+//! configuration, so both rules are linked in either decoder image. Linking at all proves the core
+//! needs neither an allocator nor `std`; `check.sh` then rejects any
+//! soft-double helper (`__aeabi_d*`, `__*df*`) in the image. Only code
+//! reachable from here is linked, so a new floating-point entry point must
+//! be called here too.
 
 #![no_std]
 #![no_main]
 
 use core::hint::black_box;
 use core::panic::PanicInfo;
+#[cfg(not(feature = "encoder-only"))]
 use core::ptr::addr_of_mut;
 
+#[cfg(not(feature = "encoder-only"))]
 use cat_ft8::decode::{
-    Band, Candidate, CandidateScratch, Decode, DecodeConfig, DecodeList, Decoder, FrontEnd,
-    CANDIDATES, SMALL_DECODES,
+    Candidate, CandidateScratch, Decode, DecodeList, Decoder, FrontEnd, CANDIDATES,
 };
 use cat_ft8::encode;
 use cat_ft8::message::{unpack, CallTable};
 use cat_ft8::waveform::{cos_turns, sin_turns, synthesize, Placement, Synth};
 
-// Decoder buffers live in statics (`.bss`), as on a real target. The
-// small configuration (200–2900 Hz, 8-bit levels) is the one sized for
-// this class of part.
-static mut FRONT: FrontEnd = FrontEnd::new();
-static mut LEVELS: [u8; Band::SMALL.spectrogram_len()] = [0; Band::SMALL.spectrogram_len()];
-static mut SYNC_SCRATCH: [i32; Decoder::sync_scratch_len(Band::SMALL)] =
-    [0; Decoder::sync_scratch_len(Band::SMALL)];
-static mut CANDIDATE_LIST: [Candidate; CANDIDATES] = [Candidate {
-    score: 0,
-    start_row: 0,
-    base: 0,
-}; CANDIDATES];
-static mut SCRATCH: CandidateScratch = CandidateScratch::new();
-static mut DECODES: [Decode; SMALL_DECODES] = [Decode::EMPTY; SMALL_DECODES];
+// The configuration of this image.
+#[cfg(not(any(feature = "host", feature = "encoder-only")))]
+mod setup {
+    use cat_ft8::decode::{Band, DecodeConfig, SMALL_DECODES};
+    /// 200–2900 Hz: the band sized for this class of part.
+    pub const BAND: Band = Band::SMALL;
+    pub const CONFIG: DecodeConfig = DecodeConfig::SMALL;
+    pub const DECODES: usize = SMALL_DECODES;
+}
+#[cfg(all(feature = "host", not(feature = "encoder-only")))]
+mod setup {
+    use cat_ft8::decode::{Band, DecodeConfig, HOST_DECODES};
+    /// 100–3100 Hz.
+    pub const BAND: Band = Band::DEFAULT;
+    pub const CONFIG: DecodeConfig = DecodeConfig::HOST;
+    pub const DECODES: usize = HOST_DECODES;
+}
+
+// Decoder buffers live in statics (`.bss`), as on a real target.
+#[cfg(not(feature = "encoder-only"))]
+mod buffers {
+    use super::setup::{BAND, DECODES};
+    use super::*;
+    pub static mut FRONT: FrontEnd = FrontEnd::new();
+    pub static mut LEVELS: [u8; BAND.spectrogram_len()] = [0; BAND.spectrogram_len()];
+    pub static mut SYNC_SCRATCH: [i32; Decoder::sync_scratch_len(BAND)] =
+        [0; Decoder::sync_scratch_len(BAND)];
+    pub static mut CANDIDATE_LIST: [Candidate; CANDIDATES] = [Candidate {
+        score: 0,
+        start_row: 0,
+        base: 0,
+    }; CANDIDATES];
+    pub static mut SCRATCH: CandidateScratch = CandidateScratch::new();
+    pub static mut DECODES_LIST: [Decode; DECODES] = [Decode::EMPTY; DECODES];
+}
 
 #[panic_handler]
 fn panic(_: &PanicInfo) -> ! {
@@ -100,10 +127,28 @@ pub extern "C" fn _start() -> ! {
             }
         }
     }
-    // The decoder: a synthesized slot fed in blocks (with `skip` for the
-    // silence before and after), decoded with each check-node rule.
-    // SAFETY: `_start` is the only code that runs and it is not
-    // re-entered, so these are the only references to the statics.
+    #[cfg_attr(feature = "encoder-only", allow(unused_mut))]
+    let mut rows = 0;
+    #[cfg(not(feature = "encoder-only"))]
+    decode_a_slot(&mut table, &mut sink, &mut rows);
+    black_box((sink, text_len, rows));
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+/// The decoder: a synthesized slot fed in blocks (with `skip` for the
+/// silence before and after), decoded and finished with this image's
+/// configuration.
+/// Not inlined, so `check.sh --stack` reports the decoder path's own
+/// frame apart from `_start`'s.
+#[cfg(not(feature = "encoder-only"))]
+#[inline(never)]
+fn decode_a_slot(table: &mut CallTable<16>, sink: &mut f32, rows: &mut usize) {
+    use buffers::*;
+    // SAFETY: `_start` is the only code that runs, it is not re-entered,
+    // and it calls this once, so these are the only references to the
+    // statics.
     let (front, levels, sync_scratch, cands, scratch, decodes) = unsafe {
         (
             &mut *addr_of_mut!(FRONT),
@@ -111,45 +156,37 @@ pub extern "C" fn _start() -> ! {
             &mut *addr_of_mut!(SYNC_SCRATCH),
             &mut *addr_of_mut!(CANDIDATE_LIST),
             &mut *addr_of_mut!(SCRATCH),
-            &mut *addr_of_mut!(DECODES),
+            &mut *addr_of_mut!(DECODES_LIST),
         )
     };
-    let mut rows = 0;
     let mut list = DecodeList::new(decodes);
-    for config in [DecodeConfig::SMALL, DecodeConfig::HOST] {
-        let Ok(mut dec) = Decoder::new(
-            &mut *front,
-            &mut *levels,
-            &mut *sync_scratch,
-            &mut *cands,
-            Band::SMALL,
-            black_box(config),
-        ) else {
-            continue;
-        };
-        dec.skip(black_box(6_000));
-        let mut feed_block = [0.0f32; 480];
-        if let Ok(mut synth) = Synth::new(&[3; 79], black_box(1500.0), black_box(0.25)) {
-            loop {
-                let n = synth.fill(&mut feed_block);
-                dec.feed(&feed_block[..n]);
-                if n < feed_block.len() {
-                    break;
-                }
+    let Ok(mut dec) = Decoder::new(
+        front,
+        levels,
+        sync_scratch,
+        cands,
+        setup::BAND,
+        setup::CONFIG,
+    ) else {
+        return;
+    };
+    dec.skip(black_box(6_000));
+    let mut feed_block = [0.0f32; 480];
+    if let Ok(mut synth) = Synth::new(&[3; 79], black_box(1500.0), black_box(0.25)) {
+        loop {
+            let n = synth.fill(&mut feed_block);
+            dec.feed(&feed_block[..n]);
+            if n < feed_block.len() {
+                break;
             }
         }
-        dec.feed_i16(black_box(&[0i16; 64]));
-        dec.skip(usize::MAX);
-        let report = dec.decode(scratch, &mut list);
-        rows += report.rows_filled + report.candidates_kept + report.all_zero_rejected;
-        list.finish(&mut table, |d, text| {
-            sink += d.snr_db + d.freq_hz;
-            rows += text.map_or(0, str::len);
-        });
     }
-
-    black_box((sink, text_len, rows));
-    loop {
-        core::hint::spin_loop();
-    }
+    dec.feed_i16(black_box(&[0i16; 64]));
+    dec.skip(usize::MAX);
+    let report = dec.decode(scratch, &mut list);
+    *rows += report.rows_filled + report.candidates_kept + report.all_zero_rejected;
+    list.finish(table, |d, text| {
+        *sink += d.snr_db + d.freq_hz;
+        *rows += text.map_or(0, str::len);
+    });
 }

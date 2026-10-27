@@ -14,9 +14,12 @@
 # limitations under the License.
 #
 # Lints and formats the bare-metal check program, links it for
-# thumbv8m.main-none-eabihf, prints its size, and fails if the image has
-# unresolved symbols or references soft-double helpers (`__aeabi_d*`,
-# `__*df*`): the core must use `f32` only. Only code reachable from
+# thumbv8m.main-none-eabihf in three images (the small decoder
+# configuration, the host configuration, and the encoder alone), prints
+# each image's size (flash = .text + .rodata + .data; static RAM = .data +
+# .bss), and fails if any image has unresolved symbols or references
+# soft-double helpers (`__aeabi_d*`, `__*df*`): the core must use `f32`
+# only. Only code reachable from
 # `src/main.rs` is linked and so checked. With `--stack`, also prints the
 # largest per-function stack frames (`-Z emit-stack-sizes`, enabled on
 # stable through RUSTC_BOOTSTRAP for this measurement only).
@@ -37,30 +40,44 @@ if [ "${1:-}" = "--stack" ]; then
   flags="-Z emit-stack-sizes"
   target_dir="$target_dir/stack-sizes"
 fi
-echo "== fmt and clippy (check program)"
+echo "== fmt (check program)"
 rustfmt --edition 2021 --check "$here/src/main.rs" "$here/build.rs"
-cargo clippy --quiet --manifest-path "$here/Cargo.toml" --target "$target" \
-  --target-dir "$target_dir" -- -D warnings
-RUSTFLAGS="$flags" cargo build --release --manifest-path "$here/Cargo.toml" \
-  --target "$target" --target-dir "$target_dir"
-elf="$target_dir/$target/release/cat-ft8-embedded-check"
 
-echo "== size ($elf)"
-"$size" -A "$elf" | grep -E '^(section|\.text|\.rodata|\.data|\.bss)'
-echo "== undefined symbols (must be none)"
-undef="$("$nm" -u "$elf" || true)"
-echo "${undef:-none}"
-[ -z "$undef" ] || { echo "FAIL: unresolved symbols" >&2; exit 1; }
-echo "== double-precision helpers (must be none)"
-doubles="$("$nm" "$elf" | awk '{print $NF}' \
-  | grep -E '^(__aeabi_d|__aeabi_(f|i|ui|l|ul)2d|__[a-z]+df[a-z0-9]*$)' || true)"
-echo "${doubles:-none}"
-[ -z "$doubles" ] || { echo "FAIL: f64 soft-float helpers linked" >&2; exit 1; }
+# One image per decoder configuration, plus the encoder alone as a
+# baseline for the decoder's size.
+for variant in small host encoder-only; do
+  case "$variant" in
+    small) features="" ;;
+    *) features="--features $variant" ;;
+  esac
+  echo "==== image: $variant"
+  # shellcheck disable=SC2086 # $features is deliberately split
+  cargo clippy --quiet --manifest-path "$here/Cargo.toml" --target "$target" \
+    --target-dir "$target_dir/$variant" $features -- -D warnings
+  # shellcheck disable=SC2086
+  RUSTFLAGS="$flags" cargo build --quiet --release --manifest-path "$here/Cargo.toml" \
+    --target "$target" --target-dir "$target_dir/$variant" $features
+  elf="$target_dir/$variant/$target/release/cat-ft8-embedded-check"
 
-if [ -n "$flags" ]; then
-  echo "== largest stack frames (bytes, per function; precompiled core has none recorded)"
-  "$readobj" --stack-sizes "$elf" | awk '/Functions:/{f=$2} /^ *Size: 0x/{print $2, f}' \
-    | while read -r hex name; do printf '%6d %s\n' "$((hex))" "$name"; done \
-    | sort -rn | head -8
-fi
+  echo "== size ($elf)"
+  "$size" -A "$elf" | grep -E '^(section|\.text|\.rodata|\.data|\.bss)'
+  "$size" -A "$elf" | awk '$1==".text"||$1==".rodata"||$1==".data"{f+=$2} $1==".data"||$1==".bss"{r+=$2}
+    END {printf "flash %d B, RAM (static) %d B\n", f, r}'
+  echo "== undefined symbols (must be none)"
+  undef="$("$nm" -u "$elf" || true)"
+  echo "${undef:-none}"
+  [ -z "$undef" ] || { echo "FAIL: unresolved symbols" >&2; exit 1; }
+  echo "== double-precision helpers (must be none)"
+  doubles="$("$nm" "$elf" | awk '{print $NF}' \
+    | grep -E '^(__aeabi_d|__aeabi_(f|i|ui|l|ul)2d|__[a-z]+df[a-z0-9]*$)' || true)"
+  echo "${doubles:-none}"
+  [ -z "$doubles" ] || { echo "FAIL: f64 soft-float helpers linked" >&2; exit 1; }
+
+  if [ -n "$flags" ]; then
+    echo "== largest stack frames (bytes, per function; precompiled core has none recorded)"
+    "$readobj" --stack-sizes "$elf" | awk '/Functions:/{f=$2} /^ *Size: 0x/{print $2, f}' \
+      | while read -r hex name; do printf '%6d %s\n' "$((hex))" "$name"; done \
+      | sort -rn | head -8
+  fi
+done
 echo "OK"

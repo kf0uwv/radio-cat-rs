@@ -18,7 +18,8 @@
 //!
 //! See `docs/adr/0024-cat-ft8.md`.
 //!
-//! This release is the transmit half (the encoder) plus message unpacking.
+//! This release is the encoder, message unpacking, and a single-pass
+//! decoder ([`decode`]; stages listed in its module docs).
 //!
 //! | Stage | Module | Does |
 //! |-------|--------|------|
@@ -27,18 +28,21 @@
 //! | 3 | [`ldpc`] | (174,91) LDPC parity → 174-bit codeword |
 //! | 4 | [`symbols`] | Gray-coded 8-FSK tones and three 7×7 Costas arrays → 79 symbols |
 //! | 5 | [`waveform`] | continuous-phase GFSK (BT = 2) into a caller's `f32` buffer at 12 kHz |
+//! | – | [`decode`] | 12 kHz audio → spectrogram → sync candidates → soft bits → belief propagation → payloads, with frequency, time offset and SNR |
 //!
 //! # `no_std` core
 //!
 //! The crate is `#![no_std]` in every build. The core allocates nothing
 //! (fixed-size arrays and caller-provided buffers), starts no threads, uses
 //! no `f64`, and has no dependencies, so it runs on microcontrollers as
-//! well as hosts. All floating-point arithmetic is `f32` `+ − ×`; the
-//! pulse shape and sine are static tables. The `std` feature (default)
-//! adds WAV output (module `wav`), the `cat-ft8-encode` binary and
-//! `std::error::Error`. The `profile` feature builds the
-//! `encode_bench` example (CPU time per stage and the memory account);
-//! it does not change the library.
+//! well as hosts. All floating-point arithmetic is `f32` `+ − × ÷` and
+//! in-crate polynomial approximations (`log2`, `exp2`); the pulse shape,
+//! sine, FFT twiddles, window and level-to-power table are static tables.
+//! The `std` feature (default) adds WAV input and output (module `wav`),
+//! the `cat-ft8-encode` and `cat-ft8-decode` binaries and
+//! `std::error::Error`. The `profile` feature builds the measurement
+//! examples and makes the decoder's stages public for them; it does not
+//! change results.
 //!
 //! # Determinism
 //!
@@ -63,6 +67,46 @@
 //! let mut slot = vec![0.0f32; cat_ft8::SLOT_SAMPLES];
 //! synthesize(&enc.symbols, &Placement::slot(1500.0, 0.0).unwrap(), &mut slot).unwrap();
 //! ```
+//!
+//! # Decode command output (format version 0)
+//!
+//! `cat-ft8-decode FILE.wav [--config host|small] [--raw] [--profile]`
+//! reads a 12 kHz mono 16-bit PCM WAV file. Its first 15 s are the slot: a
+//! shorter file is decoded as a partial slot, and samples after 15 s are
+//! ignored. Other sample rates and channel counts are errors (exit status
+//! 1; usage errors exit with 2). `--config` picks
+//! `decode::DecodeConfig::HOST` (the default) or `SMALL`.
+//!
+//! Output is one JSON object per line, in candidate order, one per
+//! distinct decode whose payload unpacked:
+//!
+//! ```text
+//! {"freq": 1000.1, "dt": 0.00, "snr": -9, "message": "CQ K1ABC FN42", "candidate": 0, "hard_errors": 0, "rounds": 0, "score": 9732}
+//! ```
+//!
+//! - `freq`: tone 0 frequency, Hz, one decimal;
+//! - `dt`: start relative to the nominal 0.5 s, seconds, two decimals;
+//! - `snr`: signal-to-noise ratio in 2500 Hz against the local noise,
+//!   dB, rounded to an integer;
+//! - `message`: the text (hashed calls the file did not name in full
+//!   appear as `<...>`);
+//! - `candidate`, `hard_errors`, `rounds`, `score`: the fields of
+//!   `decode::Decode` of the same names.
+//!
+//! `--raw` adds a line for each decode whose payload did not unpack, with
+//! `"payload"` (the 77 bits as 10 bytes, most significant first, in hex),
+//! `"type"` (`"i3"`, or `"0.n3"` when i3 is 0), `"unpacked": false` and
+//! `"error"` in place of `"message"`.
+//!
+//! `--profile` adds one last line, `{"profile": {...}}`, with `"format": 0`,
+//! `"config"`, stage times in keys ending `_seconds` (`read`, `feed`,
+//! `sync`, `candidates`, `finish`, and `total` from the first feed to the
+//! end of `finish`, single-threaded), memory in keys ending `_bytes` (each
+//! buffer, `peak_bytes` their sum, `static_table_bytes`), and every
+//! `decode::DecodeReport` count under its field name.
+//!
+//! The format is version 0 and may change until a release; a change will
+//! raise the version reported in the profile line.
 //!
 //! # Provenance
 //!

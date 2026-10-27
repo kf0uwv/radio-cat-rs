@@ -16,6 +16,14 @@ publish = false
 [dependencies]
 cat-ft8 = { path = "..", default-features = false }
 
+# The image's decoder configuration (check.sh builds each): none of these
+# is the small configuration (Band::SMALL, DecodeConfig::SMALL, 64
+# decodes); `host` is Band::DEFAULT, DecodeConfig::HOST, 128 decodes;
+# `encoder-only` leaves the decoder out, as a baseline for its size.
+[features]
+host = []
+encoder-only = []
+
 [profile.dev]
 panic = "abort"
 

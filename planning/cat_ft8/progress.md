@@ -432,6 +432,21 @@
   the Linux and Windows jobs run the decode tests through the workspace
   tests. Bulk run checked locally; aarch64 and Windows need a real CI
   run (no local runtime for either).
+- D8/D8b committed (dd51ea1). D9/D10 go-ahead (D11 runs elsewhere);
+  design recorded in the plan.
+- D9 done: `wav::read_wav` (16-bit PCM, plain or extensible, any rate
+  and channels, unknown chunks skipped, over-long data chunk read to the
+  end; 4 tests); `cat-ft8-decode` (split API with stage timings, 64-call
+  table, JSON by hand with escaping; 2 unit tests); output format version
+  0 documented in the crate docs and the ADR; `tests/decode_cli.rs` (5
+  tests, `serde_json`): lines and keys for both configurations, `--raw`
+  with an unsupported (0.3) payload, `--profile` (format, timings, memory
+  with `peak_bytes` = the sum, every report count), 14 s and 30 s files,
+  and errors (48 kHz, stereo, not a WAV, missing file, bad options).
+- D10 done: the link check builds three images (small, host,
+  encoder-only), each checked for unresolved symbols and f64 helpers and
+  sized; the decoder path is a separate, non-inlined function so its
+  stack frame is reported. Results in findings ("D10 sizes").
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
