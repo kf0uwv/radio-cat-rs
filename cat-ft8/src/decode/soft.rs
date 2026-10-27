@@ -29,12 +29,12 @@
 //! propagation sees. The mean magnitude is used rather than the standard
 //! deviation, so no square root is needed.
 
-use super::frontend::{Level, Spectrogram};
+use super::frontend::Spectrogram;
 use super::math::log2_power;
 use super::sync::Candidate;
 use super::tables::LEVEL_POWER;
 use crate::ldpc::N;
-use crate::symbols::{data_index, GRAY_UNMAP};
+use crate::symbols::{data_index, DATA_SYMBOLS, GRAY_UNMAP};
 use crate::SYMBOL_COUNT;
 
 /// For bit j (0 = most significant of the symbol's three), the tones whose
@@ -61,47 +61,67 @@ const ONES: [u8; 3] = {
 /// decoder uses [`soft_bits_at`]; this grid form is kept for tests and
 /// measurement.)
 #[cfg(any(test, feature = "profile"))]
-pub fn soft_bits<L: Level>(
-    spec: &Spectrogram<'_, L>,
+pub fn soft_bits(
+    spec: &Spectrogram<'_>,
     candidate: &Candidate,
     target: f32,
     llr: &mut [f32; N],
 ) -> usize {
     let base = usize::from(candidate.base);
-    let mut erased = 0;
-    let mut sum = 0.0f32;
-    for k in 0..SYMBOL_COUNT {
-        let Some(d) = data_index(k) else { continue };
+    fill_and_scale(target, llr, |k, v| {
         let row = i32::from(candidate.start_row) + 2 * k as i32;
-        let levels = if row >= 0 {
+        let Some(levels) = (if row >= 0 {
             spec.row(row as usize)
         } else {
             None
+        }) else {
+            return false;
         };
-        let Some(levels) = levels else {
+        // Integer levels are exact in `f32`, so the metric is the
+        // integer level difference.
+        for (t, x) in v.iter_mut().enumerate() {
+            *x = f32::from(levels[base + 2 * t]);
+        }
+        true
+    })
+}
+
+/// The shared tail of both forms: for each data symbol `k`, `fill(k, v)`
+/// writes its eight tone values (or returns false for an erased symbol,
+/// whose three soft bits are then exactly 0); each bit's value is the
+/// highest value among tones whose Gray-coded bit is 0 minus the highest
+/// among tones whose bit is 1; then all are scaled so the mean magnitude
+/// over bits not erased is `target`. Returns the number of erased symbols.
+fn fill_and_scale(
+    target: f32,
+    llr: &mut [f32; N],
+    mut fill: impl FnMut(usize, &mut [f32; 8]) -> bool,
+) -> usize {
+    let mut erased = 0;
+    let mut sum = 0.0f32;
+    let mut v = [0.0f32; 8];
+    for k in 0..SYMBOL_COUNT {
+        let Some(d) = data_index(k) else { continue };
+        if !fill(k, &mut v) {
             llr[3 * d..3 * d + 3].fill(0.0);
             erased += 1;
             continue;
-        };
-        let mut v = [0i32; 8];
-        for (t, x) in v.iter_mut().enumerate() {
-            *x = levels[base + 2 * t].value() as i32;
         }
         for (j, &ones) in ONES.iter().enumerate() {
-            let (mut max0, mut max1) = (i32::MIN, i32::MIN);
+            let (mut max0, mut max1) = (f32::MIN, f32::MIN);
             for (t, &x) in v.iter().enumerate() {
                 if ones & (1 << t) != 0 {
-                    max1 = max1.max(x);
+                    max1 = if x > max1 { x } else { max1 };
                 } else {
-                    max0 = max0.max(x);
+                    max0 = if x > max0 { x } else { max0 };
                 }
             }
-            let l = (max0 - max1) as f32;
+            let l = max0 - max1;
             llr[3 * d + j] = l;
             sum += if l < 0.0 { -l } else { l };
         }
     }
-    let live = (3 * (SYMBOL_COUNT - 21 - erased)) as f32;
+    let live = (3 * (DATA_SYMBOLS - erased)) as f32;
     if sum > 0.0 {
         let scale = target * live / sum;
         for x in llr.iter_mut() {
@@ -132,8 +152,8 @@ pub(crate) fn straddle(i: i32, f: f32) -> [(i32, f32); 2] {
 /// `centre`) and `bins` (base bins); `None` if no row of non-zero weight
 /// is filled.
 #[inline]
-pub(crate) fn interpolated_tone_power<L: Level>(
-    spec: &Spectrogram<'_, L>,
+pub(crate) fn interpolated_tone_power(
+    spec: &Spectrogram<'_>,
     centre: i32,
     rows: &[(i32, f32); 2],
     bins: &[(i32, f32); 2],
@@ -154,7 +174,7 @@ pub(crate) fn interpolated_tone_power<L: Level>(
         for &(b, wb) in bins.iter() {
             let bin = b + 2 * i32::from(tone);
             if (0..stored).contains(&bin) {
-                p += wr * wb * level_power(levels[bin as usize].value());
+                p += wr * wb * level_power(u32::from(levels[bin as usize]));
             }
         }
     }
@@ -166,8 +186,8 @@ pub(crate) fn interpolated_tone_power<L: Level>(
 /// each tone's power is interpolated bilinearly from the four
 /// surrounding grid values (in linear power), and the metric is taken
 /// on its logarithm. A symbol is erased if none of its rows is filled.
-pub fn soft_bits_at<L: Level>(
-    spec: &Spectrogram<'_, L>,
+pub fn soft_bits_at(
+    spec: &Spectrogram<'_>,
     candidate: &Candidate,
     frac_row: f32,
     frac_bin: f32,
@@ -177,46 +197,16 @@ pub fn soft_bits_at<L: Level>(
     let stored = spec.band().stored_bins() as i32;
     let rows = straddle(0, frac_row);
     let bins = straddle(i32::from(candidate.base), frac_bin);
-    let mut erased = 0;
-    let mut sum = 0.0f32;
-    for k in 0..SYMBOL_COUNT {
-        let Some(d) = data_index(k) else { continue };
+    fill_and_scale(target, llr, |k, v| {
         let centre = i32::from(candidate.start_row) + 2 * k as i32;
-        let mut v = [0.0f32; 8];
-        let mut filled = true;
         for (t, x) in v.iter_mut().enumerate() {
             match interpolated_tone_power(spec, centre, &rows, &bins, t as u8, stored) {
                 Some(p) => *x = log2_power(p),
-                None => filled = false,
+                None => return false,
             }
         }
-        if !filled {
-            llr[3 * d..3 * d + 3].fill(0.0);
-            erased += 1;
-            continue;
-        }
-        for (j, &ones) in ONES.iter().enumerate() {
-            let (mut max0, mut max1) = (f32::MIN, f32::MIN);
-            for (t, &x) in v.iter().enumerate() {
-                if ones & (1 << t) != 0 {
-                    max1 = if x > max1 { x } else { max1 };
-                } else {
-                    max0 = if x > max0 { x } else { max0 };
-                }
-            }
-            let l = max0 - max1;
-            llr[3 * d + j] = l;
-            sum += if l < 0.0 { -l } else { l };
-        }
-    }
-    let live = (3 * (SYMBOL_COUNT - 21 - erased)) as f32;
-    if sum > 0.0 {
-        let scale = target * live / sum;
-        for x in llr.iter_mut() {
-            *x *= scale;
-        }
-    }
-    erased
+        true
+    })
 }
 
 #[cfg(test)]
@@ -237,7 +227,7 @@ mod tests {
     }
 
     fn llr_for(slot: &[f32], cand: Candidate, target: f32) -> ([f32; N], usize) {
-        let mut built = Built::<u8>::new(Band::DEFAULT);
+        let mut built = Built::new(Band::DEFAULT);
         built.with(slot, |spec| {
             let mut llr = [9.0f32; N];
             let erased = soft_bits(spec, &cand, target, &mut llr);
@@ -323,7 +313,7 @@ mod tests {
             0.01,
         );
         add_noise(&mut slot, 0.03, 9);
-        let mut built = Built::<u8>::new(Band::DEFAULT);
+        let mut built = Built::new(Band::DEFAULT);
         built.with(&slot, |spec| {
             let (mut grid, mut interp) = ([0.0f32; N], [0.0f32; N]);
             let e1 = soft_bits(spec, &cand, 4.0, &mut grid);

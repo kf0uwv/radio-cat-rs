@@ -504,3 +504,23 @@ fn memory_per_item_is_bounded() {
     // Borrows and counters only (176 B with 64-bit pointers).
     assert!(size_of::<Decoder<'static>>() <= 192);
 }
+
+#[test]
+fn debug_output_leaves_out_the_buffers() {
+    let mut b = Bufs::new(Band::DEFAULT);
+    let mut dec = b.decoder(DecodeConfig::HOST);
+    dec.feed(&busy_slot(1));
+    let mut store = [Decode::EMPTY; 8];
+    let mut list = DecodeList::new(&mut store);
+    dec.decode(&mut CandidateScratch::new(), &mut list);
+    let text = std::format!(
+        "{dec:?} {list:?} {:?} {:?}",
+        CandidateScratch::new(),
+        FrontEnd::new()
+    );
+    assert!(text.len() < 4_000, "{} bytes", text.len());
+    assert!(
+        text.contains("rows_filled: 184") && text.contains("capacity: 8"),
+        "{text}"
+    );
+}

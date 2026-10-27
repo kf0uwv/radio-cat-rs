@@ -70,25 +70,6 @@ pub const BINS_ABOVE_BAND: usize = 15;
 
 const _: () = assert!(ROWS == 184);
 
-mod sealed {
-    pub trait Sealed {}
-    impl Sealed for u8 {}
-}
-
-/// A quantised spectrogram level: `u8`, in 0.5 dB steps, with 0 dB (a
-/// full-scale sine centred in a bin) as the top value. Sealed; `u8` is
-/// the only implementation (a 16-bit form measured no better).
-pub trait Level: sealed::Sealed + Copy + Default + Ord + core::fmt::Debug + 'static {
-    /// Level steps per dB.
-    const STEPS_PER_DB: u32;
-    /// The top value (0 dB).
-    const MAX: u32;
-    /// The level of a `log2` power value.
-    fn from_log2_power(l2: f32) -> Self;
-    /// The level as an integer.
-    fn value(self) -> u32;
-}
-
 /// 10 · log10(2): dB per unit of log2 power.
 const DB_PER_LOG2: f32 = 3.010_3;
 
@@ -105,17 +86,11 @@ fn quantise(x: f32, max: u32) -> u32 {
     }
 }
 
-impl Level for u8 {
-    const STEPS_PER_DB: u32 = 2;
-    const MAX: u32 = 255;
-    #[inline]
-    fn from_log2_power(l2: f32) -> Self {
-        quantise(l2 * (DB_PER_LOG2 * 2.0) + 255.0, <Self as Level>::MAX) as u8
-    }
-    #[inline]
-    fn value(self) -> u32 {
-        u32::from(self)
-    }
+/// The spectrogram level of a `log2` power value: 0.5 dB steps, 255 at
+/// 0 dB (a full-scale sine centred in a bin), 0 at the floor.
+#[inline]
+pub(crate) fn level_of(l2: f32) -> u8 {
+    quantise(l2 * (DB_PER_LOG2 * 2.0) + 255.0, 255) as u8
 }
 
 /// The base (tone 0) frequencies searched, as 3.125 Hz bins.
@@ -187,7 +162,7 @@ impl Band {
 /// The front end's working buffers: one analysis window of input and the
 /// FFT work area (30 720 bytes). Caller-owned and const-constructible, so
 /// it can be a `static`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct FrontEnd {
     window: [f32; WINDOW],
     fft: FftBuffer,
@@ -203,6 +178,48 @@ impl FrontEnd {
     }
 }
 
+/// A sample as the front end takes it, counted: a non-finite value
+/// becomes 0.0 (`sanitised`); a finite one beyond ±[`INPUT_LIMIT`] becomes
+/// the limit (`clamped`).
+#[inline]
+fn classify(x: f32, sanitised: &mut usize, clamped: &mut usize) -> f32 {
+    if !x.is_finite() {
+        *sanitised += 1;
+        0.0
+    } else if x > INPUT_LIMIT {
+        *clamped += 1;
+        INPUT_LIMIT
+    } else if x < -INPUT_LIMIT {
+        *clamped += 1;
+        -INPUT_LIMIT
+    } else {
+        x
+    }
+}
+
+/// The buffers' contents are not printed.
+impl core::fmt::Debug for FrontEnd {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FrontEnd").finish_non_exhaustive()
+    }
+}
+
+/// The band, progress and counters; the levels are not printed.
+impl core::fmt::Debug for Spectrogram<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Spectrogram")
+            .field("band", &self.band)
+            .field("samples_consumed", &self.consumed)
+            .field("rows_filled", &self.rows)
+            .field("sanitised", &self.sanitised)
+            .field("clamped", &self.clamped)
+            .field("skipped", &self.skipped)
+            .field("floored", &self.floored)
+            .field("top", &self.top)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for FrontEnd {
     fn default() -> Self {
         Self::new()
@@ -211,10 +228,9 @@ impl Default for FrontEnd {
 
 /// A slot's spectrogram, filled block by block from 12 kHz samples. Borrows
 /// the caller's [`FrontEnd`] and level slice.
-#[derive(Debug)]
-pub struct Spectrogram<'a, L: Level> {
+pub struct Spectrogram<'a> {
     front: &'a mut FrontEnd,
-    levels: &'a mut [L],
+    levels: &'a mut [u8],
     band: Band,
     /// Slot samples taken so far (fed or skipped).
     consumed: usize,
@@ -228,11 +244,11 @@ pub struct Spectrogram<'a, L: Level> {
     top: usize,
 }
 
-impl<'a, L: Level> Spectrogram<'a, L> {
+impl<'a> Spectrogram<'a> {
     /// A spectrogram for `band` over the caller's buffers, at the start of
     /// a slot. [`Error::BufferTooSmall`] if `levels` is shorter than
     /// [`Band::spectrogram_len`].
-    pub fn new(front: &'a mut FrontEnd, levels: &'a mut [L], band: Band) -> Result<Self, Error> {
+    pub fn new(front: &'a mut FrontEnd, levels: &'a mut [u8], band: Band) -> Result<Self, Error> {
         if levels.len() < band.spectrogram_len() {
             return Err(Error::BufferTooSmall);
         }
@@ -325,7 +341,7 @@ impl<'a, L: Level> Spectrogram<'a, L> {
 
     /// Row `r`'s levels, one per stored bin, or `None` if the row is not
     /// filled yet.
-    pub fn row(&self, r: usize) -> Option<&[L]> {
+    pub fn row(&self, r: usize) -> Option<&[u8]> {
         if r >= self.rows {
             return None;
         }
@@ -341,14 +357,7 @@ impl<'a, L: Level> Spectrogram<'a, L> {
         // checked so the counters cover the whole slot.
         let before = n.min(ROW_ORIGIN.saturating_sub(self.consumed));
         for k in 0..before {
-            let x = sample(k);
-            if !x.is_finite() {
-                self.sanitised += 1;
-            } else if !(-INPUT_LIMIT..=INPUT_LIMIT).contains(&x) {
-                // (A range, not `f32::abs`: that is in `core` only from
-                // Rust 1.85, above the crate's minimum.)
-                self.clamped += 1;
-            }
+            classify(sample(k), &mut self.sanitised, &mut self.clamped);
         }
         i += before;
         self.consumed += before;
@@ -358,19 +367,7 @@ impl<'a, L: Level> Spectrogram<'a, L> {
                 .iter_mut()
                 .enumerate()
             {
-                let x = sample(i + k);
-                *slot = if !x.is_finite() {
-                    self.sanitised += 1;
-                    0.0
-                } else if x > INPUT_LIMIT {
-                    self.clamped += 1;
-                    INPUT_LIMIT
-                } else if x < -INPUT_LIMIT {
-                    self.clamped += 1;
-                    -INPUT_LIMIT
-                } else {
-                    x
-                };
+                *slot = classify(sample(i + k), &mut self.sanitised, &mut self.clamped);
             }
             i += chunk;
             self.consumed += chunk;
@@ -395,9 +392,9 @@ impl<'a, L: Level> Spectrogram<'a, L> {
             self.band.first_bin(),
             width,
             |i, p| {
-                let level = L::from_log2_power(log2_power(p));
-                floored += usize::from(level.value() == 0);
-                top += usize::from(level.value() == L::MAX);
+                let level = level_of(log2_power(p));
+                floored += usize::from(level == 0);
+                top += usize::from(level == u8::MAX);
                 row[i] = level;
             },
         );

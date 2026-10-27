@@ -54,9 +54,9 @@ fn slot(message: &str, base_hz: f32, dt: f32, amp: f32, noise_rms: f32, seed: u6
     out
 }
 
-fn spectrogram_of<L: Level>(samples: &[f32], band: Band, block: usize) -> (Vec<L>, usize) {
+fn spectrogram_of(samples: &[f32], band: Band, block: usize) -> (Vec<u8>, usize) {
     let mut front = FrontEnd::new();
-    let mut levels = vec![L::default(); band.spectrogram_len()];
+    let mut levels = vec![0u8; band.spectrogram_len()];
     let rows;
     {
         let mut s = Spectrogram::new(&mut front, &mut levels, band).unwrap();
@@ -87,15 +87,15 @@ fn geometry_constants() {
 
 #[test]
 fn level_scales() {
-    assert_eq!(<u8 as Level>::from_log2_power(0.0), 255);
+    assert_eq!(level_of(0.0), 255);
     // −10 dB = log2 power −3.3219: 20 steps below the top for u8.
     let l2 = -10.0 / 3.010_3;
-    assert_eq!(<u8 as Level>::from_log2_power(l2), 235);
-    assert_eq!(<u8 as Level>::from_log2_power(-100.0), 0); // the floor
-    assert_eq!(<u8 as Level>::from_log2_power(10.0), 255); // clamped
+    assert_eq!(level_of(l2), 235);
+    assert_eq!(level_of(-100.0), 0); // the floor
+    assert_eq!(level_of(10.0), 255); // clamped
     let mut last = 0;
     for k in 0..2_000 {
-        let v = <u8 as Level>::from_log2_power(-45.0 + k as f32 * 0.02).value();
+        let v = u32::from(level_of(-45.0 + k as f32 * 0.02));
         assert!(v >= last);
         last = v;
     }
@@ -107,7 +107,7 @@ fn a_tone_lands_in_its_bin() {
     let tone: Vec<f32> = (0..SLOT_SAMPLES)
         .map(|n| libm::cos(2.0 * core::f64::consts::PI * 1_503.125 * n as f64 / 12_000.0) as f32)
         .collect();
-    let (levels, rows) = spectrogram_of::<u8>(&tone, Band::DEFAULT, SLOT_SAMPLES);
+    let (levels, rows) = spectrogram_of(&tone, Band::DEFAULT, SLOT_SAMPLES);
     assert_eq!(rows, ROWS);
     let width = Band::DEFAULT.stored_bins();
     for r in [0, 50, 183] {
@@ -129,10 +129,10 @@ fn row_origin_puts_nominal_symbol_centres_on_rows_5_7_9() {
     // either side (where the neighbouring symbols' tones share the window).
     let base = 1_500.0; // bin 480
     let samples = slot("CQ K1ABC FN42", base, 0.0, 0.5, 0.0, 1);
-    let (levels, _) = spectrogram_of::<u8>(&samples, Band::DEFAULT, 4_096);
+    let (levels, _) = spectrogram_of(&samples, Band::DEFAULT, 4_096);
     let width = Band::DEFAULT.stored_bins();
     let at =
-        |row: usize, tone: u8| levels[row * width + (480 - 32) + 2 * usize::from(tone)].value();
+        |row: usize, tone: u8| u32::from(levels[row * width + (480 - 32) + 2 * usize::from(tone)]);
     for (j, &c) in COSTAS.iter().enumerate() {
         let row = 5 + 2 * j;
         let best = (0..8u8).max_by_key(|&t| at(row, t)).unwrap();
@@ -149,14 +149,14 @@ fn row_origin_puts_nominal_symbol_centres_on_rows_5_7_9() {
 #[test]
 fn rows_do_not_depend_on_block_sizes() {
     let samples = slot("K1ABC W9XYZ -11", 812.5, 0.3, 0.1, 0.03, 7);
-    let (whole, _) = spectrogram_of::<u8>(&samples, Band::DEFAULT, SLOT_SAMPLES);
+    let (whole, _) = spectrogram_of(&samples, Band::DEFAULT, SLOT_SAMPLES);
     for block in [1, 7, 960, 1_921, 4_096] {
-        let (got, rows) = spectrogram_of::<u8>(&samples, Band::DEFAULT, block);
+        let (got, rows) = spectrogram_of(&samples, Band::DEFAULT, block);
         assert_eq!(rows, ROWS);
         assert!(got == whole, "block {block}");
     }
-    let (small, _) = spectrogram_of::<u8>(&samples, Band::SMALL, SLOT_SAMPLES);
-    let (small_333, _) = spectrogram_of::<u8>(&samples, Band::SMALL, 333);
+    let (small, _) = spectrogram_of(&samples, Band::SMALL, SLOT_SAMPLES);
+    let (small_333, _) = spectrogram_of(&samples, Band::SMALL, 333);
     assert!(small_333 == small);
 }
 
@@ -167,7 +167,7 @@ fn skip_and_non_finite_samples_are_zeros_and_counted() {
     for x in &mut zeroed[50_000..52_000] {
         *x = 0.0;
     }
-    let (want, _) = spectrogram_of::<u8>(&zeroed, Band::DEFAULT, SLOT_SAMPLES);
+    let (want, _) = spectrogram_of(&zeroed, Band::DEFAULT, SLOT_SAMPLES);
 
     // Skipping the same stretch.
     let mut front = FrontEnd::new();
@@ -213,7 +213,7 @@ fn i16_input_equals_the_scaled_f32_input() {
         .iter()
         .map(|&v| f32::from(v) * (1.0 / 32_768.0))
         .collect();
-    let (want, _) = spectrogram_of::<u8>(&floats, Band::DEFAULT, SLOT_SAMPLES);
+    let (want, _) = spectrogram_of(&floats, Band::DEFAULT, SLOT_SAMPLES);
     let mut front = FrontEnd::new();
     let mut levels = vec![0u8; Band::DEFAULT.spectrogram_len()];
     {
@@ -257,7 +257,7 @@ fn rows_are_read_through_a_shared_reference() {
     let mut levels = vec![0u8; Band::DEFAULT.spectrogram_len()];
     let mut s = Spectrogram::new(&mut front, &mut levels, Band::DEFAULT).unwrap();
     s.feed(&samples[..20_000]);
-    let shared: &Spectrogram<'_, u8> = &s;
+    let shared: &Spectrogram<'_> = &s;
     let filled = shared.rows_filled();
     assert!(filled > 0 && shared.row(filled - 1).is_some() && shared.row(filled).is_none());
 }
@@ -275,7 +275,7 @@ fn early_samples_are_counted_and_huge_ones_clamped() {
     clipped[20] = INPUT_LIMIT; // before row 0: no effect on the rows anyway
     clipped[100_000] = -INPUT_LIMIT;
     clipped[100_001] = INPUT_LIMIT;
-    let (want, _) = spectrogram_of::<u8>(&clipped, Band::DEFAULT, SLOT_SAMPLES);
+    let (want, _) = spectrogram_of(&clipped, Band::DEFAULT, SLOT_SAMPLES);
     let mut front = FrontEnd::new();
     let mut levels = vec![0u8; Band::DEFAULT.spectrogram_len()];
     {

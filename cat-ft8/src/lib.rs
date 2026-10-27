@@ -198,11 +198,15 @@ mod tests {
         "SPLIT_TWIDDLES",
         "HANN_HALF",
         "DIGIT_REV",
-        "PARITY_CHECKS",
+        "CHECKS",
+        "DEGREES",
         "LEVEL_POWER",
     ];
     const NOT_COUNTED: &[&str] = &[
-        "GENERATOR",        // compile-time input to GENERATOR_ROWS only
+        "GENERATOR", // compile-time input to GENERATOR_ROWS only
+        // Compile-time input to the decoder's CHECKS; linked only if
+        // Codeword::satisfies_parity_checks is used.
+        "PARITY_CHECKS",
         "COSTAS_POSITIONS", // frame-layout constants, folded into code
         "DATA_BLOCKS",
         "STAGES", // FFT stage radices, folded into code
@@ -279,7 +283,8 @@ mod tests {
     #[test]
     fn decode_table_bytes_matches_the_tables() {
         let parts = crate::decode::fft::table_bytes_of_statics()
-            + size_of_val(&crate::ldpc_tables::PARITY_CHECKS)
+            + size_of_val(&crate::decode::bp::CHECKS)
+            + size_of_val(&crate::decode::bp::DEGREES)
             + size_of_val(&crate::decode::tables::LEVEL_POWER);
         assert_eq!(crate::decode::TABLE_BYTES, parts);
     }

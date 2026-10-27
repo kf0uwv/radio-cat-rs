@@ -113,18 +113,46 @@ pub enum BpFailure {
     AllZero,
 }
 
+/// The parity checks with 0-based variable indices (unused entries 0),
+/// derived at compile time from the 1-based, 0-padded `PARITY_CHECKS`,
+/// in the same order.
+pub(crate) static CHECKS: [[u8; 7]; M] = {
+    let mut out = [[0u8; 7]; M];
+    let mut c = 0;
+    while c < M {
+        let mut n = 0;
+        let mut j = 0;
+        while j < 7 {
+            if PARITY_CHECKS[c][j] != 0 {
+                out[c][n] = PARITY_CHECKS[c][j] - 1;
+                n += 1;
+            }
+            j += 1;
+        }
+        c += 1;
+    }
+    out
+};
+
+/// The number of variables in each check (6 or 7).
+pub(crate) static DEGREES: [u8; M] = {
+    let mut out = [0u8; M];
+    let mut c = 0;
+    while c < M {
+        let mut j = 0;
+        while j < 7 {
+            out[c] += (PARITY_CHECKS[c][j] != 0) as u8;
+            j += 1;
+        }
+        c += 1;
+    }
+    out
+};
+
 /// Variable indices (0-based) and count of check `c`.
 #[inline]
-fn check(c: usize) -> ([usize; 7], usize) {
-    let mut v = [0usize; 7];
-    let mut n = 0;
-    for &k in PARITY_CHECKS[c].iter() {
-        if k != 0 {
-            v[n] = usize::from(k) - 1;
-            n += 1;
-        }
-    }
-    (v, n)
+fn check(c: usize) -> (&'static [u8; 7], usize) {
+    (&CHECKS[c], usize::from(DEGREES[c]))
 }
 
 /// tanh(x / 2) for any finite x.
@@ -163,7 +191,10 @@ fn hard_decide(values: &[f32; N], hard: &mut [u8; N]) -> bool {
     }
     (0..M).all(|c| {
         let (v, n) = check(c);
-        v[..n].iter().fold(0u8, |acc, &i| acc ^ hard[i]) == 0
+        v[..n]
+            .iter()
+            .fold(0u8, |acc, &i| acc ^ hard[usize::from(i)])
+            == 0
     })
 }
 
@@ -221,7 +252,7 @@ pub fn decode_soft(
             let (v, n) = check(c);
             let mut q = [0.0f32; 7];
             for j in 0..n {
-                q[j] = total[v[j]] - row[j];
+                q[j] = total[usize::from(v[j])] - row[j];
             }
             match rule {
                 CheckRule::SumProduct => {
@@ -262,7 +293,7 @@ pub fn decode_soft(
                 }
             }
             for j in 0..n {
-                next[v[j]] += row[j];
+                next[usize::from(v[j])] += row[j];
             }
         }
         core::mem::swap(total, next);

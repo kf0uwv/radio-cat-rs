@@ -107,7 +107,7 @@ fn dt(start_row: i32) -> f32 {
 }
 
 fn candidates(samples: &[f32], k: usize) -> (Vec<Candidate>, SyncReport) {
-    let mut built = Built::<u8>::new(Band::DEFAULT);
+    let mut built = Built::new(Band::DEFAULT);
     built.with(samples, |spec| {
         let mut scratch = vec![0i32; scratch_len(spec.band().base_bins())];
         let mut out = vec![Candidate::default(); k];
@@ -195,7 +195,7 @@ fn a_partial_slot_scores_only_the_arrays_it_has() {
     // Rows up to the middle Costas array only: arrays 0 and 1 present.
     let rows_needed = 5 + 2 * 42 + 1;
     let samples = 240 + 960 * (rows_needed - 1) + 3_840;
-    let mut built = Built::<u8>::new(Band::DEFAULT);
+    let mut built = Built::new(Band::DEFAULT);
     let (full, partial, none) = built.with(&slot[..samples.min(SLOT_SAMPLES)], |spec| {
         (
             costas_score(spec, 5, 448).is_some(),
@@ -232,7 +232,7 @@ fn refinement_moves_towards_sub_grid_offsets() {
             start,
             0.3,
         );
-        let mut built = Built::<u8>::new(Band::DEFAULT);
+        let mut built = Built::new(Band::DEFAULT);
         let (got, want) = built.with(&slot, |spec| {
             let mut scratch = vec![0i32; scratch_len(spec.band().base_bins())];
             let mut out = vec![Candidate::default(); 4];

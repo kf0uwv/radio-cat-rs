@@ -49,13 +49,15 @@ pub use decoder::{
     CandidateResult, CandidateScratch, Decode, DecodeConfig, DecodeList, DecodeReport, Decoder,
     CANDIDATES, HOST_DECODES, SMALL_DECODES,
 };
-pub use frontend::{Band, FrontEnd, Level, Spectrogram, BIN_HZ, HOP, ROWS, ROW_ORIGIN};
+pub use frontend::{Band, FrontEnd, Spectrogram, BIN_HZ, HOP, ROWS, ROW_ORIGIN};
 pub use snr::SNR_FLOOR_DB;
 pub use sync::{Candidate, SyncReport};
 
 /// Bytes of the decoder's static tables (FFT twiddles, real-split
-/// twiddles, half Hann window, digit-reversal table, the parity-check
-/// list used by belief propagation, and the level-to-power table), in
-/// flash.
-pub const TABLE_BYTES: usize =
-    fft::TABLE_BYTES + core::mem::size_of::<[[u8; 7]; 83]>() + core::mem::size_of::<[f32; 256]>();
+/// twiddles, half Hann window, digit-reversal table, belief
+/// propagation's check list and degrees, and the level-to-power table),
+/// in flash.
+pub const TABLE_BYTES: usize = fft::TABLE_BYTES
+    + core::mem::size_of::<[[u8; 7]; 83]>()
+    + core::mem::size_of::<[u8; 83]>()
+    + core::mem::size_of::<[f32; 256]>();

@@ -19,7 +19,7 @@
 //! ```
 //!
 //! 1. `feed` cost per 80 ms hop (whole slot and 480-sample blocks).
-//! 2. Level clipping: the share of levels at the floor or the top for
+//! 2. Clipping: the share of levels at the floor or the top for
 //!    white noise at input levels from −110 to −10 dBFS.
 //!
 //! The last line is one `{"profile": {...}}` JSON object.
@@ -27,7 +27,7 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use cat_ft8::decode::{Band, FrontEnd, Level, Spectrogram, ROWS};
+use cat_ft8::decode::{Band, FrontEnd, Spectrogram, ROWS};
 use cat_ft8::message::NoHashes;
 use cat_ft8::waveform::{synthesize, Placement};
 use cat_ft8::{encode, SLOT_SAMPLES, SYMBOL_COUNT};
@@ -72,13 +72,7 @@ fn make_slot(
     out
 }
 
-fn spectrogram<L: Level>(
-    samples: &[f32],
-    band: Band,
-    block: usize,
-    levels: &mut [L],
-    front: &mut FrontEnd,
-) {
+fn spectrogram(samples: &[f32], band: Band, block: usize, levels: &mut [u8], front: &mut FrontEnd) {
     let mut s = Spectrogram::new(front, levels, band).unwrap();
     for chunk in samples.chunks(block) {
         s.feed(chunk);
@@ -86,10 +80,10 @@ fn spectrogram<L: Level>(
 }
 
 /// Mean seconds per hop of feeding a whole slot `reps` times.
-fn feed_time<L: Level>(samples: &[f32], block: usize, reps: u32) -> f64 {
+fn feed_time(samples: &[f32], block: usize, reps: u32) -> f64 {
     let band = Band::DEFAULT;
     let mut front = Box::new(FrontEnd::new());
-    let mut levels = vec![L::default(); band.spectrogram_len()];
+    let mut levels = vec![0u8; band.spectrogram_len()];
     let t = Instant::now();
     for _ in 0..reps {
         spectrogram(black_box(samples), band, block, &mut levels, &mut front);
@@ -103,8 +97,8 @@ fn main() {
     // 1. feed cost per hop.
     let symbols0 = encode("CQ K1ABC FN42", &mut NoHashes).unwrap().symbols;
     let slot0 = make_slot(&symbols0, 1_500.0, -10.0, NOISE_RMS, 1);
-    let t8 = feed_time::<u8>(&slot0, SLOT_SAMPLES, 20);
-    let t8b = feed_time::<u8>(&slot0, 480, 20);
+    let t8 = feed_time(&slot0, SLOT_SAMPLES, 20);
+    let t8b = feed_time(&slot0, 480, 20);
     println!(
         "feed per 80 ms hop (100–3100 Hz): {:.1} µs (whole slot), {:.1} µs (480-sample blocks)",
         t8 * 1e6,

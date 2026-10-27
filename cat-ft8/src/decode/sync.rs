@@ -34,7 +34,7 @@
 //! - **Order.** Score descending, then start row, then base bin. The list
 //!   keeps the best `out.len()`; the rest are counted as dropped.
 
-use super::frontend::{Level, Spectrogram};
+use super::frontend::Spectrogram;
 use crate::symbols::{COSTAS, COSTAS_POSITIONS};
 use crate::Error;
 
@@ -90,8 +90,8 @@ pub const fn scratch_len(base_bins: usize) -> usize {
 /// Searches `spec` (its filled rows) and fills `out` with the best
 /// candidates scoring at least `min_score`, in order. `scratch` needs
 /// [`scratch_len`] entries.
-pub fn find_candidates<L: Level>(
-    spec: &Spectrogram<'_, L>,
+pub fn find_candidates(
+    spec: &Spectrogram<'_>,
     min_score: i32,
     scratch: &mut [i32],
     out: &mut [Candidate],
@@ -115,11 +115,7 @@ pub fn find_candidates<L: Level>(
 
 /// The sync score of a candidate at `start_row`, base bin `base`, or
 /// `None` if fewer than two Costas arrays lie in the filled rows.
-pub(crate) fn costas_score<L: Level>(
-    spec: &Spectrogram<'_, L>,
-    start_row: i32,
-    base: usize,
-) -> Option<i32> {
+pub(crate) fn costas_score(spec: &Spectrogram<'_>, start_row: i32, base: usize) -> Option<i32> {
     let rows = spec.rows_filled() as i32;
     let (mut sum, mut present) = (0i32, 0i32);
     for &pos in COSTAS_POSITIONS.iter() {
@@ -132,9 +128,9 @@ pub(crate) fn costas_score<L: Level>(
             let row = spec.row((first + 2 * j as i32) as usize)?;
             let mut all = 0i32;
             for t in 0..8 {
-                all += row[base + 2 * t].value() as i32;
+                all += i32::from(row[base + 2 * t]);
             }
-            sum += 8 * row[base + 2 * usize::from(tone)].value() as i32 - all;
+            sum += 8 * i32::from(row[base + 2 * usize::from(tone)]) - all;
         }
         present += 1;
     }
@@ -146,7 +142,7 @@ pub(crate) fn costas_score<L: Level>(
 /// vertex of the parabola through the sync scores of the candidate and
 /// its two neighbours along each axis (0 along an axis where a neighbour
 /// has no score or the scores are not peaked).
-pub fn refine<L: Level>(spec: &Spectrogram<'_, L>, c: &Candidate) -> (f32, f32) {
+pub fn refine(spec: &Spectrogram<'_>, c: &Candidate) -> (f32, f32) {
     let row = i32::from(c.start_row);
     let base = usize::from(c.base);
     let cols = spec.band().base_bins();

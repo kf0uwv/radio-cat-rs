@@ -759,22 +759,33 @@ fn main() {
                 ("min-sum", CheckRule::MinSum),
             ] {
                 let t = Instant::now();
-                let mut rounds = 0u64;
+                // Rounds are known for converged candidates only: a failure
+                // reports why, not after how many rounds (a candidate that
+                // never converges runs all 30).
+                let (mut rounds, mut converged, mut failed) = (0u64, 0u64, 0u64);
                 for _ in 0..reps {
                     for c in &cands[..kept] {
                         soft_bits(&spec, c, 4.0, &mut llr);
                         match decode_soft(&llr, rule, 30, &mut bp) {
-                            Ok(d) => rounds += u64::from(d.rounds),
-                            Err(_) => rounds += 30,
+                            Ok(d) => {
+                                rounds += u64::from(d.rounds);
+                                converged += 1;
+                            }
+                            Err(_) => failed += 1,
                         }
                     }
                 }
                 let per = t.elapsed().as_secs_f64() / f64::from(reps) / kept as f64;
                 println!(
-                    "  {name}: {:.1} µs per candidate (soft bits + BP; mean {:.1} rounds), {:.1} ms per slot of {kept} candidates",
+                    "  {name}: {:.1} µs per candidate (soft bits + BP), {:.1} ms per slot of {kept} candidates; \
+                     {converged} converged (mean {} rounds), {failed} failed",
                     per * 1e6,
-                    rounds as f64 / (f64::from(reps) * kept as f64),
-                    per * kept as f64 * 1e3
+                    per * kept as f64 * 1e3,
+                    if converged == 0 {
+                        "n/a".to_string()
+                    } else {
+                        format!("{:.1}", rounds as f64 / converged as f64)
+                    }
                 );
             }
             println!(

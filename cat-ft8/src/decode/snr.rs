@@ -42,7 +42,7 @@
 //!   the tone power lost to the GFSK shaping, the window and the
 //!   interpolation.
 
-use super::frontend::{Level, Spectrogram};
+use super::frontend::Spectrogram;
 use super::math::log2_power;
 use super::soft::{interpolated_tone_power, level_power, straddle};
 use super::sync::Candidate;
@@ -75,8 +75,8 @@ const QUANTILE_TO_MEAN: f32 = 7.488_80;
 
 /// The SNR (dB in 2500 Hz) of the signal with channel symbols `tones` at
 /// candidate `c` refined by (`frac_row`, `frac_bin`). `hist` is scratch.
-pub(crate) fn estimate<L: Level>(
-    spec: &Spectrogram<'_, L>,
+pub(crate) fn estimate(
+    spec: &Spectrogram<'_>,
     c: &Candidate,
     frac_row: f32,
     frac_bin: f32,
@@ -130,8 +130,8 @@ pub(crate) fn estimate<L: Level>(
 /// Mean noise power per bin over the bins `range` (those inside the
 /// stored spectrum) in the candidate's symbol rows, from the lower
 /// octile of their levels; `None` if there are none.
-fn side_noise<L: Level>(
-    spec: &Spectrogram<'_, L>,
+fn side_noise(
+    spec: &Spectrogram<'_>,
     c: &Candidate,
     range: core::ops::Range<i32>,
     stored: i32,
@@ -149,7 +149,7 @@ fn side_noise<L: Level>(
         };
         for b in range.clone() {
             if (0..stored).contains(&b) {
-                hist[levels[b as usize].value() as usize] += 1;
+                hist[usize::from(levels[b as usize])] += 1;
                 count += 1;
             }
         }

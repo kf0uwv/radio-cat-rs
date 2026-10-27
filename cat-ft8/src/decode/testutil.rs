@@ -20,7 +20,7 @@ extern crate std;
 use std::vec;
 use std::vec::Vec;
 
-use super::frontend::{Band, FrontEnd, Level, Spectrogram};
+use super::frontend::{Band, FrontEnd, Spectrogram};
 use crate::message::NoHashes;
 use crate::waveform::{synthesize, Placement};
 use crate::{SLOT_SAMPLES, SYMBOL_COUNT};
@@ -84,27 +84,23 @@ pub(crate) fn empty_slot() -> Vec<f32> {
 }
 
 /// A spectrogram's buffers, filled from `samples` in one block.
-pub(crate) struct Built<L: Level> {
+pub(crate) struct Built {
     pub(crate) front: FrontEnd,
-    pub(crate) levels: Vec<L>,
+    pub(crate) levels: Vec<u8>,
     pub(crate) band: Band,
 }
 
-impl<L: Level> Built<L> {
+impl Built {
     pub(crate) fn new(band: Band) -> Self {
         Built {
             front: FrontEnd::new(),
-            levels: vec![L::default(); band.spectrogram_len()],
+            levels: vec![0; band.spectrogram_len()],
             band,
         }
     }
 
     /// Runs `f` on a spectrogram of `samples[..n]`.
-    pub(crate) fn with<R>(
-        &mut self,
-        samples: &[f32],
-        f: impl FnOnce(&Spectrogram<'_, L>) -> R,
-    ) -> R {
+    pub(crate) fn with<R>(&mut self, samples: &[f32], f: impl FnOnce(&Spectrogram<'_>) -> R) -> R {
         let mut s = Spectrogram::new(&mut self.front, &mut self.levels, self.band).unwrap();
         s.feed(samples);
         f(&s)

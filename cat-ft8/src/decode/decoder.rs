@@ -238,7 +238,7 @@ pub type CandidateResult = Result<Decode, BpFailure>;
 /// Working storage for one candidate (soft bits, belief-propagation
 /// messages and the noise histogram, about 5.1 KB). One per worker; every
 /// candidate re-initialises it.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CandidateScratch {
     llr: [f32; N],
     bp: BpScratch,
@@ -253,6 +253,41 @@ impl CandidateScratch {
             bp: BpScratch::new(),
             hist: [0; 256],
         }
+    }
+}
+
+/// Working storage only: its contents are not printed.
+impl core::fmt::Debug for CandidateScratch {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CandidateScratch").finish_non_exhaustive()
+    }
+}
+
+/// The spectrogram's summary, the configuration and the last search; no
+/// buffers are printed.
+impl core::fmt::Debug for Decoder<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Decoder")
+            .field("spectrogram", &self.spec)
+            .field("config", &self.config)
+            .field("sync", &self.sync)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The decodes in the list (not the unused capacity) and the counts.
+impl core::fmt::Debug for DecodeList<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DecodeList")
+            .field("decodes", &self.finish_payloads())
+            .field("capacity", &self.entries.len())
+            .field("pushed", &self.next)
+            .field("truncated", &self.truncated)
+            .field("duplicates", &self.duplicates)
+            .field("all_zero", &self.all_zero)
+            .field("crc_failed", &self.crc_failed)
+            .field("not_converged", &self.not_converged)
+            .finish()
     }
 }
 
@@ -304,9 +339,12 @@ pub struct DecodeReport {
 
 /// The decoder: a spectrogram over the caller's buffers, the sync scratch
 /// and candidate list (also the caller's), and the configuration.
-#[derive(Debug)]
+///
+/// A `Decoder` holds a slot's rows as they are fed, so it must live across
+/// the whole slot: from [`Decoder::start_slot`] (or `new`) through the
+/// last `feed` to the decode. One decoder serves every slot.
 pub struct Decoder<'a> {
-    spec: Spectrogram<'a, u8>,
+    spec: Spectrogram<'a>,
     scratch: &'a mut [i32],
     candidates: &'a mut [Candidate],
     config: DecodeConfig,
@@ -353,7 +391,7 @@ impl<'a> Decoder<'a> {
     }
 
     /// The spectrogram (read-only).
-    pub fn spectrogram(&self) -> &Spectrogram<'a, u8> {
+    pub fn spectrogram(&self) -> &Spectrogram<'a> {
         &self.spec
     }
 
@@ -484,7 +522,6 @@ impl<'a> Decoder<'a> {
 
 /// The decodes of a slot, in candidate-index order, over the caller's
 /// storage (its length is the capacity).
-#[derive(Debug)]
 pub struct DecodeList<'a> {
     entries: &'a mut [Decode],
     len: usize,

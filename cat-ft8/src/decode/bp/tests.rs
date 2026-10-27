@@ -195,3 +195,14 @@ fn tanh_and_atanh_helpers() {
     }
     assert!(twice_atanh(1.0).is_finite() && twice_atanh(1.0) > 16.0);
 }
+
+#[test]
+fn the_check_table_is_the_parity_check_matrix_0_based() {
+    for (c, row) in PARITY_CHECKS.iter().enumerate() {
+        let want: std::vec::Vec<u8> = row.iter().filter(|&&k| k != 0).map(|&k| k - 1).collect();
+        let (v, n) = check(c);
+        assert_eq!(&v[..n], &want[..], "check {c}");
+        assert!(n == 6 || n == 7);
+        assert!(v[n..].iter().all(|&x| x == 0));
+    }
+}
