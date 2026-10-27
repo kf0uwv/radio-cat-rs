@@ -1,0 +1,69 @@
+cat-ft8
+Copyright 2026 Matt Franklin
+Licensed under the Apache License, Version 2.0.
+
+This crate implements FT8 from the published protocol description:
+S. Franke, B. Somerville and J. Taylor, "The FT4 and FT8 Communication
+Protocols", QEX, July/August 2020. It contains no WSJT-X source code.
+
+-------------------------------------------------------------------------------
+Third-party material
+-------------------------------------------------------------------------------
+
+ft8_lib — https://github.com/kgoba/ft8_lib (commit 9fec6ca398)
+
+  Consulted: ft8_lib's CRC, message packing, encoder (LDPC encoding and
+  tone mapping) and waveform code.
+  Copied: the (174,91) LDPC generator matrix and parity-check matrix
+  (src/ldpc_tables.rs), transcribed mechanically from ft8/constants.c.
+  Followed: the waveform's extension of the first and last tone beyond the
+  transmission (src/waveform/mod.rs), which the QEX paper does not specify.
+  Taken from it: the callsign-hash multiplier 47 055 833 459 and the order
+  of the 38-character callsign alphabet, which the QEX paper defers to
+  reference programs it does not print (the free-text alphabet is printed
+  in the paper and matches). The standard-call character sets match.
+  The CRC, packing, LDPC encoding, tone mapping and synthesis code was
+  written from the QEX paper; no ft8_lib function was translated. The tables and hash multiplier
+  originate in WSJT-X; they are interoperability constants of the protocol,
+  used here as facts.
+
+  Decoder (src/decode/): ft8_lib's spectrogram (its 2x oversampling in
+  time and frequency), sync scoring, soft-bit normalisation and LDPC
+  belief-propagation decoder were consulted. The decoder was written from
+  the QEX paper and the literature cited in the repository's ADR 0024 (the
+  short-time Fourier transform, Cooley-Tukey FFT, Costas arrays, max-log
+  soft bits, belief propagation and normalised min-sum); its scores,
+  suppression rule, scaling, refinement and SNR estimate are its own, and
+  no ft8_lib function was translated.
+
+  MIT License
+
+  Copyright (c) 2018 Kārlis Goba
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+-------------------------------------------------------------------------------
+Test data
+-------------------------------------------------------------------------------
+
+tests/data/encoder-vectors.jsonl, encoder-vectors-extra.jsonl and
+encoder-vectors-random.jsonl were generated from WSJT-X 3.0.0-rc1 `ft8sim`
+output: for each input message, the payload bits, channel symbols and
+message text that program printed. They are used only as black-box
+reference values.

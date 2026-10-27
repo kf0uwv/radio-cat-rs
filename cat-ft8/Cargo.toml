@@ -1,0 +1,72 @@
+[package]
+name = "cat-ft8"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "FT8 from the published protocol: message packing, CRC-14, LDPC (174,91), Costas/Gray tone mapping, GFSK waveform synthesis and a single-pass decoder, in a no_std, allocation-free core."
+
+# A pure library at the bottom of the graph, beside `cat-morse` and
+# `cat-layout`: no local crate dependencies, no async runtime, no device
+# audio and nothing radio-specific. See docs/adr/0024-cat-ft8.md.
+#
+# The core is `#![no_std]` in every build, allocates nothing and uses only
+# `f32` arithmetic, so it runs on microcontrollers as well as hosts. CI
+# proves that with a thumbv8m library build, a build on the minimum Rust,
+# and a bare-metal link with no allocator that rejects f64 helpers
+# (`embedded-check/check.sh`).
+#
+# No dependencies. The waveform and decoder need only `f32` `+ − × ÷`,
+# comparisons, integer operations and in-crate polynomials: the GFSK
+# pulse, sine, FFT twiddles, window and level-to-power table are static
+# data generated with `libm` and checked bit-for-bit by tests, so `libm`
+# is a dev-dependency only (ADR 0024).
+[dependencies]
+
+[features]
+# `std` (default) adds conveniences only: `std::error::Error`, WAV input
+# and output, and the `cat-ft8-encode` and `cat-ft8-decode` binaries. The
+# core never depends on it.
+# `profile` builds the measurement examples (`encode_bench`,
+# `frontend_bench`, `decode_bench`) and makes the decoder's stage modules
+# (`decode::sync`, `decode::soft`, `decode::bp`) public for them. Those
+# modules are UNSTABLE: not part of the crate's API, and they may change in
+# any release. The feature does not change results; CI builds it with
+# `cargo test -p cat-ft8 --features profile`.
+default = ["std"]
+std = []
+profile = ["std"]
+
+[dev-dependencies]
+serde_json = { workspace = true }
+# Regenerates and checks the static waveform tables.
+libm = { version = "=0.2.16", default-features = false }
+
+[[bin]]
+name = "cat-ft8-encode"
+path = "src/bin/cat-ft8-encode.rs"
+required-features = ["std"]
+
+[[bin]]
+name = "cat-ft8-decode"
+path = "src/bin/cat-ft8-decode.rs"
+required-features = ["std"]
+
+[[example]]
+name = "encode_bench"
+required-features = ["profile"]
+
+[[example]]
+name = "noisy_slot"
+required-features = ["std"]
+
+[[example]]
+name = "frontend_bench"
+required-features = ["profile"]
+
+[[example]]
+name = "decode_bench"
+required-features = ["profile"]

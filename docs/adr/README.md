@@ -29,6 +29,7 @@ never reused.
 | [0021](0021-cat-morse.md) | `cat-morse`: radio-independent Morse (codec, timing, synth, decoder, scenarios, scoring) — no radio, no device audio, no runtime; keying and scripts bit-identical per seed on every platform | Accepted (2026-10-06) |
 | [0022](0022-queue-bypassing-ptt-release.md) | A PTT release that does not wait for the broker queue: owned, release-only duplicates of the port's modem lines (amends 0003) | Accepted (2026-10-06) |
 | [0023](0023-cw-capability.md) | CW over the native protocol: optional `CwCapability`, a server-enforced armed transmit session (power clamp, server-sent ID, key-down cap), and an abort that never waits behind a send | Accepted (2026-10-07) |
+| [0024](0024-cat-ft8.md) | `cat-ft8`: FT8 from the published protocol, no WSJT-X source; `no_std`, allocation-free, `f32` core that is bit-identical on every platform; WSJT-X tools as black-box test oracles only | Accepted (2026-10-26); decoder amendment accepted (2026-10-26) with estimated figures |
 
 ## Repository status
 
