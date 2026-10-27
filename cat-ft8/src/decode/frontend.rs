@@ -344,7 +344,9 @@ impl<'a, L: Level> Spectrogram<'a, L> {
             let x = sample(k);
             if !x.is_finite() {
                 self.sanitised += 1;
-            } else if x.abs() > INPUT_LIMIT {
+            } else if !(-INPUT_LIMIT..=INPUT_LIMIT).contains(&x) {
+                // (A range, not `f32::abs`: that is in `core` only from
+                // Rust 1.85, above the crate's minimum.)
                 self.clamped += 1;
             }
         }

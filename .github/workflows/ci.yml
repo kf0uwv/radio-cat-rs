@@ -115,6 +115,14 @@ jobs:
           cargo clippy -p cat-ft8 --no-default-features --target thumbv8m.main-none-eabihf -- -D warnings
           CARGO_TARGET_DIR=target/embedded-check cat-ft8/embedded-check/check.sh
 
+      - name: cat-ft8 library on its minimum Rust (1.75)
+        # The crate's rust-version is 1.75; newer `core` methods (such as
+        # `f32::abs`, in `core` only from 1.85) must not slip into the
+        # no_std library. Tests and binaries may use the CI toolchain.
+        run: |
+          rustup toolchain install 1.75 --profile minimal
+          cargo +1.75 build -p cat-ft8 --no-default-features --lib
+
       - name: cat-ft8 feature combinations and docs
         # Default-off code is code CI does not otherwise build (ADR 0024):
         # the profile feature (bench example) and the host build without
