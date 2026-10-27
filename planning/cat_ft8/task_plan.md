@@ -621,6 +621,166 @@ failing candidates, then sum-product versus min-sum as the host default;
 continuing past a CRC-failing codeword; normalised sync threshold with a
 smaller K; multi-pass API additions.
 
+## Phase 3: single-pass improvements that change results — APPROVED (2026-10-27)
+
+Status: **approved by the user on 2026-10-27**, revised as the architects
+asked. Order: E0 → E1 → E3; E2 and E4 are measurements only in this
+phase. A checkpoint follows every step; E0 is reviewed before E1 starts.
+
+### Goal
+
+Faster single-pass decoding on hosts (and evidence for the small-target
+choice) through changes that alter decode results, each its own measured
+change behind paired gates. Nothing here adds a pass, subtraction or
+a-priori decoding. Speed is headroom for later work, so a lost decode
+weighs more than a saved millisecond.
+
+### Ground rules for every step
+
+- **One change per step**, its own commit(s), progress and findings
+  entries, and a checkpoint. A step that fails a gate or misses its cost
+  threshold is reverted and recorded.
+- **Paired results, saved.** Old and new decoders run on the *same*
+  seeded slots. Results are saved per slot and per transmitted message,
+  keyed by set and seed, so any later commit pairs against a saved
+  baseline and the files are the evidence for re-pins.
+- **Measurement sets (encoder-made, seeded; in the decode bench, not in
+  `cargo test`):**
+  - sweep: one signal per slot, random offsets, −22…−15 dB in 0.5 dB
+    steps, 1 000 slots per point;
+  - crowded: 10, 20 and 40 distinct messages per slot (−16…+6 dB),
+    200 slots each, compared **per transmitted message** (each message
+    of a slot is one pair; overlapping signals are separate messages,
+    and a message counts as decoded when its payload is in the output);
+  - edges: early and late signals (±1.6…±2.4 s), band edges, partial
+    slots;
+  - empty: the bulk inputs (noise, weak and strong carriers, clipped,
+    floored, impulsive);
+  - a **fresh seed block** of sweep and crowded, used only to confirm a
+    chosen value;
+  - both configurations (`HOST`, `SMALL`) unless a step names one.
+- **Decode gate ("no loss beyond noise")**, per set and never traded
+  between sets: with b = pairs decoded by the old decoder only and c =
+  pairs decoded by the new only, b − c ≤ 2·√(b + c) over the set, and
+  b − c ≤ 3·√(b + c) at every point (every sweep SNR, every crowded size,
+  every edges case). The sweep's 50% point may not move by more than
+  about 0.05 dB (bootstrap confidence interval reported).
+- **False-decode gate:** zero on the empty set and in the bulk run;
+  everywhere else the new decoder never has more false decodes than the
+  old at any point. Every false decode, old or new, gets a findings
+  entry. E0 records the baseline counts.
+- **Choosing a value (k, K):** the value chosen on the main seeds is
+  confirmed on the fresh seed block; if it does not pass there, the
+  next more conservative value is taken (and confirmed the same way).
+- **Cost:** times are the median of at least five runs (interleaved A/B,
+  loop-aligned builds), alongside deterministic counts — rounds per
+  candidate, candidates through belief propagation, image sizes, stack
+  frames. Thresholds are minimums, each measured against the previous
+  accepted step; host figures are provisional until measured on the
+  target class. No other cost (time per stage, memory, flash, stack)
+  may worsen by more than 3%.
+- **External acceptance per step**, outside this repository.
+- **CLI compatibility:** output format version 0 unchanged (same keys,
+  same meaning); `--config host|small`, `--raw` and `--profile` keep
+  their behaviour; the profile line may only gain keys. No new CLI flag:
+  new settings are reached through `DecodeConfig` and the bench.
+
+### Pinning
+
+- The existing golden decode hashes and counts stay, as pins of the
+  decoder with the new features **off** (stall off, 200 candidates).
+  Tests run that setup explicitly.
+- Each step that changes a preset adds pins for the **new defaults**
+  (hashes, counts, floors) in the same commit, each commented with the
+  step and date.
+- Findings record, per golden slot and setup, the messages gained or
+  lost and, for each lost message, whether it is truly lost or still
+  decoded through another candidate; and any field that moved
+  (frequency, dt, SNR, rounds).
+- Floors for a new default are set from its measured counts; a floor
+  below the "off" floor needs the paired evidence quoted in the commit
+  message.
+- The belief-propagation state hash pins both stall off (as now) and
+  stall on, with the round at which it stopped.
+- A pin changed without a findings entry is a defect.
+
+### API decisions
+
+- `DecodeConfig` gains `stall_rounds: u8` (0 = off) and
+  `const fn with_stall_rounds`, validated (at most `max_rounds`).
+- The unsatisfied-check count is computed only when stall is on, so the
+  "off" path costs nothing extra.
+- E3 changes a preset's `candidates` value, not the `CANDIDATES`
+  constant (which stays the buffer size recommendation).
+- A preset change updates the `HOST`/`SMALL` docs and ADR 0024 in the
+  same step.
+- `SMALL` may get its own k, marked provisional until instruction counts
+  on the small target exist; it is enabled only if it passes its own
+  gates.
+- `bp::decode_soft` (profile-exposed, unstable) may change signature.
+
+### Steps
+
+E0. [ ] **Paired measurement tooling and baseline** (results identical).
+        Bench modes that run two configurations on the same seeded slots
+        of each set, save per-slot and per-message results keyed by set
+        and seed, and print the paired tables (b, c, the sign-test
+        verdict per point and per set), false decodes, the 50% point with
+        its bootstrap interval, and the deterministic cost counts; a
+        crowded-slot generator with ground truth; the fresh seed block.
+        Baseline for `HOST` and `SMALL` saved and summarised in findings
+        (50% point, crowded rates per size, edges, false decodes with an
+        entry each, rounds per candidate, time).
+    ◆ Checkpoint E0 (results identical; reviewed before E1).
+E1. [ ] **Early stop of failing candidates.**
+        - Hypothesis: a candidate that will not converge shows it early —
+          its unsatisfied-check count stops improving — so stopping after
+          k rounds without improvement saves most belief-propagation time
+          at a loss within noise.
+        - Change: `stall_rounds` as above; belief propagation tracks the
+          best unsatisfied-check count and stops when it has not improved
+          for k rounds (within `max_rounds`); the failure is still
+          `NotConverged`.
+        - Measurement: k ∈ {2, 3, 4, 5, 6, 8, 10, off}, and fixed caps of
+          10, 15 and 20 rounds for comparison, for both rules; every
+          gate; rounds at which successful decodes converge; chosen k
+          confirmed on the fresh seeds.
+        - Acceptance: every gate, and belief-propagation time at least 20%
+          lower on crowded slots for `HOST` than the E0 baseline. `SMALL`
+          gets its own k (provisional) if it passes its own gates.
+        - Pinning as above; the state hash adds the stall-on case.
+    ◆ Checkpoint E1.
+E2. [ ] **Host check-node rule — measurement only.** With the accepted
+        early stop, sum-product versus min-sum for `HOST`, each with its
+        own k, paired on every set, with costs. The default does not
+        change in this phase; the numbers go to findings for a later
+        decision (sum-product is also the better input for later
+        ordered-statistics decoding). Re-measured after E3.
+    ◆ Checkpoint E2.
+E3. [ ] **Fewer candidates.**
+        - Hypothesis: most of the 200 candidates are noise; a smaller
+          preset `candidates`, or a threshold on a normalised sync score,
+          removes them without losing decodes.
+        - Measurement, in order: `candidates` ∈ {200, 150, 120, 100, 75}
+          with the accepted early stop; then, only if that alone does not
+          pass, a normalised threshold (each candidate's score relative to
+          a robust spread of the slot's local-maximum scores, cut-off
+          swept). Chosen value confirmed on the fresh seeds.
+        - Acceptance: every gate, and total host time at least 10% lower
+          than after E1. `SMALL` follows only if it passes its own gates.
+        - Pinning as above. After E3, E2's measurement is repeated.
+    ◆ Checkpoint E3.
+E4. [ ] **Continuing past a CRC-failing codeword — measurement only.**
+        Results identical: count CRC failures per candidate and per slot
+        on every set; for messages not decoded, how often a candidate on
+        them failed by CRC; and, by running further rounds in the bench
+        only, how many extra codewords would be reached and how many of
+        them would be wrong. Expected false-decode rate stated (a random
+        codeword passes the 14-bit CRC about once in 16 384). Any
+        implementation is a later, separate decision with a much larger
+        empty-set run.
+    ◆ Checkpoint E4; ◆◆ results to the user.
+
 ## Later (not in this round)
 
 - Contiguous codeword layout and table CRC, as profiled optimisations that

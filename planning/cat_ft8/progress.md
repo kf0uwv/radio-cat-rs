@@ -566,6 +566,25 @@
   only) and "n/a" for N = 0; ADR frame (2 544 B now that `q` is built
   in place; 2 568 B after pass 1) and post-pass cost.
 
+## Session: 2026-10-27 (Phase 3 plan)
+
+- Phase 2 closed and pushed (tip 724e89b). Phase 3 (single-pass changes
+  that alter results: early stop, host rule, fewer candidates, CRC
+  continuation as a measurement first) drafted in the plan; awaiting
+  approval, no code.
+
+- CRLF fix for the two generated-table tests committed (d768627) after
+  the Windows CI run failed on them.
+- Phase 3 plan approved by the user (2026-10-27), revised as the
+  architects asked: order E0 → E1 → E3 with E2 and E4 measurement-only;
+  a checkpoint after every step (E0 reviewed before E1); paired results
+  saved per slot and per message; crowded compared per message;
+  false-decode gate (zero on empty and bulk, new ≤ old elsewhere, an entry
+  per false decode); chosen values confirmed on fresh seeds; 50% point
+  within about 0.05 dB; cost as medians of five runs plus deterministic
+  counts, thresholds against the previous step; "off" pins kept, new pins
+  for new defaults; `stall_rounds: u8` API; no CLI flag. E0 not started.
+
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
 |-----------|-------|---------|------------|
