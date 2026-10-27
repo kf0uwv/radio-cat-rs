@@ -114,8 +114,9 @@ fn tables_source() -> std::string::String {
 
 #[test]
 fn tables_file_is_exactly_the_generator_output() {
+    // Line endings aside: a Windows checkout may turn `\n` into `\r\n`.
     assert_eq!(
-        include_str!("tables.rs"),
+        include_str!("tables.rs").replace("\r\n", "\n"),
         std::format!("{}\n", tables_source())
     );
 }

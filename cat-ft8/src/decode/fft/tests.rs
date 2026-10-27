@@ -153,7 +153,11 @@ fn print_decode_tables() {
 
 #[test]
 fn decode_tables_file_is_exactly_the_generator_output() {
-    assert_eq!(include_str!("../tables.rs"), tables_source());
+    // Line endings aside: a Windows checkout may turn `\n` into `\r\n`.
+    assert_eq!(
+        include_str!("../tables.rs").replace("\r\n", "\n"),
+        tables_source()
+    );
 }
 
 #[test]
