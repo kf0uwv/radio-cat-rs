@@ -41,12 +41,12 @@ const C9: f32 = 0.320_598_9;
 #[inline]
 pub(crate) fn log2(x: f32) -> f32 {
     let bits = x.to_bits();
-    let mut e = ((bits >> 23) & 0xff) as i32 - 127;
-    let mut m = f32::from_bits((bits & 0x007f_ffff) | 0x3f80_0000); // [1, 2)
-    if m > SQRT2 {
-        m *= 0.5; // exact
-        e += 1;
-    }
+    let e0 = ((bits >> 23) & 0xff) as i32 - 127;
+    let m0 = f32::from_bits((bits & 0x007f_ffff) | 0x3f80_0000); // [1, 2)
+                                                                 // Selects rather than a branch, so a loop over values can vectorise.
+    let high = m0 > SQRT2;
+    let m = if high { m0 * 0.5 } else { m0 }; // exact
+    let e = e0 + i32::from(high);
     let z = (m - 1.0) / (m + 1.0);
     let z2 = z * z;
     let series = z * (C1 + z2 * (C3 + z2 * (C5 + z2 * (C7 + z2 * C9))));
@@ -82,15 +82,20 @@ const E7: f32 = 0.000_015_252_734;
 /// omitted term below 1.5e-6 relative).
 #[inline]
 pub(crate) fn exp2_neg(y: f32) -> f32 {
-    if y.is_nan() || y < -126.0 {
-        return 0.0;
-    }
-    let y = if y > 0.0 { 0.0 } else { y };
+    // Selects rather than branches, so a loop over values can vectorise:
+    // out-of-range lanes compute on 0.0 and are replaced by 0.0 at the end.
+    let in_range = y >= -126.0; // false for NaN
+    let y = if !in_range || y > 0.0 { 0.0 } else { y };
     let t = y as i32; // truncates toward zero
     let n = if (t as f32) > y { t - 1 } else { t };
     let f = y - n as f32;
     let p = 1.0 + f * (E1 + f * (E2 + f * (E3 + f * (E4 + f * (E5 + f * (E6 + f * E7))))));
-    p * f32::from_bits(((n + 127) as u32) << 23)
+    let r = p * f32::from_bits(((n + 127) as u32) << 23);
+    if in_range {
+        r
+    } else {
+        0.0
+    }
 }
 
 #[cfg(test)]

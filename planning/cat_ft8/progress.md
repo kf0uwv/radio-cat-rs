@@ -507,6 +507,28 @@
   names ADR 0024; stale test comment; bench prints n/a. Existing golden
   hashes, floors and bulk counts unchanged.
 
+## Session: 2026-10-27 (C: optimisation passes)
+
+- D12/D12a committed as eight commits (8f4876d..deff523). The user
+  approved section C (up to five optimisation passes, results
+  identical); plan written before any change.
+- Baseline (deff523, loop-aligned build, 40 crowded slots × 2,
+  interleaved, one process at a time): total 94.4 ms per slot — belief
+  propagation 70.7, feed 14.8, soft bits 3.2, sync 2.9, refine 1.3, SNR
+  0.1; 7.127 × 10⁹ instructions over 10 crowded slots. External identity
+  check of deff523 against the d47eb5f runs: identical on both sets;
+  golden 60/60. (The harness's parallel CPU means moved +11% / +3% with
+  no code change: too noisy to judge a pass.)
+- Pass 1 (kept): sum-product check updates computed over fixed eight
+  lanes (padding lanes 0.0, discarded) with the suffix products as an
+  array in the same order, and `exp2_neg`/`log2` written with selects
+  instead of branches; every used lane's operations are unchanged. A/B:
+  belief propagation 70.73 → 45.65 ms (−35.5%), total 94.45 → 69.23 ms
+  (−26.7%), other stages within ±1.2%; instructions −15.6%. Identity:
+  cargo tests, bulk run, crowded and sweep `--identical` (0 slots
+  differ; harness CPU −24% / −25%), golden 60/60. Link check: flash
+  +112 B (+0.13%), decoder-path frame 2 496 → 2 568 B (+2.9%).
+
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
 |-----------|-------|---------|------------|

@@ -578,6 +578,32 @@ D12a. [x] Cleanup after the D12 re-review (results identical except a
           (authorised), no push.
 C (after re-review, not in this round): up to five optimisation passes
 with identical results, starting with radix-specific FFT butterflies.
+
+## C: decoder optimisation passes (approved 2026-10-27)
+
+Up to five passes, one change each, results bit-identical. Per pass:
+`cargo test -p cat-ft8` (golden waveform and decode hashes, floors), the
+external identity check on the crowded and sweep synthetic sets against
+the d47eb5f baseline runs (`--identical`) and the golden-slot check. A
+pass is kept only if its targeted CPU (a stage time from `--profile` or
+`decode_bench cost`) or memory improves by more than 3% and nothing else
+worsens by more than 3%, judged by interleaved A/B runs with a
+loop-aligned build, and per-stage instruction counts (`perf stat -e
+instructions:u` on a single-stage bench mode) where placement noise is
+in doubt. Stop after two passes in a row under 3%. Rejected passes are
+reverted and recorded. Each kept pass is its own local commit. Early
+stopping or round caps change results and are not passes.
+
+Candidates in profile order, decided from the baseline profile:
+P1. [x] Belief propagation inner loops (same operations in the same
+        order): layout, bounds checks, hoisting, the static check tables.
+        Kept: sum-product check updates over fixed eight lanes with
+        branch-free `exp2`/`log2` selects, so they vectorise; BP −35.5%.
+P2. [ ] FFT: radix-specific butterflies with incremental twiddle
+        indices instead of the generic small DFT with a modulo per term,
+        only if the rounding is identical.
+P3–P5. [ ] Refined soft bits, sync search and others, as the profile
+        shows.
 Later single-pass work (changes results, each measured): early stopping of
 failing candidates, then sum-product versus min-sum as the host default;
 continuing past a CRC-failing codeword; normalised sync threshold with a

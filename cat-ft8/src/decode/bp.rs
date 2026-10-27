@@ -159,10 +159,11 @@ fn check(c: usize) -> (&'static [u8; 7], usize) {
 /// tanh(x / 2) for any finite x.
 #[inline]
 fn tanh_half(x: f32) -> f32 {
-    let a = if x < 0.0 { -x } else { x };
+    let negative = x < 0.0;
+    let a = if negative { -x } else { x };
     let e = exp2_neg(-a * LOG2_E); // e^(−|x|)
     let t = (1.0 - e) / (1.0 + e);
-    if x < 0.0 {
+    if negative {
         -t
     } else {
         t
@@ -259,20 +260,32 @@ pub fn decode_soft(
             }
             match rule {
                 CheckRule::SumProduct => {
-                    let mut t = [0.0f32; 7];
-                    for j in 0..n {
-                        t[j] = tanh_half(q[j]);
+                    // Fixed eight lanes (unused ones hold 0.0 and are
+                    // discarded) so the tanh and atanh passes vectorise;
+                    // each used lane's arithmetic is unchanged.
+                    let mut t = [0.0f32; 8];
+                    let mut qq = [0.0f32; 8];
+                    qq[..7].copy_from_slice(&q);
+                    for (tj, &x) in t.iter_mut().zip(qq.iter()) {
+                        *tj = tanh_half(x);
                     }
-                    // Products of all the others, by prefix and suffix.
+                    // Products of all the others, by prefix and suffix, in
+                    // the same order as before.
                     let mut prefix = [1.0f32; 8];
                     for j in 0..n {
                         prefix[j + 1] = prefix[j] * t[j];
                     }
+                    let mut others = [0.0f32; 8];
                     let mut suffix = 1.0f32;
                     for j in (0..n).rev() {
-                        row[j] = twice_atanh(prefix[j] * suffix);
+                        others[j] = prefix[j] * suffix;
                         suffix *= t[j];
                     }
+                    let mut m = [0.0f32; 8];
+                    for (mj, &p) in m.iter_mut().zip(others.iter()) {
+                        *mj = twice_atanh(p);
+                    }
+                    row[..n].copy_from_slice(&m[..n]);
                 }
                 CheckRule::MinSum => {
                     let (mut min1, mut min2, mut at) = (f32::MAX, f32::MAX, 0);
