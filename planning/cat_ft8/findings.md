@@ -1471,3 +1471,97 @@ synthesises.
 
 **Not measured:** off-air audio; other hosts' speed; slots beyond 40
 signals.
+
+## S3 fix round (2026-10-28)
+
+Review fixes after the S3 checkpoint; decode results unchanged. Code at
+00c7cbe (the `Synth` conversion) and 0d3c912 (the rest); outputs in
+`~/.cache/cat-ft8-paired/s3b/`.
+
+- **`Synth` phase increment through `i32`, not `i64`.** On thumbv8m an
+  `f32 as i64` is a call to `__aeabi_f2lz`, which S3 had put on the
+  per-sample path of every image that synthesises. Exact for the
+  increment's range [0, 2³¹); waveforms and pins unchanged. `__aeabi_f2lz`
+  call sites back to d4fd2d3's (small 1, host 5, encoder-only 1); the ones
+  left are per-estimate conversions in `subtract` and `Placement::slot`,
+  which need the `i64` range, so `check.sh` cannot forbid the helper.
+  Flash: small 83 784 B, host 91 140 B, encoder-only 36 116 B (S3:
+  83 976, 91 264, 36 304). On this host the `i64` form was the faster:
+  `subcost` (interleaved, three rounds, `s3b/subcost-cast2.txt`) `i64`
+  2.94–3.03 ms per call, `i32` 3.11–3.25, `u32` 3.12–3.24; per 40-signal
+  slot (`s3b/cost/ablation.txt`, 40 slots, two rounds) mean 198–199 →
+  205–207 ms, worst 211–213 → 217–221 ms. The API changes below cost
+  nothing measurable (the same runs with them: mean 206 ms).
+- **One meaning for the multi-pass report.** `decode_passes` returns a
+  `PassesReport`: its `DecodeReport` is the whole slot (search, list and
+  rejection counts summed over the passes run; input counters from pass
+  1's feed), beside `passes_run`, subtractions made and failed, and why
+  no further pass ran (`PassesEnd`: all passes, nothing new, list full,
+  subtraction cap, stopped). The bench's records and the decode command's
+  profile carry the totals; the bench's CRC line is now summed (crowded
+  main 20, was 12 for pass 1 only), while its per-pass gate still uses
+  the base's single-pass rate.
+- **Further passes after a streamed pass 1:**
+  `Decoder::decode_further_passes[_staged]`; `decode_passes` is pass 1
+  then it. Pass 1 fed as `i16` blocks with `feed_i16`, then further
+  passes on `f32 = i16 / 32 768`, is bit-identical to `decode_passes`
+  (unit test, skip 0 and 12 000).
+- **Budgets.** The staged callback returns `ControlFlow`; a `Break` stops
+  after the current candidate pass or subtraction (`PassesEnd::Stopped`).
+  `DecodeConfig::max_subtractions` (default `None`) starts a further pass
+  only if its subtractions fit: the output is a prefix of the uncapped
+  one (tested with caps 0, pass 1's count and the slot's total).
+- **List overflow.** A pass that leaves the list full ends the passes
+  (truncated decodes are never subtracted, so a further pass would decode
+  them again and count them again). `DecodeConfig::max_decodes()`: 200
+  for `HOST`, above `HOST_DECODES` = 128 (validated to 40 signals; the
+  bench's sets never truncate).
+- **Smaller fixes:** `candidate_capacity()` = max(candidates, later)
+  always, the search's clamp removed; the list's counters one `Copy`
+  struct with one difference method; only successful subtractions
+  counted (`debug_assert`), failures in `PassReport::subtract_failed`;
+  one `PassStep::Subtract` event per decode subtracted (so a stop can
+  come between subtractions); `Subtraction` non-exhaustive; `Stage` and
+  `PassStep` documented as a profiling surface that grows;
+  `MAX_SEGMENTS` with `div_ceil` and every allowed segment checked; the
+  decode command's timings in fixed arrays; `"pass"` on every decode
+  line.
+- **Tests added:** the threaded split with a missing start (skip 12 000)
+  comparing the whole report; audio longer than a slot, and a skip at or
+  past the audio's end; an earlier-pass duplicate (one message sent on
+  two frequencies: pass 1 subtracts only the listed copy); the list-full
+  stop (lists of 6, of exactly pass 1's count, and one more); the cap;
+  stopping during pass 1 and after the first subtraction; `i16`
+  streaming; a segment with too few samples taking the previous
+  estimate (without the fill its last 100 samples keep −5.8 dB of the
+  signal; with it, below −30 dB).
+- **Pins.** Single-pass pins unchanged. The four multi-pass golden hashes
+  change only through the report (0x0f93…→0xdb5e…, 0x5b20…→0x3ff6…,
+  0x47cb…→0x4771…, 0x23c9…→0x7e11…): with the S3 report rebuilt from the
+  pass reports (pass 1's search counts, the list's decoded and
+  truncated) the test reproduces the S3 pins, so decodes, texts and
+  residuals are bit-identical.
+- **Paired acceptance re-recorded at commit 3ed1aa0** (clean tree; the
+  code is 0d3c912's; `s3b/accept`, `s3b/accept.compare.txt`): every set,
+  both blocks, PASS; against S3's `accept.compare.txt` only timings and
+  the now-summed CRC failures and dropped candidates differ. Records
+  equal to S3's `accept` with timings removed, each slot's report equal to
+  the sums over its unchanged pass records (38 900 records,
+  `s3b/accept.recdiff.txt`); the single-pass baselines equal S3's (4 100
+  records); pass 1 (`host,passes=1` and `small`, every default set and the
+  fresh sweep and crowded sets) record-for-record equal to `e3-final` and
+  `s2/identity` (34 800 records each). (S3's stored records came from a
+  tree with the S3 changes not yet committed; these replace them.)
+- **Cost** (`paired_bench slotcost host,passes=1 host 200 5`,
+  `s3b/cost/slotcost-final.txt`): worst 40-signal slot **224.7 ms**
+  (budget 250), mean 207.8 ms (S3: 213.7 / 197.5); single pass worst
+  41.3, mean 39.1 ms. Pass 2's subtraction 76.2 ms (was 69.7), pass 3's
+  33.0 (30.1): the conversion above.
+- **Decode command.** Release `cat-ft8-decode` built from this
+  repository's path, sha256 given in the progress log. On the set of 800
+  WAV slots (`host` and `small` defaults, plain, `--raw` and `--profile`,
+  timings removed) its output equals cea0bc2's but for the added
+  `"pass"` field (46 560 / 7 206 / 1 581 lines from passes 1 / 2 / 3, in
+  pass order) and the profile's slot counts, which equal the sums of the
+  unchanged per-pass keys, and the added `passes_end`; with
+  `host,passes=1` and `small` it equals cea0bc2's but for `"pass": 1`.

@@ -1212,6 +1212,10 @@ added `pass` field and the changed profile keys.
 15. Open-source wording in the planning files, NOTICE, crate docs, ADR.
 16. `slotcost` again: worst 40-signal slot ≤ 250 ms.
 
+Done 2026-10-28 (00c7cbe, 0d3c912, 3ed1aa0; findings, "S3 fix round").
+`check.sh` keeps allowing `__aeabi_f2lz`: `subtract` and
+`Placement::slot` need the `i64` range.
+
 ## Later (not in this round)
 
 - Contiguous codeword layout and table CRC, as profiled optimisations that

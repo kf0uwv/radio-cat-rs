@@ -847,6 +847,32 @@
 - Pass 1 identical: run records = e3-final (host,passes=1 and small);
   WAV output of the new binary with passes=1 = d4fd2d3's.
 
+## Session: 2026-10-28 (S3 fix round)
+
+- 00c7cbe: `Synth` phase increment through `i32` (no `__aeabi_f2lz` per
+  sample on Cortex-M; call sites back to d4fd2d3's). x86 `subtract` about
+  6% slower; worst 40-signal slot 224.7 ms (budget 250).
+- 0d3c912: `PassesReport` (whole-slot totals, passes run, why they
+  ended); `decode_further_passes` (pass 1 streamed, i16 identity tested);
+  `ControlFlow` stop and `max_subtractions`; stop on a full list,
+  `max_decodes()`; `candidate_capacity()` = max; one counts struct; only
+  successful subtractions counted; `"pass"` on decode lines; profile
+  timings in arrays; `Subtraction` non-exhaustive; `MAX_SEGMENTS`
+  `div_ceil`; tests for the review's gaps. Multi-pass pins re-pinned
+  (report only; old pins reproduced from the pass reports).
+- 3ed1aa0: NOTICE subtraction note at crate level; planning wording.
+- Identity: `run host` every set, both blocks, at clean 3ed1aa0 = S3's
+  records (reports = per-pass sums); pass 1 = e3-final; compare PASS.
+  Decode command on the 800 WAV slots = cea0bc2's but for `"pass"` and
+  the summed profile counts.
+- Release `cat-ft8-decode` built from this repository's path at the
+  final commit of this round: sha256
+  e762e43f3d4abd0f26c3cc89ca6ec73a0c9ae222b12f9bf8db660bc30e80ca6a.
+- CI-equivalent checks pass before each code commit (fmt, clippy
+  workspace and all features, workspace and release tests, thumbv8m
+  build and clippy, `check.sh` and `--stack`, MSRV 1.75, profile and
+  no-std tests, docs, bulk).
+
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
 |-----------|-------|---------|------------|
