@@ -305,10 +305,13 @@ impl Synth {
                 let env = if ramped { envelope(sym * ns + s) } else { 1.0 };
                 emit(phase, env);
                 // `freq` is positive and below half the sample rate (checked
-                // in `new`), so the increment is in [0, 2³¹) and converting
-                // through `i64` (one instruction) gives the same value as
-                // the saturating `as u32`.
-                phase = phase.wrapping_add((freq * TURNS_PER_HZ) as i64 as u32);
+                // in `new`), so the increment is in [0, 2³¹): converting
+                // through `i32` is exact there and gives the same value as
+                // a direct `as u32`. The signed conversion is a single
+                // instruction on Cortex-M (as `as u32` is) and shorter than
+                // `as u32` on x86-64; through `i64` it would be a library
+                // call on 32-bit targets.
+                phase = phase.wrapping_add((freq * TURNS_PER_HZ) as i32 as u32);
             }
             pos += s_end - s_start;
         }
