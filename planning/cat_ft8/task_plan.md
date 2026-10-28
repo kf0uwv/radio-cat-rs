@@ -616,6 +616,11 @@ C1. [x] Close-out after the pass reviews (results identical): pinned
         re-checked with instruction counts, `math.rs` wording,
         `tanh_half`); bench `stage` usage and N = 0; progress corrections;
         ADR frame and crowded-slot time.
+Later single-pass ideas, each a new hypothesis needing approval (not
+started): an early stop driven by the movement of the soft totals rather
+than the unsatisfied-check count; an early stop that allows longer
+plateaus once the unsatisfied-check count is already low (the E1
+losses converged after plateaus of 15+ rounds).
 Later single-pass work (changes results, each measured): early stopping of
 failing candidates, then sum-product versus min-sum as the host default;
 continuing past a CRC-failing codeword; normalised sync threshold with a
@@ -750,7 +755,8 @@ E0a. [x] E0 corrections after its checkpoint (decoder results identical):
          the module docs; percentile sorts once and handles empty input.
          Baseline re-recorded with file hashes, toolchain, CPU, flash,
          `.bss` and stack in findings.
-E1. [ ] **Early stop of failing candidates.**
+E1. [x] **Early stop of failing candidates.** Rejected (no stall
+        setting passes the gates with a 20% saving); reverted in 42e551e.
         - Hypothesis: a candidate that will not converge shows it early —
           its unsatisfied-check count stops improving — so stopping after
           k rounds without improvement saves most belief-propagation time

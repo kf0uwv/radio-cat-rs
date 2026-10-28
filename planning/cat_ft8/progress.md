@@ -613,6 +613,26 @@
   re-run of host pairs zero-discordant, PASS; failure cases exit 1.
   `last_rounds()` recorded as a deliberate public addition in the plan
   and ADR 0024.
+- E0 checkpoint passed. E1 started: the stall mechanism committed first
+  with stall off as the default (results identical): `DecodeConfig::
+  stall_rounds` (0 = off, at most `max_rounds`, `with_stall_rounds`),
+  `bp::decode_soft_stall` (`decode_soft` is the stall-off case, now
+  tests and benches only); the unsatisfied-check count is computed only
+  when stall is on. Tests: config bound; stall-on state pin with its stop
+  round (both rules stop after round 5 at stall 3, in the same state as
+  five stall-off rounds); stall changes no decode that converges. Golden
+  hashes, floors, stall-off state pin and bulk unchanged; off-path A/B
+  total −0.1%; flash +200 B, stack unchanged. Bench config key `stall=K`.
+- E1 sweep done (findings, "Phase 3 E1: early-stop sweep"): host stall
+  2–20 and caps 10/15/20, small stall 2–20, each on all main sets and the
+  fresh block against the E0a baseline. No host configuration passes;
+  small passes only at stall 20 (3% fewer rounds). Near-passing settings
+  save 18% of belief-propagation time at most (host stall 15). E1 fails
+  its gate as specified; no default change, nothing re-pinned, no
+  candidate binary. Stopped at the E1 checkpoint.
+- E1 rejected at its checkpoint; per the plan the mechanism (3c7bde9)
+  is reverted in 42e551e. Alternative stopping signals recorded as later
+  ideas. Next: E3 with stall off, against the E0a baseline.
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |

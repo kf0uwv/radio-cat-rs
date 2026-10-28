@@ -449,3 +449,77 @@ over a set, the band-edge cases — with its 50% point 0.034–0.038 dB
 worse. Failure cases exit with status 1: a set missing from one run, an
 empty directory, one slot's sample hash changed.
 
+## Phase 3 E1: early-stop sweep (2026-10-27)
+
+Each configuration ran all four main sets and the fresh block
+(sweep and crowded) with `paired_bench` at 3c7bde9 and was compared with
+the E0a baseline of its preset (`host` or `small`). Columns: b − c
+against the set limit for sweep (main / fresh) and crowded (main /
+fresh), points failing the per-point limit (L), the sweep's 50% point
+shift (main / fresh), and rounds per candidate on the sweep (baseline
+29.92). Empty: zero decodes in every configuration; no false decode
+anywhere, in any set or configuration.
+
+| config | sweep b − c / limit | crowded b − c / limit | edges | 50% shift dB | rounds |
+|---|---|---|---|---|---|
+| host stall 2 | 593/49 L8, 557/47 L7 | 145/24, 126/22 | 107/21 L7 | +0.307, +0.245 | 6.49 |
+| host stall 3 | 388/39, 354/38 | 86/18, 76/17 | 59/15 | +0.212, +0.169 | 8.73 |
+| host stall 4 | 283/34, 258/32 | 62/16, 53/15 | 38/12 | +0.153, +0.135 | 10.63 |
+| host stall 5 | 212/29, 185/27 | 46/14, 36/12 | 32/11 | +0.112, +0.101 | 12.30 |
+| host stall 6 | 168/26, 142/24 | 40/13, 30/11 | 24/10 | +0.094, +0.080 | 13.81 |
+| host stall 8 | 118/22, 99/20 | 26/10, 16/8 | 15/8 | +0.063, +0.054 | 16.51 |
+| host stall 10 | 90/19, 60/16 | 18/8, 13/7 | 13/7 | +0.046, +0.031 | 18.92 |
+| host stall 12 | 67/16, 45/13 | 10/6, 10/6 | 8/6 | +0.035, +0.020 | 21.10 |
+| host stall 15 | 36/12, 26/10 | 3/4, 3/4 | 6/5 | +0.017, +0.012 | 23.98 |
+| host stall 20 | 11/7, 9/6 | 0/0, 2/3 | 1/2 | +0.009, +0.002 | 27.77 |
+| host cap 10 rounds | 302/35, 280/34 | 65/16, 62/16 | 42/13 | +0.175, +0.144 | 9.98 |
+| host cap 15 rounds | 148/24, 118/22 | 25/10, 30/11 | 17/8 | +0.077, +0.076 | 14.96 |
+| host cap 20 rounds | 69/17, 57/15 | 17/8, 11/7 | 10/6 | +0.031, +0.035 | 19.95 |
+| small stall 2 | 595/49, 561/47 | 136/23, 121/22 | 93/19 | +0.315, +0.231 | 6.01 |
+| small stall 3 | 380/39, 335/37 | 89/19, 62/16 | 49/14 | +0.199, +0.146 | 8.33 |
+| small stall 4 | 262/32, 251/32 | 54/15, 42/13 | 27/10 | +0.137, +0.124 | 10.50 |
+| small stall 5 | 194/28, 169/26 | 43/13, 33/12 | 20/9 | +0.097, +0.086 | 12.52 |
+| small stall 6 | 152/25, 119/22 | 33/12, 24/10 | 17/8 | +0.072, +0.062 | 14.45 |
+| small stall 8 | 91/19, 64/16 | 21/9, 14/8 | 9/6 | +0.050, +0.037 | 18.01 |
+| small stall 10 | 54/15, 36/12 | 9/6, 9/6 | 7/5 | +0.027, +0.023 | 21.12 |
+| small stall 12 | 37/12, 23/10 | 6/5, 7/5 | 7/5 | +0.016, +0.012 | 23.69 |
+| small stall 15 | 16/8, 10/6 | 3/4, 3/4 | 4/4 | +0.008, +0.004 | 26.49 |
+| small stall 20 | 4/4, 2/3 | 1/2, 1/2 | 1/2 | +0.002, +0.002 | 29.01 |
+
+Every host configuration fails the no-loss gate on the sweep (main and
+fresh); only small with stall 20 passes every gate, saving 3% of the
+rounds. Cost (`paired_bench cost`, loop-aligned, median of five runs over
+the 42 spread crowded slots): host stall 10 cuts belief propagation by
+34.4% (total −23.2%), stall 15 by 18.3% (total −12.7%) — so no setting
+that comes near passing reaches the 20% target.
+
+Why: successful decodes near threshold converge slowly. In the host
+baseline sweep, 302 of 8 765 decodes needed more than 10 rounds, 148
+more than 15 and 69 more than 20 (crowded: 65, 25 and 17 of 9 672). The
+messages host stall 15 loses on the main sweep all needed 20–30 rounds
+in the baseline; their unsatisfied-check count plateaus for 15 rounds or
+more before they converge. None of them is decoded through another
+candidate (each is lost from the output), and the stall rule gains no
+message.
+
+Conclusion: early stop on a stalled unsatisfied-check count, as
+specified, cannot deliver a 20% belief-propagation saving without a loss
+the paired gates detect. No default change; nothing re-pinned. **E1
+rejected; the mechanism (3c7bde9) reverted in 42e551e.**
+
+Raw runs (outside the repository) are in `~/.cache/cat-ft8-paired/e1/`,
+one directory per configuration (`host_stall_K`, `host_rounds_N`,
+`small_stall_K`) with each comparison's output beside it
+(`<config>.compare.txt`); the baseline is `~/.cache/cat-ft8-paired/e0a/`.
+They were made at 3c7bde9 with, for each configuration CONFIG:
+
+```text
+paired_bench run CONFIG DIR sweep,crowded,edges,empty main
+paired_bench run CONFIG DIR sweep,crowded fresh
+paired_bench compare ~/.cache/cat-ft8-paired/e0a/<host|small> DIR
+paired_bench cost host host,stall=K 42 5      (loop-aligned build)
+```
+
+where CONFIG is `host,stall=K`, `host,rounds=N` or `small,stall=K`
+(the `stall` key existed only at 3c7bde9).
+
