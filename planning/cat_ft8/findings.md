@@ -934,3 +934,51 @@ two-pass oracle shows the margin a second further pass could add.
 Cost: each oracle pass is another full single-pass decode (the bench
 does not time it); `ceiling` took about 58 s per block for the host on
 16 threads, mostly the 14 000 alone decodes.
+
+## Bench split, and no-candidate misses told apart (2026-10-27)
+
+Results identical: `paired_bench` is split into
+`examples/paired_bench/{main,sets,record,compare,cost,ceiling}.rs`
+(the per-point verdict, the sweep bootstrap and the per-set comparison
+are functions now). `run` against `e3-final` with `compare` (both
+presets, every main set and the fresh sweep and crowded): b = c = 0
+everywhere, every 50% point and interval unchanged, PASS; the release
+`cat-ft8-decode` is unchanged (sha256 b3ead07b…dea93). Outputs in
+`~/.cache/cat-ft8-paired/s0b/`.
+
+Three report changes, each deliberate:
+
+- **No candidate, split.** A miss with no candidate on it is now one of
+  two causes: **no sync peak** on the message at all, or a **peak
+  dropped by the candidate limit** (the sync search is repeated without
+  the limit, outside the timed calls, and its peaks beyond the kept list
+  are checked with the same 4 Hz / 0.12 s tolerance). A
+  belief-propagation failure of a kind the bench does not know (the
+  failure type is non-exhaustive) is counted as "other failure" instead
+  of "not converged"; there were none.
+- **Not recorded.** A run saved before outcomes were recorded now says
+  "not recorded" for the `empty` set too (it printed zero misses, since
+  that set has no messages).
+- **Ceiling column.** `ceiling`'s "ceiling" column is now decoded by the
+  single pass, alone or an oracle pass (it was single pass or alone).
+  Since every crowded message decodes alone, its numbers do not change.
+
+`ceiling host main` again: every count equals the S0 run except the
+split rows. Host, main, the no-candidate misses split as (no sync peak
+/ dropped by the limit, with one and two oracle passes recovering):
+
+| size | no sync peak | dropped by the limit |
+|---|---|---|
+| 10 | 12 → 12 / 0 | 7 → 4 / 2 |
+| 20 | 86 → 67 / 15 | 60 → 33 / 24 |
+| 40 | 256 → 134 / 76 | 419 → 149 / 168 |
+| all | 354 → 213 / 91 | 486 → 186 / 194 |
+
+The same split over the `compare` runs (host): crowded main 354 / 486,
+fresh 351 / 502; sweep main 1 / 68, fresh 0 / 61 (the sweep's
+no-candidate misses are at its lowest points, where noise peaks outrank
+the signal's). By SNR (host main), the dropped peaks sit near the 50%
+point (205 of 318 no-candidate misses at +3…+6 dB, none above +18 dB);
+the misses with no peak spread further up (10 at +18…+21 dB, 3 at
++21…+24 dB), presumably where a neighbouring signal masks the peak
+(not measured).

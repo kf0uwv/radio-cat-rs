@@ -727,6 +727,16 @@
   `DecodeConfig::passes`), fixed subtraction order, acceptance bars,
   memory, risks and five decisions for the user. Stopped at the S0
   checkpoint for approval.
+- S0 review fixes, bench (results identical): `paired_bench` split into
+  `examples/paired_bench/`; per-point verdict, sweep bootstrap and
+  per-set comparison as functions; `ceiling` tracks the first decoding
+  pass per message; "other failure" for unknown belief-propagation
+  failures; "not recorded" for old runs of `empty`; no-candidate misses
+  split into no sync peak / peak dropped by the candidate limit; the
+  ceiling column includes the oracle passes. `compare` against
+  `e3-final`: b = c = 0, PASS, both presets; release binary unchanged.
+  `ceiling host main` matches S0 except the split rows (findings, "Bench
+  split, and no-candidate misses told apart").
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
