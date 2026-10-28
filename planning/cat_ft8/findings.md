@@ -925,12 +925,12 @@ there too.
 ceiling (100%); it is limited by how well the waveform is estimated
 and by the number of passes. With perfect waveforms one further pass
 reaches 91.0% (main) and 91.6% (fresh) on the host, and 90.9% and 91.5%
-on the small preset; two reach about 96.5–97%. So a crowded rate of
-about 91% is within reach of one further pass **only if** S2's
-subtraction comes close to the true waveform; a real estimate will leave
-residue, and the oracle has advantages a real decoder does not
-(constant amplitude, exact frequency, starts on a sample). The
-two-pass oracle shows the margin a second further pass could add.
+on the small preset; two reach about 96.5–97%. These oracle figures are
+a same-configuration reference, not a bound and not a target: a real
+estimate leaves residue, the oracle has advantages a real decoder does
+not (constant amplitude, exact frequency, starts on a sample), and a
+real pass decodes a different input. The two-pass oracle shows the
+margin a second further pass could add.
 Cost: each oracle pass is another full single-pass decode (the bench
 does not time it); `ceiling` took about 58 s per block for the host on
 16 threads, mostly the 14 000 alone decodes.

@@ -16,8 +16,8 @@ comparison with an external reference decoder, is not part of this
 repository's CI). Review of the whole decoder done; fix round D12 (A and
 B, results identical) approved by the user 2026-10-27, then up to five
 optimisation passes (C). Phase 3 (single-pass changes that alter
-results, E0–E4) done. Phase 4 (subtraction and further passes): S0 done;
-S1–S3 proposed, awaiting approval.
+results, E0–E4) done. Phase 4 (subtraction and further passes): S0 done
+and revised after review; S1–S3 proposed, awaiting approval.
 
 ## Hard constraints
 
@@ -789,7 +789,8 @@ E2. [x] **Host check-node rule — measurement only.** (Measured at
         off, at the E3 defaults — `HOST` 100 candidates, `SMALL` 75.)
     ◆ Checkpoint E2.
 E3. [x] **Fewer candidates.** (`HOST` 100, `SMALL` 75; paired gates and
-        external acceptance passed at those values.)
+        comparison with an external reference decoder passed at those
+        values.)
         - Hypothesis: most of the 200 candidates are noise; a smaller
           preset `candidates`, or a threshold on a normalised sync score,
           removes them without losing decodes.
@@ -817,12 +818,16 @@ E4. [x] **Continuing past a CRC-failing codeword — measurement only.**
         empty-set run.
     ◆ Checkpoint E4; ◆◆ results to the user.
 
-## Phase 4: subtraction and further passes — PROPOSED (2026-10-27)
+## Phase 4: subtraction and further passes — PROPOSED (2026-10-27, revised after review)
 
-Status: **S0 done (results identical); S1–S3 awaiting the user's
-approval.** No subtraction code is in the decoder. The ADR amendment
-draft is in ADR 0024 ("Amendment (draft): subtraction and further
-passes").
+Status: **S0 done (results identical) and revised after review; S1–S3
+awaiting the user's approval.** No subtraction code is in the decoder.
+The ADR amendment draft is in ADR 0024 ("Amendment (draft): subtraction
+and further passes"). Revision: the bench was split and its reports
+fixed (findings, "Bench split, and no-candidate misses told apart"), a
+wider crowded set was added and measured (findings, "Wider crowded set,
+measured"), the API was simplified, the step order changed (S2 before
+any sub-sample start) and the five open decisions were made.
 
 ### Goal
 
@@ -832,22 +837,32 @@ as it is today; further passes only add decodes. `HOST` gets a pass count
 above one only after paired acceptance; `SMALL` stays at one pass (the
 residual does not fit a 256 KiB part).
 
-### What S0 measured (findings, "Subtraction ceiling")
+### What S0 measured (findings, "Subtraction ceiling", "Bench split", "Wider crowded set")
 
-- Every crowded message decodes when alone in its slot (same noise), so
-  the ceiling of perfect subtraction on the in-repo crowded set is 100%
-  for both presets and both blocks: every crowded signal (−16…+6 dB) is
-  at least 3 dB above the single-pass 50% point. The ceiling does not
-  constrain on this set; the oracle passes do.
-- One oracle pass (remove what pass 1 decoded, with the true waveforms,
-  then decode again) takes the host from 69.1% to 91.0% (main) and 91.6%
-  (fresh) of crowded messages; a second oracle pass to 96.5% and 97.0%.
-  `SMALL` is within 0.2 points of the host. No oracle pass produced a
-  false decode or a duplicate.
-- Of the messages pass 1 misses, about 80% have a candidate on them that
-  did not converge and 20% have no candidate on them; CRC failures and
-  all-zero rejections are negligible. One oracle pass recovers about 77%
-  of the not-converged misses and about half of those with no candidate.
+The oracle passes remove what earlier passes decoded with the true
+waveforms (the slot rebuilt without them, same noise) and decode again
+with the same configuration. They are a **same-configuration oracle
+reference**, not a bound: a real further pass decodes a different input
+(residue, but also a different candidate list), and could in principle
+decode more.
+
+- **Crowded set** (10, 20, 40 messages, −16…+6 dB): every message decodes
+  alone in its slot (same noise), so the ceiling (decoded by the single
+  pass, alone or an oracle pass) is 100% for both presets and blocks;
+  every signal is at least 3 dB above the single-pass 50% point. One
+  oracle pass takes the host from 69.1% to 91.0% (main) and 91.6%
+  (fresh); a second to 96.5% and 97.0%. `SMALL` is within 0.2 points.
+- **Wider crowded set** (10, 20, 30, 40 messages, −22…+5 dB, its own
+  seeds): here the ceiling binds — the host decodes 62.5% (main) and
+  62.3% (fresh) in one pass, 81.8% and 82.0% with one oracle pass, 86.2%
+  and 86.4% with two; 89.3% and 89.8% are decoded alone or by some pass.
+  `SMALL` is within 0.3 points.
+- **Misses by cause** (host, crowded main): of pass 1's 4 328 misses,
+  3 486 have a non-converging candidate on them, 354 have no sync peak
+  on them, 486 have a peak that the candidate limit dropped, and 2 a
+  CRC failure. One oracle pass recovers 77% of the not-converged misses,
+  60% of those with no peak and 38% of those dropped by the limit. On
+  the wider set (host main) the same causes are 5 299 / 729 / 1 467 / 2.
 
 ### Ground rules for every step
 
@@ -862,126 +877,208 @@ builds, plus deterministic counts), with these additions:
   bit-identical to today's; each step proves it (release binary,
   golden hashes, `paired_bench compare` against the single-pass runs
   with b = c = 0).
-- **Oracle reference.** Every paired crowded result is also reported as
-  a share of the oracle's gain (S0's "oracle +1" and "+2" for one and
-  two further passes) and of the ceiling.
+- **Oracle reference.** Every paired result on the crowded and the
+  wider set is also reported as the share of the same-configuration
+  oracle's gain it recovers (real gain over the oracle's +1 or +2 gain,
+  for one or two further passes) and against the ceiling. A share above
+  100% is possible (a real pass decodes different input) and is
+  reported as measured, not capped. The oracle is re-run with `ceiling`
+  at whatever per-pass configuration S3 adopts (its later-pass candidate
+  count), so the share always compares like with like.
 - **No CLI flag.** The pass count is reached through `DecodeConfig` and
   the bench; output format version 0 keeps its keys; the pass number of
-  a decode appears only in profile and bench output.
+  a decode and every per-pass count appear only in profile and bench
+  output.
 
-### API decisions (to settle at approval)
+### API (to settle at approval)
 
 - **Pass 1 unchanged**: `start_slot`, `skip`, `feed`, `find_candidates`,
   `decode_candidate`, `DecodeList::push`/`merge` keep their signatures
-  and behaviour. `decode_candidate` keeps its signature.
-- **`Decoder::subtract(&self, audio: &mut [f32], decode: &Decode)`**
-  subtracts one decoded signal from the caller's residual, in place.
-  `audio[k]` is slot sample k (the indexing `feed` sees after `skip`);
-  a shorter buffer is a partial slot. It reads nothing but `audio`, the
-  decode and the configuration (no spectrogram), uses bounded stack
-  storage only (no new workspace buffer), and is deterministic.
-- **`Decoder::start_pass()`** clears the spectrogram and the candidate
-  list and keeps the slot framing (the same row origin, the skip and
-  input counts already reported); the caller then repeats the same
-  `skip` and feeds the residual from its start.
-- **The caller** feeds the residual again, runs `find_candidates`, and
-  decodes into the **same `DecodeList`**. `DecodeList::next_pass()`
-  restarts the candidate-index order check for the new pass and records
-  where the pass's entries begin (`pass_of(entry)` for profile and bench
-  use). Duplicate removal already compares against every entry, so a
-  payload decoded in an earlier pass is a duplicate, counted, never
-  output twice.
+  and behaviour.
+- **The residual** is the caller's: always the **full slot from slot
+  sample 0**, with the skipped region (the first `skip` samples) zero;
+  the caller feeds `&audio[skip..]`. A buffer shorter than a slot is a
+  slot cut short, as with `feed`.
+- **Each later pass** uses the existing calls: `start_slot()`,
+  `skip(skip)`, `feed(&residual[skip..])`, then `find_candidates` and
+  `decode_candidate` as in pass 1, into the same `DecodeList`. There is
+  no `start_pass`.
+- **`decode::subtract(audio: &mut [f32], decode: &Decode, band: Band)`**
+  (a free function, plus any setting S2 shows it needs) subtracts one
+  decoded signal from the residual in place. It reads only `audio`, the
+  decode and its arguments (no spectrogram), uses bounded stack storage
+  only (no new workspace buffer) and is deterministic. It becomes a
+  `Decoder` method only if S2 shows it needs decoder state.
+- **`DecodeList::next_pass()`** only resets the candidate-index order
+  check, so the new pass can push from index 0. The caller records the
+  list's length before each pass to know where the pass's entries begin
+  (bench and profile use only). Duplicate removal already compares
+  against every entry, so a payload decoded in an earlier pass is a
+  duplicate, never output twice.
 - **Fixed subtraction order**: after pass p, the decodes of pass p are
-  subtracted in list order (pass, then list index), on one thread. So
-  the split/threaded API stays bit-identical to one thread: candidates
-  may be decoded in parallel, subtraction is sequential.
-- **`DecodeConfig::passes: u8`** (1 = today, validated 1..=a small
-  maximum, `with_passes`), with a convenience
-  `Decoder::decode_passes(&mut self, audio: &mut [f32], scratch, list)`
-  that runs the loop above (pass 1 is `decode()` on the fed audio). The
-  presets keep 1 until S3's acceptance. Optional early end: a pass that
-  adds no decode ends the loop (deterministic).
+  subtracted in list order, on one thread. So the split/threaded API
+  stays bit-identical to one thread: candidates may be decoded in
+  parallel, subtraction is sequential.
+- **`DecodeConfig::passes: u8`**, validated 1..=3 (1 = today;
+  `with_passes`), and one candidate count for every later pass
+  (`with_later_candidates`, default to be chosen in S3; the candidate
+  buffer needs the larger of the two counts). Presets keep one pass
+  until S3's acceptance.
+- **`Decoder::decode_passes(&mut self, audio: &mut [f32], skip: usize,
+  scratch, list)`** runs the whole loop itself, pass 1 included: for
+  every pass `start_slot`, `skip`, `feed(&audio[skip..])`,
+  `find_candidates`, the decodes, and (before a further pass) the
+  subtraction of that pass's decodes. It **overwrites the caller's
+  buffer with the residual**: on return `audio` holds the slot minus
+  every decode of every pass but the last. A pass that adds no new
+  decode ends the loop early (deterministic). With one pass it is
+  `start_slot`, `skip`, `feed`, `decode` and leaves `audio` unchanged.
+- **`report()` after several passes.** `Decoder::report(&list)` keeps
+  its meaning — the last search and the last input fed, with the list's
+  counters — so after several passes it describes the last pass, not
+  the slot. The multi-pass report is defined as pass 1's report (input
+  counters, candidate counts, rejection and duplicate counts, all from
+  pass 1, as before) with `decoded` and `decodes_truncated` taken over
+  the whole list (the output); `decode_passes` returns exactly that. A
+  caller driving the passes by hand takes `report()` after pass 1 and
+  the list's length at the end. Per-pass candidate, decoded, rejection
+  and cross-pass duplicate counts go to profile and bench output only.
 - **Output format**: unchanged keys. `cat-ft8-decode` holds the residual
   (it already reads the WAV into memory) and uses the configuration's
   pass count; `--profile` gains per-pass keys (`pass<N>_*_seconds`,
-  decodes per pass), as profile keys may only be added.
+  per-pass counts), as profile keys may only be added.
+
+### Decisions (made 2026-10-27)
+
+1. **Amplitude**: the reference is built at unit amplitude and scaled
+   outside `Synth` by S2's estimated complex amplitude. `Synth` gets no
+   amplitude parameter.
+2. **Fading and drift**: a fading/drift set is added to the bench in S2
+   (amplitude fading at stated rates, slow frequency drift, starts
+   between samples). It is measured in S2 only; in S3 it is gated on
+   false decodes and duplicates, not on no-loss.
+3. **Cost**: one total budget per slot, not one per pass. A single pass
+   keeps ADR 0024's mean of ≤ 100 ms per crowded slot. Multi-pass: the
+   worst 40-signal slot ≤ 250 ms in total, the mean recorded. The
+   statistic is the maximum, over every 40-signal slot of the crowded
+   set's main block (all 200, not a subset), of that slot's median
+   across at least five interleaved runs, one thread. Alongside it, the
+   deterministic bound per pass: candidates × 30 rounds of belief
+   propagation, plus one `feed` of the slot, one sync search and the
+   subtraction of the previous pass's decodes.
+4. **A wider crowded set**: added and measured (`wide`: −22…+5 dB, 10,
+   20, 30 and 40 messages per slot, its own seeds; existing sets
+   unchanged). It is measured only, with no gate of its own, and its
+   measurement is a **precondition of S3's acceptance**.
+5. **Passes**: validated 1..=3, with the deterministic early stop when
+   a pass adds nothing. One candidate count applies to every later
+   pass; it is swept and confirmed on the fresh seeds.
 
 ### Steps
+
+Order: S2 first, with integer-sample starts; S1 only if S2 shows it is
+needed; then S3.
 
 S0. [x] **Clean-up and the subtraction ceiling** (results identical).
         E4's continuation code deleted (1870e8b reproduces it); misses by
         cause and CRC-based false-decode estimates in `run`/`compare`;
         `paired_bench ceiling` (alone decodes and oracle passes) on the
-        crowded set, both presets, both blocks. Findings: "Misses by
-        cause", "Subtraction ceiling".
+        crowded set, both presets, both blocks. After review: the bench
+        split into modules, no-candidate misses told apart (no sync peak,
+        peak dropped by the candidate limit), the ceiling column includes
+        the oracle passes, and the wider crowded set measured. Findings:
+        "Misses by cause", "Subtraction ceiling", "Bench split, and
+        no-candidate misses told apart", "Wider crowded set, measured".
     ◆ Checkpoint S0: this plan to the user for approval.
-S1. [ ] **Reference waveform.**
-        - Change: `Synth` gains a sub-sample start time (a fraction of
-          a sample, in [0, 1)) so a reference can match a signal that
-          does not start on a sample; a frequency is already fractional.
-          Amplitude: `Synth::new` already takes a constant peak
-          amplitude; S2's estimate is complex and varies slowly, so the
-          reference is built at unit amplitude from `fill_phase` (phase
-          and envelope) and scaled by S2. If S2 needs a time-varying
-          amplitude inside `Synth`, it is added here as an extra,
-          additive entry point (decision 1).
+S2. [ ] **Subtracting one signal** (integer-sample starts).
+        - Change: `decode::subtract` as above: from the decode's tones,
+          frequency and time offset, a fine time estimate (rounded to a
+          whole sample) and a fine frequency estimate on the residual,
+          then a smoothed complex amplitude (the residual times the
+          conjugate unit reference from `fill_phase`, averaged per
+          segment and interpolated), then the subtraction of the scaled
+          reference. Segment length, smoothing and estimator chosen by
+          measurement. The fading/drift set is added to the bench.
+        - Measurement: **residual suppression in dB** (residual energy
+          over signal energy in the signal's band and time span) per
+          condition — SNR (−20…+20 dB), dt (−2…+2.5 s, including
+          sub-sample offsets the integer start cannot follow), frequency
+          (band edges, fractional bins), fade rate and drift — reported
+          as median and spread per condition, beside the true-waveform
+          subtraction of S0; the timing part of the residue (the same
+          estimate with the true start) reported separately. Then, in
+          the bench only (no `DecodeConfig::passes` yet), one and two
+          further passes on the crowded, wider and fading sets with the
+          existing calls: decodes gained, false decodes, and **duplicates
+          suppressed per pass** — the main signal of subtraction quality,
+          since a later pass that re-decodes a subtracted payload means
+          the subtraction failed. Cost per subtraction.
+        - **No pass/fail bar on suppression.** S2 only reports: what
+          matters is the paired gain in S3, and a suppression threshold
+          set before measuring would be arbitrary. The one decision S2
+          makes from its numbers is S1's: if the timing residue is
+          above −30 dB in any condition, S1 is done; otherwise it is
+          not. Hard requirement: no change to any pass-1 output.
+    ◆ Checkpoint S2.
+S1. [ ] **Reference waveform: only what S2 needs** (conditional).
+        - Rationale: half a sample of start error (τ = 1/24 000 s) is a
+          phase error between tones of 2π·Δf·τ once the complex
+          amplitude has absorbed the common part — at most 2π × 43.75 Hz
+          × τ ≈ 0.011 rad across the eight tones, about −39 dB of
+          residue, of the same order through each tone change. That is
+          likely below what amplitude estimation in noise leaves, so
+          integer starts are expected to suffice; S2 measures it.
+        - Change, only if S2 measures timing residue above −30 dB:
+          `Synth` gains a sub-sample start (a fraction of a sample in
+          [0, 1)), additively. No amplitude parameter (decision 1).
         - Determinism: with a zero fraction every existing output is
-          bit-identical (the existing waveform golden hashes and the
-          `ft8sim` black-box vectors unchanged); new outputs (non-zero
-          fractions) get new pins, checked on every CI target.
+          bit-identical (the waveform golden hashes and the `ft8sim`
+          black-box vectors unchanged); non-zero fractions get new pins,
+          checked on every CI target.
         - Tests: a fractional start equals the integer-start waveform
           resampled (within a stated tolerance), continuity across block
           sizes, phase at the start, `no_std` and the MSRV build.
-    ◆ Checkpoint S1.
-S2. [ ] **Subtracting one signal.**
-        - Change: `Decoder::subtract` as above: from the decode's tones,
-          frequency and time offset, a fine time and frequency estimate
-          on the residual (sub-sample start, fractional frequency), then
-          a smoothed complex amplitude (the residual times the conjugate
-          unit reference, averaged per segment and interpolated), then
-          the subtraction of the scaled reference. The segment length,
-          smoothing and estimator are chosen by measurement.
-        - Measurement (bench, synthetic single signals): residual
-          suppression (residual energy over signal energy in the
-          signal's band and time span, dB) across SNR (−20…+20 dB), dt
-          (sub-sample offsets, −2…+2.5 s) and frequency (band edges,
-          fractional bins); and the same with the slot's other content
-          present (crowded slots, suppression of each decoded signal in
-          the oracle's place). Cost per subtraction. Compared with the
-          perfect (true-waveform) subtraction of S0.
-        - Acceptance: suppression stated per condition with its spread;
-          at least as good as needed for S3's gains (S3 decides); no
-          change to any pass-1 output.
-    ◆ Checkpoint S2.
+    ◆ Checkpoint S1 (if done); S2's suppression re-measured with it.
 S3. [ ] **Further passes, with paired acceptance.**
-        - Change: `DecodeConfig::passes`, `start_pass`,
-          `DecodeList::next_pass`, `decode_passes`, the CLI's use of the
-          pass count, golden pins for multi-pass setups.
-        - Measurement: passes ∈ {2, 3} on every set, both blocks, against
-          the single-pass runs; the candidate count swept again per pass
-          (pass 2 and later may need a different `candidates`, set per
-          pass or for all further passes), the chosen value confirmed on
-          the fresh seeds.
+        - Change: `DecodeConfig::passes` and the later-pass candidate
+          count, `DecodeList::next_pass`, `decode_passes`, the CLI's use
+          of the pass count, golden pins for multi-pass setups; `cost`
+          gains the per-slot statistic of decision 3.
+        - Measurement: passes ∈ {2, 3} on every set, both blocks (edges
+          too), plus the wider and fading sets, against the single-pass
+          runs; the later-pass candidate count swept, the chosen value
+          confirmed on the fresh seeds; `ceiling` re-run at the adopted
+          configuration for the oracle share.
         - HOST's default changes only after acceptance; SMALL stays at
           one pass.
-    ◆ Checkpoint S3; external acceptance outside this repository.
+    ◆ Checkpoint S3; ◆◆ results to the user.
 
 ### Acceptance bars (in this repository)
 
 - **Target:** on the crowded set, paired gains − losses ≥ 2·√(gains +
-  losses) on each block; the gain reported as a share of S0's oracle and
-  ceiling.
-- **False decodes:** none on the empty set and in the bulk run; the
-  expected false-decode estimate (CRC failures × 2⁻¹⁴ per slot) at most
-  passes × the single-pass rate, reported per pass; a duplicate in the
-  output is a defect.
+  losses) on each block. The headline is the share of the
+  same-configuration oracle's +1 and +2 gain recovered, on the crowded
+  and on the wider set (reported, may exceed 100%), with the ceiling
+  beside it.
+- **False decodes:** zero on crowded, sweep and edges (both blocks), per
+  pass, and on the fading set; still none on the empty set and in the
+  bulk run (which alone cannot test later passes: with nothing decoded
+  in pass 1 there is nothing to subtract and the early stop ends the
+  loop). The expected false decodes from the CRC (CRC failures × 2⁻¹⁴
+  per slot) at most passes × the single-pass rate, reported per pass. A
+  duplicate in the output is a defect.
 - **Other sets:** no loss beyond noise (the Phase 3 gate, per set and
-  per point); the sweep's 50% point shift ≤ 0.05 dB, with its bootstrap
-  interval.
-- **Cost:** recorded per pass (feed, sync, belief propagation,
-  subtraction); the worst crowded slot of the proxy (`paired_bench
-  cost`, which gains a per-slot maximum next to its medians) ≤ 250 ms
-  single-threaded on this host (decision 3).
+  per point). Sweep: the 50% point's shift and its whole bootstrap 95%
+  interval within ±0.05 dB (`compare`'s sweep gate is extended to the
+  interval in S3).
+- **Wider set:** measured and reported (gain, losses, share of the
+  oracle's gain, false decodes, duplicates); no gate of its own, but S3
+  is not accepted without it.
+- **Cost:** decision 3 — single pass mean ≤ 100 ms per crowded slot
+  (unchanged); multi-pass worst 40-signal slot ≤ 250 ms in total (the
+  per-slot median statistic), mean recorded; per-pass stage costs (feed,
+  sync, belief propagation, subtraction) and the deterministic bound
+  recorded.
 - **Memory:** the core's working memory and the caller's residual
   reported separately; flash growth on thumbv8m reported from the link
   check (a host image that calls `subtract`).
@@ -992,29 +1089,33 @@ S3. [ ] **Further passes, with paired acceptance.**
 ### Memory
 
 - The residual is the caller's: 180 000 `f32` samples, 720 000 B on a
-  host, beside the core's 234 680 B. The core gains no buffer; `subtract`
-  uses a bounded stack frame (reported).
-- A 256 KiB part cannot hold it (an `i16` residual is still 360 000 B),
-  so `SMALL` stays single-pass; the API is in the `no_std` core, and an
-  image that never calls it links none of it.
+  host, beside the core's 234 680 B. The core gains no buffer;
+  `subtract` uses a bounded stack frame (reported).
+- **Multi-pass gives up block-by-block streaming.** Pass 1 can still be
+  fed as the audio arrives, but every later pass needs the whole slot at
+  once, so multi-pass decoding is a host feature. A 256 KiB part cannot
+  hold the slot (an `i16` residual is still 360 000 B), so `SMALL` stays
+  single-pass; the API is in the `no_std` core, and an image that never
+  calls it links none of it.
 
 ### Risks
 
-- **Fading and drift.** The in-repo sets have constant amplitude, exact
+- **Fading and drift.** The crowded sets have constant amplitude, exact
   frequencies and integer-sample starts; real signals fade, drift and
   start between samples. Amplitude tracking (the smoothing length)
   trades noise against following a fade; a poor track leaves residue
-  that can mask weaker signals or, at worst, decode as something.
-  Measuring it needs a fading set in the bench (decision 2).
+  that can mask weaker signals or, at worst, decode as something. The
+  fading/drift set (decision 2) measures it.
 - **Speed ratio to small targets** is unmeasured: the per-pass cost is
   known only on this host. Nothing in this plan targets a
   microcontroller.
-- **The oracle is optimistic.** It removes the true waveforms; S2's
-  estimates will leave residue, so S3's gain will be below S0's oracle.
+- **The oracle is a reference, not a promise.** It removes true
+  waveforms; S2's estimates will leave residue, so S3's gain is expected
+  below the oracle's, though a share above 100% is possible.
 - **Order effects.** Overlapping signals bias each other's amplitude
   estimates; the fixed order keeps results deterministic, not optimal.
 
-### Ideas for a later tuning turn (not in S1–S3)
+### Ideas for a later optimisation step (not in S1–S3)
 
 - Recompute only the spectrogram bins a subtraction touched (the signal's
   band plus the window's spread, over its rows) instead of re-feeding the
@@ -1022,25 +1123,6 @@ S3. [ ] **Further passes, with paired acceptance.**
   results-changing step.
 - Subtracting during pass 1 as each decode arrives (not possible with
   the fixed-order rule as written).
-
-### Decisions needed from the user
-
-1. **S1's amplitude parameter.** `Synth::new` already has a constant
-   amplitude; the plan builds a unit reference and scales it outside
-   `Synth`. Accept that, or require a time-varying amplitude in `Synth`?
-2. **A fading/drift set** in the bench for S2 and S3 (Rayleigh-like
-   amplitude, slow frequency drift, sub-sample starts), as a measured
-   set without a gate, or with the no-loss gate?
-3. **The cost bar.** ADR 0024's host budget is a mean of ≤ 100 ms per
-   crowded slot; the 250 ms bar here is for the worst crowded slot.
-   Multi-pass may push the mean past 100 ms; does the ADR budget become
-   per pass, or is it raised?
-4. **A wider crowded set.** Every in-repo crowded message is at least
-   3 dB above the 50% point, so the ceiling is 100% by construction.
-   Add a crowded set reaching down to the threshold (e.g. −21…+6 dB) so
-   the ceiling becomes informative? (Existing sets unchanged.)
-5. **Passes measured**: 2 and 3, with an early end when a pass adds
-   nothing?
 
 ## Later (not in this round)
 

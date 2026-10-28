@@ -639,8 +639,8 @@
   on both blocks); cost host total −49.8%, small −40.7%. Candidate binary
   built; default change saved as a patch, not committed; stopped at the
   E3 checkpoint.
-- E3 external acceptance passed. Default applied, uncommitted for the
-  checkpoint reviews: the presets' `candidates` = 75 (`CANDIDATES`
+- E3 comparison with an external reference decoder passed. Default
+  applied, uncommitted for the checkpoint reviews: the presets' `candidates` = 75 (`CANDIDATES`
   unchanged, documented as the buffer size); golden setups now six — the
   existing three as explicit 200-candidate pins (hashes unchanged) and
   three new pins for the default (hashes 0x8fb5e2a8bab1a8c3,
@@ -742,6 +742,18 @@
   presets and blocks; existing sets unchanged (`crowded` main b = c = 0).
   Host main: single 62.5%, oracle +1 81.8%, +2 86.2%, ceiling 89.3%
   (findings, "Wider crowded set, measured").
+- Phase 4 plan and ADR 0024 amendment draft revised after review: no
+  `start_pass` (a later pass is `start_slot`, `skip`, `feed` of the
+  residual, which is always the full slot from sample 0); `subtract` a
+  free function; `DecodeList::next_pass` only resets the order check;
+  `decode_passes` runs every pass and overwrites the caller's buffer;
+  the multi-pass report defined; the oracle named a same-configuration
+  reference, not a bound; S2 (integer starts) before any sub-sample
+  start, with residual suppression reported per condition and no
+  pass/fail bar; the five decisions made (unit reference, fading/drift
+  set, one total cost budget, the wider set as a precondition of S3,
+  1..=3 passes with one later-pass candidate count); acceptance bars
+  tightened. Stopped at the S0 checkpoint for approval.
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
