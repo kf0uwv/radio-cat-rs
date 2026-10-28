@@ -633,6 +633,38 @@
 - E1 rejected at its checkpoint; per the plan the mechanism (3c7bde9)
   is reverted in 42e551e. Alternative stopping signals recorded as later
   ideas. Next: E3 with stall off, against the E0a baseline.
+- E3 sweep done (findings, "Phase 3 E3: candidate-count sweep"): host
+  and small with 150/120/100/75 candidates, all main sets and the fresh
+  block against E0a: every value passes every gate; 75 chosen (passes
+  on both blocks); cost host total −49.8%, small −40.7%. Candidate binary
+  built; default change saved as a patch, not committed; stopped at the
+  E3 checkpoint.
+- E3 external acceptance passed. Default applied, uncommitted for the
+  checkpoint reviews: the presets' `candidates` = 75 (`CANDIDATES`
+  unchanged, documented as the buffer size); golden setups now six — the
+  existing three as explicit 200-candidate pins (hashes unchanged) and
+  three new pins for the default (hashes 0x8fb5e2a8bab1a8c3,
+  0x9fd1ce9bbfce8d9f, 0x4356eee942f36a23; counts unchanged); floors
+  unchanged (same counts); the carrier all-zero test runs with 200
+  candidates (with 75 its candidates rank below the cut-off); HOST/SMALL
+  docs and ADR 0024 updated with the measured cost.
+- E3 decision: `HOST` 100, `SMALL` 75 (75 was the lowest value swept,
+  lost the host fresh-block message at candidate rank 78 and had a
+  one-signal external margin on 40-signal slots). The 75-candidate HOST
+  pin 0x8fb5e2a8bab1a8c3 is replaced by 0xb98914394016eb1f (100); the
+  two SMALL pins and the three 200-candidate pins are unchanged. The
+  200-candidate configurations join the rate floors (same counts); the
+  golden carrier slot asserts an all-zero rejection. Re-run at the
+  defaults against E0a: both pass every gate on both blocks (each loses
+  the main-sweep slot 4436 message, gains none, no false decode; 50%
+  shift +0.000 dB, bootstrap interval [+0.000, +0.000]). Cost: host
+  66.4 → 40.4 ms (−39.1%), small 44.8 → 26.3 ms (−41.4%) per crowded
+  slot. External acceptance of the 100-candidate binary passed (crowded
+  1 262 against 1 260, live 69 against 68, golden 60/60, nothing lost).
+  HOST/SMALL rustdoc trimmed to what each preset is; the figures moved
+  to ADR 0024, which now says `CANDIDATES` sizes the buffer for the
+  largest preset or `with_candidates` value. E2 is next, with stall off
+  at the new defaults.
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |

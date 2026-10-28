@@ -779,9 +779,12 @@ E2. [ ] **Host check-node rule — measurement only.** With the accepted
         own k, paired on every set, with costs. The default does not
         change in this phase; the numbers go to findings for a later
         decision (sum-product is also the better input for later
-        ordered-statistics decoding). Re-measured after E3.
+        ordered-statistics decoding). Re-measured after E3. (E1 was
+        rejected, so there is no early stop: E2 is measured with stall
+        off, at the E3 defaults — `HOST` 100 candidates, `SMALL` 75.)
     ◆ Checkpoint E2.
-E3. [ ] **Fewer candidates.**
+E3. [x] **Fewer candidates.** (`HOST` 100, `SMALL` 75; paired gates and
+        external acceptance passed at those values.)
         - Hypothesis: most of the 200 candidates are noise; a smaller
           preset `candidates`, or a threshold on a normalised sync score,
           removes them without losing decodes.

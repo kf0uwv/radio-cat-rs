@@ -140,8 +140,11 @@ fn configuration_and_buffer_sizes_are_checked() {
     assert_eq!(DecodeConfig::default(), DecodeConfig::HOST);
     assert_eq!(
         DecodeConfig::SMALL,
-        DecodeConfig::HOST.with_rule(CheckRule::MinSum)
+        DecodeConfig::HOST
+            .with_rule(CheckRule::MinSum)
+            .with_candidates(75)
     );
+    assert_eq!(DecodeConfig::HOST.candidates, 100);
     let c = DecodeConfig::HOST.with_max_rounds(5).with_min_score(9);
     assert_eq!((c.max_rounds, c.min_score), (5, 9));
 }
@@ -162,7 +165,7 @@ fn signals_decode_with_their_fields() {
     );
     assert_eq!(report.decoded, 3);
     assert_eq!(report.rows_filled, 184);
-    assert_eq!(report.candidates_kept, CANDIDATES);
+    assert_eq!(report.candidates_kept, DecodeConfig::HOST.candidates);
     assert_eq!(
         report.candidates_kept,
         report.decoded
@@ -345,7 +348,10 @@ fn a_carrier_converges_on_the_rejected_all_zero_word() {
     }
     add_noise(&mut slot, NOISE_RMS, 5);
     let mut b = Bufs::new(Band::DEFAULT);
-    let mut dec = b.decoder(DecodeConfig::HOST);
+    // The full buffer (`CANDIDATES`): with the presets' fewer candidates the
+    // carrier's candidates rank below the cut-off on this slot, and the
+    // guard is not exercised.
+    let mut dec = b.decoder(DecodeConfig::HOST.with_candidates(CANDIDATES));
     dec.feed(&slot);
     let mut store = [Decode::EMPTY; 8];
     let mut list = DecodeList::new(&mut store);

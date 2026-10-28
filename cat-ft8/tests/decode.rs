@@ -31,27 +31,40 @@ use cat_ft8::SLOT_SAMPLES;
 use common::*;
 
 /// The rate floors' configurations, both on the default band (the small
-/// setup's own band and capacity are covered by the golden entry).
-const CONFIGS: [(&str, DecodeConfig); 2] = [
+/// setup's own band and capacity are covered by the golden entry): the
+/// presets (100 candidates on the host, 75 with min-sum) and the same
+/// rules with the full 200-candidate buffer, so the larger setting keeps
+/// its floors as well as its golden hashes.
+const CONFIGS: [(&str, DecodeConfig); 4] = [
     ("HOST", DecodeConfig::HOST),
     ("min-sum on the default band", DecodeConfig::SMALL),
+    (
+        "HOST, 200 candidates",
+        DecodeConfig::HOST.with_candidates(200),
+    ),
+    (
+        "min-sum on the default band, 200 candidates",
+        DecodeConfig::SMALL.with_candidates(200),
+    ),
 ];
 
-/// (SNR dB, slots, minimum decodes with `HOST`, with min-sum on the default
-/// band): the
-/// counts measured when the floors were pinned (2026-10-26). Results are
+/// (SNR dB, slots, minimum decodes for each of [`CONFIGS`]): the counts
+/// measured when the floors were pinned (2026-10-26). Results are
 /// deterministic, so a lower count is a regression; raise a floor when a
 /// change improves it.
-const FLOORS: [(f64, usize, usize, usize); 3] =
-    [(-19.5, 20, 6, 6), (-18.5, 20, 16, 15), (-17.0, 20, 20, 20)];
+const FLOORS: [(f64, usize, [usize; 4]); 3] = [
+    (-19.5, 20, [6, 6, 6, 6]),
+    (-18.5, 20, [16, 15, 16, 15]),
+    (-17.0, 20, [20, 20, 20, 20]),
+];
 
 #[test]
 fn decode_rates_meet_their_pinned_floors() {
-    for (snr, n, host, small) in FLOORS {
+    for (snr, n, floors) in FLOORS {
         let slots: Vec<_> = (0..n)
             .map(|i| random_slot(snr, 50_000 + i as u64 + (snr * -100.0) as u64))
             .collect();
-        for ((name, config), floor) in CONFIGS.iter().zip([host, small]) {
+        for ((name, config), floor) in CONFIGS.iter().zip(floors) {
             let results = par_map(n, |i| {
                 let out = decode(&slots[i].0, *config);
                 let hit = out.decodes.iter().any(|d| d.payload == slots[i].1);
@@ -138,10 +151,32 @@ fn golden_slots() -> (Vec<Vec<f32>>, Vec<Payload>) {
 /// A decoder setup: name, band, configuration and decode capacity.
 type Setup = (&'static str, Band, DecodeConfig, usize);
 
-/// The golden setups: the host configuration; min-sum on the default band
-/// (the host buffers with the small configuration's rule); and the real
-/// small setup (200–2900 Hz, min-sum, 64 decodes).
-const SETUPS: [Setup; 3] = [
+/// The golden setups. The first three pin the decoder with the full
+/// 200-candidate buffer: the host configuration; min-sum on the default
+/// band (the host buffers with the small configuration's rule); and the
+/// real small setup (200–2900 Hz, min-sum, 64 decodes). The last three pin
+/// the same setups at the presets' defaults (100 candidates on the host,
+/// 75 with min-sum), which decode the same messages here; their hashes
+/// differ because the report counts (candidates kept and dropped) do.
+const SETUPS: [Setup; 6] = [
+    (
+        "HOST, 200 candidates",
+        Band::DEFAULT,
+        DecodeConfig::HOST.with_candidates(200),
+        HOST_DECODES,
+    ),
+    (
+        "min-sum on the default band, 200 candidates",
+        Band::DEFAULT,
+        DecodeConfig::SMALL.with_candidates(200),
+        HOST_DECODES,
+    ),
+    (
+        "small setup, 200 candidates",
+        Band::SMALL,
+        DecodeConfig::SMALL.with_candidates(200),
+        SMALL_DECODES,
+    ),
     ("HOST", Band::DEFAULT, DecodeConfig::HOST, HOST_DECODES),
     (
         "min-sum on the default band",
@@ -160,13 +195,26 @@ const SETUPS: [Setup; 3] = [
 /// Decodes in each golden slot (busy, carriers, cut) for each setup, all of
 /// them transmitted. Min-sum misses the −19 dB signal; the small band also
 /// excludes the signal at 3 090 Hz.
-const GOLDEN_COUNTS: [[usize; 3]; 3] = [[8, 0, 8], [7, 0, 7], [6, 0, 6]];
+const GOLDEN_COUNTS: [[usize; 3]; 6] = [
+    [8, 0, 8],
+    [7, 0, 7],
+    [6, 0, 6],
+    [8, 0, 8],
+    [7, 0, 7],
+    [6, 0, 6],
+];
 
 /// Golden hashes of the decode output of [`golden_slots`] for each setup.
-const GOLDEN: [u64; 3] = [
+/// The first three are unchanged since they were pinned (2026-10-26/27);
+/// the last three were pinned for the presets' default candidate counts
+/// (2026-10-27).
+const GOLDEN: [u64; 6] = [
     0x5eea_3477_73cf_df7d,
     0x1c82_6afc_8074_f291,
     0xdd6e_4bf0_8d7d_91f9,
+    0xb989_1439_4016_eb1f,
+    0x9fd1_ce9b_bfce_8d9f,
+    0x4356_eee9_42f3_6a23,
 ];
 
 #[test]
@@ -216,6 +264,9 @@ fn golden_decode_hashes() {
             sent.len()
         );
         assert_eq!(got, counts, "{name}");
+        // The carriers reach belief propagation and converge on the
+        // all-zero word, which is rejected rather than reported.
+        assert!(outs[1].report.all_zero_rejected > 0, "{name}");
         assert_eq!(hash, want, "{name}: golden decode hash {hash:#018x}");
     }
 }

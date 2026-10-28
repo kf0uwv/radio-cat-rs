@@ -523,3 +523,113 @@ paired_bench cost host host,stall=K 42 5      (loop-aligned build)
 where CONFIG is `host,stall=K`, `host,rounds=N` or `small,stall=K`
 (the `stall` key existed only at 3c7bde9).
 
+## Phase 3 E3: candidate-count sweep (2026-10-27)
+
+Stall off; baseline E0a (200 candidates). Each configuration ran all
+four main sets and the fresh block with `paired_bench` at 53e4a7d
+(`run <host|small>,candidates=K DIR …`, then `compare` against
+`~/.cache/cat-ft8-paired/e0a/<host|small>`); raw runs in
+`~/.cache/cat-ft8-paired/e3/` with each comparison beside them.
+
+| config | sweep b − c / limit (main, fresh) | crowded | edges | empty | 50% shift dB (main, fresh) | candidates through BP (crowded main) |
+|---|---|---|---|---|---|---|
+| host 150 | 1/2, 0/0 | 0/0, 0/0 | 0/0 | 0 | +0.000, +0.000 | 90 000 |
+| host 120 | 1/2, 0/0 | 0/0, 0/0 | 0/0 | 0 | +0.000, +0.000 | 72 000 |
+| host 100 | 1/2, 0/0 | 0/0, 0/0 | 0/0 | 0 | +0.000, +0.000 | 60 000 |
+| host 75 | 1/2, 1/2 | 0/0, 0/0 | 0/0 | 0 | +0.000, +0.002 | 45 000 |
+| small 150 | 1/2, 0/0 | 0/0, 0/0 | 0/0 | 0 | +0.000, +0.000 | 90 000 |
+| small 120 | 1/2, 0/0 | 0/0, 0/0 | 0/0 | 0 | +0.000, +0.000 | 72 000 |
+| small 100 | 1/2, 0/0 | 0/0, 0/0 | 0/0 | 0 | +0.000, +0.000 | 60 000 |
+| small 75 | 1/2, 0/0 | 0/0, 0/0 | 0/0 | 0 | +0.000, +0.000 | 45 000 |
+
+(baseline: 120 000.) Every configuration passes every gate on both
+blocks; no false decode anywhere. The one message lost on the main sweep
+at every K (slot 4436, −20 dB) was decoded in the baseline by candidate
+171 — beyond any of these cut-offs; host 75 also loses one on the fresh
+sweep. Nothing is gained.
+
+Cost (`paired_bench cost`, loop-aligned, median of five runs over the
+42 spread crowded slots, ms per slot): host 200 → 75: total 66.8 → 33.6
+(−49.8%), belief propagation 44.8 → 14.4 (−67.8%), soft bits and refine
+−63%, feed and sync unchanged; host 100: total −39.1%; small 200 → 75:
+total 45.3 → 26.9 (−40.7%).
+
+Every message gained or lost at 75 against 200, all sets and blocks:
+host main sweep, slot 4436 (−20 dB, "P5D B2Y RR73"), lost — found by
+candidate 171 in the baseline; host fresh sweep, slot 6389 (−19 dB,
+"CQ K2GPK BG95"), lost — candidate 78; small main sweep, slot 4436, lost
+— candidate 151. Each is lost from the output (no other candidate finds
+it); nothing is gained; crowded, edges and empty are identical in
+decoded messages.
+
+The external reference comparison of a 75-candidate host binary passed,
+but with one message of 2 000 lost on its 40-signal crowded slots, a
+margin of one signal over its crowded bar.
+
+**Decision: `HOST` 100 candidates, `SMALL` 75** (`CANDIDATES`, the
+buffer recommendation, stays 200). 75 was the lowest value swept, so it
+has no measured margin below it; on the host it lost the fresh-block
+message at candidate rank 78, and externally it had a one-signal margin
+on 40-signal slots. 100 loses nothing on the fresh block and costs
+little more. The small preset keeps 75: it passes both blocks, and its
+budget matters more.
+
+Confirmation at the chosen defaults (`paired_bench run host|small DIR
+sweep,crowded,edges,empty main`, then `… sweep,crowded fresh`, then
+`compare` against `~/.cache/cat-ft8-paired/e0a/<host|small>`; raw runs
+and comparisons in `~/.cache/cat-ft8-paired/e3-final/`): both pass every
+gate. Host 100: lost 1 (main sweep, slot 4436, candidate 171), gained 0,
+false 0 on every set and block; small 75: lost 1 (the same slot,
+candidate 151), gained 0, false 0. Both runs are identical in decodes to
+the sweep's `host,candidates=100` and `small,candidates=75` runs (b = c
+= 0 on every set). 50% point and its 95% paired-bootstrap interval
+(1 000 resamples, from `compare`):
+
+| preset | block | old (200) | new | shift |
+|---|---|---|---|---|
+| host 100 | main | −19.122 [−19.163, −19.072] | −19.122 [−19.163, −19.072] | +0.000 [+0.000, +0.000] |
+| host 100 | fresh | −19.078 [−19.133, −19.010] | −19.078 [−19.133, −19.010] | +0.000 [+0.000, +0.000] |
+| small 75 | main | −19.083 [−19.128, −19.024] | −19.083 [−19.128, −19.024] | +0.000 [+0.000, +0.000] |
+| small 75 | fresh | −19.044 [−19.101, −18.981] | −19.044 [−19.101, −18.981] | +0.000 [+0.000, +0.000] |
+
+Cost at the chosen defaults (`paired_bench cost host,candidates=200 host
+42 5` and the same for small, loop-aligned build, median of five
+interleaved runs over 42 crowded slots, one thread, ms per slot): host
+200 → 100: total 66.4 → 40.4 (−39.1%), belief propagation 44.0 → 20.3
+(−53.9%); small 200 → 75: total 44.8 → 26.3 (−41.4%), belief
+propagation 23.5 → 7.7 (−67.3%). Feed and sync are unchanged.
+
+External reference comparison of the 100-candidate host binary (built
+from this tree with `cargo build --release -p cat-ft8 --bin
+cat-ft8-decode`), against the last accepted decoder: every synthetic set
+and the live session gained 0, lost 0, no false decode; crowded 1 262
+against a bar of 1 260; live 69 found against 68; the golden check 60
+of 60 slots; CPU per slot about half.
+
+Golden slots: on every golden setup the defaults decode exactly the same
+decodes as 200 candidates — payload, frequency, time offset, SNR and
+score bit for bit, compared field by field — and the carrier slot still
+has its all-zero rejection (1 with the defaults, 3 with 200; now
+asserted). The hashes of the default setups differ from the 200 ones
+only because the hash also covers the report counts (candidates kept
+and dropped, not converged, all-zero rejected).
+
+Pins:
+
+- golden "HOST" (default band, `DecodeConfig::HOST`, 128 decodes): new
+  pin `0xb989_1439_4016_eb1f` for 100 candidates (it replaces
+  `0x8fb5_e2a8_bab1_a8c3`, the pin taken for 75 before the decision
+  and never committed);
+- golden "min-sum on the default band" (`SMALL`, 128 decodes):
+  `0x9fd1_ce9b_bfce_8d9f`, new for 75 candidates;
+- golden "small setup" (`Band::SMALL`, `SMALL`, 64 decodes):
+  `0x4356_eee9_42f3_6a23`, new for 75 candidates;
+- the three 200-candidate pins (`0x5eea_3477_73cf_df7d`,
+  `0x1c82_6afc_8074_f291`, `0xdd6e_4bf0_8d7d_91f9`) are unchanged, now
+  as explicit `with_candidates(200)` setups; golden counts unchanged
+  (8/0/8, 7/0/7, 6/0/6 for each pair);
+- rate floors: the 200-candidate configurations added to the floors'
+  configurations; all four give the pinned counts (6/16/20 host,
+  6/15/20 min-sum) and the floors are unchanged;
+- the bulk run stays at zero decodes (fewer all-zero rejections: fewer
+  candidates reach belief propagation).

@@ -88,8 +88,14 @@ use crate::ldpc::N;
 use crate::message::{unpack, CallHashes, MessageType, Payload};
 use crate::Error;
 
-/// Recommended candidate capacity (hosts and small targets).
+/// Recommended candidate buffer capacity (hosts and small targets): the
+/// largest `DecodeConfig::candidates` the measurements cover. The presets
+/// use fewer.
 pub const CANDIDATES: usize = 200;
+// The recommended buffer holds every preset's candidates.
+const _: () = assert!(
+    DecodeConfig::HOST.candidates <= CANDIDATES && DecodeConfig::SMALL.candidates <= CANDIDATES
+);
 /// Recommended decode-list capacity on a host.
 pub const HOST_DECODES: usize = 128;
 /// Recommended decode-list capacity on a small target.
@@ -124,20 +130,30 @@ pub struct DecodeConfig {
 }
 
 impl DecodeConfig {
-    /// Hosts: sum-product, 30 rounds, LLR scale 4, 200 candidates.
+    /// Hosts: sum-product, 30 rounds, LLR scale 4, 100 candidates.
+    ///
+    /// 100 candidates decode the same messages as 200 on the measured
+    /// sets for much less belief-propagation work. Validated up to 40 signals per slot; for busier bands raise
+    /// it with [`DecodeConfig::with_candidates`].
     pub const HOST: DecodeConfig = DecodeConfig {
         rule: CheckRule::SumProduct,
         max_rounds: 30,
         llr_scale: 4.0,
         min_score: 0,
-        candidates: CANDIDATES,
+        candidates: 100,
     };
 
-    /// Small targets: as [`DecodeConfig::HOST`] but with normalised
-    /// min-sum, which costs about a third as much per round. Provisional
-    /// until measured on such a target.
+    /// Small targets: normalised min-sum, which costs about a third as
+    /// much per round as sum-product, and 75 candidates; otherwise as
+    /// [`DecodeConfig::HOST`].
+    ///
+    /// Fewer candidates trim the cost further for a small target's budget.
+    /// Validated up to 40 signals per slot; for busier bands raise it with
+    /// [`DecodeConfig::with_candidates`]. Provisional until measured on
+    /// such a target.
     pub const SMALL: DecodeConfig = DecodeConfig {
         rule: CheckRule::MinSum,
+        candidates: 75,
         ..DecodeConfig::HOST
     };
 
