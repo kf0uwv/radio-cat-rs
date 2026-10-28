@@ -149,6 +149,7 @@ pub fn set_size(set: &str) -> Option<usize> {
     match set {
         "sweep" => Some(15 * 1_000),
         "crowded" => Some(3 * 200),
+        "wide" => Some(4 * 200),
         "edges" => Some(EDGE_CASES.len() * 100),
         "empty" => Some(2_300),
         _ => None,
@@ -288,6 +289,11 @@ pub fn build(set: &str, block: &str, index: usize) -> Slot {
                 0,
                 SLOT_SAMPLES,
             )
+        }
+        "wide" => {
+            let n = [10, 20, 30, 40][index / 200];
+            let sent = crowd(&mut r, n, -22.0, 27.0);
+            (format!("{n}"), sent, 0, SLOT_SAMPLES)
         }
         "edges" => {
             let (label, dt, f, cut, skip) = EDGE_CASES[index / 100];

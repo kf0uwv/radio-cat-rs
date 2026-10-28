@@ -28,7 +28,7 @@ use crate::{parse_config, provenance, Setup};
 const ORACLE_PASSES: usize = 2;
 
 /// The sets `ceiling` accepts.
-pub const CEILING_SETS: [&str; 1] = ["crowded"];
+pub const CEILING_SETS: [&str; 2] = ["crowded", "wide"];
 
 /// One transmitted message of a crowded slot in the `ceiling` mode.
 struct CeilingMessage {

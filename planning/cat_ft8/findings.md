@@ -982,3 +982,60 @@ point (205 of 318 no-candidate misses at +3…+6 dB, none above +18 dB);
 the misses with no peak spread further up (10 at +18…+21 dB, 3 at
 +21…+24 dB), presumably where a neighbouring signal masks the peak
 (not measured).
+
+## Wider crowded set, measured (2026-10-27)
+
+Measurement only; the decoder and every existing set are unchanged
+(`crowded` main re-run with this bench: b = c = 0 against `e3-final`).
+`wide` is a new bench set with its own seeds: 10, 20, 30 and 40
+distinct messages per slot, SNRs uniform in −22…+5 dB, the same offsets
+as `crowded` (200–2 800 Hz, −0.3…+0.7 s, overlaps allowed), 200 slots
+per size (20 000 messages per block). Its lower end is below the
+single-signal 50% point (about −19.1 dB), so not every message decodes
+even alone and the ceiling is informative. It is not in `run`'s default
+sets. `paired_bench ceiling host|small main|fresh wide` at the E3
+defaults; outputs in `~/.cache/cat-ft8-paired/wide/`.
+
+**Decoded, % of transmitted** (single pass / oracle +1 / oracle +2 /
+alone / ceiling — decoded by the single pass, alone or an oracle pass):
+
+| preset, block | 10 | 20 | 30 | 40 | all |
+|---|---|---|---|---|---|
+| host, main | 78.9 / 89.0 / 89.3 / 90.2 / 90.2 | 69.8 / 85.1 / 87.6 / 89.5 / 89.5 | 62.0 / 82.0 / 86.3 / 88.7 / 88.8 | 55.2 / 78.2 / 84.7 / 89.3 / 89.3 | 62.5 / 81.8 / 86.2 / 89.3 / 89.3 |
+| host, fresh | 78.8 / 88.7 / 89.3 / 89.7 / 89.7 | 68.7 / 85.0 / 87.4 / 89.2 / 89.2 | 62.3 / 82.8 / 86.9 / 89.8 / 89.8 | 55.0 / 78.3 / 84.9 / 90.0 / 90.0 | 62.3 / 82.0 / 86.4 / 89.7 / 89.8 |
+| small, main | 78.7 / 88.8 / 89.2 / 90.0 / 90.0 | 69.5 / 84.7 / 87.2 / 89.2 / 89.2 | 61.7 / 81.7 / 86.0 / 88.5 / 88.6 | 55.0 / 77.9 / 84.3 / 89.1 / 89.1 | 62.3 / 81.5 / 85.9 / 89.1 / 89.1 |
+| small, fresh | 78.8 / 88.7 / 89.4 / 89.7 / 89.7 | 68.6 / 84.8 / 87.2 / 89.1 / 89.1 | 62.1 / 82.6 / 86.7 / 89.6 / 89.6 | 55.0 / 78.2 / 84.8 / 89.9 / 89.9 | 62.2 / 81.9 / 86.3 / 89.6 / 89.7 |
+
+Counts, all sizes (single / +1 / +2 / alone / ceiling): host main
+12 503 / 16 366 / 17 248 / 17 851 / 17 856; host fresh 12 464 / 16 409
+/ 17 287 / 17 946 / 17 951; small main 12 457 / 16 299 / 17 174 / 17 811
+/ 17 813; small fresh 12 444 / 16 379 / 17 259 / 17 929 / 17 930. No
+false decode and no oracle duplicate in any single-pass, alone or oracle
+decode.
+
+**Single-pass misses by cause** (all sizes; missed → decoded alone →
+recovered by oracle +1 / +2):
+
+| preset, block | no sync peak | dropped by the limit | not converged | CRC |
+|---|---|---|---|---|
+| host, main | 729 → 464 → 290 / 114 | 1 467 → 719 → 379 / 238 | 5 299 → 4 167 → 3 193 / 529 | 2 → 2 → 1 / 1 |
+| host, fresh | 717 → 480 → 282 / 136 | 1 419 → 692 → 345 / 215 | 5 399 → 4 311 → 3 318 / 526 | 0 |
+| small, main | 729 → 462 → 286 / 112 | 1 750 → 863 → 458 / 272 | 5 064 → 4 031 → 3 098 / 491 | 0 |
+| small, fresh | 717 → 478 → 280 / 137 | 1 664 → 824 → 414 / 253 | 5 174 → 4 182 → 3 241 / 489 | 0 |
+
+Missed even alone (host main): 2 130 not converged and 18 with their
+peak dropped by the candidate limit (a single weak signal whose sync
+peak is outranked by 100 noise peaks); the other runs are alike.
+
+**By SNR** (host, main, relative to the −19.12 dB 50% point; sent /
+single / oracle +1 / alone): −3…0 dB 2 147 / 69 / 148 / 204; 0…+3 dB
+2 208 / 829 / 1 510 / 2 002; +3…+6 dB 2 089 / 1 005 / 1 748 / 2 089;
+above +6 dB every message decodes alone and one oracle pass reaches
+90–99% per 3 dB bin.
+
+**Reading.** On this set the ceiling binds: 10–11% of the messages do
+not decode even alone, all of them below +3 dB relative to the 50%
+point (host main: 1 943 at −3…0 dB, 206 at 0…+3 dB). Of the gap between the single pass and the ceiling
+(host main, 5 353 messages), one oracle pass covers 3 863 (72%) and two
+4 745 (89%). The oracle duplicates and false decodes are zero by
+construction, so they say nothing about a real subtraction.

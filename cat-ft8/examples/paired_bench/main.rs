@@ -29,6 +29,11 @@
 //!   −0.3…+0.7 s), −22…−15 dB in 0.5 dB steps, 1 000 slots per point;
 //! - `crowded`: 10, 20 and 40 distinct messages per slot (−16…+6 dB, same
 //!   offsets, overlaps allowed), 200 slots per size;
+//! - `wide`: crowded slots over a wider SNR range, −22…+5 dB, so that some
+//!   messages are near or below the single-signal decode threshold: 10,
+//!   20, 30 and 40 distinct messages per slot (same offsets, overlaps
+//!   allowed), 200 slots per size; its own seeds (not in the default
+//!   SETS);
 //! - `edges`: one signal at −18 dB (near the decode threshold, so a loss
 //!   shows), 100 slots per case: starts at ±1.6/±2.0/±2.4 s, tone 0 near
 //!   each end of both bands, input cut at 13.5 s, input starting 1 s late;
@@ -97,8 +102,8 @@
 //! codeword that was not transmitted passes the 14-bit CRC with
 //! probability 2⁻¹⁴, so the estimate is the CRC failures per slot × 2⁻¹⁴).
 //!
-//! **ceiling** measures what subtraction could gain on a crowded set (SET,
-//! default `crowded`) of BLOCK (default `main`), without changing the
+//! **ceiling** measures what subtraction could gain on a crowded set (SET:
+//! `crowded`, the default, or `wide`) of BLOCK (default `main`), without changing the
 //! decoder. Each transmitted message is also decoded alone, in a slot with
 //! the same noise and the other signals left out. The oracle passes then
 //! decode the slot rebuilt without every message decoded so far (true

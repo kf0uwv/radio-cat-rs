@@ -737,6 +737,11 @@
   `e3-final`: b = c = 0, PASS, both presets; release binary unchanged.
   `ceiling host main` matches S0 except the split rows (findings, "Bench
   split, and no-candidate misses told apart").
+- Wider crowded set (`wide`, its own seeds, −22…+5 dB, 10/20/30/40
+  messages per slot) added to the bench and measured with `ceiling`, both
+  presets and blocks; existing sets unchanged (`crowded` main b = c = 0).
+  Host main: single 62.5%, oracle +1 81.8%, +2 86.2%, ceiling 89.3%
+  (findings, "Wider crowded set, measured").
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
