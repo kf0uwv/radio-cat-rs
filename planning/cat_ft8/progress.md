@@ -719,6 +719,14 @@
   within 0.2 points; no false decode or duplicate anywhere. Misses: about
   80% not converged, 20% no candidate; one oracle pass recovers 77–79%
   and 47–50% of them. Decoder unchanged.
+- Plan for S1–S3 written (task plan, "Phase 4"), with an ADR 0024
+  amendment draft (proposed, not accepted): reference waveform with a
+  sub-sample start (S1), subtracting one signal measured as residual
+  suppression (S2), a pass count with paired acceptance (S3); the
+  additive API (`subtract`, `start_pass`, `DecodeList::next_pass`,
+  `DecodeConfig::passes`), fixed subtraction order, acceptance bars,
+  memory, risks and five decisions for the user. Stopped at the S0
+  checkpoint for approval.
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
