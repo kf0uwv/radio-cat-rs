@@ -827,6 +827,28 @@
 - Pass 1 identical (release binary ce6a2549 unchanged, run records equal
   to e3-final). CI-equivalent checks pass.
 
+## Session: 2026-10-28 (S3, further passes)
+
+- API: `DecodeConfig::{passes, later_candidates, subtract}`,
+  `candidate_capacity`; `Decoder::{decode_passes, decode_passes_staged,
+  find_later_candidates}`; `DecodeList::{next_pass, len, is_empty}`;
+  `PassReport`, `PassEvent`, `PassStep`. `decode` stays one pass.
+- `cat-ft8-decode --config host|small[,passes=N]`; profile per-pass keys
+  only with more than one pass. One code path (`decode_passes_staged`).
+- Bench: multi-pass `run` records (per-pass counts), `compare` per-pass
+  gates and the sweep interval gate, `slotcost`, `passes` on the
+  library, `ceiling` oracle at the later count.
+- Sweep (segments × later 20–200 × 2–3 passes) and fresh confirmation;
+  chosen 3 passes / later 50 / 3 840 segments, adopted in `HOST`.
+- Acceptance PASS on every set; cost worst 213.7 ms, mean 197.5 ms.
+- Speedup kept: `Synth` envelope only in the end symbols, `i64`
+  conversion (subtract −14%); dropped (no gain): residue-statistics skip,
+  closed-form `Correction::skip`, constant middle increment.
+- Pins: four multi-pass golden hashes; threaded split = `decode_passes`.
+- Pass 1 identical: run records = e3-final (host,passes=1 and small);
+  WAV output of the new binary with passes=1 = d4fd2d3's.
+- Binary for the external acceptance copied as `cat-ft8-decode-s3`.
+
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
 |-----------|-------|---------|------------|

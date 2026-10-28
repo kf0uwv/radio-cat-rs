@@ -1329,3 +1329,141 @@ WAV-identity outputs, `subcost`).
   d4fd2d3; `paired_bench run` of every default set, both presets,
   record-for-record identical to `e3-final` (and to `s2/identity`, with
   outcomes); golden pins pass.
+
+## Further passes (S3, 2026-10-28)
+
+`DecodeConfig::{passes, later_candidates, subtract}`,
+`Decoder::{decode_passes, decode_passes_staged, find_later_candidates}`,
+`DecodeList::next_pass` (and `len`), `PassReport`/`PassEvent`/`PassStep`;
+`cat-ft8-decode --config host|small[,passes=N]` (the user asked for a
+flag; profile keys added only). Outputs in `~/.cache/cat-ft8-paired/s3/`
+(`sweep/`, `accept*`, `ceiling/`, `cost/`, `identity/`, `wav/`, `ci/`).
+
+**Sweep** (`paired_bench passes`, `decode_passes` with three passes, main
+blocks; share of the same-configuration oracle's +1 / +2 gain, the oracle
+re-run at each later count; duplicates p2 / p3; no false decode and no
+list truncation anywhere):
+
+| segment, later | crowded | wide | fading |
+|---|---|---|---|
+| 1 920, 100 / 150 / 200 | 96.6% / 94.8%, 1 / 11 (all three) | 93.0% / 89.6%, 1 / 6 | 94.9–94.8% / 91.6%, 0 / 0 |
+| 2 880, 50 / 75 / 100 / 150 / 200 | 98.2% / 97.4%, 8 / 42 | 96.1% / 93.4%, 6 / 36 | 97.1–97.2% / 94.8–94.9%, 0 / 10 |
+| 3 840, 100 / 150 / 200 | 98.9–99.0% / 98.2%, 5 / 36 | 96.9% / 94.8%, 9 / 37 | 97.4–97.5% / 95.2%, 27 / 49 |
+| 3 840, 50 / 75 | 98.9% / 98.2%, 4 / 36 | 96.9% / 94.8%, 9 / 36 | 97.4% / 95.2–95.3%, 26–27 / 49 |
+| 3 840, 20 / 30 / 40 | 98.8–98.9% / 98.2%, 4 / 34–36 | 96.8–96.9% / 94.8%, 8–9 / 36 | 97.4% / 95.3%, 26 / 46–49 |
+
+Decoded counts at 3 840 (crowded main, +1 / +2): later 100–200 12 713–
+12 714 / 13 440, 50 and 75 12 713 / 13 439, 30–40 12 712 / 13 439, 20
+12 710 / 13 439; wide main 16 246 / 16 999 from 40 up (20: 16 240);
+fading main 11 476–11 480 / 11 995–11 998 from 40 up (20: 11 464 /
+11 992). The later passes' candidate count hardly matters from 40 up:
+once pass 1's signals are gone, the decodable rest ranks near the top.
+It costs belief propagation (pass 2 decode, all threads busy: 26 ms at
+20, 38 at 50, 56 at 100, 90 at 200). Fresh seeds (`sweep/passes-host-
+fresh-*.txt`, segments 1 920 / 2 880 / 3 840 × later 50 / 100) rank the
+same: 3 840 best (crowded 99.1% / 98.6%, wide 96.7% / 94.8%, fading
+97.0% / 95.0% at later 50; 50 = 100 within 0.1 point).
+
+**Chosen and adopted in `HOST`:** three passes, 50 later candidates,
+3 840-sample (two-symbol) segments, drift on. `SMALL` stays at one pass.
+Three passes over two: +5.7 points on crowded for about 60 ms more per
+40-signal slot (two passes, 40 slots: worst 154 ms, mean 138 ms).
+
+**Paired acceptance** (`accept.compare.txt`: `run host` against the
+single pass — `e3-final` plus `base/` for edges fresh, wide and fading,
+recorded with `host,passes=1`, record-identical to the single pass):
+
+| set, block | single | three passes | b / c | target c − b ≥ 2√(b + c) | false per pass | expected false (CRC), per slot: three passes / single |
+|---|---|---|---|---|---|---|
+| crowded main | 9 672 | 13 439 | 0 / 3 767 | met | 0 / 0 / 0 | 2.03e-6 / 1.22e-6 |
+| crowded fresh | 9 669 | 13 522 | 0 / 3 853 | met | 0 / 0 / 0 | 2.75e-6 / 1.42e-6 |
+| wide main | 12 503 | 16 999 | 0 / 4 496 | met | 0 / 0 / 0 | 2.14e-6 / 9.92e-7 |
+| wide fresh | 12 464 | 17 036 | 0 / 4 572 | met | 0 / 0 / 0 | 1.98e-6 / 8.39e-7 |
+| fading main | 8 858 | 11 995 | 0 / 3 137 | met | 0 / 0 / 0 | 2.24e-6 / 9.16e-7 |
+| fading fresh | 8 782 | 11 971 | 0 / 3 189 | met | 0 / 0 / 0 | 1.63e-6 / 1.12e-6 |
+| sweep main / fresh | 8 764 / 8 772 | the same | 0 / 0 | — | 0 / 0 | 1.20e-6 / 9.24e-7; 1.17e-6 / 8.99e-7 |
+| edges main / fresh | 1 228 / 1 220 | the same | 0 / 0 | — | 0 / 0 | 1.13e-6 / 7.04e-7; 1.60e-6 / 1.17e-6 |
+| empty main | 0 | 0 | — | — | 0 | 9.82e-7 (one pass: nothing to subtract) |
+
+Every gate passes: no loss (b = 0 everywhere); zero false decodes in
+every pass of every set; the expected false decodes at most the passes
+run × the single pass's rate (largest ratio 2.4, fading main, limit 3); no
+payload listed twice; the sweep's 50% point unmoved with its whole
+bootstrap interval within ±0.05 dB (−19.122 and −19.078 dB, shift
++0.000 [+0.000, +0.000]). Per pass, crowded main: new decodes 9 672 /
+3 041 / 726, duplicates of earlier passes 0 / 4 / 36, CRC failures 12 / 7
+/ 1, pass 3 run in 550 of 600 slots. Sweep and edges: pass 2 runs where
+pass 1 decoded and adds nothing. `compare` now checks the per-pass gates
+and the sweep interval (both blocks).
+
+**Headline (share of the oracle's gain, the oracle re-run with `ceiling`
+at 50 later candidates — the same counts as at 100):** crowded 98.9% /
+98.2% (main), 99.1% / 98.6% (fresh) of the +1 / +2 gain, ceiling 100%;
+wide 96.9% / 94.8% and 96.7% / 94.8%, decoded 85.0% and 85.2% against a
+ceiling of 89.3% and 89.8%; fading 97.4% / 95.3% and 97.0% / 95.0%.
+
+**Cost** (`paired_bench slotcost host,passes=1 host 200 5`, one thread,
+every 40-message slot of crowded main, per slot the median of five
+interleaved runs; `cost/slotcost-final.txt`): **worst 213.7 ms** (budget
+250), **mean 197.5 ms**; single pass worst 40.9, mean 38.9 ms (budget:
+mean ≤ 100). Per pass (mean of per-slot medians): pass 1 39 ms (feed
+14.4, sync 2.8, belief propagation 18.7); pass 2 98 ms (subtraction of
+24.1 decodes 69.7, feed 14.5, sync 2.9, belief propagation 9.7); pass 3
+60 ms (subtraction of 10.4 decodes 30.1, feed 14.4, sync 2.9, belief
+propagation 11.4). Deterministic bound per pass: pass 1 100 candidates
+× 30 rounds, later passes 50 × 30, each one feed and one sync search,
+plus the previous pass's subtractions (measured: 2 297 / 1 195 / 1 413
+rounds per slot on average). Measured on a host with a busy desktop
+session (about two cores of background load).
+
+**Speedups** (results identical; `cost/ablation.txt`, interleaved, 40
+slots and `subcost`): in `Synth::run` the envelope is computed only in
+the first and last symbols (elsewhere it is exactly 1.0) and the phase
+increment converted through `i64` (the same value: it is in [0, 2³¹)):
+`subtract` 3.70 → 3.19 ms per call, the 40 slots' mean 215–219 → 200–
+201 ms and worst 229–233 → 210–214 ms; waveform golden hashes and every
+other pin unchanged. Two others measured no gain and were dropped:
+skipping `subtract`'s residue statistics in the passes (198.5–198.9 ms
+without against 200.3–201.2 with — within noise) and a closed-form
+`Correction::skip` (it runs only where a waveform leaves the buffer). A
+constant-increment path for the middle of each symbol was slower (more
+instructions, 3.46–3.50 against 3.38–3.44 ms) and was not kept; nor was a
+fused amplitude-and-subtraction pass (it needs a buffer of up to 1.5
+segments of reference, unbounded for long segments).
+
+**Determinism.** New pins (`tests/decode.rs`,
+`multi_pass_golden_hashes`, over the three golden slots and a crowded
+30-message slot whole, cut at 13.5 s and starting 1 s late; output,
+report and residual bits): HOST settings with one-symbol segments and
+100 later candidates, two passes 0x0f939b4c46530a23 (decodes 8 / 0 / 8 /
+26 / 26 / 26), three passes 0x5b2023001e1b9607 (8 / 0 / 8 / 28 / 28 /
+28); min-sum on the small band, two passes 0x47cb465646e18e77 (6 / 0 / 6
+/ 26 / 26 / 25); the adopted `HOST` 0x23c98790b69a90b8 (8 / 0 / 8 / 28 /
+28 / 28). The single-pass pins are unchanged (`Decoder::decode` runs one
+pass whatever the configuration). The split API driven by hand — later
+searches, candidates on 1, 3 and 8 threads in reverse order, merged in
+order, subtraction in list order — equals `decode_passes` bit for bit
+(`passes_by_hand_on_threads_match_decode_passes`, run by `cargo test` on
+every CI target; the decode command itself is single-threaded, so no
+further CI step).
+
+**Pass 1 unchanged.** `paired_bench run host,passes=1` and `small` of
+every default set and the fresh sweep and crowded sets: record-for-record
+identical to `e3-final` and to `s2/identity` (b = c = 0, PASS). The
+release `cat-ft8-decode` changed bytes (new code, and `Synth`); on the
+800-slot WAV corpus, `--config host,passes=1` and `small`, plain,
+`--raw` and `--profile` (timings removed), its output is byte-identical
+to d4fd2d3's (ce6a2549…) with `--config host` and `small`
+(`wav/base.txt`, `wav/s3-p1.txt`).
+
+**Memory.** The core gains no buffer; `Decoder` grows by its
+configuration to 200 B (was 176 B); the caller's residual is 720 000 B (the decode
+command's profile reports it as `residual_bytes`). Flash (`check.sh`,
+thumbv8m): small image 83 976 B (was 83 504), encoder-only 36 304 B (was
+35 848), host image 91 264 B (was 90 820): the `Synth` change (a
+per-symbol envelope test) adds about 450 B to every image that
+synthesises.
+
+**Not measured:** off-air audio; other hosts' speed; the cost of slots
+beyond 40 signals; the external acceptance (another decoder's corpus)
+of the binary built here.

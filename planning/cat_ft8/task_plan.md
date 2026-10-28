@@ -822,8 +822,8 @@ E4. [x] **Continuing past a CRC-failing codeword — measurement only.**
 
 ## Phase 4: subtraction and further passes — APPROVED (2026-10-27, revised after review)
 
-Status: **S0 and S2 done (S2 fix round done 2026-10-28); S1 not needed;
-S3 approved and in progress.** (Before S2: S0 done, results identical, and revised after
+Status: **S0, S2 (with its fix round) and S3 done; S1 not needed; at
+Checkpoint S3** (2026-10-28). (Before S2: S0 done, results identical, and revised after
 review; S1–S3 then awaited the user's approval, given 2026-10-28.) No subtraction code is in the decoder.
 The ADR amendment draft is in ADR 0024 ("Amendment (draft): subtraction
 and further passes"). Revision: the bench was split and its reports
@@ -888,7 +888,9 @@ builds, plus deterministic counts), with these additions:
   reported as measured, not capped. The oracle is re-run with `ceiling`
   at whatever per-pass configuration S3 adopts (its later-pass candidate
   count), so the share always compares like with like.
-- **No CLI flag.** The pass count is reached through `DecodeConfig` and
+- **No CLI flag** (superseded 2026-10-28: the user asked for
+  `--config host,passes=N`; output keys unchanged, profile keys added).
+  The pass count is reached through `DecodeConfig` and
   the bench; output format version 0 keeps its keys; the pass number of
   a decode and every per-pass count appear only in profile and bench
   output.
@@ -1068,7 +1070,7 @@ S1. [—] **Reference waveform: only what S2 needs** (conditional; not
           resampled (within a stated tolerance), continuity across block
           sizes, phase at the start, `no_std` and the MSRV build.
     ◆ Checkpoint S1 (if done); S2's suppression re-measured with it.
-S3. [ ] **Further passes, with paired acceptance.**
+S3. [x] **Further passes, with paired acceptance.**
         - Change: `DecodeConfig::passes` and the later-pass candidate
           count, `DecodeList::next_pass`, `decode_passes`, the CLI's use
           of the pass count, golden pins for multi-pass setups; `cost`
@@ -1080,7 +1082,19 @@ S3. [ ] **Further passes, with paired acceptance.**
           configuration for the oracle share.
         - HOST's default changes only after acceptance; SMALL stays at
           one pass.
-    ◆ Checkpoint S3; ◆◆ results to the user.
+        - Done (2026-10-28; findings, "Further passes (S3)"): the API as
+          above plus `find_later_candidates`, `decode_passes_staged`
+          with `PassReport`; the decode command's `passes=N`; the bench's
+          `run`/`compare` per-pass records and gates, `slotcost`, `passes`
+          on `decode_passes`. Sweep: segment 1 920–3 840 × later 20–200;
+          chosen three passes, 50 later candidates, 3 840-sample segments
+          (fresh seeds agree), adopted in `HOST`. Acceptance: every gate
+          passes (crowded +3 767 / +3 853 with no loss, zero false decodes
+          per pass on every set, expected false decodes within passes ×
+          single, sweep interval unmoved); oracle share +1 / +2 98.9% /
+          98.2% crowded main, 96.9% / 94.8% wide main; worst 40-signal
+          slot 213.7 ms, mean 197.5 ms. Pass 1 identical.
+    ◆ Checkpoint S3 (2026-10-28); ◆◆ results to the user.
 
 ### Acceptance bars (in this repository)
 
