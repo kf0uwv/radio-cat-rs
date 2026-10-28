@@ -781,8 +781,8 @@ E2. [x] **Host check-node rule — measurement only.** (Measured at
         early stop, sum-product versus min-sum for `HOST`, each with its
         own k, paired on every set, with costs. The default does not
         change in this phase; the numbers go to findings for a later
-        decision (sum-product is also the better input for later
-        ordered-statistics decoding). Re-measured after E3. (E1 was
+        decision (assumed, not measured: sum-product is the better input
+        for later ordered-statistics decoding). Re-measured after E3. (E1 was
         rejected, so there is no early stop: E2 is measured with stall
         off, at the E3 defaults — `HOST` 100 candidates, `SMALL` 75.)
     ◆ Checkpoint E2.

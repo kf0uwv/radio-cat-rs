@@ -644,7 +644,8 @@ with the default run of its preset in `~/.cache/cat-ft8-paired/e3-final/`
 (old = the default). Raw runs and comparisons in
 `~/.cache/cat-ft8-paired/e2/`.
 
-**`HOST`, sum-product (default) → min-sum.** Lost = b (decoded by
+**`HOST`, sum-product (default) → min-sum as configured (normalised,
+the current `ALPHA` = 0.75, 30 rounds).** Lost = b (decoded by
 sum-product only), gained = c (by min-sum only):
 
 | set (block) | lost | gained | b − c / limit | points failing | false (old, new) |
@@ -661,7 +662,9 @@ sum-product only), gained = c (by min-sum only):
 → −19.044 dB, shift +0.034 dB [+0.012, +0.057]. Rounds per candidate
 unchanged (29.84 sweep, 25.25 → 25.26 crowded). Min-sum fails the
 no-loss gate on every set with signals, on both blocks; the shift is
-inside the 0.05 dB limit but its interval excludes zero.
+inside the 0.05 dB limit but its interval excludes zero. Only this
+min-sum was measured: other α values or round limits were not part of
+E2.
 
 **`SMALL`, min-sum (default) → sum-product** (75 candidates): the mirror
 image, with the same counts — lost / gained: sweep main 28 / 94, fresh
@@ -687,19 +690,23 @@ slot):
 about 65–70 sweep messages in 15 000 (0.5%), plus 15–20 crowded
 messages in 14 000, for about 10 ms per crowded slot on this host
 (belief propagation twice as long). For `HOST` the sum-product default
-stands: min-sum fails the no-loss gate on both blocks, and sum-product
-is also the better input for any later ordered-statistics stage. For
-`SMALL` the same numbers are the price of its budget: sum-product would
-pass every gate there (it is the gain side) but costs +88% belief
-propagation on the host and more on a scalar FPU (transcendentals per
-edge); whether it fits is a question for instruction counts on the
-small target, not this host. No default change; nothing re-pinned.
+stands: min-sum as configured (normalised, the current `ALPHA`, 30
+rounds) fails the no-loss gate on both blocks. *Assumption, not
+measured:* sum-product is the better input for ordered-statistics
+decoding. For `SMALL` the same numbers are the price of its budget:
+sum-product would pass every gate there (it is the gain side) but costs
++88% belief propagation on the host. *Assumption, not measured:* it
+costs more on a scalar FPU (transcendentals per edge); whether it fits
+is a question for instruction counts on the small target, not this
+host. No default change; nothing re-pinned.
 
 ## Phase 3 E4: continuing past a CRC-failing codeword, measured (2026-10-27)
 
 Measurement only; the decoder is unchanged (default release binary
-byte-identical to 8c410e0's). Method: `paired_bench crc CONFIG SETS
-BLOCK` decodes each slot as `run` does and, for every candidate whose
+byte-identical to 8c410e0's). The measurement code was removed
+afterwards (the bench keeps the CRC counts and the misses by cause, see
+"Misses by cause" below); to reproduce E4, check out 1870e8b. Method:
+`paired_bench crc CONFIG SETS BLOCK` decodes each slot as `run` does and, for every candidate whose
 belief propagation stopped at a parity-satisfying codeword that fails
 the CRC (or is all zero), recomputes its soft bits and runs belief
 propagation again without stopping, to the 30-round limit
@@ -750,9 +757,10 @@ codeword, and in every case the same one. **No continued candidate
 reached a second codeword** — none correct, none wrong, none passing or
 failing the CRC — on any set, block or preset. The same holds past an
 all-zero rejection (79 474 host and 59 692 small candidates, nearly all
-on carriers and clipped input): never another codeword. Flooding belief
-propagation that has settled on a codeword is at a fixed point;
-further rounds only reinforce it.
+on carriers and clipped input): never another codeword. Belief
+propagation continued past its first codeword never reached a different
+codeword; in 1.2% of the extra rounds it briefly left the codeword and
+returned.
 
 **False-decode rate.** A codeword that is not the transmitted one passes
 the 14-bit CRC with probability 1/16 384. The current decoder already
@@ -780,3 +788,59 @@ bit flipping on the least reliable bits), which is a separate step with
 its own false-decode budget: every extra codeword tried adds 1/16 384,
 so it needs the much larger empty-set run the plan names. Nothing
 re-pinned; no default change.
+
+Put plainly: the codewords that fail the CRC are noise, not near misses
+(they sit as far from the transmitted codewords as random ones, at the
+same rate with and without signals). A later ordered-statistics step is
+therefore sized by the candidates that did not converge while sitting on
+a transmitted message, not by the CRC failures: on the crowded main set
+that is 3 486 of the host's 4 328 missed messages (840 had no candidate
+on them, 2 a CRC failure), and 6 165 of 6 236 on the main sweep
+(`compare`'s misses by cause, "Misses by cause" below).
+
+## Misses by cause, and the E2/E4 clean-up (2026-10-27)
+
+Results identical. The E4 measurement code is gone (`bp::decode_soft_observed`
+and its tests; `paired_bench crc` and its continued runs; 1870e8b
+reproduces E4). Two of its capabilities moved into `run` and `compare`:
+`compare` prints each side's CRC failures per slot and the expected
+false decodes they imply (CRC failures per slot × 2⁻¹⁴), and `run`
+saves, per transmitted message, its outcome — decoded, or why not, by
+position (the E4 tolerances: refined tone 0 within 4 Hz, start within
+0.12 s; candidates that decoded some payload are left out; the furthest
+any candidate on it got decides: CRC failure, then all-zero, then not
+converged; otherwise no candidate on it). Runs saved before this record
+no outcomes, and `compare` says "not recorded" for them.
+
+Identity: the default release `cat-ft8-decode` is byte-identical
+(sha256 b3ead07bca4a245ebeefeaae85f36ecb519fa794664d7c47266f7a318c8dea93,
+the same as at 1870e8b and 8c410e0); the decoder sources equal 8c410e0's;
+golden hashes and floors unchanged (`cargo test`); and `run host|small`
+on every main set and the fresh block, compared with
+`~/.cache/cat-ft8-paired/e3-final/`, gives b = c = 0 everywhere, the
+same 50% points, and every slot record (seed, sample hash, messages,
+decodes, report, rounds) equal field by field. Runs in
+`~/.cache/cat-ft8-paired/s0/`.
+
+**Missed messages by cause** (E3 defaults; no candidate / not
+converged / CRC failure / all-zero, of the messages missed):
+
+| set (block) | host | small |
+|---|---|---|
+| sweep (main) | 69 / 6 165 / 2 / 0 of 6 236 | 86 / 6 216 / 1 / 0 of 6 303 |
+| sweep (fresh) | 61 / 6 165 / 2 / 0 of 6 228 | 72 / 6 227 / 1 / 0 of 6 300 |
+| crowded (main) | 840 / 3 486 / 2 / 0 of 4 328 | 938 / 3 404 / 2 / 0 of 4 344 |
+| crowded (fresh) | 853 / 3 478 / 0 / 0 of 4 331 | 947 / 3 405 / 0 / 0 of 4 352 |
+| edges (main) | 0 / 72 / 0 / 0 of 72 | 200 / 62 / 0 / 0 of 262 |
+
+(small's 200 edges without a candidate are the two cases outside its
+band.) The CRC column matches E4's "missing with a CRC-failing candidate
+on them". CRC failures per slot, from `compare`, as in E4: host 0.015
+(sweep), 0.020–0.023 (crowded), 0.012 (edges), 0.016 (empty); expected
+false decodes about 1 × 10⁻⁶ per slot; small about half.
+
+Nearly every miss has a candidate on it that did not converge; on
+crowded slots about a fifth have no candidate on them at all (not
+broken down further; a stronger neighbour's sync peak suppressing
+theirs, or the candidate limit, are the likely reasons). How many of either kind subtraction could recover is
+measured next ("Subtraction ceiling").

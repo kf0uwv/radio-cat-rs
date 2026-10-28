@@ -18,7 +18,6 @@
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- run CONFIG OUTDIR [SETS] [BLOCK]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- compare OLDDIR NEWDIR [--partial]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- cost CONFIG_A CONFIG_B [SLOTS] [RUNS]
-//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- crc CONFIG [SETS] [BLOCK]
 //! ```
 //!
 //! **Sets** (encoder-made; each slot's seed comes from its set, block and
@@ -81,22 +80,17 @@
 //! sizes, for RUNS rounds (default and minimum 5), and prints each stage's
 //! median.
 //!
-//! **crc** measures what continuing past a CRC failure would do, without
-//! changing the decoder. It decodes the slots of SETS in BLOCK with CONFIG
-//! as `run` does; for every candidate whose belief propagation stopped at
-//! a codeword that fails the CRC (or is all zero), it recomputes the
-//! candidate's soft bits and runs belief propagation again to the round
-//! limit without stopping (`bp::decode_soft_observed`), checking that the
-//! re-run first stops where the decoder did. Per point and per set it
-//! prints the CRC failures per candidate and per slot; the transmitted
-//! messages missing from the output that had a CRC-failing candidate on
-//! them (tone 0 within 4 Hz and start within 0.12 s); and what the
-//! continued runs reach: the later distinct codewords of each candidate,
-//! as transmitted payloads, other payloads passing the CRC, codewords
-//! failing it, or all zero; and each candidate's first later codeword
-//! that passes the CRC — what a decoder that continued would output — as
-//! a gain (a transmitted message missing from the output), a duplicate or
-//! a false decode. Every later codeword that passes the CRC is listed.
+//! **Misses by cause.** `run` also saves, per transmitted message, its
+//! outcome: decoded (its payload is in the output) or, judged by position,
+//! why not — no candidate on it, a candidate on it that did not converge,
+//! one that reached a codeword failing the CRC, or one that reached the
+//! all-zero codeword (a candidate is on a message when its refined tone 0
+//! is within 4 Hz and its refined start within 0.12 s; candidates that
+//! decoded some payload are left out; the furthest any candidate got
+//! decides). `compare` prints, for each side, the misses by cause, the CRC
+//! failures per slot and the expected false decodes they imply (a codeword
+//! that was not transmitted passes the 14-bit CRC with probability
+//! 2⁻¹⁴, so the estimate is the CRC failures per slot × 2⁻¹⁴).
 
 #[path = "../tests/common/mod.rs"]
 mod common;
@@ -110,8 +104,8 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use cat_ft8::decode::{
-    Band, Candidate, CandidateScratch, CheckRule, Decode, DecodeConfig, DecodeList, Decoder,
-    FrontEnd, Stage, CANDIDATES, HOST_DECODES, SMALL_DECODES,
+    sync, Band, BpFailure, Candidate, CandidateScratch, CheckRule, Decode, DecodeConfig,
+    DecodeList, Decoder, FrontEnd, Stage, BIN_HZ, CANDIDATES, HOST_DECODES, SMALL_DECODES,
 };
 use cat_ft8::message::{pack, NoHashes, Payload};
 use cat_ft8::waveform::{synthesize, Placement};
@@ -267,11 +261,27 @@ const EDGE_CASES: [(&str, f64, Option<f64>, usize, usize); 13] = [
     ("dt+0", 0.0, None, SLOT_SAMPLES, 0),
 ];
 
+/// The noise seed of the slot whose seed is `seed`.
+fn noise_seed(seed: u64) -> u64 {
+    mix(seed ^ 0x006e_6f69_7365)
+}
+
+/// A full slot of `sent` (in order) plus white noise of RMS [`NOISE_RMS`]
+/// from `noise_seed`: the input of every set with signals.
+fn render(sent: &[Sent], noise_seed: u64) -> Vec<f32> {
+    let mut samples = vec![0.0f32; SLOT_SAMPLES];
+    for s in sent {
+        add_signal(&mut samples, s);
+    }
+    add_noise(&mut samples, NOISE_RMS, noise_seed);
+    samples
+}
+
 /// Builds slot `index` of `set` in `block`.
 fn build(set: &str, block: &str, index: usize) -> Slot {
     let seed = slot_seed(set, block, index);
     let mut r = Rng(seed);
-    let noise_seed = mix(seed ^ 0x006e_6f69_7365);
+    let noise_seed = noise_seed(seed);
     let mut samples = vec![0.0f32; SLOT_SAMPLES];
     let mut sent: Vec<Sent> = Vec::new();
     let one = |r: &mut Rng, snr: f64, dt: Option<f64>, f: Option<f64>| {
@@ -365,10 +375,7 @@ fn build(set: &str, block: &str, index: usize) -> Slot {
         }
         _ => unreachable!(),
     };
-    for s in &sent {
-        add_signal(&mut samples, s);
-    }
-    add_noise(&mut samples, NOISE_RMS, noise_seed);
+    let mut samples = render(&sent, noise_seed);
     samples.truncate(cut);
     let samples = samples.split_off(skip.min(samples.len()));
     Slot {
@@ -473,6 +480,9 @@ struct SlotResult {
     bp_rounds: u64,
     /// (stage, seconds): feed, sync, then every `Stage`.
     seconds: Vec<(String, f64)>,
+    /// Per transmitted message (empty in runs recorded before outcomes
+    /// were saved).
+    outcomes: Vec<Outcome>,
 }
 
 /// `s` as a JSON string.
@@ -526,7 +536,11 @@ impl SlotResult {
         for (i, (k, v)) in self.seconds.iter().enumerate() {
             let _ = write!(o, "{}{}:{:?}", if i > 0 { "," } else { "" }, json_str(k), v);
         }
-        o.push_str("}}");
+        o.push_str("},\"outcomes\":[");
+        for (i, x) in self.outcomes.iter().enumerate() {
+            let _ = write!(o, "{}\"{}\"", if i > 0 { "," } else { "" }, x.code());
+        }
+        o.push_str("]}");
         o
     }
 
@@ -589,23 +603,118 @@ impl SlotResult {
                 .iter()
                 .map(|(k, x)| Some((k.clone(), x.as_f64()?)))
                 .collect::<Option<_>>()?,
+            outcomes: match v.get("outcomes") {
+                None => Vec::new(),
+                Some(x) => x
+                    .as_array()?
+                    .iter()
+                    .map(|o| Outcome::from_code(o.as_str()?))
+                    .collect::<Option<_>>()?,
+            },
         })
     }
 }
 
 // --------------------------------------------------------------- decode
 
-/// Decodes one slot.
-fn decode_slot(set: &str, block: &str, index: usize, slot: &Slot, setup: &Setup) -> SlotResult {
+/// Positional tolerance for "a candidate on a transmitted message": the
+/// candidate's refined tone 0 within this many Hz of the message's (a
+/// little over one bin) and its refined start within this many seconds (a
+/// little over one row).
+const ON_HZ: f32 = 4.0;
+const ON_S: f32 = 0.12;
+
+/// What became of one transmitted message: decoded (its payload is in the
+/// output), or why not, judged by position. The candidates "on" the
+/// message are those within [`ON_HZ`] and [`ON_S`] of it, leaving out any
+/// that decoded a payload (that candidate belongs to another signal, or is
+/// a false decode). Of those, the furthest any got decides: a codeword
+/// failing the CRC, then the all-zero codeword, then no codeword within the
+/// round limit; with none, there was no candidate on it.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Outcome {
+    NoCandidate,
+    NotConverged,
+    AllZero,
+    Crc,
+    Decoded,
+}
+
+impl Outcome {
+    /// The reasons a message is missed, in report order.
+    const MISSES: [Outcome; 4] = [
+        Outcome::NoCandidate,
+        Outcome::NotConverged,
+        Outcome::Crc,
+        Outcome::AllZero,
+    ];
+
+    fn code(self) -> &'static str {
+        match self {
+            Outcome::Decoded => "decoded",
+            Outcome::NoCandidate => "no_candidate",
+            Outcome::NotConverged => "not_converged",
+            Outcome::Crc => "crc",
+            Outcome::AllZero => "all_zero",
+        }
+    }
+
+    fn from_code(s: &str) -> Option<Outcome> {
+        [
+            Outcome::Decoded,
+            Outcome::NoCandidate,
+            Outcome::NotConverged,
+            Outcome::Crc,
+            Outcome::AllZero,
+        ]
+        .into_iter()
+        .find(|o| o.code() == s)
+    }
+
+    /// The outcome a failed candidate gives a message it is on.
+    fn of_failure(f: BpFailure) -> Outcome {
+        match f {
+            BpFailure::Crc => Outcome::Crc,
+            BpFailure::AllZero => Outcome::AllZero,
+            _ => Outcome::NotConverged,
+        }
+    }
+}
+
+/// Counts of missed messages by [`Outcome::MISSES`].
+fn miss_counts<'a>(outcomes: impl IntoIterator<Item = &'a Outcome>) -> [u64; 4] {
+    let mut n = [0u64; 4];
+    for o in outcomes {
+        if let Some(k) = Outcome::MISSES.iter().position(|m| m == o) {
+            n[k] += 1;
+        }
+    }
+    n
+}
+
+/// One single-pass decode of some input.
+struct Decoded {
+    decodes: Vec<DecodeRecord>,
+    counts: Counts,
+    bp_rounds: u64,
+    /// (stage, seconds): feed, sync, then every `Stage`.
+    seconds: Vec<(String, f64)>,
+    /// Per transmitted message, in order.
+    outcomes: Vec<Outcome>,
+}
+
+/// Decodes `samples` after `skip` missing ones with `setup`, and classifies
+/// each of the `sent` messages. Only the decoder's own calls are timed.
+fn decode_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &Setup) -> Decoded {
     let band = setup.band;
     let mut front = Box::new(FrontEnd::new());
     let mut levels = vec![0u8; band.spectrogram_len()];
-    let mut sync = vec![0i32; Decoder::sync_scratch_len(band)];
+    let mut sync_buf = vec![0i32; Decoder::sync_scratch_len(band)];
     let mut cands = vec![Candidate::default(); CANDIDATES.max(setup.config.candidates)];
     let mut dec = Decoder::new(
         &mut front,
         &mut levels,
-        &mut sync,
+        &mut sync_buf,
         &mut cands,
         band,
         setup.config,
@@ -615,14 +724,15 @@ fn decode_slot(set: &str, block: &str, index: usize, slot: &Slot, setup: &Setup)
     let mut list = DecodeList::new(&mut store);
     let mut scratch = Box::new(CandidateScratch::new());
     let t = Instant::now();
-    dec.skip(slot.skip);
-    dec.feed(&slot.samples);
+    dec.skip(skip);
+    dec.feed(samples);
     let feed = t.elapsed().as_secs_f64();
     let t = Instant::now();
     let kept = dec.find_candidates().kept;
     let sync_s = t.elapsed().as_secs_f64();
     let mut stages = [0.0f64; Stage::ALL.len()];
     let mut bp_rounds = 0u64;
+    let mut failed: Vec<(usize, BpFailure)> = Vec::new();
     for i in 0..kept {
         let mut last = Instant::now();
         let r = dec.decode_candidate_staged(i, &mut scratch, |st| {
@@ -632,6 +742,9 @@ fn decode_slot(set: &str, block: &str, index: usize, slot: &Slot, setup: &Setup)
         });
         bp_rounds += u64::from(scratch.last_rounds());
         if let Some(r) = r {
+            if let Err(f) = r {
+                failed.push((i, f));
+            }
             list.push(i, &r).unwrap();
         }
     }
@@ -640,28 +753,46 @@ fn decode_slot(set: &str, block: &str, index: usize, slot: &Slot, setup: &Setup)
     for st in Stage::ALL {
         seconds.push((st.name().to_string(), stages[st.index()]));
     }
-    SlotResult {
-        set: set.into(),
-        block: block.into(),
-        index,
-        seed: slot_seed(set, block, index),
-        point: slot.point.clone(),
-        sample_hash: slot.sample_hash(),
-        sent: slot.sent.clone(),
-        decodes: list
-            .finish_payloads()
-            .iter()
-            .map(|d| DecodeRecord {
-                payload: d.payload.bits(),
-                freq: d.freq_hz,
-                dt: d.dt,
-                snr: d.snr_db,
-                score: d.score,
-                candidate: d.candidate,
-                hard_errors: d.hard_errors,
-                rounds: d.rounds,
-            })
-            .collect(),
+    let decodes: Vec<DecodeRecord> = list
+        .finish_payloads()
+        .iter()
+        .map(|d| DecodeRecord {
+            payload: d.payload.bits(),
+            freq: d.freq_hz,
+            dt: d.dt,
+            snr: d.snr_db,
+            score: d.score,
+            candidate: d.candidate,
+            hard_errors: d.hard_errors,
+            rounds: d.rounds,
+        })
+        .collect();
+    // Outside the timed calls: each failed candidate's refined position,
+    // as `decode_candidate` computes it.
+    let spec = dec.spectrogram();
+    let mut outcomes: Vec<Outcome> = sent
+        .iter()
+        .map(|s| {
+            if decodes.iter().any(|d| d.payload == s.payload) {
+                Outcome::Decoded
+            } else {
+                Outcome::NoCandidate
+            }
+        })
+        .collect();
+    for &(i, f) in &failed {
+        let c = dec.candidates()[i];
+        let (frac_row, frac_bin) = sync::refine(spec, &c);
+        let freq = ((band.first_bin() + usize::from(c.base)) as f32 + frac_bin) * BIN_HZ;
+        let dt = c.dt() + frac_row * sync::ROW_SECONDS;
+        for (s, o) in sent.iter().zip(outcomes.iter_mut()) {
+            if (s.freq as f32 - freq).abs() <= ON_HZ && (s.dt as f32 - dt).abs() <= ON_S {
+                *o = (*o).max(Outcome::of_failure(f));
+            }
+        }
+    }
+    Decoded {
+        decodes,
         counts: Counts {
             found: rep.candidates_found as u64,
             kept: rep.candidates_kept as u64,
@@ -676,6 +807,26 @@ fn decode_slot(set: &str, block: &str, index: usize, slot: &Slot, setup: &Setup)
         },
         bp_rounds,
         seconds,
+        outcomes,
+    }
+}
+
+/// Decodes one slot of a set.
+fn decode_slot(set: &str, block: &str, index: usize, slot: &Slot, setup: &Setup) -> SlotResult {
+    let d = decode_input(&slot.samples, slot.skip, &slot.sent, setup);
+    SlotResult {
+        set: set.into(),
+        block: block.into(),
+        index,
+        seed: slot_seed(set, block, index),
+        point: slot.point.clone(),
+        sample_hash: slot.sample_hash(),
+        sent: slot.sent.clone(),
+        decodes: d.decodes,
+        counts: d.counts,
+        bp_rounds: d.bp_rounds,
+        seconds: d.seconds,
+        outcomes: d.outcomes,
     }
 }
 
@@ -1025,6 +1176,24 @@ fn compare(old: &Path, new: &Path, partial: bool) -> Result<bool, String> {
             cost_a[3],
             cost_b[3]
         );
+        for (side, run) in [("old", sa), ("new", sb)] {
+            let crc: u64 = run.iter().map(|r| r.counts.crc_failed).sum();
+            let per_slot = crc as f64 / run.len().max(1) as f64;
+            let most = run.iter().map(|r| r.counts.crc_failed).max().unwrap_or(0);
+            let misses = if run.iter().all(|r| r.outcomes.len() == r.sent.len()) {
+                let m = miss_counts(run.iter().flat_map(|r| &r.outcomes));
+                format!(
+                    "missed: no candidate {}, not converged {}, CRC failure {}, all-zero {}",
+                    m[0], m[1], m[2], m[3]
+                )
+            } else {
+                "missed by cause: not recorded".to_string()
+            };
+            println!(
+                "  {side}: CRC failures {crc} ({per_slot:.4} per slot, at most {most}); expected false decodes {:.2e} per slot; {misses}",
+                per_slot / 16_384.0
+            );
+        }
         let mut line = String::from("  summed stage seconds (all threads):");
         for (k, va) in &secs_a {
             let vb = secs_b.get(k).copied().unwrap_or(0.0);
@@ -1104,397 +1273,7 @@ fn cost(spec_a: &str, spec_b: &str, slots: usize, runs: usize) -> Result<(), Str
     Ok(())
 }
 
-// ------------------------------------------------------------------ crc
-
-/// Positional tolerance for "a candidate on a transmitted message": tone 0
-/// within this many Hz (a little over one bin) and the start within this
-/// many seconds (a little over one row).
-const ON_HZ: f32 = 4.0;
-const ON_S: f32 = 0.12;
-
-/// What one continued belief-propagation run reached after its first
-/// codeword (a CRC or all-zero failure).
-#[derive(Default, Clone, Copy)]
-struct Continued {
-    /// Candidates continued.
-    candidates: u64,
-    /// Rounds run after the first codeword (the cost of continuing), and
-    /// of those, rounds whose hard decisions were a codeword (the same or
-    /// another).
-    extra_rounds: u64,
-    codeword_rounds: u64,
-    /// Distinct later codewords other than the first, per candidate.
-    codewords: u64,
-    /// Of those: passing the CRC with a transmitted payload, with some
-    /// other payload, failing the CRC, all zero.
-    correct: u64,
-    wrong_pass: u64,
-    wrong_crc: u64,
-    all_zero: u64,
-    /// The first CRC-passing later codeword per candidate (what a decoder
-    /// that continues would output): a transmitted message missing from
-    /// the slot's output (gain, counted once per slot), one already in
-    /// it, and a payload not transmitted (a false decode).
-    first_gain: u64,
-    first_duplicate: u64,
-    first_false: u64,
-}
-
-impl Continued {
-    fn add(&mut self, o: &Continued) {
-        self.candidates += o.candidates;
-        self.extra_rounds += o.extra_rounds;
-        self.codeword_rounds += o.codeword_rounds;
-        self.codewords += o.codewords;
-        self.correct += o.correct;
-        self.wrong_pass += o.wrong_pass;
-        self.wrong_crc += o.wrong_crc;
-        self.all_zero += o.all_zero;
-        self.first_gain += o.first_gain;
-        self.first_duplicate += o.first_duplicate;
-        self.first_false += o.first_false;
-    }
-}
-
-/// CRC counts of one slot (or a sum of slots).
-#[derive(Default, Clone, Copy)]
-struct CrcCounts {
-    slots: u64,
-    /// Slots with at least one CRC failure, and the most in one slot.
-    slots_with_crc: u64,
-    max_crc_in_slot: u64,
-    candidates: u64,
-    decoded: u64,
-    crc: u64,
-    all_zero: u64,
-    not_converged: u64,
-    rounds: u64,
-    /// Decodes whose position is on their transmitted message (a check of
-    /// the positional match).
-    decodes_on_message: u64,
-    /// CRC failures on a transmitted message by position; of those, on a
-    /// message missing from the output.
-    crc_on_message: u64,
-    crc_on_missing: u64,
-    /// Sum of each CRC-failing codeword's distance (bits of 174) to the
-    /// nearest transmitted codeword, and how many were within 20 bits.
-    crc_distance: u64,
-    crc_near: u64,
-    /// Transmitted messages; missing from the output; missing with a
-    /// CRC-failing candidate on them.
-    messages: u64,
-    missing: u64,
-    missing_with_crc: u64,
-    past_crc: Continued,
-    past_all_zero: Continued,
-}
-
-impl CrcCounts {
-    fn add(&mut self, o: &CrcCounts) {
-        self.slots += o.slots;
-        self.slots_with_crc += o.slots_with_crc;
-        self.max_crc_in_slot = self.max_crc_in_slot.max(o.max_crc_in_slot);
-        self.candidates += o.candidates;
-        self.decoded += o.decoded;
-        self.crc += o.crc;
-        self.all_zero += o.all_zero;
-        self.not_converged += o.not_converged;
-        self.rounds += o.rounds;
-        self.decodes_on_message += o.decodes_on_message;
-        self.crc_on_message += o.crc_on_message;
-        self.crc_on_missing += o.crc_on_missing;
-        self.crc_distance += o.crc_distance;
-        self.crc_near += o.crc_near;
-        self.messages += o.messages;
-        self.missing += o.missing;
-        self.missing_with_crc += o.missing_with_crc;
-        self.past_crc.add(&o.past_crc);
-        self.past_all_zero.add(&o.past_all_zero);
-    }
-}
-
-/// Decodes one slot as `decode_slot` does, and for every candidate whose
-/// belief propagation stopped at a CRC (or all-zero) failure re-runs it
-/// from the same soft bits without stopping, up to the round limit. The
-/// decoder's own results are not changed: the re-run is a separate
-/// measurement, checked to stop where the decoder stopped. Returns the
-/// counts and one line per later codeword that passes the CRC.
-fn crc_slot(
-    set: &str,
-    block: &str,
-    index: usize,
-    slot: &Slot,
-    setup: &Setup,
-) -> (CrcCounts, Vec<String>) {
-    use cat_ft8::decode::{bp, soft, sync, BpFailure, BIN_HZ};
-    use cat_ft8::ldpc::{self, Codeword};
-    let band = setup.band;
-    let cfg = setup.config;
-    let mut front = Box::new(FrontEnd::new());
-    let mut levels = vec![0u8; band.spectrogram_len()];
-    let mut sync_buf = vec![0i32; Decoder::sync_scratch_len(band)];
-    let mut cands = vec![Candidate::default(); CANDIDATES.max(cfg.candidates)];
-    let mut dec = Decoder::new(
-        &mut front,
-        &mut levels,
-        &mut sync_buf,
-        &mut cands,
-        band,
-        cfg,
-    )
-    .unwrap();
-    let mut store = vec![Decode::EMPTY; setup.decodes];
-    let mut list = DecodeList::new(&mut store);
-    let mut scratch = Box::new(CandidateScratch::new());
-    dec.skip(slot.skip);
-    dec.feed(&slot.samples);
-    let kept = dec.find_candidates().kept;
-    let mut results = Vec::with_capacity(kept);
-    for i in 0..kept {
-        let r = dec.decode_candidate(i, &mut scratch).unwrap();
-        results.push((r, scratch.last_rounds()));
-        list.push(i, &r).unwrap();
-    }
-    let output: Vec<u128> = list
-        .finish_payloads()
-        .iter()
-        .map(|d| d.payload.bits())
-        .collect();
-    let sent: Vec<u128> = slot.sent.iter().map(|s| s.payload).collect();
-    let sent_cw: Vec<Codeword> = sent
-        .iter()
-        .map(|&p| ldpc::encode(cat_ft8::crc::append_crc(&Payload::from_bits(p).unwrap())))
-        .collect();
-    let distance =
-        |a: &Codeword, b: &Codeword| (0..ldpc::N).filter(|&i| a.bit(i) != b.bit(i)).count();
-    let spec = dec.spectrogram();
-    let mut n = CrcCounts {
-        slots: 1,
-        candidates: kept as u64,
-        messages: sent.len() as u64,
-        ..CrcCounts::default()
-    };
-    let mut crc_on: Vec<bool> = vec![false; sent.len()];
-    let mut gained: Vec<u128> = Vec::new();
-    let mut lines = Vec::new();
-    let mut llr = [0.0f32; ldpc::N];
-    let mut bps = Box::new(bp::BpScratch::new());
-    for (i, &(r, rounds)) in results.iter().enumerate() {
-        n.rounds += u64::from(rounds);
-        let c = dec.candidates()[i];
-        let (frac_row, frac_bin) = sync::refine(spec, &c);
-        let freq = ((band.first_bin() + usize::from(c.base)) as f32 + frac_bin) * BIN_HZ;
-        let dt = c.dt() + frac_row * sync::ROW_SECONDS;
-        let on: Vec<usize> = slot
-            .sent
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| {
-                (s.freq as f32 - freq).abs() <= ON_HZ && (s.dt as f32 - dt).abs() <= ON_S
-            })
-            .map(|(k, _)| k)
-            .collect();
-        match r {
-            Ok(d) => {
-                n.decoded += 1;
-                n.decodes_on_message += u64::from(on.iter().any(|&k| sent[k] == d.payload.bits()));
-                continue;
-            }
-            Err(BpFailure::NotConverged) => {
-                n.not_converged += 1;
-                continue;
-            }
-            Err(BpFailure::Crc) => n.crc += 1,
-            Err(BpFailure::AllZero) => n.all_zero += 1,
-            Err(_) => continue,
-        }
-        let first_failure = r.err();
-        // The decoder's soft bits for this candidate, recomputed.
-        soft::soft_bits_at(spec, &c, frac_row, frac_bin, cfg.llr_scale, &mut llr);
-        let mut first: Option<(u8, Codeword)> = None;
-        let mut seen: Vec<u128> = Vec::new();
-        let mut cont = Continued {
-            candidates: 1,
-            ..Continued::default()
-        };
-        let mut first_pass: Option<u128> = None;
-        let mut events = Vec::new();
-        let mut later = 0u64;
-        let run = bp::decode_soft_observed(
-            &llr,
-            cfg.rule,
-            cfg.max_rounds,
-            &mut bps,
-            |round, hard, res| {
-                let cw = Codeword::from_bits(hard);
-                match first {
-                    None => {
-                        assert_eq!(
-                        (res.err(), round),
-                        (first_failure, rounds),
-                        "{set}-{block} slot {index} candidate {i}: re-run differs from the decoder"
-                    );
-                        first = Some((round, cw));
-                        seen.push(cw.message());
-                    }
-                    Some(_) => {
-                        later += 1;
-                        if !seen.contains(&cw.message()) {
-                            seen.push(cw.message());
-                            events.push((round, res));
-                        }
-                    }
-                }
-                true
-            },
-        );
-        let (first_round, first_cw) = first.expect("the decoder stopped at a codeword");
-        cont.extra_rounds = u64::from(run - first_round);
-        cont.codeword_rounds = later;
-        for (round, res) in events {
-            cont.codewords += 1;
-            match res {
-                Ok(d) => {
-                    let p = d.payload.bits();
-                    let correct = sent.contains(&p);
-                    if correct {
-                        cont.correct += 1;
-                    } else {
-                        cont.wrong_pass += 1;
-                    }
-                    let fresh = first_pass.is_none();
-                    if fresh {
-                        first_pass = Some(p);
-                        if !correct {
-                            cont.first_false += 1;
-                        } else if output.contains(&p) || gained.contains(&p) {
-                            cont.first_duplicate += 1;
-                        } else {
-                            cont.first_gain += 1;
-                            gained.push(p);
-                        }
-                    }
-                    lines.push(format!(
-                        "  {set}-{block} slot {index} ({}) candidate {i} after {:?} at round {first_round}: round {round} {} {:020x}{}",
-                        slot.point,
-                        first_failure.unwrap(),
-                        if correct { "transmitted" } else { "NOT TRANSMITTED" },
-                        p,
-                        if fresh { if correct && !output.contains(&p) { " (first pass, new)" } else { " (first pass)" } } else { "" },
-                    ));
-                }
-                Err(BpFailure::AllZero) => cont.all_zero += 1,
-                Err(_) => cont.wrong_crc += 1,
-            }
-        }
-        if first_failure == Some(BpFailure::Crc) {
-            n.past_crc.add(&cont);
-            let d = sent_cw
-                .iter()
-                .map(|s| distance(&first_cw, s))
-                .min()
-                .unwrap_or(ldpc::N);
-            n.crc_distance += d as u64;
-            n.crc_near += u64::from(d <= 20);
-            if !on.is_empty() {
-                n.crc_on_message += 1;
-                n.crc_on_missing += u64::from(on.iter().any(|&k| !output.contains(&sent[k])));
-            }
-            for &k in &on {
-                crc_on[k] = true;
-            }
-        } else {
-            n.past_all_zero.add(&cont);
-        }
-    }
-    for (k, p) in sent.iter().enumerate() {
-        if !output.contains(p) {
-            n.missing += 1;
-            n.missing_with_crc += u64::from(crc_on[k]);
-        }
-    }
-    n.slots_with_crc = u64::from(n.crc > 0);
-    n.max_crc_in_slot = n.crc;
-    (n, lines)
-}
-
-fn crc_report(spec: &str, sets: &str, block: &str) -> Result<(), String> {
-    let setup = parse_config(spec)?;
-    for set in sets.split(',') {
-        set_size(set).ok_or_else(|| format!("unknown set {set}"))?;
-    }
-    println!("config {spec}: {:?}\n{}", setup.config, provenance());
-    for set in sets.split(',') {
-        let size = set_size(set).unwrap_or(0);
-        let per = par_map(size, |i| {
-            let slot = build(set, block, i);
-            (slot.point.clone(), crc_slot(set, block, i, &slot, &setup))
-        });
-        let mut points: BTreeMap<String, CrcCounts> = BTreeMap::new();
-        let mut order: Vec<String> = Vec::new();
-        let mut total = CrcCounts::default();
-        let mut lines = Vec::new();
-        for (pt, (c, l)) in per {
-            if !points.contains_key(&pt) {
-                order.push(pt.clone());
-            }
-            points.entry(pt).or_default().add(&c);
-            total.add(&c);
-            lines.extend(l);
-        }
-        println!("\n== {set} ({block}), {size} slots");
-        println!(
-            "  {:>9} {:>6} {:>7} {:>6} {:>6} {:>6} {:>6} {:>7} {:>6} {:>7} | {:>6} {:>6} {:>6} {:>6} {:>6} {:>5} {:>5} {:>5}",
-            "point", "msgs", "missing", "m+crc", "cands", "dec", "crc", "crc/slt", "maxslt", "zero",
-            "cont", "cws", "right", "wrongP", "wrongF", "gain", "dup", "false"
-        );
-        let row = |label: &str, p: &CrcCounts| {
-            let k = &p.past_crc;
-            println!(
-                "  {:>9} {:>6} {:>7} {:>6} {:>6} {:>6} {:>6} {:>7.3} {:>6} {:>7} | {:>6} {:>6} {:>6} {:>6} {:>6} {:>5} {:>5} {:>5}",
-                label, p.messages, p.missing, p.missing_with_crc, p.candidates, p.decoded, p.crc,
-                p.crc as f64 / p.slots.max(1) as f64, p.max_crc_in_slot, p.all_zero,
-                k.candidates, k.codewords, k.correct, k.wrong_pass, k.wrong_crc, k.first_gain, k.first_duplicate, k.first_false
-            );
-        };
-        for pt in &order {
-            row(pt, &points[pt]);
-        }
-        row("set", &total);
-        let t = &total;
-        println!(
-            "  CRC failures: {} of {} candidates ({:.4} per candidate), {:.3} per slot, {} of {} slots with one or more, at most {} in a slot",
-            t.crc, t.candidates, t.crc as f64 / t.candidates.max(1) as f64, t.crc as f64 / t.slots.max(1) as f64, t.slots_with_crc, t.slots, t.max_crc_in_slot
-        );
-        println!(
-            "  positional match: {} of {} decodes on their message; CRC failures on a transmitted message {} (on one missing from the output {}); mean distance to the nearest transmitted codeword {:.1} bits, {} within 20 bits",
-            t.decodes_on_message, t.decoded, t.crc_on_message, t.crc_on_missing,
-            t.crc_distance as f64 / t.crc.max(1) as f64, t.crc_near
-        );
-        let k = &t.past_crc;
-        println!(
-            "  past a CRC failure: {} candidates continued, {} extra rounds ({:.2}% of the {} rounds run), {} of them at a codeword; {} later codewords: {} transmitted, {} other passing, {} failing the CRC, {} all-zero; first pass: gain {}, duplicate {}, false {}",
-            k.candidates, k.extra_rounds, 100.0 * k.extra_rounds as f64 / t.rounds.max(1) as f64, t.rounds, k.codeword_rounds,
-            k.codewords, k.correct, k.wrong_pass, k.wrong_crc, k.all_zero, k.first_gain, k.first_duplicate, k.first_false
-        );
-        let z = &t.past_all_zero;
-        println!(
-            "  past an all-zero rejection: {} candidates continued, {} extra rounds, {} of them at a codeword; {} later codewords: {} transmitted, {} other passing, {} failing the CRC, {} all-zero; first pass: gain {}, duplicate {}, false {}",
-            z.candidates, z.extra_rounds, z.codeword_rounds, z.codewords, z.correct, z.wrong_pass, z.wrong_crc, z.all_zero, z.first_gain, z.first_duplicate, z.first_false
-        );
-        println!(
-            "  expected false decodes from codewords not transmitted (each passes the 14-bit CRC with probability 1/16 384): as decoded {:.4}; continuing past a CRC failure adds {:.4}",
-            t.crc as f64 / 16_384.0,
-            (k.wrong_crc + k.wrong_pass) as f64 / 16_384.0
-        );
-        for l in lines {
-            println!("{l}");
-        }
-    }
-    Ok(())
-}
-
-const USAGE: &str = "usage: paired_bench run CONFIG OUTDIR [SETS] [BLOCK] | compare OLDDIR NEWDIR [--partial] | cost A B [SLOTS] [RUNS] | crc CONFIG [SETS] [BLOCK]";
+const USAGE: &str = "usage: paired_bench run CONFIG OUTDIR [SETS] [BLOCK] | compare OLDDIR NEWDIR [--partial] | cost A B [SLOTS] [RUNS]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -1512,12 +1291,6 @@ fn main() -> ExitCode {
         (Some("compare"), Some(o), Some(n)) => {
             compare(Path::new(o), Path::new(n), arg(3) == Some("--partial"))
         }
-        (Some("crc"), Some(c), _) => crc_report(
-            c,
-            arg(2).unwrap_or("sweep,crowded,edges,empty"),
-            arg(3).unwrap_or("main"),
-        )
-        .map(|()| true),
         (Some("cost"), Some(x), Some(y)) => num(3, 42)
             .and_then(|s| num(4, 5).and_then(|r| cost(x, y, s, r)))
             .map(|()| true),

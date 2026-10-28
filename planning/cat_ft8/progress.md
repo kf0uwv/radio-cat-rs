@@ -688,7 +688,28 @@
   unchanged: default release binary byte-identical to 8c410e0's, golden
   hashes unchanged, default runs record-for-record identical to
   `e3-final` (b = c = 0 on every set and block). Stopped at the E4
-  checkpoint; results to the user.
+  checkpoint.
+
+## Session: 2026-10-27 (subtraction and further passes, S0)
+
+- S0 started: clean-up after the E2/E4 reviews, the subtraction ceiling
+  (bench only), then a plan for approval. Results stay identical; no
+  subtraction code in the decoder.
+- Clean-up done (results identical): `bp::decode_soft_observed` and its
+  two tests deleted (the decoder sources now equal 8c410e0's); the
+  continuation half of `paired_bench crc` deleted (1870e8b reproduces
+  E4). `run` saves each transmitted message's outcome (decoded, or no
+  candidate on it / not converged / CRC failure / all-zero, by
+  position), and `compare` prints the misses by cause and the CRC
+  failures per slot with the expected false decodes for both sides.
+  One decode helper serves `run`, `cost` and the new measurement; the
+  slot rendering is shared. Findings wording (E2: min-sum as
+  configured, two statements marked as assumptions; E4: no fixed-point
+  claim, CRC failures are noise, ordered statistics sized by
+  not-converged candidates); ADR 0024's scope marks continuing past a
+  CRC failure as measured, not pursued. Identity: release binary sha256
+  b3ead07b…dea93 unchanged, golden hashes unchanged, every slot record
+  equal to `e3-final` (b = c = 0 on every set and block).
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
