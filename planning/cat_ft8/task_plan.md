@@ -774,7 +774,10 @@ E1. [x] **Early stop of failing candidates.** Rejected (no stall
           gets its own k (provisional) if it passes its own gates.
         - Pinning as above; the state hash adds the stall-on case.
     ◆ Checkpoint E1.
-E2. [ ] **Host check-node rule — measurement only.** With the accepted
+E2. [x] **Host check-node rule — measurement only.** (Measured at
+        the E3 defaults: min-sum on `HOST` fails the no-loss gate on both
+        blocks, 50% point +0.034–0.038 dB, total −24% per crowded slot;
+        no default change. Findings, "Phase 3 E2".) With the accepted
         early stop, sum-product versus min-sum for `HOST`, each with its
         own k, paired on every set, with costs. The default does not
         change in this phase; the numbers go to findings for a later

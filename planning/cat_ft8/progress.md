@@ -665,6 +665,15 @@
   to ADR 0024, which now says `CANDIDATES` sizes the buffer for the
   largest preset or `with_candidates` value. E2 is next, with stall off
   at the new defaults.
+- E2 measured (findings, "Phase 3 E2: host check-node rule, measured"),
+  stall off at the E3 defaults, against the default runs in
+  `e3-final`: `HOST` with min-sum loses 94/91 sweep messages and gains
+  28/21 (main/fresh), crowded 23/24 against 7/3, edges 11 against 1; no
+  false decode; 50% point +0.038/+0.034 dB; it fails the no-loss gate on
+  every set with signals. Cost: total 40.6 → 30.8 ms (−24%), belief
+  propagation −47%. `SMALL` with sum-product is the mirror image (the
+  same messages, sides swapped) at +25% total, +88% belief propagation.
+  No default change; nothing re-pinned. Stopped at the E2 checkpoint.
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |

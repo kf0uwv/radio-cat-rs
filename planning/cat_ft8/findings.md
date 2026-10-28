@@ -633,3 +633,64 @@ Pins:
   6/15/20 min-sum) and the floors are unchanged;
 - the bulk run stays at zero decodes (fewer all-zero rejections: fewer
   candidates reach belief propagation).
+
+## Phase 3 E2: host check-node rule, measured (2026-10-27)
+
+Measurement only; no default changes. Stall off, at the E3 defaults
+(`HOST` 100 candidates, `SMALL` 75). `paired_bench` at 8c410e0 (clean
+tree): `run host,rule=ms DIR sweep,crowded,edges,empty main`, then `…
+sweep,crowded fresh`, and the same for `small,rule=sp`; each compared
+with the default run of its preset in `~/.cache/cat-ft8-paired/e3-final/`
+(old = the default). Raw runs and comparisons in
+`~/.cache/cat-ft8-paired/e2/`.
+
+**`HOST`, sum-product (default) → min-sum.** Lost = b (decoded by
+sum-product only), gained = c (by min-sum only):
+
+| set (block) | lost | gained | b − c / limit | points failing | false (old, new) |
+|---|---|---|---|---|---|
+| sweep (main) | 94 | 28 | 66 / 22.1 | −20.0 dB (16/1), −19.0 dB (32/9) | 0, 0 |
+| sweep (fresh) | 91 | 21 | 70 / 21.2 | −19.5 dB (20/3) | 0, 0 |
+| crowded (main) | 23 | 7 | 16 / 11.0 | — (40: 17/6) | 0, 0 |
+| crowded (fresh) | 24 | 3 | 21 / 10.4 | 40 messages (19/2) | 0, 0 |
+| edges (main) | 11 | 1 | 10 / 6.9 | — (spread over 9 cases) | 0, 0 |
+| empty (main) | 0 | 0 | 0 / 0 | — | 0, 0 |
+
+50% point (paired bootstrap, 1 000 resamples, none dropped): main
+−19.122 → −19.083 dB, shift +0.038 dB [+0.020, +0.061]; fresh −19.078
+→ −19.044 dB, shift +0.034 dB [+0.012, +0.057]. Rounds per candidate
+unchanged (29.84 sweep, 25.25 → 25.26 crowded). Min-sum fails the
+no-loss gate on every set with signals, on both blocks; the shift is
+inside the 0.05 dB limit but its interval excludes zero.
+
+**`SMALL`, min-sum (default) → sum-product** (75 candidates): the mirror
+image, with the same counts — lost / gained: sweep main 28 / 94, fresh
+21 / 91; crowded main 7 / 23, fresh 3 / 24; edges 1 / 11; empty 0 / 0;
+no false decode. 50% shift −0.038 dB [−0.061, −0.020] (main), −0.034 dB
+[−0.057, −0.012] (fresh). 302 of the 303 discordant messages are the
+host's, with the sides swapped: the rule, not the band or the
+candidate count, decides them.
+
+**Cost** (`paired_bench cost host host,rule=ms 42 5` and `cost small
+small,rule=sp 42 5`, loop-aligned build of 8c410e0, median of five
+interleaved single-thread runs over the 42 spread crowded slots, ms per
+slot):
+
+| preset | rule | total | belief propagation | feed | sync | soft bits | refine |
+|---|---|---|---|---|---|---|---|
+| host | sum-product (default) | 40.56 | 20.58 | 14.64 | 2.87 | 1.61 | 0.68 |
+| host | min-sum | 30.82 (−24.0%) | 10.90 (−47.1%) | 14.59 | 2.86 | 1.59 | 0.67 |
+| small | min-sum (default) | 26.59 | 7.74 | 14.34 | 2.60 | 1.22 | 0.51 |
+| small | sum-product | 33.28 (+25.2%) | 14.53 (+87.8%) | 14.27 | 2.60 | 1.23 | 0.52 |
+
+**Reading.** Sum-product is worth about 0.035 dB at the 50% point and
+about 65–70 sweep messages in 15 000 (0.5%), plus 15–20 crowded
+messages in 14 000, for about 10 ms per crowded slot on this host
+(belief propagation twice as long). For `HOST` the sum-product default
+stands: min-sum fails the no-loss gate on both blocks, and sum-product
+is also the better input for any later ordered-statistics stage. For
+`SMALL` the same numbers are the price of its budget: sum-product would
+pass every gate there (it is the gain side) but costs +88% belief
+propagation on the host and more on a scalar FPU (transcendentals per
+edge); whether it fits is a question for instruction counts on the
+small target, not this host. No default change; nothing re-pinned.
