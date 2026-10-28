@@ -755,6 +755,59 @@
   1..=3 passes with one later-pass candidate count); acceptance bars
   tightened. Stopped at the S0 checkpoint for approval.
 
+## Session: 2026-10-28 (subtraction and further passes, S2)
+
+- Plan approved by the user; S2 started (subtracting one signal,
+  integer-sample starts). Pass 1 untouched.
+- `decode::subtract` added to the core (`src/decode/subtract.rs`, with an
+  in-crate `atan2_turns` in `math.rs`): fine time from adjacent symbols'
+  phases summed by tone step in six groups (scored without the groups'
+  phases, so drift and fading need only hold within ~2 s), frequency and
+  drift from the groups' phases, least-squares amplitude per segment,
+  linear interpolation, subtraction in place; `skip` region neither read
+  nor written. `no_std`, `f32` and integer phase only, 6 836 B of stack
+  arrays, no allocation. Unit tests: noiseless suppression below −40 dB
+  (measured −96…−102 dB), a slot cut short, a skipped region stays zero,
+  determinism with three golden pins, settings and inputs checked, the
+  stack bound.
+- Bench: a second (`f64`) generator for starts between samples, fades
+  and drift (matches `Synth` to 6.6 × 10⁻⁴ at whole-sample starts); the
+  `fading` set (10/20/40 messages, fades 0.05–1 Hz, drift ±0.2 Hz/s,
+  fractional starts; own seeds; not in the default sets; `ceiling`
+  accepts it); modes `suppression`, `passes`, `subcost`. Existing sets'
+  records unchanged.
+- First measurement showed drift above ~0.2 Hz/s broke the time search
+  (one coherent sum over the transmission): fixed by scoring six groups
+  without their phases and fitting drift through the groups. Cost 6.4 ms
+  per call, then 3.3 ms after skipping the confirming timing pass for
+  small moves and integer phase stepping (suppression unchanged).
+- Results (findings, "Subtracting one signal (S2)"): noise-limited
+  residue on single signals (−37.8 dB at +10 dB SNR) at every start
+  offset and frequency; fades to 0.5 Hz followed; drift to 0.2 Hz/s
+  fine, 0.5 Hz/s fails in ~10% of trials. Sub-sample timing residue
+  ≤ −53.3 dB everywhere: **S1 not needed**. Further passes (bench loop):
+  oracle-gain share +1 / +2 96.6% / 94.8% crowded, 93.0% / 89.5% wide,
+  94.9% / 91.6% fading (main; fresh within a point); duplicates 1 in
+  ~10 000 subtractions after one pass; no false decodes. Segment 3 840
+  recovers more (99.0% / 98.2% crowded) with more duplicates; default
+  kept at 1 920, S3 to sweep.
+- `subtract_wav` example: decodes a WAV slot, subtracts every decode,
+  writes the residual and one JSON line per decode with the estimates
+  and `left_db`.
+- Identity: golden pins pass; `run` of every default set, both presets,
+  record-for-record equal to `e3-final` (b = c = 0, PASS). The release
+  `cat-ft8-decode` does not link `subtract` but its bytes changed
+  (codegen-unit partitioning; sha256 ce6a2549…fe8f); its output on 800
+  seeded WAV slots, both configurations, `--raw` and `--profile` counts,
+  is byte-identical to b3ead07b's.
+- Sizes: host link-check image +6 792 B flash (90 296 B), `subtract`
+  frame 7 432 B on thumbv8m; small and encoder images unchanged.
+- Checks: fmt; clippy (workspace, cat-ft8 all features, thumbv8m);
+  `embedded-check/check.sh` and `--stack`; release workspace tests and
+  the `--ignored` bulk run; `--features profile`; `--no-default-features`;
+  docs with `-D warnings` (default, no-std, profile); MSRV 1.75 library
+  build. Stopped at Checkpoint S2.
+
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
 |-----------|-------|---------|------------|

@@ -16,8 +16,10 @@ comparison with an external reference decoder, is not part of this
 repository's CI). Review of the whole decoder done; fix round D12 (A and
 B, results identical) approved by the user 2026-10-27, then up to five
 optimisation passes (C). Phase 3 (single-pass changes that alter
-results, E0–E4) done. Phase 4 (subtraction and further passes): S0 done
-and revised after review; S1–S3 proposed, awaiting approval.
+results, E0–E4) done. Phase 4 (subtraction and further passes): plan
+approved; S0 and S2 done (stopped at Checkpoint S2); S1 not needed (S2
+measured the sub-sample timing residue at −53 dB at worst); S3 next,
+not started.
 
 ## Hard constraints
 
@@ -818,10 +820,11 @@ E4. [x] **Continuing past a CRC-failing codeword — measurement only.**
         empty-set run.
     ◆ Checkpoint E4; ◆◆ results to the user.
 
-## Phase 4: subtraction and further passes — PROPOSED (2026-10-27, revised after review)
+## Phase 4: subtraction and further passes — APPROVED (2026-10-27, revised after review)
 
-Status: **S0 done (results identical) and revised after review; S1–S3
-awaiting the user's approval.** No subtraction code is in the decoder.
+Status: **S0 and S2 done; S1 not needed; at Checkpoint S2, S3 not
+started.** (Before S2: S0 done, results identical, and revised after
+review; S1–S3 then awaited the user's approval, given 2026-10-28.) No subtraction code is in the decoder.
 The ADR amendment draft is in ADR 0024 ("Amendment (draft): subtraction
 and further passes"). Revision: the bench was split and its reports
 fixed (findings, "Bench split, and no-candidate misses told apart"), a
@@ -990,7 +993,7 @@ S0. [x] **Clean-up and the subtraction ceiling** (results identical).
         "Misses by cause", "Subtraction ceiling", "Bench split, and
         no-candidate misses told apart", "Wider crowded set, measured".
     ◆ Checkpoint S0: this plan to the user for approval.
-S2. [ ] **Subtracting one signal** (integer-sample starts).
+S2. [x] **Subtracting one signal** (integer-sample starts).
         - Change: `decode::subtract` as above: from the decode's tones,
           frequency and time offset, a fine time estimate (rounded to a
           whole sample) and a fine frequency estimate on the residual,
@@ -1019,8 +1022,34 @@ S2. [ ] **Subtracting one signal** (integer-sample starts).
           makes from its numbers is S1's: if the timing residue is
           above −30 dB in any condition, S1 is done; otherwise it is
           not. Hard requirement: no change to any pass-1 output.
-    ◆ Checkpoint S2.
-S1. [ ] **Reference waveform: only what S2 needs** (conditional).
+        - Done (2026-10-28; findings, "Subtracting one signal (S2)"):
+          `decode::subtract(audio, &decode, skip, &SubtractConfig)` with
+          `SubtractConfig { segment, drift }` (default one symbol, drift
+          on) and a `Subtraction` report with its own `left_db`
+          estimate. The plan's `band` argument was not needed; `skip` was
+          (the skipped region is neither read nor written). Fine time
+          from adjacent symbols' phases per tone step, frequency and
+          drift from the same, a least-squares amplitude per segment,
+          linear between segment centres. The `fading` set and the
+          `suppression`, `passes` and `subcost` modes added to the bench;
+          `subtract_wav` example. Single signals: noise-limited residue
+          (−27.7 dB at 0 dB SNR, −37.8 at +10), the same at every start
+          offset, frequency and drift up to 0.2 Hz/s; fades up to 0.5 Hz
+          followed. Further passes (bench loop, host main): share of the
+          oracle's gain +1 / +2 crowded 96.6% / 94.8%, wide 93.0% /
+          89.5%, fading 94.9% / 91.6%; duplicates 1 of ~10 000
+          subtractions after one pass, 0–0.4% after two; no false
+          decodes. Cost 3.3 ms per subtraction (one thread). Pass 1
+          identical (records, golden pins, decode output of the release
+          binary; its bytes moved, see findings).
+    ◆ Checkpoint S2 (2026-10-28). **S1: not needed** — the sub-sample
+      start's share of the residue is −57.7 dB at a half-sample start
+      and −53.3 dB at worst in any trial, far below −30 dB. Open for S3:
+      the segment length (1 920 vs 3 840: +2.4 / +3.4 points of oracle
+      share on crowded for 4–36 duplicates) to sweep with the later-pass
+      candidate count; the subtraction's cost against the 250 ms budget.
+S1. [—] **Reference waveform: only what S2 needs** (conditional; not
+        needed — S2 measured the timing residue far below −30 dB).
         - Rationale: half a sample of start error (τ = 1/24 000 s) is a
           phase error between tones of 2π·Δf·τ once the complex
           amplitude has absorbed the common part — at most 2π × 43.75 Hz

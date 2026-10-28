@@ -1039,3 +1039,202 @@ point (host main: 1 943 at −3…0 dB, 206 at 0…+3 dB). Of the gap between th
 (host main, 5 353 messages), one oracle pass covers 3 863 (72%) and two
 4 745 (89%). The oracle duplicates and false decodes are zero by
 construction, so they say nothing about a real subtraction.
+
+## Subtracting one signal (S2, 2026-10-28)
+
+`decode::subtract(audio, &decode, skip, &SubtractConfig)` is in the
+core (`src/decode/subtract.rs`); nothing calls it in pass 1. Bench:
+`paired_bench suppression|passes|subcost` and the `fading` set; outputs
+in `~/.cache/cat-ft8-paired/s2/`. Host preset unless stated.
+
+**Method** (module docs): the unit reference from `Synth::fill_phase` at
+a whole-sample start; per-symbol correlations over each symbol's middle
+half; adjacent symbols' products summed by tone step in six 2 s groups
+and aligned over ±½ symbol (the phase of a start error grows with the
+tone step: 1/1920 turn per sample per step), groups added without their
+phases; one more timing pass only if the start moved by more than ⅛
+symbol; frequency offset and linear drift from the groups' aligned
+phases (weighted line); per segment a two-parameter least-squares
+amplitude on the corrected reference's cosine and sine; amplitude
+interpolated linearly between segment centres; subtraction in place.
+`f32` and integer phase only (the drift correction is a quadratic
+phase in 64-bit integers), bounded stack (`SUBTRACT_STACK_BYTES` 6 836 B
+of arrays), no allocation, deterministic (three golden pins of residual
+bits and estimates). It also returns `left_db`, its own estimate of the
+signal left (the residual's projection on the reference plus the noise's
+expected share in the amplitude fit).
+
+**A second generator.** Starts between samples, fades and drift need a
+waveform `Synth` does not make, so the bench has its own `f64` GFSK
+generator (`channel.rs`, same definition, phase accumulated at the
+continuous waveform time). At whole-sample starts it matches `Synth` to
+6.6 × 10⁻⁴ of full scale.
+
+**Suppression of single signals** (`suppression host "" 100`: 100 seeded
+slots per condition, each decoded by the single pass first and that
+decode subtracted; signal left = residual minus the noise actually
+added, over the signal's energy; median [10%, 90%]; conditions other
+than SNR at +10 dB; segment 1 920, drift on):
+
+| condition | decoded | left, dB | true start imposed | noiseless | sub-sample share (median / largest) |
+|---|---|---|---|---|---|
+| −20 dB | 12 | −7.7 [−8.2, −7.1] | −7.7 | −68.8 | −68.8 / −59.6 |
+| −16 dB | 100 | −11.8 [−12.4, −11.1] | −11.8 | −62.1 | −62.1 / −58.0 |
+| −12 dB | 100 | −15.7 [−16.3, −15.1] | −15.7 | −63.0 | −63.0 / −57.4 |
+| −8 dB | 100 | −19.8 [−20.5, −19.2] | −19.8 | −65.1 | −65.1 / −56.6 |
+| −4 dB | 100 | −23.8 [−24.3, −23.2] | −23.8 | −63.3 | −63.3 / −56.9 |
+| 0 dB | 100 | −27.7 [−28.4, −27.1] | −27.7 | −62.7 | −62.7 / −57.2 |
+| +5 dB | 100 | −32.6 [−33.3, −32.1] | −32.7 | −63.6 | −63.6 / −57.4 |
+| +10 dB | 100 | −37.8 [−38.5, −37.1] | −37.8 | −63.8 | −63.8 / −57.0 |
+| +20 dB | 100 | −47.5 [−48.2, −46.7] | −47.5 | −63.6 | −63.6 / −57.5 |
+| dt −2.0 / −1.0 / 0 / +1.0 / +2.0 / +2.4 / +2.5 s | 100 each | −37.6 … −37.8 | −37.7 … −37.8 | −63.4 … −65.8 | ≤ −63.4 / ≤ −56.5 |
+| start +0 / +0.25 / +0.5 sample | 100 each | −37.7 / −37.7 / −37.7 | −37.7 | −104.2 / −63.8 / −57.7 | none / −63.8 / −57.7 (largest −56.4) |
+| tone 0 at 100, 101.56, 200, 1 500, 1 500.78, 1 501.56, 2 850, 3 050 Hz | 100 each | −37.7 … −37.8 | −37.7 … −37.8 | −63.1 … −64.8 | ≤ −63.1 / ≤ −57.1 |
+| fade 0.05 / 0.1 / 0.2 / 0.5 / 1 / 2 Hz (depth 0.9) | 100 each | −34.0 / −33.9 / −33.7 / −31.3 / −23.4 / −13.3 | the same | −60.7 / −55.1 / −48.3 / −35.0 / −23.9 / −13.3 | ≤ −63.2 / largest −53.3 (2 Hz) |
+| drift 0.02 / 0.05 / 0.1 / 0.2 Hz/s | 100 each | −37.6 / −37.6 / −37.7 / −37.5 | −37.6 … −37.7 | −64.0 / −62.5 / −59.2 / −52.2 | ≤ −63.5 / ≤ −57.0 |
+| drift 0.5 Hz/s | 100 | −36.4 [−37.7, −9.8] | −37.6 | −42.1 | −62.8 / −57.8 |
+
+- In noise the residue is the amplitude estimate's noise: it falls 1 dB
+  per dB of SNR (−27.7 dB at 0 dB, −37.8 at +10), the same at every start
+  offset (including the slot's edges, where part of the waveform is
+  outside the slot), every frequency (band edges and fractions of a bin)
+  and drifts up to 0.2 Hz/s. With the true start imposed nothing changes
+  (≤ 0.1 dB): the time estimate costs nothing measurable.
+- Noiseless, everything estimated, the floor is −62…−69 dB; with a start
+  on a sample it is −104 dB.
+- Fades: a one-symbol segment follows fades up to 0.5 Hz (−31 dB at
+  +10 dB SNR); at 1 Hz it leaves −23 dB and at 2 Hz −13 dB.
+- Drift 0.5 Hz/s (6.3 Hz over the transmission, beyond the fading set's
+  ±0.2 Hz/s) mostly works (median −36.4 dB) but fails in about one trial
+  in ten (90% quantile −9.8 dB: the frequency estimate misses, |error| 90%
+  0.84 Hz).
+
+**Fine estimates against the truth** (|error| median [90%]; the
+decoder's own in brackets): start 0.05 [0.13] samples at +20 dB, 0.21
+[0.51] at +10, 0.69 [1.40] at 0 dB, 4.0 [9.4] at −16 dB (decoder 45–75
+[90–137] samples); the whole-sample start is exactly right in 90% of
+trials at +20 dB, 81% at +10 dB, 51% at a half-sample start. Frequency
+below 0.001 Hz at +5 dB and up, 0.013 [0.026] Hz at −16 dB, 0.022
+[0.064] at −20 (the decoder's medians up to 0.51 Hz, 90% up to 0.73). Drift error 0.004
+[0.008] Hz/s at −16 dB, below 0.001 above 0 dB.
+
+**`left_db` against the measurement:** +10 dB −35.6 vs −37.8; −16 dB −9.9
+vs −11.8; fade 1 Hz −24.0 vs −23.4; fade 2 Hz −15.7 vs −13.3. It is
+within about 2.5 dB: high where noise dominates, low for fast fades.
+
+**Segment length** (signal left, median dB): at +10 dB 480 → −31.8, 960
+→ −34.8, 1 920 → −37.8, 3 840 → −40.6, 7 680 → −43.3, the whole waveform
+→ −42.1 (3 dB per doubling, the noise averaged). Fades reverse it: at
+1 Hz 480 → −27.7, 960 → −29.4, 1 920 → −23.4, 3 840 → −13.3; at 0.5 Hz
+3 840 leaves −23.7 against −31.3. Drift needs the drift estimate once
+segments are long: at 0.2 Hz/s without it, 1 920 leaves −20.6 dB and
+3 840 −10.7 (−37.5 and −39.6 with it).
+
+**S1 (a sub-sample start in `Synth`): not needed.** The residue a start
+between samples leaves — the noiseless subtraction with the true start
+rounded to a sample and the true frequency and drift imposed, less the
+same for the same signal started on a sample — is −57.7 dB at a
+half-sample start (the worst case), −63.8 dB at a quarter sample, and
+at most −53.3 dB in any trial of any condition (a 2 Hz fade). Every
+condition is more than 23 dB below the −30 dB threshold, and 15 dB or
+more below what noise leaves even at +20 dB SNR. This agrees with the
+plan's estimate (about −39 dB as an upper bound from the phase error
+between tones; the amplitude fit absorbs most of it).
+
+**Further passes with the bench's own loop** (`passes`; each pass's new
+decodes subtracted in list order, then the residual decoded again with
+the same configuration; beside the same-configuration oracle passes run
+in the same command; decoded, % of transmitted):
+
+| set, block | single | +1 real / oracle | +2 real / oracle | share of the oracle's gain +1 / +2 | duplicates p2 / p3 (of decodes subtracted) | false p2 / p3 |
+|---|---|---|---|---|---|---|
+| crowded, main | 69.1 | 90.3 / 91.0 | 95.1 / 96.5 | 96.6% / 94.8% | 1 of 9 672 / 11 of 2 969 | 0 / 0 |
+| crowded, fresh | 69.1 | 91.0 / 91.6 | 95.7 / 97.0 | 97.3% / 95.5% | 0 of 9 669 / 10 of 3 071 | 0 / 0 |
+| wide, main | 62.5 | 80.5 / 81.8 | 83.8 / 86.2 | 93.0% / 89.5% | 1 of 12 503 / 6 of 3 593 | 0 / 0 |
+| wide, fresh | 62.3 | 80.5 / 82.0 | 83.9 / 86.4 | 92.4% / 89.5% | 0 of 12 464 / 4 of 3 644 | 0 / 0 |
+| fading, main | 63.3 | 81.5 / 82.5 | 84.8 / 86.8 | 94.9% / 91.6% | 0 of 8 858 / 0 of 2 551 | 0 / 0 |
+| fading, fresh | 62.7 | 81.2 / 82.3 | 84.6 / 86.7 | 94.1% / 91.0% | 0 of 8 782 / 3 of 2 583 | 0 / 0 |
+| crowded, main, small preset | 69.0 | 90.2 / 90.9 | 95.0 / 96.4 | 96.7% / 94.8% | 0 of 9 656 / 9 of 2 970 | 0 / 0 |
+
+Per size (crowded, main): 10 messages 87.8 → 99.0 / 99.7 (oracle 99.0 /
+99.7), 20 messages 77.5 → 95.3 / 98.0 (95.7 / 98.8), 40 messages 60.2 →
+85.6 / 92.4 (86.7 / 94.5). Counts (crowded, main): single 9 672, real +1
+12 641, +2 13 309; oracle 12 746 and 13 508 (as S0 measured). A real
+pass decoded 3 messages the oracle pass did not (fading main: 18 and
+16; wide main: 9 and 6).
+
+- **Duplicates** — a payload of an earlier pass decoded again, so a
+  subtraction that left a decodable signal — are 1 in about 10 000
+  subtractions after the first further pass and 0.1–0.4% after the
+  second; on crowded main the duplicated messages were at 0–10 dB SNR
+  (not weak signals: overlapping strong neighbours bias each other's
+  estimates). The list's duplicate rule keeps them out of the output.
+- **False decodes:** none in any further pass on any set (the expected
+  rate from the CRC was not computed per pass here; S3's bar).
+- **The fading set** decodes fewer in the single pass (63.3% against
+  crowded's 69.1%) and keeps nearly the same share of the oracle's gain
+  (94.9% against 96.6%); drift on or off makes no difference there
+  (±0.2 Hz/s: one-symbol segments follow it either way).
+
+**Segment length on the passes** (host, main; share +1 / +2, duplicates
+p2 / p3):
+
+| segment | crowded | wide | fading |
+|---|---|---|---|
+| 960 | 91.8% / 86.3%, 0 / 0 | 83.2% / 77.6%, 0 / 0 | 85.4% / 79.4%, 0 / 0 |
+| 1 920 (default) | 96.6% / 94.8%, 1 / 11 | 93.0% / 89.5%, 1 / 6 | 94.9% / 91.6%, 0 / 0 |
+| 2 880 | 98.2% / 97.4%, 8 / 42 | 96.1% / 93.4%, 6 / 36 | 97.2% / 94.8%, 0 / 10 |
+| 3 840 | 99.0% / 98.2%, 4 / 36 | 96.9% / 94.8%, 9 / 37 | 97.4% / 95.1%, 27 / 52 |
+| 1 920, no drift | 96.6% / 94.8%, 1 / 12 | 93.0% / 89.5%, 1 / 6 | 94.9% / 91.4%, 0 / 0 |
+
+Fresh seeds, 3 840: crowded 99.0% / 98.6% (4 / 41), wide 96.7% / 94.8%
+(2 / 24), fading 96.9% / 94.9% (21 / 49). Longer segments recover more
+(less noise in the amplitude) and leave more duplicates (fades and
+neighbours followed less well); the default stays at one symbol, the
+segment with almost no duplicates on every set. Since duplicates are
+dropped by the list, S3 should sweep 1 920–3 840 together with the
+later-pass candidate count, on the paired gain.
+
+**Cost** (`subcost host "" 20 5`: one thread, the single-pass decodes of
+20 crowded 40-message slots, 485 calls, median of five runs): 3.3 ms per
+call (3.28–3.32 in two runs; 3.23–3.35 per slot), about 80 ms for a
+40-message slot's ~24 pass-1 decodes. A first version took 6.4 ms;
+skipping the confirming timing pass when the start moved by ⅛ symbol or
+less, an integer quadratic phase for the drift and whole-block loops
+halved it without changing the suppression (≤ 0.1 dB). Each call runs
+the reference generator two or three times over the waveform (timing,
+amplitude, subtraction), about 0.7 ms each. In `passes` (all threads
+busy) a further pass's decode took 51 ms median. Against the multi-pass
+budget (worst 40-signal slot ≤ 250 ms in total) this is tight; S3
+measures it, and the subtraction cost is the first candidate for
+optimisation (one generator run for amplitude and subtraction would
+need a buffer of about 1.5 segments).
+
+**Memory.** `subtract`'s arrays: 6 836 B (`SUBTRACT_STACK_BYTES`); its
+frame on thumbv8m (`check.sh --stack`, host image, residual in a
+static): 7 432 B. Flash: the host image grows from 83 504 B to 90 296 B
+(+6 792 B); the small image (which does not call it) and the encoder
+image are unchanged (83 504 B, 35 848 B); no `f64` helper linked. The
+host image's static RAM grows only by the check program's 8 192 B
+residual buffer.
+
+**Pass 1 unchanged.** Every golden pin passes; `paired_bench run` of every
+default set (both presets, the main block and the fresh sweep and
+crowded sets) is record-for-record identical to `e3-final` apart from
+timings (`compare`: b = c = 0, PASS). The release `cat-ft8-decode` does
+not link `subtract` (no symbol of it or of the new arctangent), but its
+bytes changed (sha256 ce6a2549…fe8f at this commit, was
+b3ead07b…dea93; an intermediate state gave a02cff01…9eac): adding the
+module moved code between codegen units (`soft_bits_at` is 4 bytes
+longer; two error helpers changed size). Its output is identical: 800
+seeded WAV slots (0, 1, 5, 10, 20 and 40 signals; some cut short),
+both configurations, `--raw` and `--profile` (timings removed): 35 840
+output lines, 31 040 of them decodes, byte-identical between the two
+binaries. With only the new arithmetic helpers (no new module) the
+binary is byte-identical to b3ead07b.
+
+**Not measured:** subtraction of signals from another FT8 generator
+(`subtract_wav` exists for that); real off-air audio; the cost on any
+other host; fades deeper than 0.9 or not sinusoidal (Rayleigh); drift
+that is not linear; the expected false decodes per further pass from
+the CRC.
