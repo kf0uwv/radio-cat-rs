@@ -1335,8 +1335,8 @@ WAV-identity outputs, `subcost`).
 `DecodeConfig::{passes, later_candidates, subtract}`,
 `Decoder::{decode_passes, decode_passes_staged, find_later_candidates}`,
 `DecodeList::next_pass` (and `len`), `PassReport`/`PassEvent`/`PassStep`;
-`cat-ft8-decode --config host|small[,passes=N]` (the user asked for a
-flag; profile keys added only). Outputs in `~/.cache/cat-ft8-paired/s3/`
+`cat-ft8-decode --config host|small[,passes=N]` (a flag, on request;
+profile keys added only). Outputs in `~/.cache/cat-ft8-paired/s3/`
 (`sweep/`, `accept*`, `ceiling/`, `cost/`, `identity/`, `wav/`, `ci/`).
 
 **Sweep** (`paired_bench passes`, `decode_passes` with three passes, main
@@ -1451,16 +1451,15 @@ further CI step).
 every default set and the fresh sweep and crowded sets: record-for-record
 identical to `e3-final` and to `s2/identity` (b = c = 0, PASS). The
 release `cat-ft8-decode` changed bytes (new code, and `Synth`); on the
-800-slot WAV corpus, `--config host,passes=1` and `small`, plain,
+set of 800 WAV slots, `--config host,passes=1` and `small`, plain,
 `--raw` and `--profile` (timings removed), its output is byte-identical
 to d4fd2d3's (ce6a2549…) with `--config host` and `small`
 (`wav/base.txt`, `wav/s3-p1.txt`). The binary built from cea0bc2 in this
 repository's path, sha256 b07afd894e432a81634d3b8e5d06eb59c19a90a4a9ba2a832ae437102746b989,
 gives the same identity (`wav/cea0bc2-p1.txt`); with its defaults (host
-three passes) the corpus's host decodes go from 7 767 to 10 696, the
+three passes) the set's host decodes go from 7 767 to 10 696, the
 single pass's lines first and unchanged in every slot, no message twice,
-`small` unchanged (`wav/cea0bc2-default.txt`). It is the binary handed on
-for the external acceptance.
+`small` unchanged (`wav/cea0bc2-default.txt`).
 
 **Memory.** The core gains no buffer; `Decoder` grows by its
 configuration to 200 B (was 176 B); the caller's residual is 720 000 B (the decode
@@ -1470,6 +1469,5 @@ thumbv8m): small image 83 976 B (was 83 504), encoder-only 36 304 B (was
 per-symbol envelope test) adds about 450 B to every image that
 synthesises.
 
-**Not measured:** off-air audio; other hosts' speed; the cost of slots
-beyond 40 signals; the external acceptance (another decoder's corpus)
-of the binary built here.
+**Not measured:** off-air audio; other hosts' speed; slots beyond 40
+signals.

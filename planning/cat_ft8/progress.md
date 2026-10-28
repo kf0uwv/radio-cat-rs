@@ -659,8 +659,7 @@
   the main-sweep slot 4436 message, gains none, no false decode; 50%
   shift +0.000 dB, bootstrap interval [+0.000, +0.000]). Cost: host
   66.4 → 40.4 ms (−39.1%), small 44.8 → 26.3 ms (−41.4%) per crowded
-  slot. External acceptance of the 100-candidate binary passed (crowded
-  1 262 against 1 260, live 69 against 68, golden 60/60, nothing lost).
+  slot. External check of the 100-candidate binary passed; nothing lost.
   HOST/SMALL rustdoc trimmed to what each preset is; the figures moved
   to ADR 0024, which now says `CANDIDATES` sizes the buffer for the
   largest preset or `with_candidates` value. E2 is next, with stall off
@@ -847,7 +846,6 @@
 - Pins: four multi-pass golden hashes; threaded split = `decode_passes`.
 - Pass 1 identical: run records = e3-final (host,passes=1 and small);
   WAV output of the new binary with passes=1 = d4fd2d3's.
-- Binary for the external acceptance copied as `cat-ft8-decode-s3`.
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |

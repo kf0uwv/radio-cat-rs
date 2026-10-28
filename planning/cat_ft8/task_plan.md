@@ -888,7 +888,7 @@ builds, plus deterministic counts), with these additions:
   reported as measured, not capped. The oracle is re-run with `ceiling`
   at whatever per-pass configuration S3 adopts (its later-pass candidate
   count), so the share always compares like with like.
-- **No CLI flag** (superseded 2026-10-28: the user asked for
+- **No CLI flag** (superseded 2026-10-28: a flag was requested,
   `--config host,passes=N`; output keys unchanged, profile keys added).
   The pass count is reached through `DecodeConfig` and
   the bench; output format version 0 keeps its keys; the pass number of
@@ -1166,6 +1166,51 @@ S3. [x] **Further passes, with paired acceptance.**
   results-changing step.
 - Subtracting during pass 1 as each decode arrives (not possible with
   the fixed-order rule as written).
+
+## S3 fix round (2026-10-28, after the S3 checkpoint review)
+
+Results stay identical: every change is result-neutral, or opt-in with a
+default that keeps today's output. Proof: pass-1 and multi-pass pins
+(only report-semantics changes allowed, each explained); `paired_bench
+run host` records equal to S3's on every set with timings removed (the
+slot-level counts checked against the per-pass sums); the decode
+command's output on the 800 WAV slots equal to cea0bc2's but for the
+added `pass` field and the changed profile keys.
+
+1. `Synth`: the phase increment through `i32`, not `i64` (a library call
+   on Cortex-M); own commit; `__aeabi_f2lz` call sites back to d4fd2d3's;
+   `subcost` of the cast alone.
+2. One meaning for the multi-pass report: a new `PassesReport` whose
+   `DecodeReport` holds whole-slot totals (search, list and rejection
+   counts summed over passes; input counters from pass 1's feed), with
+   `passes_run` and why the passes ended; per-pass detail stays in
+   `PassReport`. Bench and `--profile` show the totals.
+3. `"pass": N` on every decode line of `cat-ft8-decode` (format stays 0).
+4. `candidate_capacity()` = max(candidates, later_candidates); no clamp in
+   the search.
+5. `DecodeList` counters as one `Copy` struct; the per-pass difference
+   one method.
+6. Count only successful subtractions (`debug_assert`), failures in
+   `PassReport::subtract_failed`.
+7. Decode command profile: fixed arrays, names only when printing.
+8. `Decoder::decode_further_passes[_staged]`: passes 2.. after a pass 1
+   run with `decode` (for example fed block by block with `feed_i16`);
+   `decode_passes` = pass 1 + this. Test: `i16` blocks then further
+   passes on `f32 = i16 / 32 768` equals `decode_passes` bit for bit.
+9. Budget: the event callback returns `ControlFlow<()>`, checked between
+   passes and between subtractions; `DecodeConfig::max_subtractions`
+   (default none) stops before a pass whose subtractions would exceed
+   it. The report says which.
+10. Stop after a pass that leaves the list full; `max_decodes()`.
+11. `Subtraction` non-exhaustive; `Stage`/`PassStep` documented as a
+    profiling surface that grows.
+12. `MAX_SEGMENTS` with `div_ceil`.
+13. Tests: threaded path with nonzero skip comparing every report field;
+    audio longer than a slot and skip past its end; nonzero earlier
+    duplicates; the forward fill of a segment with no usable samples.
+14. Full paired acceptance re-recorded at a clean commit.
+15. Open-source wording in the planning files, NOTICE, crate docs, ADR.
+16. `slotcost` again: worst 40-signal slot ≤ 250 ms.
 
 ## Later (not in this round)
 
