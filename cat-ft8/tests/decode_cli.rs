@@ -70,12 +70,13 @@ fn keys(v: &Value) -> Vec<String> {
     k
 }
 
-const LINE_KEYS: [&str; 8] = [
+const LINE_KEYS: [&str; 9] = [
     "candidate",
     "dt",
     "freq",
     "hard_errors",
     "message",
+    "pass",
     "rounds",
     "score",
     "snr",
@@ -119,6 +120,7 @@ fn decodes_print_one_json_object_each() {
             assert!((v["dt"].as_f64().unwrap() - dt).abs() <= 0.03, "{v}");
             assert!((v["snr"].as_f64().unwrap() - snr).abs() <= 2.0, "{v}");
             assert!(v["snr"].as_f64().unwrap().fract() == 0.0, "{v}");
+            assert_eq!(v["pass"], 1, "{v}");
             assert!(
                 v["candidate"].is_u64()
                     && v["rounds"].is_u64()
@@ -175,6 +177,7 @@ fn raw_adds_payloads_that_do_not_unpack() {
     );
     assert!((r["freq"].as_f64().unwrap() - 1_200.0).abs() <= 1.0);
     assert!(r.get("message").is_none());
+    assert_eq!(r["pass"], 1);
     std::fs::remove_file(path).unwrap();
 }
 
@@ -293,12 +296,45 @@ fn further_passes_add_decodes_and_profile_keys() {
     assert_eq!(p3["passes"], 3);
     let run = p3["passes_run"].as_u64().unwrap();
     assert!((2..=3).contains(&run));
+    assert!(["all_passes", "nothing_new"].contains(&p3["passes_end"].as_str().unwrap()));
     assert_eq!(p3["decoded"].as_u64().unwrap() as usize, m3.len());
-    assert_eq!(p3["candidates_kept"], p1["candidates_kept"]);
-    let new: u64 = (1..=run)
-        .map(|p| p3[format!("pass{p}_decoded")].as_u64().unwrap())
-        .sum();
-    assert_eq!(new as usize, m3.len());
+    assert_eq!(p3["pass1_candidates_kept"], p1["candidates_kept"]);
+    // The slot's counts are the passes' totals.
+    let total = |k: &str| -> u64 {
+        (1..=run)
+            .map(|p| p3[format!("pass{p}_{k}")].as_u64().unwrap())
+            .sum()
+    };
+    for k in [
+        "candidates_found",
+        "candidates_kept",
+        "candidates_dropped",
+        "decoded",
+        "decodes_truncated",
+        "duplicates",
+        "all_zero_rejected",
+        "crc_failed",
+        "not_converged",
+    ] {
+        assert_eq!(p3[k].as_u64().unwrap(), total(k), "{k}");
+    }
+    assert_eq!(total("decoded") as usize, m3.len());
+    // Each line says its pass: pass 1's lines first, then each pass's new
+    // decodes in order.
+    let pass: Vec<u64> = three[..three.len() - 1]
+        .iter()
+        .map(|d| d["pass"].as_u64().unwrap())
+        .collect();
+    assert!(pass.windows(2).all(|w| w[0] <= w[1]));
+    for p in 1..=run {
+        let n = pass.iter().filter(|&&q| q == p).count() as u64;
+        assert_eq!(
+            n,
+            p3[format!("pass{p}_decoded")].as_u64().unwrap(),
+            "pass {p}"
+        );
+    }
+    assert!(one[..one.len() - 1].iter().all(|d| d["pass"] == 1));
     assert_eq!(p3["pass2_subtracted"].as_u64().unwrap() as usize, m1.len());
     for k in [
         "subtract_seconds",

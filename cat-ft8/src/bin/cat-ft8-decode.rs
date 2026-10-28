@@ -21,20 +21,21 @@
 //! The configuration's pass count is used (`passes=N` sets it, 1–3): after
 //! each pass but the last, its decodes are subtracted from the audio and
 //! the residual decoded again; the output lists every decode once, in the
-//! order found. `--profile` adds per-pass keys when more than one pass is
-//! configured.
+//! order found, with the pass that found it. `--profile` adds per-pass keys
+//! when more than one pass is configured.
 //! Exit status 0 on success (with or without decodes), 1 on an error, 2 on
 //! a usage error.
 
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufReader, Write as _};
+use std::ops::ControlFlow;
 use std::process::ExitCode;
 use std::time::Instant;
 
 use cat_ft8::decode::{
-    Band, Candidate, CandidateScratch, Decode, DecodeConfig, DecodeList, DecodeReport, Decoder,
-    FrontEnd, PassEvent, PassReport, PassStep, Stage, CANDIDATES, HOST_DECODES, SMALL_DECODES,
+    Band, Candidate, CandidateScratch, Decode, DecodeConfig, DecodeList, Decoder, FrontEnd,
+    PassEvent, PassReport, PassStep, PassesReport, Stage, CANDIDATES, HOST_DECODES, SMALL_DECODES,
     TABLE_BYTES,
 };
 use cat_ft8::message::CallTable;
@@ -185,26 +186,27 @@ fn common_fields(d: &Decode) -> String {
     )
 }
 
-/// The fields every decode line ends with.
-fn tail_fields(d: &Decode) -> String {
+/// The fields every decode line ends with; `pass` is the pass that found
+/// it (from 1).
+fn tail_fields(d: &Decode, pass: u8) -> String {
     format!(
-        "\"candidate\": {}, \"hard_errors\": {}, \"rounds\": {}, \"score\": {}",
+        "\"pass\": {pass}, \"candidate\": {}, \"hard_errors\": {}, \"rounds\": {}, \"score\": {}",
         d.candidate, d.hard_errors, d.rounds, d.score
     )
 }
 
 /// One line for an unpacked decode.
-fn decode_line(d: &Decode, text: &str) -> String {
+fn decode_line(d: &Decode, pass: u8, text: &str) -> String {
     format!(
         "{{{}, \"message\": {}, {}}}",
         common_fields(d),
         json_string(text),
-        tail_fields(d)
+        tail_fields(d, pass)
     )
 }
 
 /// One `--raw` line for a decode whose payload did not unpack.
-fn raw_line(d: &Decode, error: &str) -> String {
+fn raw_line(d: &Decode, pass: u8, error: &str) -> String {
     let hex: String = d
         .payload
         .to_bytes()
@@ -221,8 +223,46 @@ fn raw_line(d: &Decode, error: &str) -> String {
         "{{{}, \"payload\": \"{hex}\", \"type\": \"{kind}\", \"unpacked\": false, \"error\": {}, {}}}",
         common_fields(d),
         json_string(error),
-        tail_fields(d)
+        tail_fields(d, pass)
     )
+}
+
+/// The steps of a pass as the profile names them, in the order of
+/// [`Times::steps`].
+const STEPS: [&str; 4] = ["subtract", "feed", "sync", "candidates"];
+
+/// Most passes.
+const PASSES: usize = DecodeConfig::MAX_PASSES as usize;
+
+/// Seconds booked to each step of each pass and to each candidate stage
+/// (over every pass).
+#[derive(Default)]
+struct Times {
+    /// Per pass (from pass 1), per step of [`STEPS`].
+    steps: [[f64; STEPS.len()]; PASSES],
+    /// Per [`Stage`], by [`Stage::index`].
+    stages: [f64; Stage::ALL.len()],
+}
+
+impl Times {
+    /// Books `t` seconds to `step` of pass `pass`.
+    fn add(&mut self, pass: u8, step: PassStep, t: f64) {
+        let k = match step {
+            PassStep::Subtract => 0,
+            PassStep::Feed => 1,
+            PassStep::Sync => 2,
+            PassStep::Candidate(stage) => {
+                self.stages[stage.index()] += t;
+                3
+            }
+        };
+        self.steps[usize::from(pass) - 1][k] += t;
+    }
+
+    /// Step `k`'s seconds over every pass.
+    fn step(&self, k: usize) -> f64 {
+        self.steps.iter().map(|p| p[k]).sum()
+    }
 }
 
 /// The `--profile` line: per-pass keys follow the others when more than one
@@ -230,7 +270,7 @@ fn raw_line(d: &Decode, error: &str) -> String {
 fn profile_line(
     setup: &Setup,
     seconds: &[(String, f64)],
-    report: &DecodeReport,
+    slot: &PassesReport,
     passes: &[PassReport],
 ) -> String {
     let band = setup.band;
@@ -280,7 +320,7 @@ fn profile_line(
         out,
         ", \"peak_bytes\": {peak}, \"static_table_bytes\": {TABLE_BYTES}"
     );
-    let r = report;
+    let r = &slot.report;
     for (k, v) in [
         ("candidates_found", r.candidates_found),
         ("candidates_kept", r.candidates_kept),
@@ -303,9 +343,10 @@ fn profile_line(
     if multi {
         let _ = write!(
             out,
-            ", \"passes\": {}, \"passes_run\": {}",
+            ", \"passes\": {}, \"passes_run\": {}, \"passes_end\": {}",
             setup.config.passes,
-            passes.len()
+            slot.passes_run,
+            json_string(slot.end.name())
         );
         for p in passes {
             let r = &p.report;
@@ -377,43 +418,39 @@ fn run(a: &Args) -> Result<(), String> {
         .iter()
         .map(|&x| f32::from(x) * (1.0 / 32_768.0))
         .collect();
-    let mut seconds: Vec<(String, f64)> = Vec::new();
-    let mut add = |k: String, t: f64| match seconds.iter_mut().find(|e| e.0 == k) {
-        Some(e) => e.1 += t,
-        None => seconds.push((k, t)),
-    };
-    let multi = a.setup.config.passes > 1;
+    let mut times = Times::default();
     let mut passes: Vec<PassReport> = Vec::new();
     let mut last = Instant::now();
-    let report = decoder.decode_passes_staged(&mut audio, 0, &mut scratch, &mut list, |e| {
+    let slot = decoder.decode_passes_staged(&mut audio, 0, &mut scratch, &mut list, |e| {
         let now = Instant::now();
-        let t = (now - last).as_secs_f64();
-        if let PassEvent::Step { pass, step } = e {
-            let name = match step {
-                PassStep::Subtract => "subtract",
-                PassStep::Feed => "feed",
-                PassStep::Sync => "sync",
-                PassStep::Candidate(_) => "candidates",
-            };
-            add(name.to_string(), t);
-            if let PassStep::Candidate(stage) = step {
-                add(stage.name().to_string(), t);
-            }
-            if multi {
-                add(format!("pass{pass}_{name}"), t);
-            }
-        } else if let PassEvent::Done(r) = e {
-            passes.push(*r);
+        match e {
+            PassEvent::Step { pass, step } => times.add(pass, step, (now - last).as_secs_f64()),
+            PassEvent::Done(r) => passes.push(*r),
+            _ => {}
         }
         last = Instant::now();
+        ControlFlow::Continue(())
     });
     let t = Instant::now();
     let mut lines = Vec::new();
     let mut table: CallTable<CALLS> = CallTable::new();
-    list.finish(&mut table, |d, text| match text {
-        Ok(text) => lines.push(decode_line(d, text)),
-        Err(e) if a.raw => lines.push(raw_line(d, &e.to_string())),
-        Err(_) => {}
+    // The pass of list entry `i`: the last pass that began at or before it.
+    let pass_of = |i: usize| {
+        passes
+            .iter()
+            .rev()
+            .find(|p| p.first <= i)
+            .map_or(1, |p| p.pass)
+    };
+    let mut i = 0;
+    list.finish(&mut table, |d, text| {
+        let pass = pass_of(i);
+        i += 1;
+        match text {
+            Ok(text) => lines.push(decode_line(d, pass, text)),
+            Err(e) if a.raw => lines.push(raw_line(d, pass, &e.to_string())),
+            Err(_) => {}
+        }
     });
     let finish = t.elapsed().as_secs_f64();
 
@@ -425,8 +462,7 @@ fn run(a: &Args) -> Result<(), String> {
     if a.profile {
         // The fixed keys first, in the order of format version 0; then
         // `subtract` and the per-pass keys.
-        let get = |k: &str| seconds.iter().find(|e| e.0 == k).map_or(0.0, |e| e.1);
-        let (feed, search, cands) = (get("feed"), get("sync"), get("candidates"));
+        let [subtract, feed, search, cands] = [0, 1, 2, 3].map(|k| times.step(k));
         let mut keys: Vec<(String, f64)> = vec![
             ("read".into(), read),
             ("feed".into(), feed),
@@ -435,23 +471,21 @@ fn run(a: &Args) -> Result<(), String> {
         ];
         // The candidate stage split up; these sum to about `candidates`.
         for stage in Stage::ALL {
-            keys.push((stage.name().into(), get(stage.name())));
+            keys.push((stage.name().into(), times.stages[stage.index()]));
         }
         keys.push(("finish".into(), finish));
-        let subtract = get("subtract");
         keys.push(("total".into(), feed + search + cands + subtract + finish));
-        if multi {
+        if a.setup.config.passes > 1 {
             keys.push(("subtract".into(), subtract));
             for p in 1..=passes.len() {
-                for step in ["subtract", "feed", "sync", "candidates"] {
-                    let k = format!("pass{p}_{step}");
-                    if p > 1 || step != "subtract" {
-                        keys.push((k.clone(), get(&k)));
+                for (k, step) in STEPS.iter().enumerate() {
+                    if p > 1 || k > 0 {
+                        keys.push((format!("pass{p}_{step}"), times.steps[p - 1][k]));
                     }
                 }
             }
         }
-        writeln!(out, "{}", profile_line(&a.setup, &keys, &report, &passes))
+        writeln!(out, "{}", profile_line(&a.setup, &keys, &slot, &passes))
             .map_err(|e| e.to_string())?;
     }
     Ok(())

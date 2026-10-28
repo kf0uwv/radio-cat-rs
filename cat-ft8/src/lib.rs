@@ -95,10 +95,10 @@
 //!
 //! Output is one JSON object per line, one per distinct decode whose
 //! payload unpacked, in the order found: pass by pass, and in candidate
-//! order within a pass (`candidate` is the index in its own pass):
+//! order within a pass:
 //!
 //! ```text
-//! {"freq": 1000.1, "dt": 0.00, "snr": -9, "message": "CQ K1ABC FN42", "candidate": 0, "hard_errors": 0, "rounds": 0, "score": 9732}
+//! {"freq": 1000.1, "dt": 0.00, "snr": -9, "message": "CQ K1ABC FN42", "pass": 1, "candidate": 0, "hard_errors": 0, "rounds": 0, "score": 9732}
 //! ```
 //!
 //! - `freq`: tone 0 frequency, Hz, one decimal;
@@ -107,8 +107,10 @@
 //!   dB, rounded to an integer;
 //! - `message`: the text (hashed calls the file did not name in full
 //!   appear as `<...>`);
+//! - `pass`: the pass that found it, from 1 (always 1 with one pass);
 //! - `candidate`, `hard_errors`, `rounds`, `score`: the fields of
-//!   `decode::Decode` of the same names.
+//!   `decode::Decode` of the same names (`candidate` is the index in its
+//!   own pass's search, so `pass` and `candidate` together identify it).
 //!
 //! `--raw` adds a line for each decode whose payload did not unpack, with
 //! `"payload"` (the 77 bits as 10 bytes, most significant first, in hex),
@@ -122,11 +124,15 @@
 //! `finish`, and `total` from the first feed to the end of `finish`,
 //! single-threaded), memory in keys ending `_bytes` (each
 //! buffer, `peak_bytes` their sum, `static_table_bytes`), and every
-//! `decode::DecodeReport` count under its field name (the multi-pass
-//! report: pass 1's counts, with `decoded` and `decodes_truncated` over the
-//! whole output). With more than one pass configured it also has
-//! `subtract_seconds` (in `total`), `residual_bytes` (in `peak_bytes`),
-//! `passes` and `passes_run`, and per pass N `passN_feed_seconds`,
+//! `decode::DecodeReport` count under its field name (the slot's report,
+//! `decode::PassesReport::report`: the search, list and rejection counts
+//! are totals over every pass, the input counters those of the slot's
+//! audio; stage times are summed over passes too). With more than one
+//! pass configured it also has `subtract_seconds` (in `total`),
+//! `residual_bytes` (in `peak_bytes`), `passes`, `passes_run`,
+//! `passes_end` (why no further pass ran: `"all_passes"`,
+//! `"nothing_new"`, `"list_full"`, `"subtraction_cap"` or `"stopped"`),
+//! and per pass N `passN_feed_seconds`,
 //! `passN_sync_seconds`, `passN_candidates_seconds`,
 //! `passN_subtract_seconds` (N ≥ 2) and the pass's own counts
 //! `passN_<count>` (`subtracted`, the search and list counts of
@@ -148,8 +154,10 @@
 //! spectrogram (2× oversampling in time and frequency), sync scoring,
 //! soft-bit normalisation and belief-propagation decoder were consulted;
 //! the decoder was written from the QEX paper and the literature cited in
-//! the ADR, and no `ft8_lib` function was translated. See the crate's
-//! `NOTICE` file.
+//! the ADR, and no `ft8_lib` function was translated. Signal subtraction
+//! was written from the QEX paper's description and the waveform
+//! definition, without reference to `ft8_lib`'s or WSJT-X's source. See
+//! the crate's `NOTICE` file.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -244,6 +252,7 @@ mod tests {
         "STAGES", // FFT stage radices, folded into code
         "ONES",   // Gray bit masks for soft bits, folded into code
         "ALL",    // the decoder's profiling stages, folded into code
+        "STEPS",  // the decode command's profile names (not in the library)
     ];
 
     #[test]

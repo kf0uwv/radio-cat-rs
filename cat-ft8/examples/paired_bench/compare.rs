@@ -420,7 +420,17 @@ fn print_passes(sa: &[SlotResult], sb: &[SlotResult]) -> bool {
             p.windows(2).any(|w| w[0] == w[1])
         })
         .count();
-    let old_rate = sa.iter().map(|r| r.counts.crc_failed).sum::<u64>() as f64
+    // The old side's single-pass rate: its first pass's if it has passes
+    // (its report is then the slot's total).
+    let old_rate = sa
+        .iter()
+        .map(|r| {
+            r.passes
+                .as_ref()
+                .and_then(|p| p.first())
+                .map_or(r.counts.crc_failed, |p| p.crc_failed)
+        })
+        .sum::<u64>() as f64
         / sa.len().max(1) as f64
         / 16_384.0;
     let crc_ok = expected_total <= most as f64 * old_rate || expected_total == 0.0;

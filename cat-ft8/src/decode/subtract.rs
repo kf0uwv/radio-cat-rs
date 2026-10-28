@@ -80,8 +80,8 @@ const BLOCK: usize = 240;
 // Symbol cores ([T/4, 3T/4)) and segments are whole blocks.
 const _: () = assert!(T % BLOCK == 0 && (T / 4) % BLOCK == 0 && WAVEFORM_SAMPLES % BLOCK == 0);
 
-/// Most segments in one waveform.
-const MAX_SEGMENTS: usize = WAVEFORM_SAMPLES / SubtractConfig::MIN_SEGMENT;
+/// Most segments in one waveform (`run` uses `div_ceil` too).
+const MAX_SEGMENTS: usize = WAVEFORM_SAMPLES.div_ceil(SubtractConfig::MIN_SEGMENT);
 /// Timing steps at most (each one pass over the signal).
 const TIMING_PASSES: usize = 3;
 /// The coarse grid of the time search, samples.
@@ -155,8 +155,10 @@ impl Default for SubtractConfig {
     }
 }
 
-/// What [`subtract`] estimated and removed.
+/// What [`subtract`] estimated and removed. Non-exhaustive: further
+/// estimates may be added.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub struct Subtraction {
     /// Slot sample of the subtracted waveform's first sample (may be
     /// negative or beyond the buffer; only its overlap with the buffer

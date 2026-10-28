@@ -127,12 +127,14 @@ pub fn decode_passes_setup(
     let mut store = vec![Decode::EMPTY; capacity];
     let mut list = DecodeList::new(&mut store);
     let mut residual = samples.to_vec();
-    let report = dec.decode_passes(
-        &mut residual,
-        skip,
-        &mut Box::new(CandidateScratch::new()),
-        &mut list,
-    );
+    let report = dec
+        .decode_passes(
+            &mut residual,
+            skip,
+            &mut Box::new(CandidateScratch::new()),
+            &mut list,
+        )
+        .report;
     let mut texts = Vec::new();
     list.finish(&mut NoHashes, |_, t| {
         texts.push(match t {

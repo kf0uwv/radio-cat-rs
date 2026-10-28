@@ -185,6 +185,26 @@ fn a_slot_cut_short_is_handled() {
 }
 
 #[test]
+fn a_segment_with_too_few_samples_takes_the_previous_estimate() {
+    // The buffer ends 100 samples into a two-symbol segment: too few for
+    // an estimate of its own, so it takes the previous segment's (with
+    // none, the amplitude would fall towards zero across the cut and
+    // leave about half the signal there).
+    let (freq, dt) = (1_000.0, 0.4);
+    let clean = slot_with(freq, dt, 0.1);
+    let config = SubtractConfig::DEFAULT.with_segment(2 * T);
+    let start = Placement::slot(freq, dt).unwrap().start as usize;
+    let cut = start + 30 * 2 * T + 100;
+    let mut audio = clean[..cut].to_vec();
+    let r = subtract(&mut audio, &decode_near(freq, dt), 0, &config).unwrap();
+    assert_eq!(r.samples, cut - start);
+    let tail = db(energy(&audio[cut - 100..]), energy(&clean[cut - 100..cut]));
+    assert!(tail < -30.0, "{tail:.1} dB {r:?}");
+    let left = db(energy(&audio), energy(&clean[..cut]));
+    assert!(left < -40.0, "{left:.1} dB {r:?}");
+}
+
+#[test]
 fn a_skipped_region_is_neither_read_nor_written() {
     // A signal starting at 0.1 s (sample 1 200) in a slot whose first
     // second is missing (zero).
@@ -364,5 +384,11 @@ fn settings_and_inputs_are_checked() {
 #[test]
 fn stack_storage_is_bounded() {
     const _: () = assert!(MAX_SEGMENTS == 158 && STACK_BYTES < 8 * 1024);
+    // Every segment count `run` can use fits.
+    for seg in
+        (SubtractConfig::MIN_SEGMENT..=WAVEFORM_SAMPLES).step_by(SubtractConfig::SEGMENT_STEP)
+    {
+        assert!(WAVEFORM_SAMPLES.div_ceil(seg) <= MAX_SEGMENTS, "{seg}");
+    }
     assert_eq!(STACK_BYTES, 4_536);
 }

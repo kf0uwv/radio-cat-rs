@@ -663,14 +663,18 @@ fn multi_pass_slots() -> Vec<(Vec<f32>, usize, Vec<Payload>)> {
     out
 }
 
-/// Golden hashes of the multi-pass output (decodes, texts, report and the
-/// residual's bits) of [`multi_pass_slots`] for each of
-/// [`multi_pass_setups`], and the decodes per slot (pinned 2026-10-28).
+/// Golden hashes of the multi-pass output (decodes, texts, the slot's
+/// report and the residual's bits) of [`multi_pass_slots`] for each of
+/// [`multi_pass_setups`], and the decodes per slot (pinned 2026-10-28;
+/// re-pinned the same day when the report's search and rejection counts
+/// became totals over the passes — with the earlier report rebuilt from
+/// the pass reports the earlier pins still hold, so decodes, texts and
+/// residuals are unchanged).
 const MULTI_GOLDEN: [u64; 4] = [
-    0x0f93_9b4c_4653_0a23,
-    0x5b20_2300_1e1b_9607,
-    0x47cb_4656_46e1_8e77,
-    0x23c9_8790_b69a_90b8,
+    0xdb5e_a6a9_8c17_2765,
+    0x3ff6_696a_8eb8_92d1,
+    0x4771_efb6_2764_562f,
+    0x7e11_b969_7004_1fbf,
 ];
 const MULTI_COUNTS: [[usize; 6]; 4] = [
     [8, 0, 8, 26, 26, 26],
@@ -725,81 +729,101 @@ fn multi_pass_golden_hashes() {
 /// The split API driving the passes by hand — candidates decoded on
 /// several threads in any order, merged in order, each pass's decodes
 /// subtracted in list order on one thread — gives exactly what
-/// `decode_passes` gives.
+/// `decode_passes` gives: decodes, the slot's report (search counts summed
+/// over passes, input counters from pass 1, the list's counts) and the
+/// residual, with and without a missing start.
 #[test]
 fn passes_by_hand_on_threads_match_decode_passes() {
     use cat_ft8::decode::{subtract, CandidateResult, CandidateScratch, Decode, DecodeList};
     let (crowd, _) = crowded_slot(30, 22);
-    for (name, band, config, capacity) in multi_pass_setups() {
-        let (want, want_residual) = decode_passes_setup(&crowd, 0, band, config, capacity);
-        for threads in [1, 3, 8] {
-            let mut w = Work::new(band);
-            let mut dec = w.decoder(config);
-            let mut store = vec![Decode::EMPTY; capacity];
-            let mut list = DecodeList::new(&mut store);
-            let mut audio = crowd.clone();
-            let mut first_report = None;
-            let mut begin = 0;
-            for pass in 1..=config.passes {
-                if pass > 1 {
-                    let new: Vec<Decode> = list.finish_payloads()[begin..].to_vec();
-                    for d in &new {
-                        subtract(&mut audio, d, 0, &config.subtract).unwrap();
+    for skip in [0, 12_000] {
+        let mut slot = crowd.clone();
+        slot[..skip].fill(0.0);
+        for (name, band, config, capacity) in multi_pass_setups() {
+            let (want, want_residual) = decode_passes_setup(&slot, skip, band, config, capacity);
+            for threads in [1, 3, 8] {
+                let mut w = Work::new(band);
+                let mut dec = w.decoder(config);
+                let mut store = vec![Decode::EMPTY; capacity];
+                let mut list = DecodeList::new(&mut store);
+                let mut audio = slot.clone();
+                let mut first_report = None;
+                let mut search = [0usize; 3];
+                let mut begin = 0;
+                for pass in 1..=config.passes {
+                    if pass > 1 {
+                        let new: Vec<Decode> = list.finish_payloads()[begin..].to_vec();
+                        if new.is_empty() || list.len() == capacity {
+                            break;
+                        }
+                        for d in &new {
+                            subtract(&mut audio, d, skip, &config.subtract).unwrap();
+                        }
+                        list.next_pass();
                     }
-                    list.next_pass();
-                }
-                let before = list.len();
-                dec.start_slot();
-                dec.skip(0);
-                dec.feed(&audio);
-                let kept = if pass == 1 {
-                    dec.find_candidates().kept
-                } else {
-                    dec.find_later_candidates().kept
-                };
-                let d = &dec;
-                let mut results: Vec<(usize, CandidateResult)> = std::thread::scope(|s| {
-                    let hs: Vec<_> = (0..threads)
-                        .map(|t| {
-                            s.spawn(move || {
-                                let mut scratch = Box::new(CandidateScratch::new());
-                                (t..kept)
-                                    .step_by(threads)
-                                    .rev()
-                                    .map(|i| (i, d.decode_candidate(i, &mut scratch).unwrap()))
-                                    .collect::<Vec<_>>()
+                    let before = list.len();
+                    dec.start_slot();
+                    dec.skip(skip);
+                    dec.feed(&audio[skip..]);
+                    let sync = if pass == 1 {
+                        dec.find_candidates()
+                    } else {
+                        dec.find_later_candidates()
+                    };
+                    search[0] += sync.found;
+                    search[1] += sync.kept;
+                    search[2] += sync.dropped;
+                    let kept = sync.kept;
+                    let d = &dec;
+                    let mut results: Vec<(usize, CandidateResult)> = std::thread::scope(|s| {
+                        let hs: Vec<_> = (0..threads)
+                            .map(|t| {
+                                s.spawn(move || {
+                                    let mut scratch = Box::new(CandidateScratch::new());
+                                    (t..kept)
+                                        .step_by(threads)
+                                        .rev()
+                                        .map(|i| (i, d.decode_candidate(i, &mut scratch).unwrap()))
+                                        .collect::<Vec<_>>()
+                                })
                             })
-                        })
-                        .collect();
-                    hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
-                });
-                results.sort_by_key(|r| r.0);
-                let ordered: Vec<CandidateResult> = results.into_iter().map(|r| r.1).collect();
-                list.merge(&ordered).unwrap();
-                if pass == 1 {
-                    first_report = Some(dec.report(&list));
+                            .collect();
+                        hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+                    });
+                    results.sort_by_key(|r| r.0);
+                    let ordered: Vec<CandidateResult> = results.into_iter().map(|r| r.1).collect();
+                    list.merge(&ordered).unwrap();
+                    if pass == 1 {
+                        first_report = Some(dec.report(&list));
+                    }
+                    begin = before;
                 }
-                begin = before;
-                if list.len() == before {
-                    break;
-                }
+                // The list's counts over the slot, the searches summed, the
+                // input counters pass 1's.
+                let first = first_report.unwrap();
+                let mut report = dec.report(&list);
+                [
+                    report.candidates_found,
+                    report.candidates_kept,
+                    report.candidates_dropped,
+                ] = search;
+                report.rows_filled = first.rows_filled;
+                report.sanitised_samples = first.sanitised_samples;
+                report.clamped_samples = first.clamped_samples;
+                report.skipped_samples = first.skipped_samples;
+                report.floored_levels = first.floored_levels;
+                report.top_levels = first.top_levels;
+                let at = format!("{name}, skip {skip}, {threads} threads");
+                assert_eq!(list.finish_payloads(), &want.decodes[..], "{at}");
+                assert_eq!(report, want.report, "{at}");
+                assert!(
+                    audio
+                        .iter()
+                        .zip(&want_residual)
+                        .all(|(a, b)| a.to_bits() == b.to_bits()),
+                    "{at}"
+                );
             }
-            let mut report = first_report.unwrap();
-            report.decoded = want.report.decoded;
-            report.decodes_truncated = want.report.decodes_truncated;
-            assert_eq!(
-                list.finish_payloads(),
-                &want.decodes[..],
-                "{name}, {threads} threads"
-            );
-            assert_eq!(report, want.report, "{name}, {threads} threads");
-            assert!(
-                audio
-                    .iter()
-                    .zip(&want_residual)
-                    .all(|(a, b)| a.to_bits() == b.to_bits()),
-                "{name}, {threads} threads"
-            );
         }
     }
 }

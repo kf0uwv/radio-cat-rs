@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::io::Write as _;
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::time::Instant;
 
@@ -595,7 +596,9 @@ fn record(d: &Decode) -> DecodeRecord {
 /// [`decode_input`] for several passes: `decode_passes_staged` over the
 /// slot (the skipped region zero), timing each pass's steps. Seconds:
 /// `feed`, `sync` and the candidate stages summed over passes, then
-/// `subtract`, and per pass `pass<N>_<step>`. Misses are classified on
+/// `subtract`, and per pass `pass<N>_<step>`. The counts are the slot's
+/// totals over every pass (`PassesReport`), each pass's own in `passes`.
+/// Misses are classified on
 /// the last pass run (its spectrogram and candidates; its failures are
 /// found again outside the timed calls).
 pub fn decode_passes_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &Setup) -> Decoded {
@@ -621,7 +624,7 @@ pub fn decode_passes_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &
     let mut seconds: BTreeMap<String, f64> = BTreeMap::new();
     let mut passes: Vec<PassRecord> = Vec::new();
     let mut last = Instant::now();
-    let rep = dec.decode_passes_staged(&mut audio, skip, &mut scratch, &mut list, |e| {
+    let slot = dec.decode_passes_staged(&mut audio, skip, &mut scratch, &mut list, |e| {
         let now = Instant::now();
         match e {
             PassEvent::Step { pass, step } => {
@@ -657,7 +660,10 @@ pub fn decode_passes_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &
             _ => {}
         }
         last = Instant::now();
+        ControlFlow::Continue(())
     });
+    // The slot's totals over every pass.
+    let rep = slot.report;
     let decodes: Vec<DecodeRecord> = list.finish_payloads().iter().map(record).collect();
     // The last pass's failures, found again (deterministic, not timed).
     let mut failed: Vec<(usize, BpFailure)> = Vec::new();

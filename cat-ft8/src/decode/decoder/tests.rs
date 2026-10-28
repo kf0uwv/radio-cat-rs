@@ -115,22 +115,33 @@ fn configuration_and_buffer_sizes_are_checked() {
         );
         assert_eq!(r.err(), Some(Error::InvalidConfig), "{bad:?}");
     }
-    // The later-pass count needs room only when there are later passes.
+    // The later-pass count needs room whatever the pass count.
     let later = DecodeConfig::HOST
         .with_passes(1)
         .with_later_candidates(CANDIDATES + 1);
-    assert_eq!(later.candidate_capacity(), 100);
-    assert!(Decoder::new(
-        &mut b.front,
-        &mut b.levels,
-        &mut b.scratch,
-        &mut b.cands,
-        band,
-        later
-    )
-    .is_ok());
-    let later = later.with_passes(2);
     assert_eq!(later.candidate_capacity(), CANDIDATES + 1);
+    assert_eq!(later.with_passes(2).candidate_capacity(), CANDIDATES + 1);
+    assert_eq!(
+        [DecodeConfig::HOST, DecodeConfig::SMALL].map(|c| c.candidate_capacity()),
+        [100, 75]
+    );
+    // The most decodes a slot can list.
+    assert_eq!(
+        [
+            DecodeConfig::HOST,
+            DecodeConfig::HOST.with_passes(2),
+            DecodeConfig::SMALL
+        ]
+        .map(|c| c.max_decodes()),
+        [200, 150, 75]
+    );
+    assert_eq!(DecodeConfig::HOST.max_subtractions, None);
+    assert_eq!(
+        DecodeConfig::HOST
+            .with_max_subtractions(Some(7))
+            .max_subtractions,
+        Some(7)
+    );
     let r = Decoder::new(
         &mut b.front,
         &mut b.levels,
@@ -360,29 +371,17 @@ fn duplicates_keep_the_lowest_index_and_truncation_is_counted() {
         chunked.merge(part).unwrap();
     }
     assert_eq!(chunked.finish_payloads(), list.finish_payloads());
-    assert_eq!(
-        (
-            chunked.duplicates,
-            chunked.truncated,
-            chunked.all_zero,
-            chunked.crc_failed
-        ),
-        (
-            list.duplicates,
-            list.truncated,
-            list.all_zero,
-            list.crc_failed
-        )
-    );
+    assert_eq!(chunked.tally(), list.tally());
     let kept: Vec<u16> = list.finish_payloads().iter().map(|d| d.candidate).collect();
     assert_eq!(kept, [0, 3]);
+    let t = list.tally();
     assert_eq!(
         (
-            list.duplicates,
-            list.truncated,
-            list.all_zero,
-            list.crc_failed,
-            list.not_converged
+            t.duplicates,
+            t.truncated,
+            t.all_zero,
+            t.crc_failed,
+            t.not_converged
         ),
         (1, 2, 1, 1, 1)
     );
@@ -654,10 +653,24 @@ fn passes(
     audio: &[f32],
     skip: usize,
     config: DecodeConfig,
-) -> (Vec<Decode>, DecodeReport, Vec<f32>, Vec<PassReport>) {
+) -> (Vec<Decode>, PassesReport, Vec<f32>, Vec<PassReport>) {
+    passes_into(audio, skip, config, HOST_DECODES, |_| {
+        ControlFlow::Continue(())
+    })
+}
+
+/// [`passes`] into a list of `capacity` entries, `event` also seeing each
+/// event (and deciding whether to go on).
+fn passes_into(
+    audio: &[f32],
+    skip: usize,
+    config: DecodeConfig,
+    capacity: usize,
+    mut event: impl FnMut(&PassEvent<'_>) -> ControlFlow<()>,
+) -> (Vec<Decode>, PassesReport, Vec<f32>, Vec<PassReport>) {
     let mut b = Bufs::new(Band::DEFAULT);
     let mut dec = b.decoder(config);
-    let mut store = [Decode::EMPTY; HOST_DECODES];
+    let mut store = vec![Decode::EMPTY; capacity];
     let mut list = DecodeList::new(&mut store);
     let mut residual = audio.to_vec();
     let mut per = Vec::new();
@@ -670,9 +683,34 @@ fn passes(
             if let PassEvent::Done(r) = e {
                 per.push(*r);
             }
+            event(&e)
         },
     );
     (list.finish_payloads().to_vec(), report, residual, per)
+}
+
+/// Whether two sample buffers are equal bit for bit.
+fn same_bits(a: &[f32], b: &[f32]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+}
+
+/// The slot totals the pass reports add up to: summed search and list
+/// counts, pass 1's input counters.
+fn summed(per: &[PassReport]) -> DecodeReport {
+    let mut t = per[0].report;
+    for p in &per[1..] {
+        let r = &p.report;
+        t.candidates_found += r.candidates_found;
+        t.candidates_kept += r.candidates_kept;
+        t.candidates_dropped += r.candidates_dropped;
+        t.decoded += r.decoded;
+        t.decodes_truncated += r.decodes_truncated;
+        t.duplicates += r.duplicates;
+        t.all_zero_rejected += r.all_zero_rejected;
+        t.crc_failed += r.crc_failed;
+        t.not_converged += r.not_converged;
+    }
+    t
 }
 
 #[test]
@@ -690,11 +728,12 @@ fn one_pass_is_feed_and_decode_and_leaves_the_audio_alone() {
             let want = dec.decode(&mut CandidateScratch::new(), &mut list);
             let (got, report, residual, per) = passes(&slot, skip, config);
             assert_eq!(got, list.finish_payloads(), "{config:?} {skip}");
-            assert_eq!(report, want, "{config:?} {skip}");
-            assert!(residual
-                .iter()
-                .zip(&slot)
-                .all(|(a, b)| a.to_bits() == b.to_bits()));
+            assert_eq!(report.report, want, "{config:?} {skip}");
+            assert_eq!(
+                (report.passes_run, report.end, report.subtracted),
+                (1, PassesEnd::AllPasses, 0)
+            );
+            assert!(same_bits(&residual, &slot));
             assert_eq!(per.len(), 1);
             assert_eq!(per[0].report, want);
         }
@@ -719,12 +758,28 @@ fn further_passes_add_decodes_once_each() {
     assert_eq!(two[..one.len()], one[..]);
     assert_eq!(three[..two.len()], two[..]);
     assert!(two.len() > one.len() && three.len() >= two.len());
-    // Pass 1's counts, the whole list's decoded.
+    // The slot's report is the pass reports' totals (input counters from
+    // pass 1), and its decoded count the list's.
+    assert_eq!(r2.report, summed(&per2));
+    assert_eq!(r3.report, summed(&per3));
+    assert_eq!(per2[0].report, r1.report);
     assert_eq!(
-        (r2.candidates_kept, r2.crc_failed),
-        (r1.candidates_kept, r1.crc_failed)
+        (r2.report.decoded, r3.report.decoded),
+        (two.len(), three.len())
     );
-    assert_eq!((r2.decoded, r3.decoded), (two.len(), three.len()));
+    assert_eq!(
+        r3.report.candidates_kept,
+        per3.iter().map(|p| p.report.candidates_kept).sum::<usize>()
+    );
+    assert_eq!(
+        (r2.passes_run, r3.passes_run, r3.end),
+        (2, 3, PassesEnd::AllPasses)
+    );
+    assert_eq!(
+        r3.subtracted,
+        per3.iter().map(|p| p.subtracted).sum::<usize>()
+    );
+    assert_eq!((r3.subtract_failed, r3.stopped_early()), (0, false));
     // Every decode was sent, and none is listed twice.
     let mut payloads: Vec<u128> = three.iter().map(|d| d.payload.bits()).collect();
     payloads.sort_unstable();
@@ -752,24 +807,19 @@ fn further_passes_add_decodes_once_each() {
     // Deterministic.
     let again = passes(&slot, 0, host.with_passes(3));
     assert_eq!((again.0, again.1, again.3), (three, r3, per3));
-    assert!(again
-        .2
-        .iter()
-        .zip(&res3)
-        .all(|(a, b)| a.to_bits() == b.to_bits()));
+    assert!(same_bits(&again.2, &res3));
 }
 
 #[test]
 fn a_pass_that_adds_nothing_ends_the_loop() {
     let mut noise = empty_slot();
     add_noise(&mut noise, NOISE_RMS, 3);
-    let (got, _, residual, per) = passes(&noise, 0, DecodeConfig::HOST.with_passes(3));
+    let (got, report, residual, per) = passes(&noise, 0, DecodeConfig::HOST.with_passes(3));
     assert!(got.is_empty());
     assert_eq!(per.len(), 1);
-    assert!(residual
-        .iter()
-        .zip(&noise)
-        .all(|(a, b)| a.to_bits() == b.to_bits()));
+    assert_eq!((report.passes_run, report.end), (1, PassesEnd::NothingNew));
+    assert!(!report.stopped_early());
+    assert!(same_bits(&residual, &noise));
     // One signal: pass 2 finds nothing new, so there is no pass 3.
     let mut one = noise.clone();
     add_signal(
@@ -779,9 +829,10 @@ fn a_pass_that_adds_nothing_ends_the_loop() {
         0.1,
         amplitude_for(-5.0),
     );
-    let (got, _, _, per) = passes(&one, 0, DecodeConfig::HOST.with_passes(3));
+    let (got, report, _, per) = passes(&one, 0, DecodeConfig::HOST.with_passes(3));
     assert_eq!(got.len(), 1);
     assert_eq!(per.len(), 2);
+    assert_eq!((report.passes_run, report.end), (2, PassesEnd::NothingNew));
     assert_eq!(
         (
             per[1].subtracted,
@@ -793,6 +844,217 @@ fn a_pass_that_adds_nothing_ends_the_loop() {
 }
 
 #[test]
+fn a_payload_sent_twice_is_found_again_as_an_earlier_duplicate() {
+    // The same message on two frequencies: pass 1 lists it once (the
+    // second copy is a duplicate) and subtracts only the listed copy, so
+    // pass 2 decodes the other copy: a duplicate of an earlier pass.
+    let mut slot = empty_slot();
+    let sym = symbols_of("CQ K1ABC FN42");
+    add_signal(&mut slot, &sym, 900.0, 0.1, amplitude_for(-5.0));
+    add_signal(&mut slot, &sym, 2_100.0, 0.3, amplitude_for(-5.0));
+    add_noise(&mut slot, NOISE_RMS, 21);
+    let (got, report, _, per) = passes(&slot, 0, DecodeConfig::HOST);
+    assert_eq!(got.len(), 1);
+    assert_eq!(per.len(), 2);
+    assert!(per[0].report.duplicates >= 1, "{per:?}");
+    assert_eq!(per[0].earlier_duplicates, 0);
+    assert!(per[1].earlier_duplicates >= 1, "{per:?}");
+    assert_eq!(per[1].earlier_duplicates, per[1].report.duplicates);
+    assert_eq!(report.end, PassesEnd::NothingNew);
+    assert_eq!(
+        report.report.duplicates,
+        per[0].report.duplicates + per[1].report.duplicates
+    );
+}
+
+#[test]
+fn a_full_list_ends_the_passes() {
+    let (slot, _) = crowded_slot(30, 9);
+    let (one, r1, _, _) = passes(&slot, 0, DecodeConfig::HOST.with_passes(1));
+    assert!(one.len() > 6);
+    // Pass 1 overflows a list of 6: no further pass runs (it could only
+    // repeat what was truncated), and every count is pass 1's.
+    let (got, report, residual, per) = passes_into(&slot, 0, DecodeConfig::HOST, 6, |_| {
+        ControlFlow::Continue(())
+    });
+    assert_eq!(got[..], one[..6]);
+    assert_eq!(per.len(), 1);
+    assert_eq!((report.passes_run, report.end), (1, PassesEnd::ListFull));
+    assert!(report.stopped_early());
+    // (A truncated payload decoded again counts as truncated again.)
+    let r = &report.report;
+    assert_eq!(r.decoded, 6 + r.decodes_truncated);
+    assert!(r.decoded >= r1.report.decoded && r.decodes_truncated >= one.len() - 6);
+    assert!(same_bits(&residual, &slot));
+    // Filled exactly, with nothing truncated: the same.
+    let n = one.len();
+    let (got, report, _, _) = passes_into(&slot, 0, DecodeConfig::HOST, n, |_| {
+        ControlFlow::Continue(())
+    });
+    assert_eq!(got, one);
+    assert_eq!(
+        (report.end, report.report.decodes_truncated),
+        (PassesEnd::ListFull, 0)
+    );
+    // One entry more: pass 2 runs and fills it.
+    let (got, report, _, per) = passes_into(&slot, 0, DecodeConfig::HOST, n + 1, |_| {
+        ControlFlow::Continue(())
+    });
+    assert_eq!(got.len(), n + 1);
+    assert_eq!(per.len(), 2);
+    assert_eq!(report.end, PassesEnd::ListFull);
+    assert_eq!(report.report, summed(&per));
+}
+
+#[test]
+fn the_subtraction_cap_runs_a_prefix_of_the_passes() {
+    let (slot, _) = crowded_slot(30, 9);
+    let host = DecodeConfig::HOST;
+    let (all, all_report, all_res, all_per) = passes(&slot, 0, host);
+    assert_eq!(all_per.len(), 3);
+    let first = all_per[1].first;
+    // No subtraction allowed: pass 1 only.
+    let (got, report, residual, per) = passes(&slot, 0, host.with_max_subtractions(Some(0)));
+    assert_eq!(got[..], all[..first]);
+    assert_eq!(per[..], all_per[..1]);
+    assert_eq!(
+        (report.passes_run, report.end),
+        (1, PassesEnd::SubtractionCap)
+    );
+    assert!(report.stopped_early());
+    assert!(same_bits(&residual, &slot));
+    // Room for pass 1's decodes but not pass 2's as well: passes 1 and 2,
+    // exactly as without the cap.
+    let cap = Some(u16::try_from(first).unwrap());
+    let (got, report, _, per) = passes(&slot, 0, host.with_max_subtractions(cap));
+    assert_eq!(got[..], all[..all_per[2].first]);
+    assert_eq!(per[..], all_per[..2]);
+    assert_eq!(
+        (report.passes_run, report.end, report.subtracted),
+        (2, PassesEnd::SubtractionCap, first)
+    );
+    assert_eq!(report.report, summed(&per));
+    // A cap the slot does not reach changes nothing.
+    let cap = Some(u16::try_from(all_report.subtracted).unwrap());
+    let (got, report, residual, _) = passes(&slot, 0, host.with_max_subtractions(cap));
+    assert_eq!((got, report), (all, all_report));
+    assert!(same_bits(&residual, &all_res));
+}
+
+#[test]
+fn the_event_callback_can_stop_the_passes() {
+    let (slot, _) = crowded_slot(30, 9);
+    let host = DecodeConfig::HOST;
+    let (all, _, _, all_per) = passes(&slot, 0, host);
+    let first = all_per[1].first;
+    // Asked during pass 1: pass 1 completes, nothing is subtracted.
+    let mut events = 0;
+    let (got, report, residual, per) = passes_into(&slot, 0, host, HOST_DECODES, |_| {
+        events += 1;
+        if events == 5 {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    });
+    assert_eq!(got[..], all[..first]);
+    assert_eq!(per[..], all_per[..1]);
+    assert_eq!((report.passes_run, report.end), (1, PassesEnd::Stopped));
+    assert!(report.stopped_early());
+    assert!(same_bits(&residual, &slot));
+    // Asked after the first subtraction: the residual holds that one only.
+    let (got, report, residual, per) = passes_into(&slot, 0, host, HOST_DECODES, |e| {
+        if matches!(
+            e,
+            PassEvent::Step {
+                step: PassStep::Subtract,
+                ..
+            }
+        ) {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    });
+    assert_eq!(got[..], all[..first]);
+    assert_eq!(per.len(), 1);
+    assert_eq!(
+        (report.passes_run, report.end, report.subtracted),
+        (1, PassesEnd::Stopped, 1)
+    );
+    let mut want = slot.clone();
+    subtract(&mut want, &all[0], 0, &host.subtract).unwrap();
+    assert!(same_bits(&residual, &want));
+    // With one pass there is nothing to stop.
+    let (_, report, _, _) = passes_into(&slot, 0, host.with_passes(1), HOST_DECODES, |_| {
+        ControlFlow::Break(())
+    });
+    assert_eq!(report.end, PassesEnd::AllPasses);
+}
+
+#[test]
+fn further_passes_after_a_pass_fed_as_i16_blocks_match_decode_passes() {
+    // The slot as 16-bit samples, and as the `f32` values `feed_i16`
+    // takes them as.
+    let (slot, _) = crowded_slot(30, 5);
+    let pcm: Vec<i16> = slot
+        .iter()
+        .map(|&x| (x * 32_768.0).round().clamp(-32_768.0, 32_767.0) as i16)
+        .collect();
+    let audio: Vec<f32> = pcm.iter().map(|&x| f32::from(x) / 32_768.0).collect();
+    for skip in [0, 12_000] {
+        let mut want_audio = audio.clone();
+        want_audio[..skip].fill(0.0);
+        let (want, want_report, want_res, _) = passes(&want_audio, skip, DecodeConfig::HOST);
+        let mut b = Bufs::new(Band::DEFAULT);
+        let mut dec = b.decoder(DecodeConfig::HOST);
+        let mut store = [Decode::EMPTY; HOST_DECODES];
+        let mut list = DecodeList::new(&mut store);
+        let mut scratch = CandidateScratch::new();
+        // Pass 1 as the audio arrives: the missing start, then blocks.
+        dec.skip(skip);
+        for block in pcm[skip..].chunks(1_000) {
+            dec.feed_i16(block);
+        }
+        dec.decode(&mut scratch, &mut list);
+        // The residual buffer: slot sample 0 on, the skipped part unread.
+        let mut residual = audio.clone();
+        let report = dec.decode_further_passes(&mut residual, skip, &mut scratch, &mut list);
+        assert_eq!(list.finish_payloads(), &want[..], "skip {skip}");
+        assert_eq!(report, want_report, "skip {skip}");
+        assert!(
+            same_bits(&residual[skip..], &want_res[skip..]),
+            "skip {skip}"
+        );
+        assert!(same_bits(&residual[..skip], &audio[..skip]), "skip {skip}");
+        assert!(report.passes_run > 1);
+    }
+}
+
+#[test]
+fn audio_past_the_slot_or_a_skip_past_the_audio() {
+    let (slot, _) = crowded_slot(20, 7);
+    let (want, want_report, want_res, _) = passes(&slot, 0, DecodeConfig::HOST);
+    // Longer than a slot: decoded to the slot's end. These signals end
+    // before it, so subtraction leaves the extra samples alone.
+    let mut long = slot.clone();
+    long.extend((0..6_000).map(|i| if i % 2 == 0 { 0.01 } else { -0.01 }));
+    let (got, report, residual, _) = passes(&long, 0, DecodeConfig::HOST);
+    assert_eq!((got, report), (want, want_report));
+    assert!(same_bits(&residual[..SLOT_SAMPLES], &want_res));
+    assert!(same_bits(&residual[SLOT_SAMPLES..], &long[SLOT_SAMPLES..]));
+    // A skip at or past the end of the audio feeds nothing.
+    for skip in [slot.len(), slot.len() + 5, 3 * SLOT_SAMPLES] {
+        let (got, report, residual, per) = passes(&slot, skip, DecodeConfig::HOST);
+        assert!(got.is_empty(), "{skip}");
+        assert_eq!(per.len(), 1);
+        assert_eq!(report.end, PassesEnd::NothingNew);
+        assert_eq!(report.report.skipped_samples, SLOT_SAMPLES.min(skip));
+        assert!(same_bits(&residual, &slot));
+    }
+}
+
+#[test]
 fn staged_passes_report_their_steps_in_order() {
     let (slot, _) = crowded_slot(12, 3);
     let mut b = Bufs::new(Band::DEFAULT);
@@ -801,7 +1063,7 @@ fn staged_passes_report_their_steps_in_order() {
     let mut list = DecodeList::new(&mut store);
     let mut steps: Vec<(u8, PassStep)> = Vec::new();
     let mut audio = slot.clone();
-    dec.decode_passes_staged(
+    let report = dec.decode_passes_staged(
         &mut audio,
         0,
         &mut CandidateScratch::new(),
@@ -812,18 +1074,15 @@ fn staged_passes_report_their_steps_in_order() {
                     steps.push((pass, step));
                 }
             }
+            ControlFlow::Continue(())
         },
     );
-    assert_eq!(
-        steps,
-        [
-            (1, PassStep::Feed),
-            (1, PassStep::Sync),
-            (2, PassStep::Subtract),
-            (2, PassStep::Feed),
-            (2, PassStep::Sync)
-        ]
-    );
+    // One subtraction step per decode of pass 1.
+    let mut want = vec![(1, PassStep::Feed), (1, PassStep::Sync)];
+    want.extend(core::iter::repeat((2, PassStep::Subtract)).take(report.subtracted));
+    want.extend([(2, PassStep::Feed), (2, PassStep::Sync)]);
+    assert!(report.subtracted > 0);
+    assert_eq!(steps, want);
 }
 
 #[test]
@@ -844,6 +1103,6 @@ fn next_pass_restarts_the_index_and_keeps_the_entries() {
     list.push(1, &Ok(d(3, 1))).unwrap();
     list.push(2, &Ok(d(3, 2))).unwrap(); // this pass's own
     assert_eq!(list.len(), 3);
-    assert_eq!((list.duplicates, list.earlier), (2, 1));
+    assert_eq!((list.tally.duplicates, list.tally.earlier), (2, 1));
     assert_eq!(list.finish_payloads()[1].candidate, 1);
 }

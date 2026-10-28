@@ -64,8 +64,9 @@
 //! passes `passes=N` (1–3), `later=N` (candidates in every pass after the
 //! first), `seg=N` and `drift=0|1` (the subtraction). Examples:
 //! `host,candidates=100`, `host,passes=3,later=150,seg=2880`. With more
-//! than one pass, `run` decodes with `decode_passes` and saves each pass's
-//! counts (single-pass records are unchanged).
+//! than one pass, `run` decodes with `decode_passes` and saves the slot's
+//! totals over every pass as its report, and each pass's own counts
+//! (single-pass records are unchanged).
 //!
 //! **run** decodes every slot (all threads; results do not depend on the
 //! thread count) and writes `OUTDIR/<set>-<block>.jsonl`: one JSON object
@@ -120,7 +121,8 @@
 //! no sync peak at all. `compare` prints, for each side, the misses by
 //! cause ("not recorded" for runs saved before outcomes were; older runs
 //! that did not split the no-candidate cause show it undivided), the CRC
-//! failures per slot and the expected false decodes they imply (a
+//! failures per slot (summed over passes) and the expected false decodes
+//! they imply (a
 //! codeword that was not transmitted passes the 14-bit CRC with
 //! probability 2⁻¹⁴, so the estimate is the CRC failures per slot × 2⁻¹⁴).
 //!

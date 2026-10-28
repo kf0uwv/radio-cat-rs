@@ -78,6 +78,8 @@
 //! });
 //! ```
 
+use core::ops::ControlFlow;
+
 use super::bp::{decode_soft, BpFailure, BpScratch, CheckRule};
 use super::frontend::BIN_HZ;
 use super::frontend::{Band, FrontEnd, Spectrogram};
@@ -98,7 +100,11 @@ const _: () = assert!(
     DecodeConfig::HOST.candidate_capacity() <= CANDIDATES
         && DecodeConfig::SMALL.candidate_capacity() <= CANDIDATES
 );
-/// Recommended decode-list capacity on a host.
+/// Recommended decode-list capacity on a host. Below what `HOST`'s three
+/// passes could list in the worst case ([`DecodeConfig::max_decodes`],
+/// 200): validated up to 40 signals per slot; decodes beyond it are
+/// counted as truncated and end the passes. Size the list from
+/// [`DecodeConfig::max_decodes`] where it must never truncate.
 pub const HOST_DECODES: usize = 128;
 /// Recommended decode-list capacity on a small target.
 pub const SMALL_DECODES: usize = 64;
@@ -135,11 +141,18 @@ pub struct DecodeConfig {
     /// [`Decoder::decode`] always runs one pass.
     pub passes: u8,
     /// Candidates kept by the sync search in every pass after the first
-    /// (1–65 535); with more than one pass the candidate buffer needs at
-    /// least this many entries too.
+    /// (1–65 535); the candidate buffer needs at least this many entries
+    /// too ([`DecodeConfig::candidate_capacity`]).
     pub later_candidates: usize,
     /// How each decode is subtracted between passes.
     pub subtract: SubtractConfig,
+    /// A deterministic work cap: [`Decoder::decode_passes`] starts a
+    /// further pass only if the subtractions it needs, added to those
+    /// already made, are at most this many (`None`, the default: no cap).
+    /// The passes that run are exactly those an uncapped decode runs
+    /// first, so a capped slot's output is a prefix of the uncapped one's
+    /// and as reproducible.
+    pub max_subtractions: Option<u16>,
 }
 
 impl DecodeConfig {
@@ -162,6 +175,7 @@ impl DecodeConfig {
         passes: 3,
         later_candidates: 50,
         subtract: SubtractConfig::DEFAULT.with_segment(2 * crate::SAMPLES_PER_SYMBOL),
+        max_subtractions: None,
     };
 
     /// Small targets: normalised min-sum, which costs about a third as
@@ -223,15 +237,34 @@ impl DecodeConfig {
         DecodeConfig { subtract, ..self }
     }
 
-    /// Entries the candidate buffer needs: [`DecodeConfig::candidates`],
-    /// or [`DecodeConfig::later_candidates`] if larger and more than one
-    /// pass is configured.
+    /// With at most `max_subtractions` subtractions per slot (`None`: no
+    /// cap); see [`DecodeConfig::max_subtractions`].
+    pub const fn with_max_subtractions(self, max_subtractions: Option<u16>) -> Self {
+        DecodeConfig {
+            max_subtractions,
+            ..self
+        }
+    }
+
+    /// Entries the candidate buffer needs: the larger of
+    /// [`DecodeConfig::candidates`] and [`DecodeConfig::later_candidates`]
+    /// (whatever the pass count, so [`Decoder::find_later_candidates`] is
+    /// never cut short).
     pub const fn candidate_capacity(&self) -> usize {
-        if self.passes > 1 && self.later_candidates > self.candidates {
+        if self.later_candidates > self.candidates {
             self.later_candidates
         } else {
             self.candidates
         }
+    }
+
+    /// The most decodes [`Decoder::decode_passes`] can list for one slot
+    /// (each candidate gives at most one): [`DecodeConfig::candidates`]
+    /// plus [`DecodeConfig::later_candidates`] for every further pass.
+    /// A list this long never truncates. 200 for `HOST`, 75 for `SMALL`.
+    pub const fn max_decodes(&self) -> usize {
+        let later = self.passes.saturating_sub(1) as usize;
+        self.candidates + later * self.later_candidates
     }
 
     /// The most decoding passes.
@@ -316,8 +349,11 @@ impl Default for Decode {
 /// The stages of one candidate's decode, reported in this order by
 /// [`Decoder::decode_candidate_staged`]. It exists for timing: a profiler
 /// books the time since the previous report to the stage reported.
-/// Adding a stage is a breaking change on purpose, so that every match
-/// on it is revisited.
+///
+/// A profiling surface: stages will be added as the decoder grows (for
+/// example further decoding methods), each a breaking change on purpose
+/// so that every profiler's match on it is revisited. Match on it in
+/// profiling and measurement code only, not to steer a decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     /// Sub-grid refinement of the candidate's position.
@@ -412,13 +448,8 @@ impl core::fmt::Debug for DecodeList<'_> {
             .field("decodes", &self.finish_payloads())
             .field("capacity", &self.entries.len())
             .field("pushed", &self.next)
-            .field("truncated", &self.truncated)
-            .field("duplicates", &self.duplicates)
-            .field("all_zero", &self.all_zero)
-            .field("crc_failed", &self.crc_failed)
-            .field("not_converged", &self.not_converged)
+            .field("counts", &self.tally)
             .field("pass_start", &self.pass_start)
-            .field("earlier", &self.earlier)
             .finish()
     }
 }
@@ -580,10 +611,9 @@ impl<'a> Decoder<'a> {
     }
 
     fn search(&mut self, limit: usize) -> SyncReport {
-        // At most the buffer: a single-pass configuration's buffer may hold
-        // fewer than its later-pass count.
-        let n = limit.min(self.candidates.len());
-        let out = &mut self.candidates[..n];
+        // `new` checked the buffer holds `candidate_capacity()` entries,
+        // at least either limit.
+        let out = &mut self.candidates[..limit];
         // The buffer sizes were checked in `new`, so this cannot fail.
         self.sync = sync::find_candidates(&self.spec, self.config.min_score, self.scratch, out)
             .unwrap_or_default();
@@ -675,142 +705,277 @@ impl<'a> Decoder<'a> {
 
     /// Every configured pass ([`DecodeConfig::passes`]) over one slot's
     /// audio, on one thread, into `list` (emptied first). Returns the
-    /// multi-pass report: pass 1's (input counters, candidate counts,
-    /// rejection and duplicate counts) with [`DecodeReport::decoded`] and
-    /// [`DecodeReport::decodes_truncated`] taken over the whole list.
+    /// slot's report ([`PassesReport`]): whole-slot totals over every pass
+    /// run, the passes run and why they ended.
     ///
     /// `audio[0]` is slot sample 0; the first `skip` samples are missing
     /// input (neither read nor written); a buffer shorter than a slot is a
-    /// slot cut short. Each pass runs [`Decoder::start_slot`],
-    /// [`Decoder::skip`]`(skip)` and [`Decoder::feed`]`(&audio[skip..])`,
-    /// the search ([`Decoder::find_candidates`] in pass 1,
-    /// [`Decoder::find_later_candidates`] after it) and every candidate in
-    /// order. Before each further pass, the previous pass's new decodes are
-    /// subtracted from `audio` in list order ([`subtract`] with
-    /// [`DecodeConfig::subtract`]) and [`DecodeList::next_pass`] is called;
-    /// a pass that adds no decode to the list ends the loop. So on return
+    /// slot cut short. A longer one is decoded to the slot's end (as
+    /// [`Decoder::feed`] takes it), but [`subtract`] reads and writes the
+    /// whole buffer wherever a decoded waveform overlaps it. A `skip` at or
+    /// beyond the buffer's end feeds no samples. Pass 1 runs [`Decoder::start_slot`],
+    /// [`Decoder::skip`]`(skip)`, [`Decoder::feed`]`(&audio[skip..])`,
+    /// [`Decoder::find_candidates`] and every candidate in order — exactly
+    /// [`Decoder::decode`] after feeding the audio — and then
+    /// [`Decoder::decode_further_passes`] runs the rest. So on return
     /// `audio` holds the slot less every decode of every pass but the last
-    /// (with one pass it is unchanged), and a payload is listed once, at its
-    /// first decode.
+    /// (with one pass it is unchanged), and a payload is listed once, at
+    /// its first decode.
     ///
     /// With one pass this is [`Decoder::decode`] after feeding the audio:
-    /// the same list and report.
+    /// the same list, and the same report in [`PassesReport::report`].
     pub fn decode_passes(
         &mut self,
         audio: &mut [f32],
         skip: usize,
         scratch: &mut CandidateScratch,
         list: &mut DecodeList<'_>,
-    ) -> DecodeReport {
-        self.decode_passes_staged(audio, skip, scratch, list, |_| {})
+    ) -> PassesReport {
+        self.decode_passes_staged(audio, skip, scratch, list, |_| ControlFlow::Continue(()))
     }
 
     /// [`Decoder::decode_passes`], calling `event` as each step of each
     /// pass ends (for timing) and with each pass's own counts. The result
-    /// is the same.
+    /// is the same while `event` returns [`ControlFlow::Continue`].
+    ///
+    /// If `event` returns [`ControlFlow::Break`], the decode stops at the
+    /// next point where it can stop cleanly: after the current candidate
+    /// pass, or after the current subtraction (then `audio` holds a
+    /// partial residual and the next pass does not run). The list then
+    /// holds every pass run so far, whole, and the report says
+    /// [`PassesEnd::Stopped`]. This is a safety net for a deadline; a
+    /// count-based limit ([`DecodeConfig::max_subtractions`]) keeps the
+    /// output reproducible.
     pub fn decode_passes_staged(
         &mut self,
         audio: &mut [f32],
         skip: usize,
         scratch: &mut CandidateScratch,
         list: &mut DecodeList<'_>,
-        mut event: impl FnMut(PassEvent<'_>),
-    ) -> DecodeReport {
+        mut event: impl FnMut(PassEvent<'_>) -> ControlFlow<()>,
+    ) -> PassesReport {
         list.clear();
-        let mut first = DecodeReport::default();
-        // The list entries of the last pass.
+        let mut stop = false;
+        let first = self.pass(1, audio, skip, scratch, list, &mut event, &mut stop);
+        stop |= event(PassEvent::Done(&first)).is_break();
+        self.further_passes(audio, skip, scratch, list, stop, event)
+    }
+
+    /// Passes 2 and on ([`DecodeConfig::passes`]) after a pass 1 run
+    /// separately, into the same `list`; returns the slot's report as
+    /// [`Decoder::decode_passes`] does (pass 1 included).
+    ///
+    /// The decoder and `list` must be as pass 1 left them: the slot fed
+    /// (by any blocks, with [`Decoder::feed`], [`Decoder::feed_i16`] or
+    /// [`Decoder::skip`]) and decoded into `list` with [`Decoder::decode`]
+    /// or the split API, with no search or feed since. `audio` is the
+    /// slot as pass 1 saw it, from slot sample 0, with `skip` as in
+    /// [`Decoder::decode_passes`]; it is overwritten with the residual.
+    ///
+    /// This lets pass 1 be fed as the audio arrives, as `i16` blocks for
+    /// example: [`Decoder::feed_i16`] takes sample `x` as
+    /// `f32::from(x) / 32 768.0` (exactly; the scale is a power of two), so
+    /// with `audio` holding those values the list, report and residual are
+    /// bit for bit those of [`Decoder::decode_passes`] on `audio`.
+    pub fn decode_further_passes(
+        &mut self,
+        audio: &mut [f32],
+        skip: usize,
+        scratch: &mut CandidateScratch,
+        list: &mut DecodeList<'_>,
+    ) -> PassesReport {
+        self.decode_further_passes_staged(audio, skip, scratch, list, |_| ControlFlow::Continue(()))
+    }
+
+    /// [`Decoder::decode_further_passes`] with `event` as in
+    /// [`Decoder::decode_passes_staged`] (from pass 2's first step; pass
+    /// 1's steps and counts are the caller's).
+    pub fn decode_further_passes_staged(
+        &mut self,
+        audio: &mut [f32],
+        skip: usize,
+        scratch: &mut CandidateScratch,
+        list: &mut DecodeList<'_>,
+        event: impl FnMut(PassEvent<'_>) -> ControlFlow<()>,
+    ) -> PassesReport {
+        self.further_passes(audio, skip, scratch, list, false, event)
+    }
+
+    /// Passes 2.. after pass 1 (the decoder's state and `list`); `stop`
+    /// if a stop was asked for during pass 1.
+    fn further_passes(
+        &mut self,
+        audio: &mut [f32],
+        skip: usize,
+        scratch: &mut CandidateScratch,
+        list: &mut DecodeList<'_>,
+        mut stop: bool,
+        mut event: impl FnMut(PassEvent<'_>) -> ControlFlow<()>,
+    ) -> PassesReport {
+        // Pass 1's report: its search and input counters stay in the
+        // totals (later passes' searches are added; the list's counts
+        // are taken over the whole slot at the end).
+        let mut totals = self.report(list);
+        let mut out = PassesReport {
+            passes_run: 1,
+            ..PassesReport::default()
+        };
+        // The list entries of the last pass run.
         let mut begin = 0;
-        for pass in 1..=self.config.passes {
-            let mut subtracted = 0;
-            if pass > 1 {
-                for i in begin..list.len {
-                    // A decode's frequency and time are always valid for
-                    // the waveform, and the settings were checked in `new`,
-                    // so this does not fail; if it did, the audio would be
-                    // left as it was.
-                    let _ = subtract(audio, &list.entries[i], skip, &self.config.subtract);
-                    subtracted += 1;
-                }
-                list.next_pass();
-                event(PassEvent::Step {
-                    pass,
-                    step: PassStep::Subtract,
-                });
-            }
-            let before = list.tally();
-            self.start_slot();
-            self.skip(skip);
-            self.feed(audio.get(skip..).unwrap_or(&[]));
-            event(PassEvent::Step {
-                pass,
-                step: PassStep::Feed,
-            });
-            if pass == 1 {
-                self.find_candidates();
+        for pass in 2..=self.config.passes {
+            let len = list.len();
+            let need = len - begin;
+            let capped = self
+                .config
+                .max_subtractions
+                .is_some_and(|cap| out.subtracted + out.subtract_failed + need > usize::from(cap));
+            out.end = if need == 0 {
+                PassesEnd::NothingNew
+            } else if len == list.capacity() {
+                PassesEnd::ListFull
+            } else if stop {
+                PassesEnd::Stopped
+            } else if capped {
+                PassesEnd::SubtractionCap
             } else {
-                self.find_later_candidates();
-            }
-            event(PassEvent::Step {
-                pass,
-                step: PassStep::Sync,
-            });
-            let mut bp_rounds = 0;
-            for i in 0..self.sync.kept {
-                let r = self.decode_candidate_staged(i, scratch, |stage| {
-                    event(PassEvent::Step {
-                        pass,
-                        step: PassStep::Candidate(stage),
-                    })
-                });
-                bp_rounds += usize::from(scratch.last_rounds());
-                if let Some(r) = r {
-                    // In order by construction, so this cannot fail.
-                    let _ = list.push(i, &r);
-                }
-            }
-            let after = list.tally();
-            let mut report = self.report(list);
-            report.decoded = (after.len - before.len) + (after.truncated - before.truncated);
-            report.decodes_truncated = after.truncated - before.truncated;
-            report.duplicates = after.duplicates - before.duplicates;
-            report.all_zero_rejected = after.all_zero - before.all_zero;
-            report.crc_failed = after.crc_failed - before.crc_failed;
-            report.not_converged = after.not_converged - before.not_converged;
-            event(PassEvent::Done(&PassReport {
-                pass,
-                first: before.len,
-                subtracted,
-                earlier_duplicates: after.earlier - before.earlier,
-                bp_rounds,
-                report,
-            }));
-            if pass == 1 {
-                first = report;
-            }
-            begin = before.len;
-            if after.len == before.len {
+                PassesEnd::AllPasses
+            };
+            if out.end != PassesEnd::AllPasses {
                 break;
             }
+            let (mut subtracted, mut failed) = (0, 0);
+            for i in begin..len {
+                // A decode's frequency and time are always valid for the
+                // waveform, and the settings were checked in `new`, so
+                // this does not fail; if it did, the audio would be left
+                // as it was and the failure counted.
+                let r = subtract(audio, &list.entries[i], skip, &self.config.subtract);
+                debug_assert!(r.is_ok(), "subtracting entry {i}: {r:?}");
+                if r.is_ok() {
+                    subtracted += 1;
+                } else {
+                    failed += 1;
+                }
+                stop |= event(PassEvent::Step {
+                    pass,
+                    step: PassStep::Subtract,
+                })
+                .is_break();
+                if stop {
+                    break;
+                }
+            }
+            out.subtracted += subtracted;
+            out.subtract_failed += failed;
+            if stop {
+                out.end = PassesEnd::Stopped;
+                break;
+            }
+            list.next_pass();
+            let mut done = self.pass(pass, audio, skip, scratch, list, &mut event, &mut stop);
+            done.subtracted = subtracted;
+            done.subtract_failed = failed;
+            stop |= event(PassEvent::Done(&done)).is_break();
+            let r = &done.report;
+            totals.candidates_found += r.candidates_found;
+            totals.candidates_kept += r.candidates_kept;
+            totals.candidates_dropped += r.candidates_dropped;
+            out.passes_run = pass;
+            begin = len;
         }
-        DecodeReport {
-            decoded: list.len + list.truncated,
-            decodes_truncated: list.truncated,
-            ..first
+        out.report = DecodeReport {
+            candidates_found: totals.candidates_found,
+            candidates_kept: totals.candidates_kept,
+            candidates_dropped: totals.candidates_dropped,
+            rows_filled: totals.rows_filled,
+            sanitised_samples: totals.sanitised_samples,
+            clamped_samples: totals.clamped_samples,
+            skipped_samples: totals.skipped_samples,
+            floored_levels: totals.floored_levels,
+            top_levels: totals.top_levels,
+            ..self.report_counts(&list.tally())
+        };
+        out
+    }
+
+    /// One pass: feed `audio` (from slot sample 0, `skip` missing), the
+    /// search (pass 1's count or the later one) and every candidate in
+    /// order into `list`. Returns the pass's counts (no subtraction
+    /// counts); sets `stop` if `event` asks.
+    #[allow(clippy::too_many_arguments)]
+    fn pass(
+        &mut self,
+        pass: u8,
+        audio: &[f32],
+        skip: usize,
+        scratch: &mut CandidateScratch,
+        list: &mut DecodeList<'_>,
+        event: &mut impl FnMut(PassEvent<'_>) -> ControlFlow<()>,
+        stop: &mut bool,
+    ) -> PassReport {
+        let before = list.tally();
+        self.start_slot();
+        self.skip(skip);
+        self.feed(audio.get(skip..).unwrap_or(&[]));
+        *stop |= event(PassEvent::Step {
+            pass,
+            step: PassStep::Feed,
+        })
+        .is_break();
+        if pass == 1 {
+            self.find_candidates();
+        } else {
+            self.find_later_candidates();
+        }
+        *stop |= event(PassEvent::Step {
+            pass,
+            step: PassStep::Sync,
+        })
+        .is_break();
+        let mut bp_rounds = 0;
+        for i in 0..self.sync.kept {
+            let r = self.decode_candidate_staged(i, scratch, |stage| {
+                *stop |= event(PassEvent::Step {
+                    pass,
+                    step: PassStep::Candidate(stage),
+                })
+                .is_break();
+            });
+            bp_rounds += usize::from(scratch.last_rounds());
+            if let Some(r) = r {
+                // In order by construction, so this cannot fail.
+                let _ = list.push(i, &r);
+            }
+        }
+        let counts = list.tally().since(&before);
+        PassReport {
+            pass,
+            first: before.len,
+            subtracted: 0,
+            subtract_failed: 0,
+            earlier_duplicates: counts.earlier,
+            bp_rounds,
+            report: self.report_counts(&counts),
         }
     }
 
-    /// The report for the last search and `list`.
+    /// The report for the last search, the last input fed and `list`.
     pub fn report(&self, list: &DecodeList<'_>) -> DecodeReport {
+        self.report_counts(&list.tally())
+    }
+
+    /// The report for the last search, the last input fed and `c`.
+    fn report_counts(&self, c: &Tally) -> DecodeReport {
         DecodeReport {
             candidates_found: self.sync.found,
             candidates_kept: self.sync.kept,
             candidates_dropped: self.sync.dropped,
-            decoded: list.len + list.truncated,
-            decodes_truncated: list.truncated,
-            duplicates: list.duplicates,
-            all_zero_rejected: list.all_zero,
-            crc_failed: list.crc_failed,
-            not_converged: list.not_converged,
+            decoded: c.len + c.truncated,
+            decodes_truncated: c.truncated,
+            duplicates: c.duplicates,
+            all_zero_rejected: c.all_zero,
+            crc_failed: c.crc_failed,
+            not_converged: c.not_converged,
             rows_filled: self.spec.rows_filled(),
             sanitised_samples: self.spec.sanitised_samples(),
             clamped_samples: self.spec.clamped_samples(),
@@ -822,10 +987,16 @@ impl<'a> Decoder<'a> {
 }
 
 /// One step of a pass, reported by [`Decoder::decode_passes_staged`] as
-/// it ends. Adding a step is a breaking change on purpose.
+/// it ends.
+///
+/// A profiling surface, like [`Stage`]: steps will be added as the decoder
+/// grows, each a breaking change on purpose so that every profiler's
+/// match on it is revisited. Match on it in profiling and measurement code
+/// only, not to steer a decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PassStep {
-    /// The previous pass's decodes subtracted (passes after the first).
+    /// One of the previous pass's decodes subtracted (passes after the
+    /// first; reported once per decode, in list order).
     Subtract,
     /// `start_slot`, `skip` and `feed`.
     Feed,
@@ -850,8 +1021,8 @@ pub enum PassEvent<'r> {
     Done(&'r PassReport),
 }
 
-/// One pass's counts (for profiling and measurement; the output's report
-/// is [`Decoder::decode_passes`]'s return value).
+/// One pass's counts (for profiling and measurement; the slot's totals
+/// are [`Decoder::decode_passes`]'s [`PassesReport`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct PassReport {
@@ -862,43 +1033,131 @@ pub struct PassReport {
     pub first: usize,
     /// Decodes subtracted before the pass (0 in pass 1).
     pub subtracted: usize,
+    /// Subtractions before the pass that failed (the audio left as it
+    /// was). Not expected: every listed decode is a valid waveform.
+    pub subtract_failed: usize,
     /// Of [`PassReport::report`]'s duplicates, those of a payload listed
     /// by an earlier pass: a subtraction that left a decodable signal.
     pub earlier_duplicates: usize,
     /// Belief-propagation rounds run in the pass, over every candidate.
     pub bp_rounds: usize,
-    /// The pass's search and input counters, and the list's counts during
-    /// the pass ([`DecodeReport::decoded`]: new entries plus truncated).
+    /// The pass's own counts: its search, the input it fed (in a later
+    /// pass the residual), and the list's counts during the pass
+    /// ([`DecodeReport::decoded`]: new entries plus truncated).
     pub report: DecodeReport,
+}
+
+/// What [`Decoder::decode_passes`] did with a slot.
+///
+/// One meaning throughout: [`PassesReport::report`] is the whole slot.
+/// Its search and list counts (candidates found, kept and dropped,
+/// decoded, truncated, duplicates, all-zero, CRC failures, not converged)
+/// are totals over every pass run, so they add up with the
+/// [`PassReport`]s; its input counters (rows filled, sanitised, clamped,
+/// skipped, floored and top levels) describe the slot's audio as pass 1
+/// fed it (later passes feed the residual of the same samples; their
+/// counters are in their [`PassReport`]s). With one pass it is
+/// [`Decoder::decode`]'s report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct PassesReport {
+    /// Whole-slot totals.
+    pub report: DecodeReport,
+    /// Passes run, from 1.
+    pub passes_run: u8,
+    /// Decodes subtracted, over every pass.
+    pub subtracted: usize,
+    /// Subtractions that failed, over every pass (not expected).
+    pub subtract_failed: usize,
+    /// Why no further pass ran.
+    pub end: PassesEnd,
+}
+
+impl PassesReport {
+    /// Whether a limit ended the passes before an unlimited decode would
+    /// have: a full list, the subtraction cap or a stop asked for by the
+    /// event callback. The output is then a prefix of the unlimited one.
+    pub fn stopped_early(&self) -> bool {
+        matches!(
+            self.end,
+            PassesEnd::ListFull | PassesEnd::SubtractionCap | PassesEnd::Stopped
+        )
+    }
+}
+
+/// Why [`Decoder::decode_passes`] ran no further pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum PassesEnd {
+    /// Every configured pass ran.
+    #[default]
+    AllPasses,
+    /// The last pass run added no decode, so another would find the same.
+    NothingNew,
+    /// The list was full after the last pass run: a further pass could
+    /// only list what it truncated again.
+    ListFull,
+    /// The next pass's subtractions would exceed
+    /// [`DecodeConfig::max_subtractions`].
+    SubtractionCap,
+    /// The event callback returned [`ControlFlow::Break`].
+    Stopped,
+}
+
+impl PassesEnd {
+    /// A short snake-case name (`all_passes`, `nothing_new`, `list_full`,
+    /// `subtraction_cap`, `stopped`).
+    pub const fn name(self) -> &'static str {
+        match self {
+            PassesEnd::AllPasses => "all_passes",
+            PassesEnd::NothingNew => "nothing_new",
+            PassesEnd::ListFull => "list_full",
+            PassesEnd::SubtractionCap => "subtraction_cap",
+            PassesEnd::Stopped => "stopped",
+        }
+    }
 }
 
 /// The decodes of a slot, in candidate-index order, over the caller's
 /// storage (its length is the capacity).
 pub struct DecodeList<'a> {
     entries: &'a mut [Decode],
-    len: usize,
+    tally: Tally,
+    /// The next candidate index expected.
     next: usize,
-    truncated: usize,
-    duplicates: usize,
-    all_zero: usize,
-    crc_failed: usize,
-    not_converged: usize,
-    /// The list's length when the current pass began, and duplicates of
-    /// entries before it.
+    /// The list's length when the current pass began.
     pass_start: usize,
-    earlier: usize,
 }
 
-/// A [`DecodeList`]'s counts at one moment.
-#[derive(Clone, Copy)]
+/// A [`DecodeList`]'s counts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Tally {
+    /// Entries.
     len: usize,
+    /// Decodes not stored because the list was full.
     truncated: usize,
+    /// Decodes of a payload already listed.
     duplicates: usize,
+    /// Of those, payloads listed before the current pass.
+    earlier: usize,
     all_zero: usize,
     crc_failed: usize,
     not_converged: usize,
-    earlier: usize,
+}
+
+impl Tally {
+    /// The counts added since `before` (an earlier tally of the same list).
+    fn since(&self, before: &Tally) -> Tally {
+        Tally {
+            len: self.len - before.len,
+            truncated: self.truncated - before.truncated,
+            duplicates: self.duplicates - before.duplicates,
+            earlier: self.earlier - before.earlier,
+            all_zero: self.all_zero - before.all_zero,
+            crc_failed: self.crc_failed - before.crc_failed,
+            not_converged: self.not_converged - before.not_converged,
+        }
+    }
 }
 
 impl<'a> DecodeList<'a> {
@@ -906,28 +1165,19 @@ impl<'a> DecodeList<'a> {
     pub fn new(entries: &'a mut [Decode]) -> Self {
         DecodeList {
             entries,
-            len: 0,
+            tally: Tally::default(),
             next: 0,
-            truncated: 0,
-            duplicates: 0,
-            all_zero: 0,
-            crc_failed: 0,
-            not_converged: 0,
             pass_start: 0,
-            earlier: 0,
         }
     }
 
     fn tally(&self) -> Tally {
-        Tally {
-            len: self.len,
-            truncated: self.truncated,
-            duplicates: self.duplicates,
-            all_zero: self.all_zero,
-            crc_failed: self.crc_failed,
-            not_converged: self.not_converged,
-            earlier: self.earlier,
-        }
+        self.tally
+    }
+
+    /// Entries the list can hold.
+    pub fn capacity(&self) -> usize {
+        self.entries.len()
     }
 
     /// Starts another pass over the same slot: the next result pushed is
@@ -935,17 +1185,17 @@ impl<'a> DecodeList<'a> {
     /// stay, and a payload already listed (by any pass) is a duplicate.
     pub fn next_pass(&mut self) {
         self.next = 0;
-        self.pass_start = self.len;
+        self.pass_start = self.tally.len;
     }
 
     /// Decodes in the list.
     pub fn len(&self) -> usize {
-        self.len
+        self.tally.len
     }
 
     /// Whether the list holds no decode.
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.tally.len == 0
     }
 
     /// Empties the list and its counts.
@@ -966,26 +1216,27 @@ impl<'a> DecodeList<'a> {
             return Err(Error::OutOfOrder);
         }
         self.next += 1;
+        let t = &mut self.tally;
         match result {
-            Err(BpFailure::AllZero) => self.all_zero += 1,
-            Err(BpFailure::Crc) => self.crc_failed += 1,
-            Err(BpFailure::NotConverged) => self.not_converged += 1,
+            Err(BpFailure::AllZero) => t.all_zero += 1,
+            Err(BpFailure::Crc) => t.crc_failed += 1,
+            Err(BpFailure::NotConverged) => t.not_converged += 1,
             Ok(d) => {
                 // Truncated payloads are not kept: a repeat of one counts
                 // as another truncated decode.
-                if let Some(j) = self.entries[..self.len]
+                if let Some(j) = self.entries[..t.len]
                     .iter()
                     .position(|e| e.payload == d.payload)
                 {
-                    self.duplicates += 1;
+                    t.duplicates += 1;
                     if j < self.pass_start {
-                        self.earlier += 1;
+                        t.earlier += 1;
                     }
-                } else if self.len < self.entries.len() {
-                    self.entries[self.len] = *d;
-                    self.len += 1;
+                } else if t.len < self.entries.len() {
+                    self.entries[t.len] = *d;
+                    t.len += 1;
                 } else {
-                    self.truncated += 1;
+                    t.truncated += 1;
                 }
             }
         }
@@ -1008,7 +1259,7 @@ impl<'a> DecodeList<'a> {
 
     /// The decodes, without unpacking.
     pub fn finish_payloads(&self) -> &[Decode] {
-        &self.entries[..self.len]
+        &self.entries[..self.tally.len]
     }
 
     /// Unpacks every decode in order with `hashes`, calling `out` with the
