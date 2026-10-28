@@ -85,7 +85,6 @@ fn configuration_and_buffer_sizes_are_checked() {
         DecodeConfig::HOST.with_llr_scale(f32::NAN),
         DecodeConfig::HOST.with_llr_scale(DecodeConfig::MAX_LLR_SCALE * 1.001),
         DecodeConfig::HOST.with_llr_scale(f32::INFINITY),
-        DecodeConfig::HOST.with_stall_rounds(31),
         DecodeConfig::HOST.with_candidates(0),
         DecodeConfig::HOST.with_candidates(70_000),
     ] {
@@ -145,8 +144,6 @@ fn configuration_and_buffer_sizes_are_checked() {
     );
     let c = DecodeConfig::HOST.with_max_rounds(5).with_min_score(9);
     assert_eq!((c.max_rounds, c.min_score), (5, 9));
-    assert_eq!(DecodeConfig::HOST.stall_rounds, 0);
-    assert_eq!(DecodeConfig::HOST.with_stall_rounds(4).stall_rounds, 4);
 }
 
 #[test]

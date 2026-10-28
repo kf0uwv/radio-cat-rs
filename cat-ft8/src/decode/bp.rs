@@ -203,34 +203,19 @@ fn twice_atanh(p: f32) -> f32 {
 
 /// Hard decisions of `values` into `hard`; true if every check holds.
 fn hard_decide(values: &[f32; N], hard: &mut [u8; N]) -> bool {
-    hard_bits(values, hard);
-    (0..M).all(|c| check_holds(c, hard))
-}
-
-/// Hard decisions of `values` into `hard`. An exact tie (0, e.g. an
-/// erased bit no check has informed) goes to the bit's index parity:
-/// deterministic, and favouring neither value, so ties do not pull
-/// towards the all-zero codeword.
-fn hard_bits(values: &[f32; N], hard: &mut [u8; N]) {
+    // An exact tie (0, e.g. an erased bit no check has informed) goes to
+    // the bit's index parity: deterministic, and favouring neither value,
+    // so ties do not pull towards the all-zero codeword.
     for (i, (h, &x)) in hard.iter_mut().zip(values.iter()).enumerate() {
         *h = u8::from(x < 0.0 || (x == 0.0 && i % 2 == 1));
     }
-}
-
-/// True if check `c` holds for the hard decisions `hard`.
-#[inline]
-fn check_holds(c: usize, hard: &[u8; N]) -> bool {
-    let (v, n) = check(c);
-    v[..n]
-        .iter()
-        .fold(0u8, |acc, &i| acc ^ hard[usize::from(i)])
-        == 0
-}
-
-/// Hard decisions of `values` into `hard`; the number of checks that fail.
-fn hard_decide_count(values: &[f32; N], hard: &mut [u8; N]) -> usize {
-    hard_bits(values, hard);
-    (0..M).filter(|&c| !check_holds(c, hard)).count()
+    (0..M).all(|c| {
+        let (v, n) = check(c);
+        v[..n]
+            .iter()
+            .fold(0u8, |acc, &i| acc ^ hard[usize::from(i)])
+            == 0
+    })
 }
 
 /// The payload of a codeword in hard decisions, after the CRC and the
@@ -250,27 +235,11 @@ fn accept(hard: &[u8; N]) -> Result<Payload, BpFailure> {
 }
 
 /// Decodes soft bits `llr` (positive favours 0) with at most `max_rounds`
-/// rounds of message passing (tests and benches; the decoder calls
-/// [`decode_soft_stall`]).
-#[cfg(any(test, feature = "profile"))]
+/// rounds of message passing.
 pub fn decode_soft(
     llr: &[f32; N],
     rule: CheckRule,
     max_rounds: u8,
-    scratch: &mut BpScratch,
-) -> Result<BpDecode, BpFailure> {
-    decode_soft_stall(llr, rule, max_rounds, 0, scratch)
-}
-
-/// [`decode_soft`], also giving up when the number of unsatisfied checks
-/// has not improved on its best for `stall_rounds` rounds in a row (0 =
-/// never: exactly [`decode_soft`]). The count is computed only when
-/// `stall_rounds` is not 0. Giving up is `NotConverged`.
-pub fn decode_soft_stall(
-    llr: &[f32; N],
-    rule: CheckRule,
-    max_rounds: u8,
-    stall_rounds: u8,
     scratch: &mut BpScratch,
 ) -> Result<BpDecode, BpFailure> {
     let BpScratch {
@@ -293,18 +262,7 @@ pub fn decode_soft_stall(
             .count();
         n.min(255) as u8
     };
-    // With stall on: the fewest unsatisfied checks so far, and the rounds
-    // since that count last improved.
-    let stall = stall_rounds > 0;
-    let mut best = usize::MAX;
-    let mut since_best = 0u8;
-    let holds = if stall {
-        best = hard_decide_count(total, hard);
-        best == 0
-    } else {
-        hard_decide(total, hard)
-    };
-    if holds {
+    if hard_decide(total, hard) {
         let payload = accept(hard)?;
         return Ok(BpDecode {
             payload,
@@ -381,28 +339,13 @@ pub fn decode_soft_stall(
             }
         }
         core::mem::swap(total, next);
-        let holds = if stall {
-            let unsatisfied = hard_decide_count(total, hard);
-            if unsatisfied < best {
-                best = unsatisfied;
-                since_best = 0;
-            } else {
-                since_best += 1;
-            }
-            unsatisfied == 0
-        } else {
-            hard_decide(total, hard)
-        };
-        if holds {
+        if hard_decide(total, hard) {
             let payload = accept(hard)?;
             return Ok(BpDecode {
                 payload,
                 rounds: round,
                 hard_errors: hard_errors(hard),
             });
-        }
-        if stall && since_best >= stall_rounds {
-            break;
         }
     }
     Err(BpFailure::NotConverged)

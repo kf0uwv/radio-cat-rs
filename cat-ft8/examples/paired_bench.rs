@@ -41,9 +41,8 @@
 //!
 //! **CONFIG** is `host` or `small` (the small setup: 200–2900 Hz, min-sum,
 //! 64 decodes) followed by optional `,key=value` changes: `rule=sp|ms`,
-//! `rounds=N`, `scale=X`, `candidates=N`, `min_score=N`, `stall=K` (early
-//! stop after K rounds without fewer unsatisfied checks; 0 = off). Example:
-//! `host,stall=4`.
+//! `rounds=N`, `scale=X`, `candidates=N`, `min_score=N`. Example:
+//! `host,candidates=100`.
 //!
 //! **run** decodes every slot (all threads; results do not depend on the
 //! thread count) and writes `OUTDIR/<set>-<block>.jsonl`: one JSON object
@@ -404,7 +403,6 @@ fn parse_config(spec: &str) -> Result<Setup, String> {
             "scale" => s.config.with_llr_scale(num(v)? as f32),
             "candidates" => s.config.with_candidates(num(v)? as usize),
             "min_score" => s.config.with_min_score(num(v)? as i32),
-            "stall" => s.config.with_stall_rounds(num(v)? as u8),
             _ => return Err(format!("unknown setting {k}")),
         };
     }
