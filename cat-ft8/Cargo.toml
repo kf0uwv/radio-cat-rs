@@ -64,6 +64,10 @@ name = "noisy_slot"
 required-features = ["std"]
 
 [[example]]
+name = "subtract_wav"
+required-features = ["std"]
+
+[[example]]
 name = "frontend_bench"
 required-features = ["profile"]
 
