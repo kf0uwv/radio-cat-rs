@@ -34,11 +34,13 @@
 //!    and fading need only hold the phase within a group): every 16
 //!    samples, then every sample near the best, then a parabola through
 //!    the best three for the fraction. The start moves by the
-//!    whole-sample part and the step is repeated (at most three times)
-//!    until it no longer moves.
+//!    whole-sample part; only if that move is larger than ⅛ symbol (so the
+//!    signal's tone changes may have reached the symbols' middle halves)
+//!    is the step repeated at the moved start, at most three times in all.
 //! 2. **Fine frequency.** Each group's aligned phase is its frequency
 //!    error times one symbol. With [`SubtractConfig::drift`] on, a line
-//!    through the groups' errors (weighted by their magnitudes) gives the
+//!    through the groups' errors (weighted by their squared magnitudes,
+//!    which do not depend on the phase) gives the
 //!    error at the middle of the transmission and a linear drift;
 //!    otherwise the phase of the groups' sum gives one error.
 //! 3. **Amplitude.** Per segment of [`SubtractConfig::segment`] samples,
@@ -52,7 +54,11 @@
 //!
 //! Only the audio from `skip` to the end of the buffer is read or
 //! written: the skipped region (missing input, zero by convention) stays
-//! as it is, and a buffer shorter than a slot is a slot cut short.
+//! as it is, and a buffer shorter than a slot is a slot cut short. Samples
+//! are read as the decoder's front end takes them (a non-finite value as
+//! 0.0, a finite one beyond ±2¹⁶ clamped), and a sample the subtraction
+//! changes is written as that value less the estimate, so the residual is
+//! what the next pass would see, less the signal.
 //!
 //! All arithmetic is `f32` `+ − × ÷`, comparisons, integer phase and the
 //! crate's polynomial helpers, in a fixed order, so the result is
@@ -60,7 +66,8 @@
 //! covers).
 
 use super::decoder::Decode;
-use super::math::{abs, atan2_turns, log2_power};
+use super::frontend::INPUT_LIMIT;
+use super::math::{atan2_turns, log2_power};
 use crate::waveform::{cos_turns, sin_turns, Placement, Synth};
 use crate::{
     encode_payload, Error, SAMPLES_PER_SYMBOL, SAMPLE_RATE, SYMBOL_COUNT, WAVEFORM_SAMPLES,
@@ -89,12 +96,11 @@ const HZ_PER_SYMBOL_TURN: f32 = SAMPLE_RATE as f32 / T as f32;
 const MIDDLE: f32 = WAVEFORM_SAMPLES as f32 / 2.0;
 
 /// Upper bound on [`subtract`]'s own stack storage, bytes: the per-symbol
-/// correlations, two sets of per-group step sums, the per-segment
-/// amplitudes and their flags, and one block of reference phase and
-/// envelope. (The compiler's frame adds
-/// scalars and call overhead; the embedded link check reports it.)
-pub const STACK_BYTES: usize =
-    SYMBOL_COUNT * 8 + 2 * GROUPS * 15 * 8 + MAX_SEGMENTS * 9 + BLOCK * 8;
+/// correlations, one set of per-group step sums, the per-segment
+/// amplitudes and one block of reference phase and envelope. (The
+/// compiler's frame adds scalars, temporaries and call overhead; the
+/// embedded link check reports it.)
+pub const STACK_BYTES: usize = SYMBOL_COUNT * 8 + GROUPS * 15 * 8 + MAX_SEGMENTS * 8 + BLOCK * 8;
 
 /// Settings of [`subtract`]. Start from [`SubtractConfig::DEFAULT`] and
 /// change fields with the `with_*` setters (the type is non-exhaustive).
@@ -113,8 +119,9 @@ pub struct SubtractConfig {
 impl SubtractConfig {
     /// Segment lengths are a multiple of this many samples (20 ms).
     pub const SEGMENT_STEP: usize = BLOCK;
-    /// The shortest segment, samples (a quarter symbol).
-    pub const MIN_SEGMENT: usize = 2 * BLOCK;
+    /// The shortest segment, samples (half a symbol; shorter segments
+    /// measured worse in every condition).
+    pub const MIN_SEGMENT: usize = 4 * BLOCK;
 
     /// The measured default: one symbol (1 920 samples) per segment,
     /// drift on.
@@ -187,6 +194,13 @@ impl Subtraction {
     /// Measured on single signals in white noise: within about 2.5 dB of
     /// the true value, about 2 dB high where noise dominates and up to
     /// 2.4 dB low for fades faster than the segments follow.
+    ///
+    /// It sees the residual only along the reference waveform (each
+    /// segment's cosine and sine): a mismatch orthogonal to the reference
+    /// is invisible to it. A signal from another generator whose ramps are
+    /// a sample or two away from this crate's, for example, leaves a
+    /// residue `left_db` does not report; only a comparison with the true
+    /// slot measures that.
     pub fn left_db(&self) -> Option<f32> {
         ratio_db(self.residue + self.residue_noise, self.energy)
     }
@@ -323,7 +337,7 @@ fn symbol_correlations(
         let (mut re, mut im) = (0.0f32, 0.0f32);
         for j in a..b {
             let i = j - j0;
-            let w = audio[(start + j as i64) as usize] * env[i];
+            let w = input(audio[(start + j as i64) as usize]) * env[i];
             re += w * cos_turns(phase[i]);
             im -= w * sin_turns(phase[i]);
         }
@@ -332,6 +346,17 @@ fn symbol_correlations(
         c[k].1 += im;
     });
     c
+}
+
+/// A sample as the decoder's front end takes it: a non-finite value is
+/// 0.0 and a finite one beyond ±[`INPUT_LIMIT`] is clamped to it.
+#[inline]
+fn input(x: f32) -> f32 {
+    if x.is_finite() {
+        x.clamp(-INPUT_LIMIT, INPUT_LIMIT)
+    } else {
+        0.0
+    }
 }
 
 /// `a · conj(b)`.
@@ -447,7 +472,8 @@ fn align(d: &StepSums) -> Option<(i32, f32)> {
 /// sums of correlations taken at a start `e` samples (fractional) before
 /// the signal's: each group's aligned phase over one symbol is its
 /// frequency error; with `drift`, a line through the groups' errors
-/// (weighted by their magnitudes), otherwise the phase of their sum.
+/// (weighted by their squared magnitudes), otherwise the phase of their
+/// sum.
 fn frequency(d: &StepSums, e: f32, drift: bool) -> (f32, f32) {
     let hz = |z: (f32, f32)| atan2_turns(z.1, z.0) * HZ_PER_SYMBOL_TURN;
     let mut z = [(0.0f32, 0.0f32); GROUPS];
@@ -469,7 +495,7 @@ fn frequency(d: &StepSums, e: f32, drift: bool) -> (f32, f32) {
     };
     let (mut w, mut wt, mut wf) = (0.0f32, 0.0f32, 0.0f32);
     for (g, zg) in z.iter().enumerate() {
-        let wg = abs(zg.0) + abs(zg.1);
+        let wg = zg.0 * zg.0 + zg.1 * zg.1;
         w += wg;
         wt += wg * at(g);
         wf += wg * hz(*zg);
@@ -481,7 +507,7 @@ fn frequency(d: &StepSums, e: f32, drift: bool) -> (f32, f32) {
     let (tm, fm) = (wt / w, wf / w);
     let (mut stt, mut stf) = (0.0f32, 0.0f32);
     for (g, zg) in z.iter().enumerate() {
-        let wg = abs(zg.0) + abs(zg.1);
+        let wg = zg.0 * zg.0 + zg.1 * zg.1;
         let dt = at(g) - tm;
         stt += wg * dt * dt;
         stf += wg * dt * (hz(*zg) - fm);
@@ -571,14 +597,19 @@ fn run(
     // estimate is used as it is; a larger one is measured again at the
     // moved start.
     let mut start = fixed.start.unwrap_or(nominal);
-    let mut timing: Option<(StepSums, i64, f32)> = None;
+    let sums_at = |at: i64| step_sums(&symbol_correlations(audio, usable, &synth, at), &tones);
+    // The sums of the last step, taken at `taken`; the estimate `e` found
+    // in sums taken at `at`.
+    let mut d: StepSums = [[(0.0, 0.0); 15]; GROUPS];
+    let mut taken = start;
+    let mut timing: Option<(i64, f32)> = None;
     for _ in 0..TIMING_PASSES {
-        let c = symbol_correlations(audio, usable, &synth, start);
-        let d = step_sums(&c, &tones);
+        d = sums_at(start);
+        taken = start;
         let Some((e, frac)) = align(&d) else {
             break;
         };
-        timing = Some((d, start, e as f32 + frac));
+        timing = Some((start, e as f32 + frac));
         if fixed.start.is_some() {
             break;
         }
@@ -587,9 +618,14 @@ fn run(
             break;
         }
     }
-    let Some((d, at, e)) = timing else {
+    let Some((at, e)) = timing else {
         return Ok(out);
     };
+    if taken != at {
+        // A repeated step found nothing at the moved start (rare): the
+        // frequency is measured from the sums the estimate came from.
+        d = sums_at(at);
+    }
     out.start = start;
     out.dt = (at as f32 + e) * (1.0 / SAMPLE_RATE as f32) - crate::NOMINAL_START_S;
 
@@ -603,7 +639,7 @@ fn run(
     let seg = config.segment;
     let segments = WAVEFORM_SAMPLES.div_ceil(seg);
     let mut amp = [(0.0f32, 0.0f32); MAX_SEGMENTS];
-    let mut valid = [false; MAX_SEGMENTS];
+    let mut first_valid: Option<usize> = None;
     let end = usable.range(start, 0, WAVEFORM_SAMPLES).1;
     {
         let mut corr = correction;
@@ -623,35 +659,39 @@ fn run(
                     let xs = &audio[(start + (j0 + a) as i64) as usize..][..b - a];
                     for ((&p, &w), &x) in phase[a..b].iter().zip(&env[a..b]).zip(xs) {
                         let q = p.wrapping_add(corr.next());
-                        sums.add(x, w * cos_turns(q), w * sin_turns(q));
+                        sums.add(input(x), w * cos_turns(q), w * sin_turns(q));
                     }
                     corr.skip(n - b);
                 }
                 let next = j0 + n;
                 if next % seg == 0 || next >= end {
+                    // A segment without an estimate takes the previous
+                    // one's (those before the first estimate are filled
+                    // below).
                     let k = j0 / seg;
-                    if let Some(ab) = sums.solve(seg.min(WAVEFORM_SAMPLES - k * seg)) {
-                        amp[k] = ab;
-                        valid[k] = true;
+                    match sums.solve(seg.min(WAVEFORM_SAMPLES - k * seg)) {
+                        Some(ab) => {
+                            amp[k] = ab;
+                            first_valid.get_or_insert(k);
+                        }
+                        None if k > 0 => amp[k] = amp[k - 1],
+                        None => {}
                     }
                     sums = Sums::default();
                 }
             },
         );
     }
-    // Segments without an estimate take the nearest earlier one, or the
-    // first later one at the start.
-    let Some(first_valid) = valid[..segments].iter().position(|&v| v) else {
+    // Segments before the first estimate take it; those after the usable
+    // audio (never visited) the last one.
+    let Some(first_valid) = first_valid else {
         return Ok(out);
     };
-    for k in 0..segments {
-        if !valid[k] {
-            amp[k] = if k < first_valid {
-                amp[first_valid]
-            } else {
-                amp[k - 1]
-            };
-        }
+    for k in 0..first_valid {
+        amp[k] = amp[first_valid];
+    }
+    for k in end.div_ceil(seg)..segments {
+        amp[k] = amp[k - 1];
     }
 
     // 4. Subtraction, with the residue's projection per segment. The
@@ -705,7 +745,7 @@ fn run(
                     let q = p.wrapping_add(corr.next());
                     let (rc, rs) = (w * cos_turns(q), w * sin_turns(q));
                     let est = ra * rc + rb * rs;
-                    *x -= est;
+                    *x = input(*x) - est;
                     energy += est * est;
                     sums.add(*x, rc, rs);
                 }

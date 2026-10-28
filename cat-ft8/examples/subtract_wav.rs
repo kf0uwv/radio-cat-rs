@@ -34,8 +34,12 @@
 //! model's misfit: a fade, drift or waveform it did not follow; other
 //! signals add to it), and `residue_noise_db`, the error the noise is
 //! expected to leave in the amplitude estimate (other signals count as
-//! noise there). Neither part sees a difference that is orthogonal to this
-//! crate's waveform, so a comparison with the true slot is the real test.
+//! noise there). Both are measured only along the reference waveform (its
+//! cosine and sine per segment): a mismatch orthogonal to it is invisible
+//! to `left_db`. A signal from another generator whose ramps start a
+//! sample or two away from this crate's, for example, leaves a residue
+//! that `left_db` does not report, so a comparison with the true slot is
+//! the real test.
 //! Messages go to standard error.
 //!
 //! A test of subtraction against signals from another FT8 generator: mix

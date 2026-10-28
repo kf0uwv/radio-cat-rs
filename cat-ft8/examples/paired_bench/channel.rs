@@ -19,8 +19,8 @@
 //! first and last tones extended, the raised-cosine ramps over T/8, phase
 //! accumulated sample by sample), evaluated at the continuous waveform
 //! time of each output sample. With a whole-sample start and no fade or
-//! drift it matches `Synth` to within about 10⁻⁴ of full scale (checked
-//! by [`check_against_synth`]).
+//! drift it matches `Synth` to 6.6 × 10⁻⁴ of full scale (measured by
+//! [`check_against_synth`]; `suppression` fails above 10⁻³).
 
 use std::sync::OnceLock;
 

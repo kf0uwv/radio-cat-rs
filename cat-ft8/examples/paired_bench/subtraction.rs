@@ -37,12 +37,61 @@ pub fn parse_subtract(spec: &str) -> Result<SubtractConfig, String> {
             .split_once('=')
             .ok_or_else(|| format!("bad setting {kv}"))?;
         c = match k {
-            "seg" => c.with_segment(v.parse().map_err(|e| format!("seg: {e}"))?),
-            "drift" => c.with_drift(v == "1"),
+            "seg" => {
+                let n: usize = v.parse().map_err(|e| format!("seg: {e}"))?;
+                let ok = (SubtractConfig::MIN_SEGMENT..=WAVEFORM_SAMPLES).contains(&n)
+                    && n % SubtractConfig::SEGMENT_STEP == 0;
+                if !ok {
+                    return Err(format!(
+                        "seg must be a multiple of {} from {} to {WAVEFORM_SAMPLES}, not {n}",
+                        SubtractConfig::SEGMENT_STEP,
+                        SubtractConfig::MIN_SEGMENT
+                    ));
+                }
+                c.with_segment(n)
+            }
+            "drift" => c.with_drift(match v {
+                "0" => false,
+                "1" => true,
+                _ => return Err(format!("drift must be 0 or 1, not {v}")),
+            }),
             _ => return Err(format!("unknown subtraction setting {k}")),
         };
     }
     Ok(c)
+}
+
+/// Every combination of a grid of settings: `key=v1|v2|…` per key,
+/// comma-separated; the first key varies slowest. Several grids separated
+/// by `;` are run one after the other. Empty: `default`.
+pub fn expand_grid(spec: &str, default: &str) -> Vec<String> {
+    let spec = if spec.is_empty() { default } else { spec };
+    let mut all = Vec::new();
+    for grid in spec.split(';') {
+        let mut out = vec![String::new()];
+        for kv in grid.split(',').filter(|s| !s.is_empty()) {
+            let (k, vs) = kv.split_once('=').unwrap_or((kv, ""));
+            out = out
+                .iter()
+                .flat_map(|prefix| {
+                    vs.split('|').map(move |v| {
+                        let sep = if prefix.is_empty() { "" } else { "," };
+                        format!("{prefix}{sep}{k}={v}")
+                    })
+                })
+                .collect();
+        }
+        all.extend(out);
+    }
+    all
+}
+
+/// The subtraction settings of a grid (see [`expand_grid`]).
+pub fn parse_grid(spec: &str, default: &str) -> Result<Vec<SubtractConfig>, String> {
+    expand_grid(spec, default)
+        .iter()
+        .map(|s| parse_subtract(s))
+        .collect()
 }
 
 fn label(c: &SubtractConfig) -> String {
@@ -96,6 +145,7 @@ fn median(v: &mut [f64]) -> f64 {
 
 /// One condition of the `suppression` mode. `None` fields are drawn per
 /// trial: frequency 200–2 800 Hz, dt −0.3…+0.7 s, start fraction 0…1.
+/// The input is the slot's samples `skip..cut` (the first `skip` missing).
 #[derive(Clone)]
 struct Condition {
     group: &'static str,
@@ -105,6 +155,8 @@ struct Condition {
     dt: Option<f64>,
     frac: Option<f64>,
     channel: Channel,
+    skip: usize,
+    cut: usize,
 }
 
 fn conditions() -> Vec<Condition> {
@@ -116,6 +168,8 @@ fn conditions() -> Vec<Condition> {
         dt: None,
         frac: None,
         channel: Channel::default(),
+        skip: 0,
+        cut: SLOT_SAMPLES,
     };
     let mut v = Vec::new();
     for snr in [-20.0, -16.0, -12.0, -8.0, -4.0, 0.0, 5.0, 10.0, 20.0] {
@@ -154,6 +208,15 @@ fn conditions() -> Vec<Condition> {
     for drift in [0.02, 0.05, 0.1, 0.2, 0.5] {
         let mut c = base("drift", format!("drift {drift} Hz/s"), 10.0);
         c.channel.drift = drift;
+        v.push(c);
+    }
+    // Input cut at 13.5 s, or starting 1 s late, as in the `edges` set.
+    for snr in [10.0, 0.0] {
+        let mut c = base("input", format!("cut 13.5 s, {snr:+} dB"), snr);
+        c.cut = 162_000;
+        v.push(c);
+        let mut c = base("input", format!("late 1 s, {snr:+} dB"), snr);
+        c.skip = 12_000;
         v.push(c);
     }
     v
@@ -240,7 +303,16 @@ fn trial(
     channel::render(&mut clean, &encode_payload(&payload), freq, start, amp, &ch);
     let mut audio = clean.clone();
     add_noise(&mut audio, NOISE_RMS, noise_seed(seed));
-    let d = decode_input(&audio, 0, std::slice::from_ref(&sent), setup);
+    // The input: samples skip..cut. The skipped region is zero in every
+    // buffer (it is not input), so it adds nothing to the signal left.
+    let skip = cond.skip;
+    let usable = |mut x: Vec<f32>| {
+        x.truncate(cond.cut);
+        x[..skip].fill(0.0);
+        x
+    };
+    let (clean, audio) = (usable(clean), usable(audio));
+    let d = decode_input(&audio[skip..], skip, std::slice::from_ref(&sent), setup);
     let Some(rec) = d.decodes.iter().find(|x| x.payload == sent.payload) else {
         return Trial::default();
     };
@@ -248,12 +320,12 @@ fn trial(
     let true_start = start.round() as i64;
     let run = |input: &[f32], cfg: &SubtractConfig, fixed: Fixed| -> (Vec<f32>, Subtraction) {
         let mut res = input.to_vec();
-        let s = subtract_fixed(&mut res, &dec, 0, cfg, fixed).unwrap();
+        let s = subtract_fixed(&mut res, &dec, skip, cfg, fixed).unwrap();
         (res, s)
     };
     let t = Instant::now();
     let mut res = audio.clone();
-    let s = subtract(&mut res, &dec, 0, config).unwrap();
+    let s = subtract(&mut res, &dec, skip, config).unwrap();
     let seconds = t.elapsed().as_secs_f64();
     let full = left_db(&res, &audio, &clean);
     let at_start = Fixed {
@@ -276,6 +348,7 @@ fn trial(
         amp,
         &ch,
     );
+    let clean_whole = usable(clean_whole);
     let (res_whole, _) = run(&clean_whole, config, truth);
     let timing = left_db(&res_timing, &clean, &clean);
     let whole = left_db(&res_whole, &clean_whole, &clean_whole);
@@ -289,7 +362,7 @@ fn trial(
         .iter()
         .map(|c| {
             let mut x = audio.clone();
-            subtract(&mut x, &dec, 0, c).unwrap();
+            subtract(&mut x, &dec, skip, c).unwrap();
             left_db(&x, &audio, &clean)
         })
         .collect();
@@ -314,34 +387,48 @@ fn trial(
     }
 }
 
-/// The configurations of the segment sweep.
-fn sweep_configs() -> Vec<SubtractConfig> {
-    let mut v = Vec::new();
-    for seg in [480, 960, 1_920, 3_840, 7_680, WAVEFORM_SAMPLES] {
-        v.push(SubtractConfig::DEFAULT.with_segment(seg));
+/// `suppression`'s grid when none is given: the default first (the
+/// detailed tables), then the segment lengths with drift on and off.
+const SUPPRESSION_GRID: &str = "seg=1920|960|3840|7680|151680,drift=1|0";
+
+/// The largest difference allowed between the bench's generator and
+/// `Synth` at whole-sample starts (measured 6.6 × 10⁻⁴ of full scale).
+const GENERATOR_TOLERANCE: f64 = 1e-3;
+
+/// Fails unless the bench's generator matches `Synth`.
+fn checked_generator() -> Result<f64, String> {
+    let worst = check_against_synth();
+    println!(
+        "bench generator vs Synth (whole-sample starts): largest difference {worst:.2e} of full scale (limit {GENERATOR_TOLERANCE:.0e})"
+    );
+    // False for NaN as well.
+    if worst <= GENERATOR_TOLERANCE {
+        Ok(worst)
+    } else {
+        Err(format!(
+            "the bench generator differs from Synth by {worst:.2e} (limit {GENERATOR_TOLERANCE:.0e})"
+        ))
     }
-    for seg in [960, 1_920, 3_840] {
-        v.push(SubtractConfig::DEFAULT.with_segment(seg).with_drift(false));
-    }
-    v
 }
 
-/// Residual suppression of single signals across conditions, and the
-/// segment sweep.
-pub fn suppression(spec: &str, sub: &str, trials: usize) -> Result<(), String> {
+/// Residual suppression of single signals across conditions with the
+/// first setting of GRID, and the signal left with every setting of it.
+pub fn suppression(spec: &str, grid: &str, trials: usize) -> Result<(), String> {
     let setup = parse_config(spec)?;
-    let config = parse_subtract(sub)?;
+    let sweep = parse_grid(grid, SUPPRESSION_GRID)?;
+    let config = sweep[0];
     println!(
-        "config {spec}: {:?}\nsubtraction {}\n{}",
+        "config {spec}: {:?}\nsubtraction {} (grid {})\n{}",
         setup.config,
         label(&config),
+        if grid.is_empty() {
+            SUPPRESSION_GRID
+        } else {
+            grid
+        },
         provenance()
     );
-    println!(
-        "bench generator vs Synth (whole-sample starts): largest difference {:.2e} of full scale",
-        check_against_synth()
-    );
-    let sweep = sweep_configs();
+    checked_generator()?;
     let conds = conditions();
     let t = Instant::now();
     let results: Vec<Vec<Trial>> = conds
@@ -434,7 +521,7 @@ pub fn suppression(spec: &str, sub: &str, trials: usize) -> Result<(), String> {
         "\nsubtract, one call (all threads busy): median {:.2} ms",
         1e3 * median(&mut secs)
     );
-    println!("\n== segment sweep: signal left (full), median dB, per configuration");
+    println!("\n== the grid: signal left (full), median dB, per setting");
     let mut head = format!("  {:<6} {:<22}", "group", "condition");
     for c in &sweep {
         head.push_str(&format!(" {:>16}", label(c)));
@@ -457,16 +544,11 @@ pub fn suppression(spec: &str, sub: &str, trials: usize) -> Result<(), String> {
 /// Further passes after the single pass (passes 2 and 3).
 const PASSES: usize = 2;
 
-/// One slot of the `passes` mode.
-#[derive(Default)]
-struct PassSlot {
-    size: usize,
-    sent: usize,
-    /// Decoded by pass 1, and by pass 2 or 3 at the latest, of the sent
-    /// messages; likewise for the oracle passes.
-    single: usize,
+/// One setting's further passes on one slot.
+#[derive(Default, Clone)]
+struct Real {
+    /// Decoded by pass 2 or 3 at the latest, of the sent messages.
     real: [usize; PASSES],
-    oracle: [usize; PASSES],
     /// Decoded by a real pass and not by the oracle pass, by pass.
     real_not_oracle: [usize; PASSES],
     /// Per pass: payloads of earlier passes decoded again (duplicates), not
@@ -482,28 +564,28 @@ struct PassSlot {
     decode_seconds: [f64; PASSES],
 }
 
-fn pass_slot(
-    set: &str,
-    block: &str,
-    index: usize,
+/// One slot of the `passes` mode: the single pass, the oracle passes and
+/// each setting's real passes.
+#[derive(Default)]
+struct PassSlot {
+    size: usize,
+    sent: usize,
+    /// Decoded by pass 1, and by oracle pass 2 or 3 at the latest.
+    single: usize,
+    oracle: [usize; PASSES],
+    real: Vec<Real>,
+}
+
+/// The real passes of one setting with the bench's own loop.
+fn real_passes(
+    slot: &crate::sets::Slot,
+    p1: &crate::record::Decoded,
     setup: &Setup,
     cfg: &SubtractConfig,
-) -> PassSlot {
-    let slot = build(set, block, index);
+) -> (Real, Vec<Vec<bool>>) {
     let sent = &slot.sent;
     let skip = slot.skip;
-    let mut out = PassSlot {
-        size: sent.len(),
-        sent: sent.len(),
-        ..PassSlot::default()
-    };
-    let p1 = decode_input(&slot.samples, skip, sent, setup);
-    out.single = p1
-        .outcomes
-        .iter()
-        .filter(|&&o| o == Outcome::Decoded)
-        .count();
-    // Real passes.
+    let mut out = Real::default();
     let mut residual = vec![0.0f32; skip];
     residual.extend_from_slice(&slot.samples);
     let mut known: Vec<u128> = p1.decodes.iter().map(|d| d.payload).collect();
@@ -539,11 +621,36 @@ fn pass_slot(
         out.real[pass] = found.iter().filter(|&&f| f).count();
         found_by_pass.push(found.clone());
     }
+    (out, found_by_pass)
+}
+
+fn pass_slot(
+    set: &str,
+    block: &str,
+    index: usize,
+    setup: &Setup,
+    grid: &[SubtractConfig],
+) -> PassSlot {
+    let slot = build(set, block, index);
+    let sent = &slot.sent;
+    let skip = slot.skip;
+    let mut out = PassSlot {
+        size: sent.len(),
+        sent: sent.len(),
+        ..PassSlot::default()
+    };
+    let p1 = decode_input(&slot.samples, skip, sent, setup);
+    out.single = p1
+        .outcomes
+        .iter()
+        .filter(|&&o| o == Outcome::Decoded)
+        .count();
     // Oracle passes: the slot rebuilt without every message decoded so far
     // (true waveforms, same noise).
     let ns = noise_seed(slot_seed(set, block, index));
     let mut found_o: Vec<bool> = p1.outcomes.iter().map(|&o| o == Outcome::Decoded).collect();
-    for (pass, found_real) in found_by_pass.iter().enumerate() {
+    let mut oracle_by_pass = Vec::new();
+    for pass in 0..PASSES {
         let left: Vec<Sent> = sent
             .iter()
             .zip(&found_o)
@@ -557,37 +664,79 @@ fn pass_slot(
             }
         }
         out.oracle[pass] = found_o.iter().filter(|&&f| f).count();
-        out.real_not_oracle[pass] = found_real
-            .iter()
-            .zip(&found_o)
-            .filter(|(r, o)| **r && !**o)
-            .count();
+        oracle_by_pass.push(found_o.clone());
+    }
+    for cfg in grid {
+        let (mut real, found_by_pass) = real_passes(&slot, &p1, setup, cfg);
+        for pass in 0..PASSES {
+            real.real_not_oracle[pass] = found_by_pass[pass]
+                .iter()
+                .zip(&oracle_by_pass[pass])
+                .filter(|(r, o)| **r && !**o)
+                .count();
+        }
+        out.real.push(real);
     }
     out
 }
 
-/// Further passes on a crowded set with the bench's own loop: subtraction
-/// of each pass's new decodes in list order, then the residual decoded
-/// again with the same configuration; beside the oracle passes.
-pub fn passes(spec: &str, block: &str, set: &str, sub: &str) -> Result<(), String> {
+/// Further passes on a crowded set with the bench's own loop, for every
+/// setting of GRID: subtraction of each pass's new decodes in list order,
+/// then the residual decoded again with the same configuration; beside the
+/// oracle passes (computed once).
+pub fn passes(spec: &str, block: &str, set: &str, grid: &str) -> Result<(), String> {
     if !["crowded", "wide", "fading"].contains(&set) {
         return Err(format!("passes takes crowded, wide or fading, not {set}"));
     }
     let setup = parse_config(spec)?;
-    let cfg = parse_subtract(sub)?;
+    let grid = parse_grid(grid, "")?;
     println!(
         "config {spec}: {:?}\nsubtraction {}\n{}",
         setup.config,
-        label(&cfg),
+        grid.iter().map(label).collect::<Vec<_>>().join("; "),
         provenance()
     );
     let t = Instant::now();
     let per = par_map(set_size(set).unwrap_or(0), |i| {
-        pass_slot(set, block, i, &setup, &cfg)
+        pass_slot(set, block, i, &setup, &grid)
     });
     eprintln!("passes {set}-{block}: {:.0} s", t.elapsed().as_secs_f64());
+    for (g, cfg) in grid.iter().enumerate() {
+        println!("\n######## subtraction {}", label(cfg));
+        report_passes(set, block, &per, g);
+    }
+    if grid.len() > 1 {
+        println!("\n== summary ({set}, {block}): share of the oracle's gain +1 / +2, duplicates p2 / p3, false p2 / p3");
+        let all: Vec<&PassSlot> = per.iter().collect();
+        let single: usize = all.iter().map(|p| p.single).sum();
+        let oracle: Vec<usize> = (0..PASSES)
+            .map(|k| all.iter().map(|p| p.oracle[k]).sum())
+            .collect();
+        for (g, cfg) in grid.iter().enumerate() {
+            let sum = |f: &dyn Fn(&Real) -> usize| all.iter().map(|p| f(&p.real[g])).sum::<usize>();
+            let share = |k: usize| {
+                let real = sum(&|r| r.real[k]);
+                100.0 * (real as f64 - single as f64) / (oracle[k] as f64 - single as f64).max(1.0)
+            };
+            println!(
+                "  {:<22} {:>6.1}% / {:>6.1}%   {:>4} / {:>4}   {} / {}",
+                label(cfg),
+                share(0),
+                share(1),
+                sum(&|r| r.duplicates[0]),
+                sum(&|r| r.duplicates[1]),
+                sum(&|r| r.false_decodes[0]),
+                sum(&|r| r.false_decodes[1]),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The `passes` tables of setting `g`.
+fn report_passes(set: &str, block: &str, per: &[PassSlot], g: usize) {
     let mut sizes: BTreeMap<usize, Vec<&PassSlot>> = BTreeMap::new();
-    for p in &per {
+    for p in per {
         sizes.entry(p.size).or_default().push(p);
     }
     let all: Vec<&PassSlot> = per.iter().collect();
@@ -607,7 +756,9 @@ pub fn passes(spec: &str, block: &str, set: &str, sub: &str) -> Result<(), Strin
     for (name, v) in &groups {
         let sent = sum(v, &|p| p.sent);
         let single = sum(v, &|p| p.single);
-        let real: Vec<usize> = (0..PASSES).map(|k| sum(v, &|p| p.real[k])).collect();
+        let real: Vec<usize> = (0..PASSES)
+            .map(|k| sum(v, &|p| p.real[g].real[k]))
+            .collect();
         let oracle: Vec<usize> = (0..PASSES).map(|k| sum(v, &|p| p.oracle[k])).collect();
         let share = |k: usize| {
             100.0 * (real[k] as f64 - single as f64) / (oracle[k] as f64 - single as f64).max(1.0)
@@ -623,14 +774,15 @@ pub fn passes(spec: &str, block: &str, set: &str, sub: &str) -> Result<(), Strin
             share(1)
         );
     }
+    let last = &groups.last().unwrap().1;
     println!("  counts (all): single {}, real +1 {}, +2 {}; oracle +1 {}, +2 {}; decoded by a real pass but not the oracle: +1 {}, +2 {}",
-        sum(&groups.last().unwrap().1, &|p| p.single),
-        sum(&groups.last().unwrap().1, &|p| p.real[0]),
-        sum(&groups.last().unwrap().1, &|p| p.real[1]),
-        sum(&groups.last().unwrap().1, &|p| p.oracle[0]),
-        sum(&groups.last().unwrap().1, &|p| p.oracle[1]),
-        sum(&groups.last().unwrap().1, &|p| p.real_not_oracle[0]),
-        sum(&groups.last().unwrap().1, &|p| p.real_not_oracle[1]),
+        sum(last, &|p| p.single),
+        sum(last, &|p| p.real[g].real[0]),
+        sum(last, &|p| p.real[g].real[1]),
+        sum(last, &|p| p.oracle[0]),
+        sum(last, &|p| p.oracle[1]),
+        sum(last, &|p| p.real[g].real_not_oracle[0]),
+        sum(last, &|p| p.real[g].real_not_oracle[1]),
     );
     println!("  (share +k: real gain over the single pass / oracle gain, same configuration; may exceed 100%)");
     println!(
@@ -641,10 +793,10 @@ pub fn passes(spec: &str, block: &str, set: &str, sub: &str) -> Result<(), Strin
         "size", "subtr. p2", "dup p2", "subtr. p3", "dup p3", "false p2", "false p3"
     );
     for (name, v) in &groups {
-        let s2 = sum(v, &|p| p.subtracted[0]);
-        let d2 = sum(v, &|p| p.duplicates[0]);
-        let s3 = sum(v, &|p| p.subtracted[1]);
-        let d3 = sum(v, &|p| p.duplicates[1]);
+        let s2 = sum(v, &|p| p.real[g].subtracted[0]);
+        let d2 = sum(v, &|p| p.real[g].duplicates[0]);
+        let s3 = sum(v, &|p| p.real[g].subtracted[1]);
+        let d3 = sum(v, &|p| p.real[g].duplicates[1]);
         println!(
             "  {:>5} {:>12} {:>12} {:>12} {:>12} {:>8} {:>8}",
             name,
@@ -652,13 +804,13 @@ pub fn passes(spec: &str, block: &str, set: &str, sub: &str) -> Result<(), Strin
             format!("{d2} ({:.2}%)", pct(d2, s2)),
             s3,
             format!("{d3} ({:.2}%)", pct(d3, s3)),
-            sum(v, &|p| p.false_decodes[0]),
-            sum(v, &|p| p.false_decodes[1]),
+            sum(v, &|p| p.real[g].false_decodes[0]),
+            sum(v, &|p| p.real[g].false_decodes[1]),
         );
     }
     let mut snrs: Vec<f64> = per
         .iter()
-        .flat_map(|p| p.duplicate_snrs.iter().copied())
+        .flat_map(|p| p.real[g].duplicate_snrs.iter().copied())
         .collect();
     snrs.sort_by(f64::total_cmp);
     let mut hist: BTreeMap<i64, usize> = BTreeMap::new();
@@ -668,18 +820,17 @@ pub fn passes(spec: &str, block: &str, set: &str, sub: &str) -> Result<(), Strin
     println!("  duplicates by the message's SNR (5 dB bins, lower edge): {hist:?}");
     let mut sub: Vec<f64> = per
         .iter()
-        .flat_map(|p| p.subtract_seconds.iter().copied())
+        .flat_map(|p| p.real[g].subtract_seconds.iter().copied())
         .collect();
     let total: f64 = sub.iter().sum();
     let slots = per.len().max(1) as f64;
-    let mut dec2: Vec<f64> = per.iter().map(|p| p.decode_seconds[0]).collect();
+    let mut dec2: Vec<f64> = per.iter().map(|p| p.real[g].decode_seconds[0]).collect();
     println!(
         "\ncost (all threads busy): subtraction median {:.2} ms per call, {:.1} ms per slot on average; pass-2 decode median {:.1} ms",
         1e3 * median(&mut sub),
         1e3 * total / slots,
         1e3 * median(&mut dec2)
     );
-    Ok(())
 }
 
 /// Single-thread cost of `subtract`: the pass-1 decodes of `slots`

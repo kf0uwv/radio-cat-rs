@@ -17,6 +17,7 @@ extern crate std;
 use std::vec::Vec;
 
 use super::*;
+use crate::decode::frontend::INPUT_LIMIT;
 use crate::decode::testutil::{add_noise, add_signal, amplitude_for, empty_slot, symbols_of};
 use crate::message::NoHashes;
 use crate::{pack, Error, SLOT_SAMPLES};
@@ -52,7 +53,14 @@ fn db(a: f64, b: f64) -> f64 {
 
 #[test]
 fn noiseless_signal_is_suppressed_below_the_floor() {
-    for (freq, dt) in [(1_500.0f32, 0.2f32), (212.5, -0.9), (2_987.0, 1.3)] {
+    // Tone 0 as low as a band may start (25 Hz) and below 100 Hz too.
+    for (freq, dt) in [
+        (1_500.0f32, 0.2f32),
+        (212.5, -0.9),
+        (2_987.0, 1.3),
+        (25.0, 0.0),
+        (60.0, -0.4),
+    ] {
         let clean = slot_with(freq, dt, 0.1);
         let mut audio = clean.clone();
         let r = subtract(
@@ -177,7 +185,7 @@ fn a_slot_cut_short_is_handled() {
 }
 
 #[test]
-fn a_skipped_region_stays_zero() {
+fn a_skipped_region_is_neither_read_nor_written() {
     // A signal starting at 0.1 s (sample 1 200) in a slot whose first
     // second is missing (zero).
     let (freq, dt) = (1_700.0, -0.4);
@@ -193,6 +201,25 @@ fn a_skipped_region_stays_zero() {
     )
     .unwrap();
     assert!(audio[..skip].iter().all(|x| x.to_bits() == 0));
+    // Whatever the skipped region holds, the result is bit for bit the
+    // same and the region is left as it was.
+    for junk in [f32::NAN, f32::INFINITY, 1.0e30, -3.0e4] {
+        let mut other = clean.clone();
+        other[..skip].fill(junk);
+        let ro = subtract(
+            &mut other,
+            &decode_near(freq, dt),
+            skip,
+            &SubtractConfig::DEFAULT,
+        )
+        .unwrap();
+        assert_eq!(
+            hash(&other[skip..], &ro),
+            hash(&audio[skip..], &r),
+            "{junk}"
+        );
+        assert!(other[..skip].iter().all(|x| x.to_bits() == junk.to_bits()));
+    }
     let start = Placement::slot(freq, dt).unwrap().start;
     assert_eq!(r.start, start);
     assert_eq!(r.samples, start as usize + WAVEFORM_SAMPLES - skip);
@@ -211,12 +238,71 @@ fn a_skipped_region_stays_zero() {
 }
 
 #[test]
+fn non_finite_and_huge_samples_are_taken_as_the_front_end_takes_them() {
+    let (freq, dt) = (1_234.5, 0.31);
+    let clean = slot_with(freq, dt, amplitude_for(5.0));
+    let start = Placement::slot(freq, dt).unwrap().start as usize;
+    // One bad sample in a symbol's middle half and one near a symbol
+    // boundary, each also as zero (what the front end makes of them).
+    let bad = [start + 10 * 1_920 + 700, start + 40 * 1_920 + 10];
+    for junk in [f32::NAN, f32::NEG_INFINITY] {
+        let mut a = noisy_slot();
+        let mut z = noisy_slot();
+        for &i in &bad {
+            a[i] = junk;
+            z[i] = 0.0;
+        }
+        let ra = subtract(&mut a, &decode_near(freq, dt), 0, &SubtractConfig::DEFAULT).unwrap();
+        let rz = subtract(&mut z, &decode_near(freq, dt), 0, &SubtractConfig::DEFAULT).unwrap();
+        assert_eq!(hash(&a, &ra), hash(&z, &rz), "{junk}");
+        assert!(a.iter().all(|x| x.is_finite()));
+        assert!(ra.samples > 0 && ra.left_db().unwrap() < -15.0, "{ra:?}");
+    }
+    // A finite sample beyond ±2¹⁶ is clamped to it, as the front end does.
+    let mut a = clean.clone();
+    let mut z = clean.clone();
+    a[bad[0]] = 1.0e30;
+    z[bad[0]] = INPUT_LIMIT;
+    let ra = subtract(&mut a, &decode_near(freq, dt), 0, &SubtractConfig::DEFAULT).unwrap();
+    let rz = subtract(&mut z, &decode_near(freq, dt), 0, &SubtractConfig::DEFAULT).unwrap();
+    assert_eq!(hash(&a, &ra), hash(&z, &rz));
+    assert!(a.iter().all(|x| x.is_finite()) && ra.energy.is_finite());
+}
+
+#[test]
+fn a_clipped_signal_is_mostly_removed() {
+    // A strong signal (peak 0.1) clipped at ±0.06 by the receiver, with
+    // noise: the clipping's distortion stays, the fundamental goes.
+    let (freq, dt) = (1_500.0, 0.0);
+    let mut audio = slot_with(freq, dt, 0.1);
+    add_noise(&mut audio, crate::decode::testutil::NOISE_RMS, 5);
+    for x in &mut audio {
+        *x = x.clamp(-0.06, 0.06);
+    }
+    let before = energy(&audio);
+    let r = subtract(
+        &mut audio,
+        &decode_near(freq, dt),
+        0,
+        &SubtractConfig::DEFAULT,
+    )
+    .unwrap();
+    assert!(audio.iter().all(|x| x.is_finite()));
+    assert_eq!(r.start, Placement::slot(freq, dt).unwrap().start);
+    assert!((r.freq_hz - freq).abs() < 0.01, "{r:?}");
+    // Most of the energy was the signal's (measured −7.3 dB: the
+    // clipping's harmonics and the noise stay).
+    let left = db(energy(&audio), before);
+    assert!(left < -6.0, "{left:.1} dB {r:?}");
+}
+
+#[test]
 fn deterministic_and_pinned() {
     let d = decode_near(1_234.5, 0.31);
     let mut pins = Vec::new();
     for config in [
         SubtractConfig::DEFAULT,
-        SubtractConfig::DEFAULT.with_segment(480).with_drift(false),
+        SubtractConfig::DEFAULT.with_segment(960).with_drift(false),
         SubtractConfig::DEFAULT.with_segment(WAVEFORM_SAMPLES),
     ] {
         let mut a = noisy_slot();
@@ -231,9 +317,9 @@ fn deterministic_and_pinned() {
     assert_eq!(
         pins,
         [
-            0x0c03_f1fa_aa51_307a,
-            0x2e0b_f0eb_311b_0c28,
-            0xfa07_29dc_78e8_af7d
+            0xf677_81b2_5882_c626,
+            0xfc2a_9cb5_fdf7_76ce,
+            0xd6d8_05c9_6781_5885
         ],
         "{pins:x?}"
     );
@@ -277,6 +363,6 @@ fn settings_and_inputs_are_checked() {
 
 #[test]
 fn stack_storage_is_bounded() {
-    const _: () = assert!(MAX_SEGMENTS == 316 && STACK_BYTES < 8 * 1024);
-    assert_eq!(STACK_BYTES, 6_836);
+    const _: () = assert!(MAX_SEGMENTS == 158 && STACK_BYTES < 8 * 1024);
+    assert_eq!(STACK_BYTES, 4_536);
 }

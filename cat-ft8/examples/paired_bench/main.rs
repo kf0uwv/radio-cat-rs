@@ -19,8 +19,8 @@
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- compare OLDDIR NEWDIR [--partial]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- cost CONFIG_A CONFIG_B [SLOTS] [RUNS]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- ceiling CONFIG [BLOCK] [SET]
-//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- suppression CONFIG [SUB] [TRIALS]
-//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- passes CONFIG [BLOCK] [SET] [SUB]
+//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- suppression CONFIG [GRID] [TRIALS]
+//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- passes CONFIG [BLOCK] [SET] [GRID]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- subcost CONFIG [SUB] [SLOTS] [RUNS]
 //! ```
 //!
@@ -127,8 +127,12 @@
 //! sweep set in the same block (computed first).
 //!
 //! **SUB** is a subtraction setting for `decode::subtract`: empty for the
-//! default, or `seg=N` (samples per amplitude segment) and/or `drift=0|1`,
-//! comma-separated.
+//! default, or `seg=N` (samples per amplitude segment, a multiple of 240
+//! from 960 to the waveform's 151 680) and/or `drift=0|1`, comma-separated.
+//! **GRID** is a set of them: each key may list values separated by `|`,
+//! and every combination is run (the first key varies slowest), so
+//! `seg=1920|3840,drift=1|0` is four settings; several grids may be joined
+//! with `;` (`seg=960|1920;seg=1920,drift=0` is three).
 //!
 //! **suppression** measures how much of one decoded signal `subtract`
 //! removes, over TRIALS (default 100) seeded slots per condition: SNR
@@ -140,13 +144,18 @@
 //! the signal's energy) with every estimate made, with the true start
 //! imposed, on the noiseless signal, and on the noiseless signal with the
 //! true start (rounded to a sample), frequency and drift imposed (the
-//! whole-sample start's share); the fine estimates' errors beside the
-//! decoder's; and a segment-length sweep.
+//! whole-sample start's share), and the fine estimates' errors beside the
+//! decoder's, all with GRID's first setting; then the signal left with
+//! every setting of GRID (default `seg=1920|960|3840|7680|151680,drift=1|0`).
+//! Input cut at 13.5 s and starting 1 s late are conditions too. It fails
+//! if the bench's generator differs from `Synth` by more than 10⁻³.
 //!
 //! **passes** runs further passes with the bench's own loop on a crowded
-//! set (SET `crowded`, `wide` or `fading`; BLOCK as above): each pass's new
+//! set (SET `crowded`, `wide` or `fading`; BLOCK as above) for every
+//! setting of GRID (default: the default setting): each pass's new
 //! decodes are subtracted in list order and the residual is decoded again
-//! with the same configuration, twice. It reports the decodes gained beside
+//! with the same configuration, twice; the single pass and the oracle
+//! passes are run once for all settings. It reports the decodes gained beside
 //! the oracle passes (and the share of the oracle's gain recovered),
 //! earlier payloads decoded again (duplicates: the main sign of a poor
 //! subtraction), false decodes per pass, and the cost.
@@ -261,7 +270,7 @@ pub fn provenance() -> String {
 
 // ----------------------------------------------------------------- main
 
-const USAGE: &str = "usage: paired_bench run CONFIG OUTDIR [SETS] [BLOCK] | compare OLDDIR NEWDIR [--partial] | cost A B [SLOTS] [RUNS] | ceiling CONFIG [BLOCK] [SET] | suppression CONFIG [SUB] [TRIALS] | passes CONFIG [BLOCK] [SET] [SUB] | subcost CONFIG [SUB] [SLOTS] [RUNS]";
+const USAGE: &str = "usage: paired_bench run CONFIG OUTDIR [SETS] [BLOCK] | compare OLDDIR NEWDIR [--partial] | cost A B [SLOTS] [RUNS] | ceiling CONFIG [BLOCK] [SET] | suppression CONFIG [GRID] [TRIALS] | passes CONFIG [BLOCK] [SET] [GRID] | subcost CONFIG [SUB] [SLOTS] [RUNS]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

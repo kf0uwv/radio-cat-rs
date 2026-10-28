@@ -99,8 +99,17 @@ pub(crate) fn exp2_neg(y: f32) -> f32 {
     }
 }
 
-// Minimax coefficients of atan(z)/z in z² on [0, 1] (absolute error of
-// atan below 1.2e-5 rad), divided by 2π so the result is in turns.
+// A six-term odd polynomial for atan(z) on [−1, 1]: a1 … a11 =
+// 0.99997726, −0.33262347, 0.19354346, −0.11643287, 0.05265332,
+// −0.01172120 (used here to seven digits), as given by F. Mazzoli, "Speeding up
+// atan2f by 50x" (2021, mazzo.li/posts/vectorized-atan2.html), who
+// attributes them to C. Hastings Jr., "Approximations for Digital
+// Computers" (Princeton University Press, 1955); the book itself was not
+// checked. It is not in Abramowitz and Stegun, whose 4.4.47 is Hastings'
+// five-term version (error 1e-5) and 4.4.49 a degree-17 polynomial from
+// Carlson and Goldstein (2e-8). Checked here in
+// f64 against atan on [0, 1]: largest error 1.7e-6 rad (2.7e-7 turn) with
+// the values as written. Divided by 2π so the result is in turns.
 const A1: f32 = 0.999_977_3 / core::f32::consts::TAU;
 const A3: f32 = -0.332_623_5 / core::f32::consts::TAU;
 const A5: f32 = 0.193_543_5 / core::f32::consts::TAU;
@@ -115,8 +124,8 @@ pub(crate) fn abs(x: f32) -> f32 {
 }
 
 /// The angle of `(x, y)` in turns, in [−½, ½] (`atan2(y, x) / 2π`): 0
-/// for `(0, 0)` and for non-finite input. Absolute error below 2 × 10⁻⁶
-/// turn (1.2 × 10⁻⁵ rad).
+/// for `(0, 0)` and for non-finite input. Absolute error below 5 × 10⁻⁷
+/// turn (3 × 10⁻⁶ rad; the polynomial's own error is 1.7 × 10⁻⁶ rad).
 ///
 /// The argument is reduced to the first octant (|z| ≤ 1, z = min/max of
 /// |x| and |y|) and `atan(z)` taken from an odd polynomial of degree 11.
@@ -236,7 +245,7 @@ mod tests {
                 worst = worst.max(d);
             }
         }
-        assert!(worst < 2e-6, "worst {worst}");
+        assert!(worst < 5e-7, "worst {worst}");
         assert_eq!(atan2_turns(0.0, 0.0), 0.0);
         assert_eq!(atan2_turns(f32::NAN, 1.0), 0.0);
         assert_eq!(atan2_turns(1.0, f32::INFINITY), 0.0);

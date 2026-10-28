@@ -36,6 +36,11 @@ ft8_lib — https://github.com/kgoba/ft8_lib (commit 9fec6ca398)
   suppression rule, scaling, refinement and SNR estimate are its own, and
   no ft8_lib function was translated.
 
+  Subtraction (src/decode/subtract.rs) was written for this crate from
+  the waveform's definition; no ft8_lib or WSJT-X subtraction code was
+  consulted. The arctangent polynomial it uses (src/decode/math.rs) is
+  from the published literature cited there.
+
   MIT License
 
   Copyright (c) 2018 Kārlis Goba
