@@ -1454,7 +1454,13 @@ release `cat-ft8-decode` changed bytes (new code, and `Synth`); on the
 800-slot WAV corpus, `--config host,passes=1` and `small`, plain,
 `--raw` and `--profile` (timings removed), its output is byte-identical
 to d4fd2d3's (ce6a2549…) with `--config host` and `small`
-(`wav/base.txt`, `wav/s3-p1.txt`).
+(`wav/base.txt`, `wav/s3-p1.txt`). The binary built from cea0bc2 in this
+repository's path, sha256 b07afd894e432a81634d3b8e5d06eb59c19a90a4a9ba2a832ae437102746b989,
+gives the same identity (`wav/cea0bc2-p1.txt`); with its defaults (host
+three passes) the corpus's host decodes go from 7 767 to 10 696, the
+single pass's lines first and unchanged in every slot, no message twice,
+`small` unchanged (`wav/cea0bc2-default.txt`). It is the binary handed on
+for the external acceptance.
 
 **Memory.** The core gains no buffer; `Decoder` grows by its
 configuration to 200 B (was 176 B); the caller's residual is 720 000 B (the decode
