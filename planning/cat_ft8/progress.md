@@ -710,6 +710,15 @@
   CRC failure as measured, not pursued. Identity: release binary sha256
   b3ead07b…dea93 unchanged, golden hashes unchanged, every slot record
   equal to `e3-final` (b = c = 0 on every set and block).
+- Subtraction ceiling measured (findings, "Subtraction ceiling"):
+  `paired_bench ceiling` decodes each crowded message alone (same noise)
+  and runs oracle passes that remove the decoded signals' true
+  waveforms. Every message decodes alone (ceiling 100%: the crowded set
+  starts 3 dB above the 50% point). Host 69.1% single pass, 91.0% (main)
+  / 91.6% (fresh) after one oracle pass, 96.5% / 97.0% after two; small
+  within 0.2 points; no false decode or duplicate anywhere. Misses: about
+  80% not converged, 20% no candidate; one oracle pass recovers 77–79%
+  and 47–50% of them. Decoder unchanged.
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |

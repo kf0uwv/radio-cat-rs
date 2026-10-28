@@ -844,3 +844,93 @@ crowded slots about a fifth have no candidate on them at all (not
 broken down further; a stronger neighbour's sync peak suppressing
 theirs, or the candidate limit, are the likely reasons). How many of either kind subtraction could recover is
 measured next ("Subtraction ceiling").
+
+## Subtraction ceiling (2026-10-27)
+
+Measurement only; the decoder is unchanged. `paired_bench ceiling
+host|small main|fresh` (bench as committed with this section; outputs
+in `~/.cache/cat-ft8-paired/s0/ceiling-<preset>-<block>.txt`) decodes
+every crowded slot of the block three ways, at the E3 defaults:
+
+- **single pass**: the slot as `run` decodes it (the counts equal
+  `e3-final` exactly);
+- **alone**: each transmitted message by itself in a slot with the same
+  noise realisation and the other signals left out — decoded alone or in
+  the single pass is the **ceiling** of perfect subtraction;
+- **oracle +1, +2**: the slot rebuilt without every message decoded so
+  far (true waveforms, same noise), decoded once more, then again —
+  what one or two further passes could gain with perfect reference
+  waveforms.
+
+The SNR bins are relative to the single-pass 50% point of the same
+block's sweep (host −19.122 dB main, −19.078 fresh; small −19.083,
+−19.044), computed by the same command.
+
+**Decoded, % of transmitted** (single pass / oracle +1 / oracle +2 /
+ceiling):
+
+| preset, block | 10 messages (2 000) | 20 messages (4 000) | 40 messages (8 000) | all (14 000) |
+|---|---|---|---|---|
+| host, main | 87.8 / 99.0 / 99.7 / 100 | 77.5 / 95.7 / 98.8 / 100 | 60.2 / 86.7 / 94.5 / 100 | 69.1 / 91.0 / 96.5 / 100 |
+| host, fresh | 87.9 / 99.0 / 99.7 / 100 | 77.0 / 95.9 / 98.8 / 100 | 60.4 / 87.6 / 95.4 / 100 | 69.1 / 91.6 / 97.0 / 100 |
+| small, main | 87.7 / 99.0 / 99.7 / 100 | 77.5 / 95.7 / 98.7 / 100 | 60.0 / 86.5 / 94.4 / 100 | 69.0 / 90.9 / 96.4 / 100 |
+| small, fresh | 87.8 / 99.0 / 99.8 / 100 | 77.0 / 96.0 / 98.8 / 100 | 60.1 / 87.4 / 95.3 / 100 | 68.9 / 91.5 / 96.9 / 100 |
+
+Counts: host main 9 672 / 12 746 / 13 508 / 14 000; host fresh 9 669 /
+12 826 / 13 575 / 14 000; small main 9 656 / 12 726 / 13 491 / 14 000;
+small fresh 9 648 / 12 813 / 13 570 / 14 000. Every message decodes
+alone: on this set the ceiling is 100% by construction, since every
+crowded signal (−16…+6 dB) is at least 3 dB above the 50% point, where
+the sweep decodes 998–1 000 of 1 000 alone. No false decode and no
+duplicate in any single-pass, alone or oracle decode.
+
+**Single-pass misses by cause, and how many one oracle pass recovers**
+(no candidate on it / not converged; CRC failures 0–2 per run, all-zero
+none; every miss decodes alone):
+
+| preset, block | 10 messages | 20 messages | 40 messages | all |
+|---|---|---|---|---|
+| host, main | 19 → 16 / 226 → 210 | 146 → 100 / 752 → 626 | 675 → 283 / 2 508 → 1 837 | 840 → 399 / 3 486 → 2 673 |
+| host, fresh | 15 → 12 / 227 → 209 | 113 → 74 / 805 → 681 | 725 → 339 / 2 446 → 1 842 | 853 → 425 / 3 478 → 2 732 |
+| small, main | 20 → 16 / 227 → 211 | 155 → 106 / 746 → 621 | 763 → 321 / 2 431 → 1 793 | 938 → 443 / 3 404 → 2 625 |
+| small, fresh | 16 → 13 / 228 → 212 | 125 → 82 / 795 → 676 | 806 → 380 / 2 382 → 1 802 | 947 → 475 / 3 405 → 2 690 |
+
+One oracle pass recovers 77–79% of the not-converged misses and 47–50%
+of those with no candidate; on 40-message slots the no-candidate misses
+are the slowest to recover (42–47% after one pass, 78–81% after two).
+The CRC-failure misses (two each in the host and small main runs) are
+all recovered by the first oracle pass.
+
+**By SNR relative to the 50% point** (host, main; all sizes; sent /
+single pass / oracle +1, and the single-pass misses as no candidate /
+not converged):
+
+| relative SNR | sent | single | oracle +1 | misses |
+|---|---|---|---|---|
+| +3 to +6 dB | 1 742 | 750 (43%) | 1 375 (79%) | 318 / 673 |
+| +6 to +9 dB | 1 941 | 966 (50%) | 1 606 (83%) | 251 / 723 |
+| +9 to +12 dB | 1 934 | 1 147 (59%) | 1 718 (89%) | 155 / 632 |
+| +12 to +15 dB | 1 904 | 1 253 (66%) | 1 739 (91%) | 67 / 584 |
+| +15 to +18 dB | 1 908 | 1 404 (74%) | 1 810 (95%) | 36 / 468 |
+| +18 to +21 dB | 1 934 | 1 641 (85%) | 1 894 (98%) | 10 / 283 |
+| +21 to +24 dB | 1 886 | 1 771 (94%) | 1 859 (99%) | 3 / 112 |
+| +24 to +27 dB | 751 | 740 (99%) | 745 (99%) | 0 / 11 |
+
+(The other three runs differ by a point or two per bin.) Crowding costs
+decodes at every level, most within 9 dB of the 50% point, where more
+than half are missed in one pass; the no-candidate misses sit mostly
+there too.
+
+**Reading.** On this set subtraction alone is not limited by the
+ceiling (100%); it is limited by how well the waveform is estimated
+and by the number of passes. With perfect waveforms one further pass
+reaches 91.0% (main) and 91.6% (fresh) on the host, and 90.9% and 91.5%
+on the small preset; two reach about 96.5–97%. So a crowded rate of
+about 91% is within reach of one further pass **only if** S2's
+subtraction comes close to the true waveform; a real estimate will leave
+residue, and the oracle has advantages a real decoder does not
+(constant amplitude, exact frequency, starts on a sample). The
+two-pass oracle shows the margin a second further pass could add.
+Cost: each oracle pass is another full single-pass decode (the bench
+does not time it); `ceiling` took about 58 s per block for the host on
+16 threads, mostly the 14 000 alone decodes.

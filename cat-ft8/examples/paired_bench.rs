@@ -18,6 +18,7 @@
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- run CONFIG OUTDIR [SETS] [BLOCK]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- compare OLDDIR NEWDIR [--partial]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- cost CONFIG_A CONFIG_B [SLOTS] [RUNS]
+//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- ceiling CONFIG [BLOCK]
 //! ```
 //!
 //! **Sets** (encoder-made; each slot's seed comes from its set, block and
@@ -91,6 +92,18 @@
 //! failures per slot and the expected false decodes they imply (a codeword
 //! that was not transmitted passes the 14-bit CRC with probability
 //! 2⁻¹⁴, so the estimate is the CRC failures per slot × 2⁻¹⁴).
+//!
+//! **ceiling** measures the most that subtraction could gain on the
+//! crowded set of BLOCK (default `main`), without changing the decoder.
+//! Each transmitted message is also decoded alone, in a slot with the same
+//! noise and the other signals left out: decoded in the crowded slot or
+//! alone is the ceiling of perfect subtraction. The oracle passes then
+//! decode the slot rebuilt without every message decoded so far (true
+//! waveforms, same noise), twice, which bounds what further passes could
+//! gain with perfect reference waveforms. It prints the decoded counts per
+//! crowded size, the single-pass misses by cause and what recovers them,
+//! and the counts by SNR relative to the single-pass 50% point of the
+//! sweep set in the same block (computed first).
 
 #[path = "../tests/common/mod.rs"]
 mod common;
@@ -267,7 +280,8 @@ fn noise_seed(seed: u64) -> u64 {
 }
 
 /// A full slot of `sent` (in order) plus white noise of RMS [`NOISE_RMS`]
-/// from `noise_seed`: the input of every set with signals.
+/// from `noise_seed`: the input of every set with signals, and of the
+/// `ceiling` mode's slots with some signals left out (same noise).
 fn render(sent: &[Sent], noise_seed: u64) -> Vec<f32> {
     let mut samples = vec![0.0f32; SLOT_SAMPLES];
     for s in sent {
@@ -1273,7 +1287,261 @@ fn cost(spec_a: &str, spec_b: &str, slots: usize, runs: usize) -> Result<(), Str
     Ok(())
 }
 
-const USAGE: &str = "usage: paired_bench run CONFIG OUTDIR [SETS] [BLOCK] | compare OLDDIR NEWDIR [--partial] | cost A B [SLOTS] [RUNS]";
+// -------------------------------------------------------------- ceiling
+
+/// One transmitted message of a crowded slot in the `ceiling` mode.
+struct CeilingMessage {
+    /// Messages in its slot, and its SNR.
+    size: usize,
+    snr: f64,
+    /// Single pass on the crowded slot.
+    single: Outcome,
+    /// Single pass on the slot with only this message (same noise).
+    alone: Outcome,
+    /// The oracle pass (2 or 3) that first decoded it after the single
+    /// pass missed it; 0 if neither did (or the single pass decoded it).
+    oracle_pass: u8,
+}
+
+/// Per-slot counts of the `ceiling` mode.
+#[derive(Default, Clone, Copy)]
+struct CeilingCounts {
+    /// Decodes not transmitted: single pass, all the slot's alone decodes,
+    /// oracle passes 2 and 3.
+    false_single: u64,
+    false_alone: u64,
+    false_oracle: [u64; 2],
+    /// Oracle-pass decodes of a message already decoded by an earlier pass.
+    duplicate_oracle: [u64; 2],
+}
+
+/// Oracle passes after the single pass (passes 2 and 3).
+const ORACLE_PASSES: usize = 2;
+
+/// The `ceiling` mode on crowded slot `index` of `block`.
+fn ceiling_slot(block: &str, index: usize, setup: &Setup) -> (Vec<CeilingMessage>, CeilingCounts) {
+    let slot = build("crowded", block, index);
+    let ns = noise_seed(slot_seed("crowded", block, index));
+    let sent = &slot.sent;
+    let mut n = CeilingCounts::default();
+    let not_sent = |d: &Decoded| {
+        d.decodes
+            .iter()
+            .filter(|x| !sent.iter().any(|s| s.payload == x.payload))
+            .count() as u64
+    };
+    let single = decode_input(&slot.samples, 0, sent, setup);
+    n.false_single = not_sent(&single);
+    let alone: Vec<Outcome> = sent
+        .iter()
+        .map(|s| {
+            let one = std::slice::from_ref(s);
+            let d = decode_input(&render(one, ns), 0, one, setup);
+            n.false_alone += d.decodes.iter().filter(|x| x.payload != s.payload).count() as u64;
+            d.outcomes[0]
+        })
+        .collect();
+    // Oracle: remove every message decoded so far with its true waveform
+    // (the slot is rebuilt without them, same noise), then decode again.
+    let mut found: Vec<u8> = single
+        .outcomes
+        .iter()
+        .map(|&o| u8::from(o == Outcome::Decoded))
+        .collect();
+    for pass in 0..ORACLE_PASSES {
+        let left: Vec<Sent> = sent
+            .iter()
+            .zip(&found)
+            .filter(|(_, &f)| f == 0)
+            .map(|(s, _)| s.clone())
+            .collect();
+        let d = decode_input(&render(&left, ns), 0, &left, setup);
+        n.false_oracle[pass] += not_sent(&d);
+        for x in &d.decodes {
+            if let Some(k) = sent.iter().position(|s| s.payload == x.payload) {
+                if found[k] == 0 {
+                    found[k] = pass as u8 + 2;
+                } else {
+                    n.duplicate_oracle[pass] += 1;
+                }
+            }
+        }
+    }
+    let messages = sent
+        .iter()
+        .enumerate()
+        .map(|(k, s)| CeilingMessage {
+            size: sent.len(),
+            snr: s.snr,
+            single: single.outcomes[k],
+            alone: alone[k],
+            oracle_pass: if found[k] >= 2 { found[k] } else { 0 },
+        })
+        .collect();
+    (messages, n)
+}
+
+/// The most that subtraction could gain on the crowded set: for each
+/// transmitted message, the single pass on the crowded slot, the single
+/// pass on a slot with that message alone (same noise; the ceiling of
+/// perfect subtraction), and oracle passes that remove what earlier
+/// passes decoded with the true waveforms. SNRs are also given relative to
+/// the single-pass 50% point of the sweep set in the same block.
+fn ceiling(spec: &str, block: &str) -> Result<(), String> {
+    let setup = parse_config(spec)?;
+    println!("config {spec}: {:?}\n{}", setup.config, provenance());
+    let t = Instant::now();
+    let sweep: Vec<(String, bool)> = par_map(set_size("sweep").unwrap_or(0), |i| {
+        let s = build("sweep", block, i);
+        let d = decode_input(&s.samples, s.skip, &s.sent, &setup);
+        (s.point, d.outcomes[0] == Outcome::Decoded)
+    });
+    let mut points: BTreeMap<i64, Vec<(bool, bool)>> = BTreeMap::new();
+    for (pt, ok) in sweep {
+        let tenths = (pt.parse::<f64>().unwrap_or(0.0) * 10.0).round() as i64;
+        points.entry(tenths).or_default().push((ok, ok));
+    }
+    let p50 = curve(&points, false, None).ok_or("the sweep has no 50% point")?;
+    println!(
+        "single-pass 50% point (sweep, {block}): {p50:.3} dB ({:.0} s)",
+        t.elapsed().as_secs_f64()
+    );
+    let t = Instant::now();
+    let per = par_map(set_size("crowded").unwrap_or(0), |i| {
+        ceiling_slot(block, i, &setup)
+    });
+    eprintln!("crowded-{block}: {:.0} s", t.elapsed().as_secs_f64());
+    let mut msgs: Vec<CeilingMessage> = Vec::new();
+    let mut counts: BTreeMap<usize, CeilingCounts> = BTreeMap::new();
+    for (m, c) in per {
+        let e = counts.entry(m[0].size).or_default();
+        e.false_single += c.false_single;
+        e.false_alone += c.false_alone;
+        for p in 0..ORACLE_PASSES {
+            e.false_oracle[p] += c.false_oracle[p];
+            e.duplicate_oracle[p] += c.duplicate_oracle[p];
+        }
+        msgs.extend(m);
+    }
+    let pct = |a: usize, b: usize| 100.0 * a as f64 / b.max(1) as f64;
+    let sizes = [Some(10), Some(20), Some(40), None];
+    let label = |z: Option<usize>| z.map_or("all".to_string(), |z| z.to_string());
+    println!("\n== crowded ({block}): messages decoded (% of transmitted)");
+    println!(
+        "  {:>5} {:>6} {:>14} {:>14} {:>14} {:>14} {:>14}",
+        "size", "sent", "single pass", "oracle +1", "oracle +2", "alone", "ceiling"
+    );
+    for z in sizes {
+        let m: Vec<&CeilingMessage> = msgs
+            .iter()
+            .filter(|m| z.map_or(true, |z| m.size == z))
+            .collect();
+        let single = m.iter().filter(|m| m.single == Outcome::Decoded).count();
+        let o2 = single + m.iter().filter(|m| m.oracle_pass == 2).count();
+        let o3 = o2 + m.iter().filter(|m| m.oracle_pass == 3).count();
+        let alone = m.iter().filter(|m| m.alone == Outcome::Decoded).count();
+        let ceil = m
+            .iter()
+            .filter(|m| m.single == Outcome::Decoded || m.alone == Outcome::Decoded)
+            .count();
+        let cell = |x: usize| format!("{x} ({:.1}%)", pct(x, m.len()));
+        println!(
+            "  {:>5} {:>6} {:>14} {:>14} {:>14} {:>14} {:>14}",
+            label(z),
+            m.len(),
+            cell(single),
+            cell(o2),
+            cell(o3),
+            cell(alone),
+            cell(ceil)
+        );
+    }
+    println!("  (oracle +k: k further passes, each on the slot without every message decoded so far; ceiling: single pass or alone)");
+    println!("  false decodes (single pass, alone, oracle +1, oracle +2) and oracle duplicates:");
+    for (z, c) in &counts {
+        println!(
+            "  {:>5} {} {} {} {}; duplicates {} {}",
+            z,
+            c.false_single,
+            c.false_alone,
+            c.false_oracle[0],
+            c.false_oracle[1],
+            c.duplicate_oracle[0],
+            c.duplicate_oracle[1]
+        );
+    }
+    println!("\n== single-pass misses by cause, and what recovers them");
+    println!(
+        "  {:>5} {:>14} {:>7} {:>11} {:>10} {:>10}",
+        "size", "cause", "missed", "alone dec", "oracle +1", "oracle +2"
+    );
+    for z in sizes {
+        for cause in Outcome::MISSES {
+            let m: Vec<&CeilingMessage> = msgs
+                .iter()
+                .filter(|m| z.map_or(true, |z| m.size == z) && m.single == cause)
+                .collect();
+            println!(
+                "  {:>5} {:>14} {:>7} {:>11} {:>10} {:>10}",
+                label(z),
+                cause.code(),
+                m.len(),
+                m.iter().filter(|m| m.alone == Outcome::Decoded).count(),
+                m.iter().filter(|m| m.oracle_pass == 2).count(),
+                m.iter().filter(|m| m.oracle_pass == 3).count()
+            );
+        }
+    }
+    let alone_miss = miss_counts(msgs.iter().map(|m| &m.alone));
+    println!(
+        "  missed even alone (all sizes): no candidate {}, not converged {}, CRC failure {}, all-zero {}",
+        alone_miss[0], alone_miss[1], alone_miss[2], alone_miss[3]
+    );
+    println!("\n== by SNR relative to the single-pass 50% point ({p50:.2} dB), all sizes; right: single-pass misses by cause");
+    println!(
+        "  {:>12} {:>6} {:>8} {:>9} {:>8} {:>8} | {:>6} {:>6} {:>6} {:>6}",
+        "rel dB",
+        "sent",
+        "single",
+        "oracle+1",
+        "alone",
+        "ceiling",
+        "nocand",
+        "notcnv",
+        "crc",
+        "zero"
+    );
+    for lo in (3..27).step_by(3) {
+        let (lo, hi) = (f64::from(lo), f64::from(lo + 3));
+        let m: Vec<&CeilingMessage> = msgs
+            .iter()
+            .filter(|m| (lo..hi).contains(&(m.snr - p50)))
+            .collect();
+        if m.is_empty() {
+            continue;
+        }
+        let single = m.iter().filter(|m| m.single == Outcome::Decoded).count();
+        let miss = miss_counts(m.iter().map(|m| &m.single));
+        println!(
+            "  {:>12} {:>6} {:>8} {:>9} {:>8} {:>8} | {:>6} {:>6} {:>6} {:>6}",
+            format!("[{lo:+.0}, {hi:+.0})"),
+            m.len(),
+            single,
+            single + m.iter().filter(|m| m.oracle_pass == 2).count(),
+            m.iter().filter(|m| m.alone == Outcome::Decoded).count(),
+            m.iter()
+                .filter(|m| m.single == Outcome::Decoded || m.alone == Outcome::Decoded)
+                .count(),
+            miss[0],
+            miss[1],
+            miss[2],
+            miss[3]
+        );
+    }
+    Ok(())
+}
+
+const USAGE: &str = "usage: paired_bench run CONFIG OUTDIR [SETS] [BLOCK] | compare OLDDIR NEWDIR [--partial] | cost A B [SLOTS] [RUNS] | ceiling CONFIG [BLOCK]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -1291,6 +1559,7 @@ fn main() -> ExitCode {
         (Some("compare"), Some(o), Some(n)) => {
             compare(Path::new(o), Path::new(n), arg(3) == Some("--partial"))
         }
+        (Some("ceiling"), Some(c), _) => ceiling(c, arg(2).unwrap_or("main")).map(|()| true),
         (Some("cost"), Some(x), Some(y)) => num(3, 42)
             .and_then(|s| num(4, 5).and_then(|r| cost(x, y, s, r)))
             .map(|()| true),
