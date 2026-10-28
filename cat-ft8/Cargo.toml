@@ -7,7 +7,7 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "FT8 from the published protocol: message packing, CRC-14, LDPC (174,91), Costas/Gray tone mapping, GFSK waveform synthesis and a single-pass decoder, in a no_std, allocation-free core."
+description = "FT8 from the published protocol: message packing, CRC-14, LDPC (174,91), Costas/Gray tone mapping, GFSK waveform synthesis and a decoder (single pass, or several with subtraction), in a no_std, allocation-free core."
 
 # A pure library at the bottom of the graph, beside `cat-morse` and
 # `cat-layout`: no local crate dependencies, no async runtime, no device

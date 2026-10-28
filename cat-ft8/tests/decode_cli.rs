@@ -255,6 +255,72 @@ fn profile_adds_one_line_of_timings_memory_and_counts() {
 }
 
 #[test]
+fn further_passes_add_decodes_and_profile_keys() {
+    let (s, sent) = crowded_slot(30, 23);
+    let path = write("passes.wav", &s, 12_000);
+    let one = lines(&decode_cmd(
+        &path,
+        &["--profile", "--config", "host,passes=1"],
+    ));
+    let three = lines(&decode_cmd(
+        &path,
+        &["--profile", "--config", "host,passes=3"],
+    ));
+    let (p1, p3) = (
+        &one[one.len() - 1]["profile"],
+        &three[three.len() - 1]["profile"],
+    );
+    let messages = |v: &[Value]| -> Vec<String> {
+        v[..v.len() - 1]
+            .iter()
+            .map(|d| d["message"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (m1, m3) = (messages(&one), messages(&three));
+    // The first pass's lines come first and unchanged; more follow, each
+    // message once, all of them sent.
+    assert_eq!(three[..m1.len()], one[..m1.len()]);
+    assert!(m3.len() > m1.len(), "{} -> {}", m1.len(), m3.len());
+    let mut unique = m3.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), m3.len());
+    let texts: Vec<String> = (0..30).map(|k| format!("CROWD {k:03} 23")).collect();
+    assert!(m3.iter().all(|m| texts.contains(m)));
+    assert_eq!(sent.len(), 30);
+    // One pass: the format-0 keys only. Three: the per-pass keys too.
+    assert!(p1.get("passes").is_none() && p1.get("residual_bytes").is_none());
+    assert_eq!(p3["passes"], 3);
+    let run = p3["passes_run"].as_u64().unwrap();
+    assert!((2..=3).contains(&run));
+    assert_eq!(p3["decoded"].as_u64().unwrap() as usize, m3.len());
+    assert_eq!(p3["candidates_kept"], p1["candidates_kept"]);
+    let new: u64 = (1..=run)
+        .map(|p| p3[format!("pass{p}_decoded")].as_u64().unwrap())
+        .sum();
+    assert_eq!(new as usize, m3.len());
+    assert_eq!(p3["pass2_subtracted"].as_u64().unwrap() as usize, m1.len());
+    for k in [
+        "subtract_seconds",
+        "pass2_subtract_seconds",
+        "pass2_feed_seconds",
+        "pass1_sync_seconds",
+    ] {
+        assert!(p3[k].as_f64().unwrap() >= 0.0, "{k}");
+    }
+    assert_eq!(p3["residual_bytes"], 720_000);
+    let parts: u64 = p3
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(k, _)| k.ends_with("_bytes") && *k != "peak_bytes" && *k != "static_table_bytes")
+        .map(|(_, v)| v.as_u64().unwrap())
+        .sum();
+    assert_eq!(p3["peak_bytes"].as_u64().unwrap(), parts);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn short_files_are_partial_slots_and_long_files_use_the_first_slot() {
     let first = Signal {
         message: "CQ K1ABC FN42",
@@ -318,6 +384,21 @@ fn unusable_files_and_arguments_are_errors() {
     fail(decode_cmd(&text, &[]), 1, "RIFF");
     fail(decode_cmd(&temp("missing.wav"), &[]), 1, "missing.wav");
     fail(decode_cmd(&rate, &["--config", "fast"]), 2, "host or small");
+    fail(
+        decode_cmd(&rate, &["--config", "host,passes=4"]),
+        2,
+        "passes must be 1 to 3",
+    );
+    fail(
+        decode_cmd(&rate, &["--config", "host,passes=0"]),
+        2,
+        "passes must be 1 to 3",
+    );
+    fail(
+        decode_cmd(&rate, &["--config", "small,later=5"]),
+        2,
+        "host or small",
+    );
     fail(decode_cmd(&rate, &["--bogus"]), 2, "unknown option");
     for p in [rate, stereo_path, text] {
         std::fs::remove_file(p).unwrap();

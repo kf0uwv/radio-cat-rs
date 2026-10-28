@@ -81,7 +81,7 @@
 //!
 //! # Decode command output (format version 0)
 //!
-//! `cat-ft8-decode FILE.wav [--config host|small] [--raw] [--profile]`
+//! `cat-ft8-decode FILE.wav [--config host|small[,passes=N]] [--raw] [--profile]`
 //! reads a 12 kHz mono 16-bit PCM WAV file. Its first 15 s are the slot: a
 //! shorter file is decoded as a partial slot, and samples after 15 s are
 //! ignored (and not read). Other sample rates and channel counts are
@@ -89,9 +89,13 @@
 //! usage on standard output and exits with 0). `--config host` (the
 //! default) is `decode::DecodeConfig::HOST` over 100–3100 Hz with 128
 //! decodes; `--config small` is `SMALL` over 200–2900 Hz with 64 decodes.
+//! `,passes=N` (1–3) sets the configuration's pass count: after each pass
+//! but the last, its decodes are subtracted from the audio and the
+//! residual is decoded again (`decode::Decoder::decode_passes`).
 //!
-//! Output is one JSON object per line, in candidate order, one per
-//! distinct decode whose payload unpacked:
+//! Output is one JSON object per line, one per distinct decode whose
+//! payload unpacked, in the order found: pass by pass, and in candidate
+//! order within a pass (`candidate` is the index in its own pass):
 //!
 //! ```text
 //! {"freq": 1000.1, "dt": 0.00, "snr": -9, "message": "CQ K1ABC FN42", "candidate": 0, "hard_errors": 0, "rounds": 0, "score": 9732}
@@ -118,7 +122,15 @@
 //! `finish`, and `total` from the first feed to the end of `finish`,
 //! single-threaded), memory in keys ending `_bytes` (each
 //! buffer, `peak_bytes` their sum, `static_table_bytes`), and every
-//! `decode::DecodeReport` count under its field name.
+//! `decode::DecodeReport` count under its field name (the multi-pass
+//! report: pass 1's counts, with `decoded` and `decodes_truncated` over the
+//! whole output). With more than one pass configured it also has
+//! `subtract_seconds` (in `total`), `residual_bytes` (in `peak_bytes`),
+//! `passes` and `passes_run`, and per pass N `passN_feed_seconds`,
+//! `passN_sync_seconds`, `passN_candidates_seconds`,
+//! `passN_subtract_seconds` (N ≥ 2) and the pass's own counts
+//! `passN_<count>` (`subtracted`, the search and list counts of
+//! `decode::PassReport`, `earlier_pass_duplicates`, `bp_rounds`).
 //!
 //! The format is version 0 and may change until a release; a change will
 //! raise the version reported in the profile line.

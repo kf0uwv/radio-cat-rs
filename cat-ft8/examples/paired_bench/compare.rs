@@ -128,8 +128,13 @@ fn bootstrap(sweep: &Sweep<(bool, bool)>) -> Bootstrap {
     b
 }
 
+/// The most the sweep's 50% point, and each end of its shift's bootstrap
+/// 95% interval, may move either way, dB.
+const SHIFT_LIMIT_DB: f64 = 0.05;
+
 /// The sweep's 50% points and their shift; prints them and returns the
-/// shift gate (false if a 50% point is missing).
+/// shift gate: the shift and its whole bootstrap interval within
+/// ±[`SHIFT_LIMIT_DB`] (false if a 50% point is missing).
 fn sweep_shift(sweep: &Sweep<(bool, bool)>) -> bool {
     let (h_old, h_new) = (
         curve_by(sweep, |p| p.0, None),
@@ -138,12 +143,15 @@ fn sweep_shift(sweep: &Sweep<(bool, bool)>) -> bool {
     let mut b = bootstrap(sweep);
     match (h_old, h_new) {
         (Some(o), Some(n)) => {
-            let shift_ok = n - o <= 0.05;
             let ((ol, oh), (nl, nh), (dl, dh)) = (
                 interval(&mut b.old),
                 interval(&mut b.new),
                 interval(&mut b.shift),
             );
+            // The shift and its whole interval within ±0.05 dB (false for
+            // NaN as well).
+            let within = |x: f64| (-SHIFT_LIMIT_DB..=SHIFT_LIMIT_DB).contains(&x);
+            let shift_ok = within(n - o) && within(dl) && within(dh);
             println!(
                 "  50% point: old {o:.3} dB [{ol:.3}, {oh:.3}], new {n:.3} dB [{nl:.3}, {nh:.3}], shift {:+.3} dB [{dl:+.3}, {dh:+.3}] ({} of 1 000 resamples without a 50% point): {}",
                 n - o,
@@ -232,7 +240,11 @@ struct Work {
 
 impl Work {
     fn add(&mut self, r: &SlotResult) {
-        self.counts[0] += r.counts.kept;
+        // Every pass's candidates in a multi-pass run.
+        self.counts[0] += r
+            .passes
+            .as_ref()
+            .map_or(r.counts.kept, |ps| ps.iter().map(|p| p.kept).sum());
         self.counts[1] += r.bp_rounds;
         self.counts[2] += r.counts.truncated;
         self.counts[3] += r.counts.dropped;
@@ -341,6 +353,86 @@ fn print_misses(side: &str, run: &[SlotResult]) {
     );
 }
 
+/// A multi-pass run's per-pass counts: new decodes, false decodes and
+/// duplicates of earlier passes, list truncation and CRC failures; and the
+/// gates: no false decode in a further pass, no payload listed twice, and
+/// the expected false decodes from the CRC (summed over passes) at most
+/// the passes run × the single-pass run's. Returns the gates' verdict
+/// (true when the new run is single-pass).
+fn print_passes(sa: &[SlotResult], sb: &[SlotResult]) -> bool {
+    if sb.iter().all(|r| r.passes.is_none()) {
+        return true;
+    }
+    let mut pass_ok = true;
+    let most = sb
+        .iter()
+        .filter_map(|r| r.passes.as_ref().map(|p| p.len()))
+        .max()
+        .unwrap_or(1);
+    println!(
+        "  passes: {:>4} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>10} {:>12}",
+        "pass", "slots", "new", "false", "dup", "earlier", "trunc", "CRC fails", "exp. false"
+    );
+    let slots = sb.len().max(1) as f64;
+    let mut expected_total = 0.0;
+    for k in 0..most {
+        let (mut ran, mut new, mut false_n, mut dup, mut earlier, mut trunc, mut crc) =
+            (0, 0, 0, 0, 0, 0, 0);
+        for r in sb {
+            let Some(ps) = &r.passes else { continue };
+            let Some(p) = ps.get(k) else { continue };
+            ran += 1;
+            let end = ps.get(k + 1).map_or(r.decodes.len(), |q| q.first as usize);
+            let mine = &r.decodes[(p.first as usize).min(end)..end];
+            new += mine.len();
+            false_n += mine
+                .iter()
+                .filter(|d| !r.sent.iter().any(|s| s.payload == d.payload))
+                .count();
+            dup += p.duplicates;
+            earlier += p.earlier;
+            trunc += p.truncated;
+            crc += p.crc_failed;
+        }
+        let expected = crc as f64 / slots / 16_384.0;
+        expected_total += expected;
+        let ok = k == 0 || false_n == 0;
+        pass_ok &= ok;
+        println!(
+            "          {:>4} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>10} {:>12.2e}{}",
+            k + 1,
+            ran,
+            new,
+            false_n,
+            dup,
+            earlier,
+            trunc,
+            crc,
+            expected,
+            if ok { "" } else { "  FALSE" }
+        );
+    }
+    let repeated = sb
+        .iter()
+        .filter(|r| {
+            let mut p: Vec<u128> = r.decodes.iter().map(|d| d.payload).collect();
+            p.sort_unstable();
+            p.windows(2).any(|w| w[0] == w[1])
+        })
+        .count();
+    let old_rate = sa.iter().map(|r| r.counts.crc_failed).sum::<u64>() as f64
+        / sa.len().max(1) as f64
+        / 16_384.0;
+    let crc_ok = expected_total <= most as f64 * old_rate || expected_total == 0.0;
+    pass_ok &= crc_ok && repeated == 0;
+    println!(
+        "  passes: expected false decodes {expected_total:.2e} per slot (limit {most} × {old_rate:.2e}): {}; slots listing a payload twice: {repeated}{}",
+        if crc_ok { "ok" } else { "CRC" },
+        if repeated == 0 { "" } else { " DUPLICATE" }
+    );
+    pass_ok
+}
+
 /// Compares one (set, block) of the two runs; prints it and returns its
 /// verdict.
 fn compare_set(set: &str, block: &str, sa: &[SlotResult], sb: &[SlotResult]) -> bool {
@@ -368,11 +460,17 @@ fn compare_set(set: &str, block: &str, sa: &[SlotResult], sb: &[SlotResult]) -> 
     let set_ok = bb - cc <= 2.0 * (bb + cc).sqrt();
     pass &= set_ok;
     println!(
-        "  set: b {tb}, c {tc}, b − c = {} (limit {:.1}): {}",
+        "  set: b {tb}, c {tc}, b − c = {} (limit {:.1}): {}; gain c − b ≥ 2·√(b + c): {}",
         tb as i64 - tc as i64,
         2.0 * (bb + cc).sqrt(),
-        if set_ok { "ok" } else { "LOSS" }
+        if set_ok { "ok" } else { "LOSS" },
+        if cc - bb >= 2.0 * (bb + cc).sqrt() && cc > bb {
+            "met"
+        } else {
+            "not met"
+        }
     );
+    pass &= print_passes(sa, sb);
     if set == "sweep" {
         pass &= sweep_shift(&t.sweep);
     }
@@ -391,7 +489,13 @@ fn compare_set(set: &str, block: &str, sa: &[SlotResult], sb: &[SlotResult]) -> 
     print_misses("old", sa);
     print_misses("new", sb);
     let mut line = String::from("  summed stage seconds (all threads):");
-    for (k, va) in &t.work[0].seconds {
+    let keys: BTreeSet<&String> = t.work[0]
+        .seconds
+        .keys()
+        .chain(t.work[1].seconds.keys())
+        .collect();
+    for k in keys {
+        let va = t.work[0].seconds.get(k).copied().unwrap_or(0.0);
         let vb = t.work[1].seconds.get(k).copied().unwrap_or(0.0);
         let _ = write!(line, " {k} {va:.1} -> {vb:.1};");
     }

@@ -12,12 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `cat-ft8-decode FILE.wav [--config host|small] [--raw] [--profile]`
+//! `cat-ft8-decode FILE.wav [--config host|small[,passes=N]] [--raw] [--profile]`
 //!
 //! Decodes one FT8 slot from a 12 kHz mono 16-bit WAV file and prints one
 //! JSON object per decode, in output format version 0 (see the crate docs,
 //! "Decode command output"). The file's first 15 s are the slot: a shorter
 //! file is decoded as a partial slot, and anything after 15 s is ignored.
+//! The configuration's pass count is used (`passes=N` sets it, 1–3): after
+//! each pass but the last, its decodes are subtracted from the audio and
+//! the residual decoded again; the output lists every decode once, in the
+//! order found. `--profile` adds per-pass keys when more than one pass is
+//! configured.
 //! Exit status 0 on success (with or without decodes), 1 on an error, 2 on
 //! a usage error.
 
@@ -29,12 +34,14 @@ use std::time::Instant;
 
 use cat_ft8::decode::{
     Band, Candidate, CandidateScratch, Decode, DecodeConfig, DecodeList, DecodeReport, Decoder,
-    FrontEnd, Stage, CANDIDATES, HOST_DECODES, SMALL_DECODES, TABLE_BYTES,
+    FrontEnd, PassEvent, PassReport, PassStep, Stage, CANDIDATES, HOST_DECODES, SMALL_DECODES,
+    TABLE_BYTES,
 };
 use cat_ft8::message::CallTable;
 use cat_ft8::{wav, SAMPLE_RATE, SLOT_SAMPLES};
 
-const USAGE: &str = "usage: cat-ft8-decode FILE.wav [--config host|small] [--raw] [--profile]";
+const USAGE: &str =
+    "usage: cat-ft8-decode FILE.wav [--config host|small[,passes=N]] [--raw] [--profile]";
 
 /// Calls remembered for hashed-call messages within the file.
 const CALLS: usize = 64;
@@ -88,15 +95,7 @@ fn parse() -> Result<Parsed, String> {
     };
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--config" => match it.next().as_deref() {
-                Some("host") => a.setup = HOST,
-                Some("small") => a.setup = SMALL,
-                other => {
-                    return Err(format!(
-                        "--config needs host or small, not {other:?}\n{USAGE}"
-                    ))
-                }
-            },
+            "--config" => a.setup = parse_config(it.next().as_deref())?,
             "--raw" => a.raw = true,
             "--profile" => a.profile = true,
             "-h" | "--help" => return Ok(Parsed::Help),
@@ -109,6 +108,33 @@ fn parse() -> Result<Parsed, String> {
         return Err(USAGE.into());
     }
     Ok(Parsed::Run(a))
+}
+
+/// `host` or `small`, optionally followed by `,passes=N` (1–3).
+fn parse_config(spec: Option<&str>) -> Result<Setup, String> {
+    let bad = || format!("--config needs host or small[,passes=N], not {spec:?}\n{USAGE}");
+    let mut parts = spec.ok_or_else(bad)?.split(',');
+    let mut setup = match parts.next() {
+        Some("host") => HOST,
+        Some("small") => SMALL,
+        _ => return Err(bad()),
+    };
+    for kv in parts {
+        match kv.split_once('=') {
+            Some(("passes", n)) => {
+                let n: u8 = n.parse().map_err(|_| bad())?;
+                if !(1..=DecodeConfig::MAX_PASSES).contains(&n) {
+                    return Err(format!(
+                        "passes must be 1 to {}, not {n}\n{USAGE}",
+                        DecodeConfig::MAX_PASSES
+                    ));
+                }
+                setup.config = setup.config.with_passes(n);
+            }
+            _ => return Err(bad()),
+        }
+    }
+    Ok(setup)
 }
 
 /// `s` as a JSON string literal.
@@ -199,8 +225,14 @@ fn raw_line(d: &Decode, error: &str) -> String {
     )
 }
 
-/// The `--profile` line.
-fn profile_line(setup: &Setup, seconds: &[(&str, f64)], report: &DecodeReport) -> String {
+/// The `--profile` line: per-pass keys follow the others when more than one
+/// pass is configured.
+fn profile_line(
+    setup: &Setup,
+    seconds: &[(String, f64)],
+    report: &DecodeReport,
+    passes: &[PassReport],
+) -> String {
     let band = setup.band;
     let memory = [
         ("front_end_bytes", std::mem::size_of::<FrontEnd>()),
@@ -220,7 +252,13 @@ fn profile_line(setup: &Setup, seconds: &[(&str, f64)], report: &DecodeReport) -
         ),
         ("call_table_bytes", std::mem::size_of::<CallTable<CALLS>>()),
     ];
-    let peak: usize = memory.iter().map(|m| m.1).sum();
+    let mut peak: usize = memory.iter().map(|m| m.1).sum();
+    let multi = setup.config.passes > 1;
+    // The slot's samples as `f32`, overwritten with the residual.
+    let residual = SLOT_SAMPLES * std::mem::size_of::<f32>();
+    if multi {
+        peak += residual;
+    }
     let (lo, hi) = band.range_hz();
     let mut out = format!(
         "{{\"profile\": {{\"format\": 0, \"config\": {}, \"band_lo_hz\": {}, \"band_hi_hz\": {}, \"decode_capacity\": {}",
@@ -234,6 +272,9 @@ fn profile_line(setup: &Setup, seconds: &[(&str, f64)], report: &DecodeReport) -
     }
     for (k, v) in memory {
         let _ = write!(out, ", \"{k}\": {v}");
+    }
+    if multi {
+        let _ = write!(out, ", \"residual_bytes\": {residual}");
     }
     let _ = write!(
         out,
@@ -258,6 +299,33 @@ fn profile_line(setup: &Setup, seconds: &[(&str, f64)], report: &DecodeReport) -
         ("top_levels", r.top_levels),
     ] {
         let _ = write!(out, ", \"{k}\": {v}");
+    }
+    if multi {
+        let _ = write!(
+            out,
+            ", \"passes\": {}, \"passes_run\": {}",
+            setup.config.passes,
+            passes.len()
+        );
+        for p in passes {
+            let r = &p.report;
+            for (k, v) in [
+                ("subtracted", p.subtracted),
+                ("candidates_found", r.candidates_found),
+                ("candidates_kept", r.candidates_kept),
+                ("candidates_dropped", r.candidates_dropped),
+                ("decoded", r.decoded),
+                ("decodes_truncated", r.decodes_truncated),
+                ("duplicates", r.duplicates),
+                ("earlier_pass_duplicates", p.earlier_duplicates),
+                ("all_zero_rejected", r.all_zero_rejected),
+                ("crc_failed", r.crc_failed),
+                ("not_converged", r.not_converged),
+                ("bp_rounds", p.bp_rounds),
+            ] {
+                let _ = write!(out, ", \"pass{}_{k}\": {v}", p.pass);
+            }
+        }
     }
     out.push_str("}}");
     out
@@ -301,32 +369,44 @@ fn run(a: &Args) -> Result<(), String> {
     let mut entries = vec![Decode::EMPTY; a.setup.decodes];
     let mut list = DecodeList::new(&mut entries);
 
-    // The split API, to time each stage; the same result as `decode()`.
-    let t = Instant::now();
-    for block in w.samples.chunks(1_920) {
-        decoder.feed_i16(block);
-    }
-    let feed = t.elapsed().as_secs_f64();
-    let t = Instant::now();
-    let kept = decoder.find_candidates().kept;
-    let search = t.elapsed().as_secs_f64();
-    // Each candidate's stages timed separately (`Stage::ALL`).
-    let mut stage_seconds = [0.0f64; Stage::ALL.len()];
-    let t = Instant::now();
-    for i in 0..kept {
-        let mut last = Instant::now();
-        let result = decoder.decode_candidate_staged(i, &mut scratch, |stage| {
-            let now = Instant::now();
-            stage_seconds[stage.index()] += (now - last).as_secs_f64();
-            last = now;
-        });
-        if let Some(result) = result {
-            list.push(i, &result).map_err(|e| e.to_string())?;
+    // Every pass, timed step by step (`PassStep`); one pass is `feed` and
+    // `decode`. The samples as `f32` (exactly what `feed_i16` takes), which
+    // further passes overwrite with the residual.
+    let mut audio: Vec<f32> = w
+        .samples
+        .iter()
+        .map(|&x| f32::from(x) * (1.0 / 32_768.0))
+        .collect();
+    let mut seconds: Vec<(String, f64)> = Vec::new();
+    let mut add = |k: String, t: f64| match seconds.iter_mut().find(|e| e.0 == k) {
+        Some(e) => e.1 += t,
+        None => seconds.push((k, t)),
+    };
+    let multi = a.setup.config.passes > 1;
+    let mut passes: Vec<PassReport> = Vec::new();
+    let mut last = Instant::now();
+    let report = decoder.decode_passes_staged(&mut audio, 0, &mut scratch, &mut list, |e| {
+        let now = Instant::now();
+        let t = (now - last).as_secs_f64();
+        if let PassEvent::Step { pass, step } = e {
+            let name = match step {
+                PassStep::Subtract => "subtract",
+                PassStep::Feed => "feed",
+                PassStep::Sync => "sync",
+                PassStep::Candidate(_) => "candidates",
+            };
+            add(name.to_string(), t);
+            if let PassStep::Candidate(stage) = step {
+                add(stage.name().to_string(), t);
+            }
+            if multi {
+                add(format!("pass{pass}_{name}"), t);
+            }
+        } else if let PassEvent::Done(r) = e {
+            passes.push(*r);
         }
-    }
-    let candidates_time = t.elapsed().as_secs_f64();
-    let report = decoder.report(&list);
-
+        last = Instant::now();
+    });
     let t = Instant::now();
     let mut lines = Vec::new();
     let mut table: CallTable<CALLS> = CallTable::new();
@@ -343,19 +423,35 @@ fn run(a: &Args) -> Result<(), String> {
         writeln!(out, "{line}").map_err(|e| e.to_string())?;
     }
     if a.profile {
-        let mut seconds = vec![
-            ("read", read),
-            ("feed", feed),
-            ("sync", search),
-            ("candidates", candidates_time),
+        // The fixed keys first, in the order of format version 0; then
+        // `subtract` and the per-pass keys.
+        let get = |k: &str| seconds.iter().find(|e| e.0 == k).map_or(0.0, |e| e.1);
+        let (feed, search, cands) = (get("feed"), get("sync"), get("candidates"));
+        let mut keys: Vec<(String, f64)> = vec![
+            ("read".into(), read),
+            ("feed".into(), feed),
+            ("sync".into(), search),
+            ("candidates".into(), cands),
         ];
         // The candidate stage split up; these sum to about `candidates`.
         for stage in Stage::ALL {
-            seconds.push((stage.name(), stage_seconds[stage.index()]));
+            keys.push((stage.name().into(), get(stage.name())));
         }
-        seconds.push(("finish", finish));
-        seconds.push(("total", feed + search + candidates_time + finish));
-        writeln!(out, "{}", profile_line(&a.setup, &seconds, &report))
+        keys.push(("finish".into(), finish));
+        let subtract = get("subtract");
+        keys.push(("total".into(), feed + search + cands + subtract + finish));
+        if multi {
+            keys.push(("subtract".into(), subtract));
+            for p in 1..=passes.len() {
+                for step in ["subtract", "feed", "sync", "candidates"] {
+                    let k = format!("pass{p}_{step}");
+                    if p > 1 || step != "subtract" {
+                        keys.push((k.clone(), get(&k)));
+                    }
+                }
+            }
+        }
+        writeln!(out, "{}", profile_line(&a.setup, &keys, &report, &passes))
             .map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -368,6 +464,7 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             println!("  --config host   100–3100 Hz, sum-product, 128 decodes (the default)");
             println!("  --config small  200–2900 Hz, min-sum, 64 decodes");
+            println!("  ,passes=N       after either: decode in N passes (1–3), subtracting each pass's decodes");
             println!("  --raw           also print decodes whose payload did not unpack");
             println!("  --profile       add one line of timings, memory and counts");
             return ExitCode::SUCCESS;

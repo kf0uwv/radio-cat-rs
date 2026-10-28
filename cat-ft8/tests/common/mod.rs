@@ -95,6 +95,61 @@ pub fn slot(signals: &[Signal<'_>], seed: u64) -> (Vec<f32>, Vec<Payload>) {
     (s, payloads)
 }
 
+/// A crowded slot: `n` free-text messages at −16…+6 dB, tone 0 at
+/// 200–2 800 Hz, starts −0.3…+0.7 s (drawn by `seed`), in white noise.
+pub fn crowded_slot(n: usize, seed: u64) -> (Vec<f32>, Vec<Payload>) {
+    let mut r = Rng(seed ^ 0x00c0_ffee);
+    let texts: Vec<String> = (0..n).map(|k| format!("CROWD {k:03} {seed}")).collect();
+    let signals: Vec<Signal<'_>> = texts
+        .iter()
+        .map(|t| Signal {
+            message: t,
+            snr_db: -16.0 + 22.0 * r.uniform(),
+            base_hz: 200.0 + 2_600.0 * r.uniform(),
+            dt: -0.3 + r.uniform(),
+        })
+        .collect();
+    slot(&signals, seed)
+}
+
+/// Every configured pass over a copy of `samples` (from slot sample 0,
+/// the first `skip` missing), into a list of `capacity` entries: the
+/// output and the residual.
+pub fn decode_passes_setup(
+    samples: &[f32],
+    skip: usize,
+    band: Band,
+    config: DecodeConfig,
+    capacity: usize,
+) -> (Output, Vec<f32>) {
+    let mut w = Work::new(band);
+    let mut dec = w.decoder(config);
+    let mut store = vec![Decode::EMPTY; capacity];
+    let mut list = DecodeList::new(&mut store);
+    let mut residual = samples.to_vec();
+    let report = dec.decode_passes(
+        &mut residual,
+        skip,
+        &mut Box::new(CandidateScratch::new()),
+        &mut list,
+    );
+    let mut texts = Vec::new();
+    list.finish(&mut NoHashes, |_, t| {
+        texts.push(match t {
+            Ok(s) => s.to_string(),
+            Err(e) => format!("error: {e}"),
+        })
+    });
+    (
+        Output {
+            decodes: list.finish_payloads().to_vec(),
+            report,
+            texts,
+        },
+        residual,
+    )
+}
+
 /// Messages to draw from (standard, nonstandard and free text).
 pub const MESSAGES: [&str; 12] = [
     "CQ K1ABC FN42",

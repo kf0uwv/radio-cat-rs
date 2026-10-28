@@ -98,6 +98,48 @@ fn configuration_and_buffer_sizes_are_checked() {
         );
         assert_eq!(r.err(), Some(Error::InvalidConfig), "{bad:?}");
     }
+    for bad in [
+        DecodeConfig::HOST.with_passes(0),
+        DecodeConfig::HOST.with_passes(DecodeConfig::MAX_PASSES + 1),
+        DecodeConfig::HOST.with_later_candidates(0),
+        DecodeConfig::HOST.with_later_candidates(70_000),
+        DecodeConfig::HOST.with_subtract(SubtractConfig::DEFAULT.with_segment(100)),
+    ] {
+        let r = Decoder::new(
+            &mut b.front,
+            &mut b.levels,
+            &mut b.scratch,
+            &mut b.cands,
+            band,
+            bad,
+        );
+        assert_eq!(r.err(), Some(Error::InvalidConfig), "{bad:?}");
+    }
+    // The later-pass count needs room only when there are later passes.
+    let later = DecodeConfig::HOST
+        .with_passes(1)
+        .with_later_candidates(CANDIDATES + 1);
+    assert_eq!(later.candidate_capacity(), 100);
+    assert!(Decoder::new(
+        &mut b.front,
+        &mut b.levels,
+        &mut b.scratch,
+        &mut b.cands,
+        band,
+        later
+    )
+    .is_ok());
+    let later = later.with_passes(2);
+    assert_eq!(later.candidate_capacity(), CANDIDATES + 1);
+    let r = Decoder::new(
+        &mut b.front,
+        &mut b.levels,
+        &mut b.scratch,
+        &mut b.cands,
+        band,
+        later,
+    );
+    assert_eq!(r.err(), Some(Error::BufferTooSmall));
     let big = DecodeConfig::HOST.with_candidates(CANDIDATES + 1);
     let r = Decoder::new(
         &mut b.front,
@@ -143,8 +185,14 @@ fn configuration_and_buffer_sizes_are_checked() {
         DecodeConfig::HOST
             .with_rule(CheckRule::MinSum)
             .with_candidates(75)
+            .with_passes(1)
     );
     assert_eq!(DecodeConfig::HOST.candidates, 100);
+    let h = DecodeConfig::HOST;
+    assert_eq!(
+        (h.passes, h.later_candidates, h.subtract.segment),
+        (3, 50, 3_840)
+    );
     let c = DecodeConfig::HOST.with_max_rounds(5).with_min_score(9);
     assert_eq!((c.max_rounds, c.min_score), (5, 9));
 }
@@ -519,8 +567,9 @@ fn memory_per_item_is_bounded() {
     assert!(size_of::<Decode>() <= 48);
     assert!(size_of::<CandidateScratch>() <= 5_200);
     assert!(size_of::<Candidate>() <= 8);
-    // Borrows and counters only (176 B with 64-bit pointers).
-    assert!(size_of::<Decoder<'static>>() <= 192);
+    // Borrows, counters and the configuration (200 B with 64-bit
+    // pointers).
+    assert!(size_of::<Decoder<'static>>() <= 224);
 }
 
 #[test]
@@ -579,4 +628,222 @@ fn staged_decoding_reports_its_stages_and_gives_the_same_result() {
         Stage::ALL.map(Stage::name),
         ["refine", "soft_bits", "belief_propagation", "snr"]
     );
+}
+
+/// A crowded slot: `n` free-text messages at −16…+6 dB, 200–2 800 Hz,
+/// −0.3…+0.7 s (seeded), in noise. Returns the slot and the texts.
+fn crowded_slot(n: usize, seed: u64) -> (Vec<f32>, Vec<String>) {
+    let mut r = crate::decode::testutil::Noise(seed);
+    let mut s = empty_slot();
+    let mut sent = Vec::new();
+    for k in 0..n {
+        let text = std::format!("CROWD {k:03} {seed}");
+        let snr = -16.0 + 22.0 * r.uniform();
+        let freq = (200.0 + 2_600.0 * r.uniform()) as f32;
+        let dt = (-0.3 + r.uniform()) as f32;
+        add_signal(&mut s, &symbols_of(&text), freq, dt, amplitude_for(snr));
+        sent.push(text);
+    }
+    add_noise(&mut s, NOISE_RMS, seed ^ 0x55);
+    (s, sent)
+}
+
+/// `decode_passes` with `config` on a copy of `audio`: the list, the
+/// report, the residual and every pass's counts.
+fn passes(
+    audio: &[f32],
+    skip: usize,
+    config: DecodeConfig,
+) -> (Vec<Decode>, DecodeReport, Vec<f32>, Vec<PassReport>) {
+    let mut b = Bufs::new(Band::DEFAULT);
+    let mut dec = b.decoder(config);
+    let mut store = [Decode::EMPTY; HOST_DECODES];
+    let mut list = DecodeList::new(&mut store);
+    let mut residual = audio.to_vec();
+    let mut per = Vec::new();
+    let report = dec.decode_passes_staged(
+        &mut residual,
+        skip,
+        &mut CandidateScratch::new(),
+        &mut list,
+        |e| {
+            if let PassEvent::Done(r) = e {
+                per.push(*r);
+            }
+        },
+    );
+    (list.finish_payloads().to_vec(), report, residual, per)
+}
+
+#[test]
+fn one_pass_is_feed_and_decode_and_leaves_the_audio_alone() {
+    for config in [DecodeConfig::HOST.with_passes(1), DecodeConfig::SMALL] {
+        for skip in [0, 12_000] {
+            let mut slot = busy_slot(4);
+            slot[..skip].fill(0.0);
+            let mut b = Bufs::new(Band::DEFAULT);
+            let mut dec = b.decoder(config);
+            dec.skip(skip);
+            dec.feed(&slot[skip..]);
+            let mut store = [Decode::EMPTY; HOST_DECODES];
+            let mut list = DecodeList::new(&mut store);
+            let want = dec.decode(&mut CandidateScratch::new(), &mut list);
+            let (got, report, residual, per) = passes(&slot, skip, config);
+            assert_eq!(got, list.finish_payloads(), "{config:?} {skip}");
+            assert_eq!(report, want, "{config:?} {skip}");
+            assert!(residual
+                .iter()
+                .zip(&slot)
+                .all(|(a, b)| a.to_bits() == b.to_bits()));
+            assert_eq!(per.len(), 1);
+            assert_eq!(per[0].report, want);
+        }
+    }
+}
+
+#[test]
+fn further_passes_add_decodes_once_each() {
+    let (slot, sent) = crowded_slot(30, 9);
+    let host = DecodeConfig::HOST.with_passes(1);
+    let (one, r1, _, _) = passes(&slot, 0, host);
+    let (two, r2, res2, per2) = passes(&slot, 0, host.with_passes(2));
+    let (three, r3, res3, per3) = passes(&slot, 0, host.with_passes(3));
+    std::println!(
+        "decoded of {}: {} / {} / {}; passes {per3:?}",
+        sent.len(),
+        one.len(),
+        two.len(),
+        three.len()
+    );
+    // Each run starts with the one before it, and adds.
+    assert_eq!(two[..one.len()], one[..]);
+    assert_eq!(three[..two.len()], two[..]);
+    assert!(two.len() > one.len() && three.len() >= two.len());
+    // Pass 1's counts, the whole list's decoded.
+    assert_eq!(
+        (r2.candidates_kept, r2.crc_failed),
+        (r1.candidates_kept, r1.crc_failed)
+    );
+    assert_eq!((r2.decoded, r3.decoded), (two.len(), three.len()));
+    // Every decode was sent, and none is listed twice.
+    let mut payloads: Vec<u128> = three.iter().map(|d| d.payload.bits()).collect();
+    payloads.sort_unstable();
+    payloads.dedup();
+    assert_eq!(payloads.len(), three.len());
+    let mut store = [Decode::EMPTY; HOST_DECODES];
+    let mut list = DecodeList::new(&mut store);
+    for d in &three {
+        list.push(0, &Ok(Decode { candidate: 0, ..*d })).unwrap();
+        list.next_pass();
+    }
+    for t in texts(&list) {
+        assert!(sent.contains(&t), "{t}");
+    }
+    // The pass reports add up and say where each pass began.
+    assert_eq!(per2.len(), 2);
+    assert_eq!(per3[..2], per2[..]);
+    assert_eq!(per3[1].first, one.len());
+    assert_eq!(per3[1].subtracted, one.len());
+    assert_eq!(per3[0].report.decoded + per3[1].report.decoded, two.len());
+    // The residual of two passes is the slot less pass 1's decodes, so the
+    // third pass starts from it and subtracts pass 2's.
+    assert!(res2.iter().zip(&slot).any(|(a, b)| a != b));
+    assert!(res3.iter().zip(&res2).any(|(a, b)| a != b));
+    // Deterministic.
+    let again = passes(&slot, 0, host.with_passes(3));
+    assert_eq!((again.0, again.1, again.3), (three, r3, per3));
+    assert!(again
+        .2
+        .iter()
+        .zip(&res3)
+        .all(|(a, b)| a.to_bits() == b.to_bits()));
+}
+
+#[test]
+fn a_pass_that_adds_nothing_ends_the_loop() {
+    let mut noise = empty_slot();
+    add_noise(&mut noise, NOISE_RMS, 3);
+    let (got, _, residual, per) = passes(&noise, 0, DecodeConfig::HOST.with_passes(3));
+    assert!(got.is_empty());
+    assert_eq!(per.len(), 1);
+    assert!(residual
+        .iter()
+        .zip(&noise)
+        .all(|(a, b)| a.to_bits() == b.to_bits()));
+    // One signal: pass 2 finds nothing new, so there is no pass 3.
+    let mut one = noise.clone();
+    add_signal(
+        &mut one,
+        &symbols_of("CQ K1ABC FN42"),
+        1_200.0,
+        0.1,
+        amplitude_for(-5.0),
+    );
+    let (got, _, _, per) = passes(&one, 0, DecodeConfig::HOST.with_passes(3));
+    assert_eq!(got.len(), 1);
+    assert_eq!(per.len(), 2);
+    assert_eq!(
+        (
+            per[1].subtracted,
+            per[1].report.decoded,
+            per[1].earlier_duplicates
+        ),
+        (1, 0, 0)
+    );
+}
+
+#[test]
+fn staged_passes_report_their_steps_in_order() {
+    let (slot, _) = crowded_slot(12, 3);
+    let mut b = Bufs::new(Band::DEFAULT);
+    let mut dec = b.decoder(DecodeConfig::HOST.with_passes(2));
+    let mut store = [Decode::EMPTY; HOST_DECODES];
+    let mut list = DecodeList::new(&mut store);
+    let mut steps: Vec<(u8, PassStep)> = Vec::new();
+    let mut audio = slot.clone();
+    dec.decode_passes_staged(
+        &mut audio,
+        0,
+        &mut CandidateScratch::new(),
+        &mut list,
+        |e| {
+            if let PassEvent::Step { pass, step } = e {
+                if !matches!(step, PassStep::Candidate(_)) {
+                    steps.push((pass, step));
+                }
+            }
+        },
+    );
+    assert_eq!(
+        steps,
+        [
+            (1, PassStep::Feed),
+            (1, PassStep::Sync),
+            (2, PassStep::Subtract),
+            (2, PassStep::Feed),
+            (2, PassStep::Sync)
+        ]
+    );
+}
+
+#[test]
+fn next_pass_restarts_the_index_and_keeps_the_entries() {
+    let d = |p: u128, c: u16| Decode {
+        payload: Payload::from_bits(p).unwrap(),
+        candidate: c,
+        ..Decode::EMPTY
+    };
+    let mut store = [Decode::EMPTY; 4];
+    let mut list = DecodeList::new(&mut store);
+    list.push(0, &Ok(d(1, 0))).unwrap();
+    list.push(1, &Ok(d(2, 1))).unwrap();
+    assert_eq!(list.push(0, &Ok(d(3, 0))), Err(Error::OutOfOrder));
+    list.next_pass();
+    assert_eq!(list.pushed(), 0);
+    list.push(0, &Ok(d(2, 0))).unwrap(); // an earlier pass's payload
+    list.push(1, &Ok(d(3, 1))).unwrap();
+    list.push(2, &Ok(d(3, 2))).unwrap(); // this pass's own
+    assert_eq!(list.len(), 3);
+    assert_eq!((list.duplicates, list.earlier), (2, 1));
+    assert_eq!(list.finish_payloads()[1].candidate, 1);
 }

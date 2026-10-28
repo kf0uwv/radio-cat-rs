@@ -140,7 +140,7 @@ impl SubtractConfig {
         SubtractConfig { drift, ..self }
     }
 
-    fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         let s = self.segment;
         if !(Self::MIN_SEGMENT..=WAVEFORM_SAMPLES).contains(&s) || s % Self::SEGMENT_STEP != 0 {
             return Err(Error::InvalidConfig);

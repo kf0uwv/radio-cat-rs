@@ -12,14 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The decoder (single pass), being built step by step (ADR 0024,
-//! amendment "single-pass decoder"): a block-fed spectrogram, the Costas
+//! The decoder (ADR 0024, amendments "single-pass decoder" and
+//! "subtraction and further passes"): a block-fed spectrogram, the Costas
 //! sync search, soft bits, belief propagation and the CRC, behind the
 //! [`Decoder`] and [`DecodeList`] API (see the [`decoder`] module).
 //!
 //! [`subtract`] removes one decoded signal from a slot's audio, for
-//! decoding the residual again (ADR 0024, amendment "subtraction and
-//! further passes").
+//! decoding the residual again, and [`Decoder::decode_passes`] runs the
+//! configured passes (ADR 0024, amendment "subtraction and further
+//! passes").
 //!
 //! The stages (`sync`, `soft`, `bp`) are crate-private; the `profile`
 //! feature makes them public for measurement benches only.
@@ -52,7 +53,7 @@ pub(crate) mod testutil;
 pub use bp::{BpFailure, CheckRule};
 pub use decoder::{
     CandidateResult, CandidateScratch, Decode, DecodeConfig, DecodeList, DecodeReport, Decoder,
-    Stage, CANDIDATES, HOST_DECODES, SMALL_DECODES,
+    PassEvent, PassReport, PassStep, Stage, CANDIDATES, HOST_DECODES, SMALL_DECODES,
 };
 pub use frontend::{Band, FrontEnd, Spectrogram, BIN_HZ, HOP, ROWS, ROW_ORIGIN};
 pub use snr::SNR_FLOOR_DB;

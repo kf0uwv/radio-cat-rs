@@ -15,6 +15,7 @@
 //! Decoding a slot, classifying what became of each transmitted message,
 //! and the per-slot record `run` writes and `compare` reads.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::io::Write as _;
@@ -22,8 +23,8 @@ use std::path::Path;
 use std::time::Instant;
 
 use cat_ft8::decode::{
-    sync, BpFailure, Candidate, CandidateScratch, Decode, DecodeList, Decoder, FrontEnd,
-    Spectrogram, Stage, BIN_HZ, CANDIDATES,
+    sync, BpFailure, Candidate, CandidateScratch, Decode, DecodeList, Decoder, FrontEnd, PassEvent,
+    PassStep, Spectrogram, Stage, BIN_HZ, CANDIDATES,
 };
 use serde_json::Value;
 
@@ -60,6 +61,85 @@ pub struct Counts {
     pub rows_filled: u64,
 }
 
+/// One pass's counts, saved for multi-pass runs only.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub struct PassRecord {
+    pub pass: u64,
+    /// The decode list's length when the pass began (its first new entry).
+    pub first: u64,
+    pub subtracted: u64,
+    pub found: u64,
+    pub kept: u64,
+    pub dropped: u64,
+    /// New entries plus truncated.
+    pub decoded: u64,
+    pub truncated: u64,
+    pub duplicates: u64,
+    /// Duplicates of a payload an earlier pass listed.
+    pub earlier: u64,
+    pub all_zero: u64,
+    pub crc_failed: u64,
+    pub not_converged: u64,
+    pub bp_rounds: u64,
+}
+
+impl PassRecord {
+    const KEYS: [&'static str; 14] = [
+        "pass",
+        "first",
+        "subtracted",
+        "candidates_found",
+        "candidates_kept",
+        "candidates_dropped",
+        "decoded",
+        "decodes_truncated",
+        "duplicates",
+        "earlier_pass_duplicates",
+        "all_zero_rejected",
+        "crc_failed",
+        "not_converged",
+        "bp_rounds",
+    ];
+
+    fn values(&self) -> [u64; 14] {
+        [
+            self.pass,
+            self.first,
+            self.subtracted,
+            self.found,
+            self.kept,
+            self.dropped,
+            self.decoded,
+            self.truncated,
+            self.duplicates,
+            self.earlier,
+            self.all_zero,
+            self.crc_failed,
+            self.not_converged,
+            self.bp_rounds,
+        ]
+    }
+
+    fn from_values(v: [u64; 14]) -> Self {
+        PassRecord {
+            pass: v[0],
+            first: v[1],
+            subtracted: v[2],
+            found: v[3],
+            kept: v[4],
+            dropped: v[5],
+            decoded: v[6],
+            truncated: v[7],
+            duplicates: v[8],
+            earlier: v[9],
+            all_zero: v[10],
+            crc_failed: v[11],
+            not_converged: v[12],
+            bp_rounds: v[13],
+        }
+    }
+}
+
 /// One slot's result: the record `run` writes and `compare` reads.
 pub struct SlotResult {
     pub set: String,
@@ -78,6 +158,9 @@ pub struct SlotResult {
     /// were saved (so an old run of a set without messages is told apart
     /// from a new one).
     pub outcomes: Option<Vec<Outcome>>,
+    /// Per pass, for multi-pass configurations only (single-pass records
+    /// are unchanged).
+    pub passes: Option<Vec<PassRecord>>,
 }
 
 /// `s` as a JSON string.
@@ -146,6 +229,17 @@ impl SlotResult {
             o.push_str(",\"outcomes\":[");
             for (i, x) in outcomes.iter().enumerate() {
                 let _ = write!(o, "{}\"{}\"", if i > 0 { "," } else { "" }, x.code());
+            }
+            o.push(']');
+        }
+        if let Some(passes) = &self.passes {
+            o.push_str(",\"passes\":[");
+            for (i, p) in passes.iter().enumerate() {
+                o.push_str(if i > 0 { ",{" } else { "{" });
+                for (j, (k, v)) in PassRecord::KEYS.iter().zip(p.values()).enumerate() {
+                    let _ = write!(o, "{}\"{k}\":{v}", if j > 0 { "," } else { "" });
+                }
+                o.push('}');
             }
             o.push(']');
         }
@@ -227,6 +321,21 @@ impl SlotResult {
                     x.as_array()?
                         .iter()
                         .map(|o| Outcome::from_code(o.as_str()?))
+                        .collect::<Option<_>>()?,
+                ),
+            },
+            passes: match v.get("passes") {
+                None => None,
+                Some(x) => Some(
+                    x.as_array()?
+                        .iter()
+                        .map(|p| {
+                            let mut v = [0u64; 14];
+                            for (k, slot) in PassRecord::KEYS.iter().zip(v.iter_mut()) {
+                                *slot = u(&p[*k])?;
+                            }
+                            Some(PassRecord::from_values(v))
+                        })
                         .collect::<Option<_>>()?,
                 ),
             },
@@ -375,11 +484,18 @@ pub struct Decoded {
     pub seconds: Vec<(String, f64)>,
     /// Per transmitted message, in order.
     pub outcomes: Vec<Outcome>,
+    /// Per pass (multi-pass configurations only).
+    pub passes: Option<Vec<PassRecord>>,
 }
 
 /// Decodes `samples` after `skip` missing ones with `setup`, and classifies
 /// each of the `sent` messages. Only the decoder's own calls are timed.
+/// With more than one pass configured, `decode_passes` runs every pass
+/// (see [`decode_passes_input`]).
 pub fn decode_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &Setup) -> Decoded {
+    if setup.config.passes > 1 {
+        return decode_passes_input(samples, skip, sent, setup);
+    }
     let band = setup.band;
     let mut front = Box::new(FrontEnd::new());
     let mut levels = vec![0u8; band.spectrogram_len()];
@@ -444,6 +560,7 @@ pub fn decode_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &Setup) 
     let outcomes = classify(&dec, rep.candidates_found, sent, &decodes, &failed, setup);
     Decoded {
         decodes,
+        passes: None,
         counts: Counts {
             found: rep.candidates_found as u64,
             kept: rep.candidates_kept as u64,
@@ -459,6 +576,116 @@ pub fn decode_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &Setup) 
         bp_rounds,
         seconds,
         outcomes,
+    }
+}
+
+fn record(d: &Decode) -> DecodeRecord {
+    DecodeRecord {
+        payload: d.payload.bits(),
+        freq: d.freq_hz,
+        dt: d.dt,
+        snr: d.snr_db,
+        score: d.score,
+        candidate: d.candidate,
+        hard_errors: d.hard_errors,
+        rounds: d.rounds,
+    }
+}
+
+/// [`decode_input`] for several passes: `decode_passes_staged` over the
+/// slot (the skipped region zero), timing each pass's steps. Seconds:
+/// `feed`, `sync` and the candidate stages summed over passes, then
+/// `subtract`, and per pass `pass<N>_<step>`. Misses are classified on
+/// the last pass run (its spectrogram and candidates; its failures are
+/// found again outside the timed calls).
+pub fn decode_passes_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &Setup) -> Decoded {
+    let band = setup.band;
+    let mut front = Box::new(FrontEnd::new());
+    let mut levels = vec![0u8; band.spectrogram_len()];
+    let mut sync_buf = vec![0i32; Decoder::sync_scratch_len(band)];
+    let mut cands = vec![Candidate::default(); CANDIDATES.max(setup.config.candidate_capacity())];
+    let mut dec = Decoder::new(
+        &mut front,
+        &mut levels,
+        &mut sync_buf,
+        &mut cands,
+        band,
+        setup.config,
+    )
+    .unwrap();
+    let mut store = vec![Decode::EMPTY; setup.decodes];
+    let mut list = DecodeList::new(&mut store);
+    let mut scratch = Box::new(CandidateScratch::new());
+    let mut audio = vec![0.0f32; skip];
+    audio.extend_from_slice(samples);
+    let mut seconds: BTreeMap<String, f64> = BTreeMap::new();
+    let mut passes: Vec<PassRecord> = Vec::new();
+    let mut last = Instant::now();
+    let rep = dec.decode_passes_staged(&mut audio, skip, &mut scratch, &mut list, |e| {
+        let now = Instant::now();
+        match e {
+            PassEvent::Step { pass, step } => {
+                let t = (now - last).as_secs_f64();
+                let name = match step {
+                    PassStep::Subtract => "subtract",
+                    PassStep::Feed => "feed",
+                    PassStep::Sync => "sync",
+                    PassStep::Candidate(st) => st.name(),
+                };
+                *seconds.entry(name.to_string()).or_default() += t;
+                *seconds.entry(format!("pass{pass}_{name}")).or_default() += t;
+            }
+            PassEvent::Done(r) => {
+                let c = &r.report;
+                passes.push(PassRecord {
+                    pass: u64::from(r.pass),
+                    first: r.first as u64,
+                    subtracted: r.subtracted as u64,
+                    found: c.candidates_found as u64,
+                    kept: c.candidates_kept as u64,
+                    dropped: c.candidates_dropped as u64,
+                    decoded: c.decoded as u64,
+                    truncated: c.decodes_truncated as u64,
+                    duplicates: c.duplicates as u64,
+                    earlier: r.earlier_duplicates as u64,
+                    all_zero: c.all_zero_rejected as u64,
+                    crc_failed: c.crc_failed as u64,
+                    not_converged: c.not_converged as u64,
+                    bp_rounds: r.bp_rounds as u64,
+                });
+            }
+            _ => {}
+        }
+        last = Instant::now();
+    });
+    let decodes: Vec<DecodeRecord> = list.finish_payloads().iter().map(record).collect();
+    // The last pass's failures, found again (deterministic, not timed).
+    let mut failed: Vec<(usize, BpFailure)> = Vec::new();
+    for i in 0..dec.candidates().len() {
+        if let Some(Err(f)) = dec.decode_candidate(i, &mut scratch) {
+            failed.push((i, f));
+        }
+    }
+    let found = passes.last().map_or(0, |p| p.found as usize);
+    let outcomes = classify(&dec, found, sent, &decodes, &failed, setup);
+    Decoded {
+        decodes,
+        counts: Counts {
+            found: rep.candidates_found as u64,
+            kept: rep.candidates_kept as u64,
+            dropped: rep.candidates_dropped as u64,
+            decoded: rep.decoded as u64,
+            truncated: rep.decodes_truncated as u64,
+            duplicates: rep.duplicates as u64,
+            all_zero: rep.all_zero_rejected as u64,
+            crc_failed: rep.crc_failed as u64,
+            not_converged: rep.not_converged as u64,
+            rows_filled: rep.rows_filled as u64,
+        },
+        bp_rounds: passes.iter().map(|p| p.bp_rounds).sum(),
+        seconds: seconds.into_iter().collect(),
+        outcomes,
+        passes: Some(passes),
     }
 }
 
@@ -537,6 +764,7 @@ pub fn decode_slot(set: &str, block: &str, index: usize, slot: &Slot, setup: &Se
         bp_rounds: d.bp_rounds,
         seconds: d.seconds,
         outcomes: Some(d.outcomes),
+        passes: d.passes,
     }
 }
 

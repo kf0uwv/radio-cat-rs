@@ -101,9 +101,10 @@ applications via git dependency:
 - **`cat-ft8`** — FT8 implemented from the published protocol (QEX 2020):
   message packing and unpacking, CRC-14, LDPC (174,91), Costas/Gray tone
   mapping and continuous-phase GFSK synthesis at 12 kHz, streamed into
-  caller buffers; and a single-pass decoder (block-fed spectrogram, Costas
-  sync search, sub-grid refinement, soft bits, belief propagation, CRC,
-  frequency, time offset and local-noise SNR) with a `cat-ft8-decode`
+  caller buffers; and a decoder (block-fed spectrogram, Costas sync
+  search, sub-grid refinement, soft bits, belief propagation, CRC,
+  frequency, time offset and local-noise SNR; on hosts up to three passes,
+  each decoded signal subtracted before the next) with a `cat-ft8-decode`
   command that prints JSON lines. The core is `no_std`, allocation-free,
   dependency-free and `f32`-only, so it runs on microcontrollers as well
   as hosts. Output is bit-identical on every platform with IEEE-754

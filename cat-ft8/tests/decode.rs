@@ -25,7 +25,7 @@
 
 mod common;
 
-use cat_ft8::decode::{Band, DecodeConfig, Decoder, HOST_DECODES, SMALL_DECODES};
+use cat_ft8::decode::{Band, DecodeConfig, Decoder, SubtractConfig, HOST_DECODES, SMALL_DECODES};
 use cat_ft8::message::{CallHashes, CallTable, NoHashes, Payload};
 use cat_ft8::SLOT_SAMPLES;
 use common::*;
@@ -606,5 +606,200 @@ fn snr_beside_a_strong_neighbour() {
             .unwrap_or_else(|| panic!("{offset}"));
         println!("neighbour at {offset:+} Hz: {:.1} dB", d.snr_db);
         assert!((d.snr_db + 10.0).abs() <= 2.5, "{offset}: {d:?}");
+    }
+}
+
+/// Multi-pass setups: fixed ones (every setting spelled out, so their pins
+/// do not move with a preset) — two and three passes on the host settings
+/// with one-symbol segments and 100 later candidates, two passes with
+/// min-sum on the small band (the API allows it; the `SMALL` preset stays
+/// at one pass) — and the `HOST` preset as adopted.
+fn multi_pass_setups() -> [Setup; 4] {
+    let sub = SubtractConfig::DEFAULT;
+    let host = DecodeConfig::HOST
+        .with_candidates(100)
+        .with_later_candidates(100)
+        .with_subtract(sub);
+    [
+        (
+            "HOST, 2 passes",
+            Band::DEFAULT,
+            host.with_passes(2),
+            HOST_DECODES,
+        ),
+        (
+            "HOST, 3 passes",
+            Band::DEFAULT,
+            host.with_passes(3),
+            HOST_DECODES,
+        ),
+        (
+            "small setup, 2 passes",
+            Band::SMALL,
+            DecodeConfig::SMALL
+                .with_candidates(75)
+                .with_later_candidates(75)
+                .with_subtract(sub)
+                .with_passes(2),
+            SMALL_DECODES,
+        ),
+        ("HOST", Band::DEFAULT, DecodeConfig::HOST, HOST_DECODES),
+    ]
+}
+
+/// The multi-pass golden slots: the single-pass golden slots, a crowded
+/// slot of 30 messages and the same cut at 13.5 s, and the crowded slot
+/// with its first second missing.
+fn multi_pass_slots() -> Vec<(Vec<f32>, usize, Vec<Payload>)> {
+    let (golden, sent) = golden_slots();
+    let mut out: Vec<(Vec<f32>, usize, Vec<Payload>)> =
+        golden.into_iter().map(|s| (s, 0, sent.clone())).collect();
+    let (crowd, crowd_sent) = crowded_slot(30, 21);
+    out.push((crowd.clone(), 0, crowd_sent.clone()));
+    out.push((crowd[..162_000].to_vec(), 0, crowd_sent.clone()));
+    let mut late = crowd;
+    late[..12_000].fill(0.0);
+    out.push((late, 12_000, crowd_sent));
+    out
+}
+
+/// Golden hashes of the multi-pass output (decodes, texts, report and the
+/// residual's bits) of [`multi_pass_slots`] for each of
+/// [`multi_pass_setups`], and the decodes per slot (pinned 2026-10-28).
+const MULTI_GOLDEN: [u64; 4] = [
+    0x0f93_9b4c_4653_0a23,
+    0x5b20_2300_1e1b_9607,
+    0x47cb_4656_46e1_8e77,
+    0x23c9_8790_b69a_90b8,
+];
+const MULTI_COUNTS: [[usize; 6]; 4] = [
+    [8, 0, 8, 26, 26, 26],
+    [8, 0, 8, 28, 28, 28],
+    [6, 0, 6, 26, 26, 25],
+    [8, 0, 8, 28, 28, 28],
+];
+
+#[test]
+fn multi_pass_golden_hashes() {
+    let slots = multi_pass_slots();
+    let mut got_hashes = Vec::new();
+    let mut got_counts = Vec::new();
+    for (name, band, config, capacity) in multi_pass_setups() {
+        let outs = par_map(slots.len(), |i| {
+            let (s, skip, _) = &slots[i];
+            decode_passes_setup(s, *skip, band, config, capacity)
+        });
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for (out, residual) in &outs {
+            hash_output(&mut hash, out);
+            for x in residual {
+                fnv1a(&mut hash, &x.to_bits().to_le_bytes());
+            }
+        }
+        // Only transmitted messages, each once.
+        for (i, (out, _)) in outs.iter().enumerate() {
+            let mut p: Vec<u128> = out.decodes.iter().map(|d| d.payload.bits()).collect();
+            for d in &out.decodes {
+                assert!(
+                    slots[i].2.contains(&d.payload),
+                    "{name} slot {i}: false decode"
+                );
+            }
+            p.sort_unstable();
+            p.dedup();
+            assert_eq!(
+                p.len(),
+                out.decodes.len(),
+                "{name} slot {i}: a payload twice"
+            );
+        }
+        let counts: Vec<usize> = outs.iter().map(|o| o.0.decodes.len()).collect();
+        println!("{name}: decodes per slot {counts:?}, hash {hash:#018x}");
+        got_hashes.push(hash);
+        got_counts.push(counts);
+    }
+    assert_eq!(got_counts, MULTI_COUNTS.map(|c| c.to_vec()).to_vec());
+    assert_eq!(got_hashes, MULTI_GOLDEN.to_vec(), "{got_hashes:#018x?}");
+}
+
+/// The split API driving the passes by hand — candidates decoded on
+/// several threads in any order, merged in order, each pass's decodes
+/// subtracted in list order on one thread — gives exactly what
+/// `decode_passes` gives.
+#[test]
+fn passes_by_hand_on_threads_match_decode_passes() {
+    use cat_ft8::decode::{subtract, CandidateResult, CandidateScratch, Decode, DecodeList};
+    let (crowd, _) = crowded_slot(30, 22);
+    for (name, band, config, capacity) in multi_pass_setups() {
+        let (want, want_residual) = decode_passes_setup(&crowd, 0, band, config, capacity);
+        for threads in [1, 3, 8] {
+            let mut w = Work::new(band);
+            let mut dec = w.decoder(config);
+            let mut store = vec![Decode::EMPTY; capacity];
+            let mut list = DecodeList::new(&mut store);
+            let mut audio = crowd.clone();
+            let mut first_report = None;
+            let mut begin = 0;
+            for pass in 1..=config.passes {
+                if pass > 1 {
+                    let new: Vec<Decode> = list.finish_payloads()[begin..].to_vec();
+                    for d in &new {
+                        subtract(&mut audio, d, 0, &config.subtract).unwrap();
+                    }
+                    list.next_pass();
+                }
+                let before = list.len();
+                dec.start_slot();
+                dec.skip(0);
+                dec.feed(&audio);
+                let kept = if pass == 1 {
+                    dec.find_candidates().kept
+                } else {
+                    dec.find_later_candidates().kept
+                };
+                let d = &dec;
+                let mut results: Vec<(usize, CandidateResult)> = std::thread::scope(|s| {
+                    let hs: Vec<_> = (0..threads)
+                        .map(|t| {
+                            s.spawn(move || {
+                                let mut scratch = Box::new(CandidateScratch::new());
+                                (t..kept)
+                                    .step_by(threads)
+                                    .rev()
+                                    .map(|i| (i, d.decode_candidate(i, &mut scratch).unwrap()))
+                                    .collect::<Vec<_>>()
+                            })
+                        })
+                        .collect();
+                    hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+                });
+                results.sort_by_key(|r| r.0);
+                let ordered: Vec<CandidateResult> = results.into_iter().map(|r| r.1).collect();
+                list.merge(&ordered).unwrap();
+                if pass == 1 {
+                    first_report = Some(dec.report(&list));
+                }
+                begin = before;
+                if list.len() == before {
+                    break;
+                }
+            }
+            let mut report = first_report.unwrap();
+            report.decoded = want.report.decoded;
+            report.decodes_truncated = want.report.decodes_truncated;
+            assert_eq!(
+                list.finish_payloads(),
+                &want.decodes[..],
+                "{name}, {threads} threads"
+            );
+            assert_eq!(report, want.report, "{name}, {threads} threads");
+            assert!(
+                audio
+                    .iter()
+                    .zip(&want_residual)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "{name}, {threads} threads"
+            );
+        }
     }
 }

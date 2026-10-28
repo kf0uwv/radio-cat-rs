@@ -115,6 +115,8 @@ const _: () = assert!(PULSE_FIRST <= SAMPLES_PER_SYMBOL);
 // (s ≤ ns − PULSE_FIRST) and the next symbol's (s ≥ PULSE_FIRST) are
 // disjoint. (Strict: with equality one sample would need all three.)
 const _: () = assert!(2 * PULSE_FIRST > SAMPLES_PER_SYMBOL);
+// The ramps lie within the first and last symbols.
+const _: () = assert!(RAMP_SAMPLES <= SAMPLES_PER_SYMBOL);
 
 /// The pulse `g` at sample `i` of `0..PULSE_SAMPLES` (centre at 2880).
 #[cfg(test)]
@@ -277,6 +279,9 @@ impl Synth {
             let (prev, cur, next) = (tone(sym.saturating_sub(1)), tone(sym), tone(sym + 1));
             let s_start = pos - sym * ns;
             let s_end = ns.min(s_start + (end - pos));
+            // Only the first and last symbols reach the ramps; elsewhere
+            // the envelope is exactly 1.0.
+            let ramped = sym == 0 || sym == last;
             for s in s_start..s_end {
                 // Symbol m's pulse covers samples [(m−1)T, (m+2)T): this
                 // sample gets the previous symbol's pulse at 2ns + s, the
@@ -297,9 +302,13 @@ impl Synth {
                     dev += next * PULSE_HALF[s - PULSE_FIRST];
                 }
                 let freq = self.base_hz + TONE_SPACING_HZ * dev;
-                let j = sym * ns + s;
-                emit(phase, envelope(j));
-                phase = phase.wrapping_add((freq * TURNS_PER_HZ) as u32);
+                let env = if ramped { envelope(sym * ns + s) } else { 1.0 };
+                emit(phase, env);
+                // `freq` is positive and below half the sample rate (checked
+                // in `new`), so the increment is in [0, 2³¹) and converting
+                // through `i64` (one instruction) gives the same value as
+                // the saturating `as u32`.
+                phase = phase.wrapping_add((freq * TURNS_PER_HZ) as i64 as u32);
             }
             pos += s_end - s_start;
         }

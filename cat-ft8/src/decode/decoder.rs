@@ -83,6 +83,7 @@ use super::frontend::BIN_HZ;
 use super::frontend::{Band, FrontEnd, Spectrogram};
 use super::snr;
 use super::soft::soft_bits_at;
+use super::subtract::{subtract, SubtractConfig};
 use super::sync::{self, Candidate, SyncReport, ROW_SECONDS};
 use crate::ldpc::N;
 use crate::message::{unpack, CallHashes, MessageType, Payload};
@@ -94,7 +95,8 @@ use crate::Error;
 pub const CANDIDATES: usize = 200;
 // The recommended buffer holds every preset's candidates.
 const _: () = assert!(
-    DecodeConfig::HOST.candidates <= CANDIDATES && DecodeConfig::SMALL.candidates <= CANDIDATES
+    DecodeConfig::HOST.candidate_capacity() <= CANDIDATES
+        && DecodeConfig::SMALL.candidate_capacity() <= CANDIDATES
 );
 /// Recommended decode-list capacity on a host.
 pub const HOST_DECODES: usize = 128;
@@ -127,24 +129,44 @@ pub struct DecodeConfig {
     /// Candidates kept by the sync search (1–65 535); the candidate buffer
     /// needs at least this many entries.
     pub candidates: usize,
+    /// Decoding passes, 1–3, run by [`Decoder::decode_passes`]: after each
+    /// pass but the last, that pass's decodes are subtracted from the audio
+    /// and the residual is decoded again. 1 is the single-pass decoder.
+    /// [`Decoder::decode`] always runs one pass.
+    pub passes: u8,
+    /// Candidates kept by the sync search in every pass after the first
+    /// (1–65 535); with more than one pass the candidate buffer needs at
+    /// least this many entries too.
+    pub later_candidates: usize,
+    /// How each decode is subtracted between passes.
+    pub subtract: SubtractConfig,
 }
 
 impl DecodeConfig {
-    /// Hosts: sum-product, 30 rounds, LLR scale 4, 100 candidates.
+    /// Hosts: sum-product, 30 rounds, LLR scale 4, 100 candidates; three
+    /// passes ([`Decoder::decode_passes`]) with 50 candidates in each
+    /// further pass and two-symbol (3 840-sample) subtraction segments.
     ///
     /// 100 candidates decode the same messages as 200 on the measured
-    /// sets for much less belief-propagation work. Validated up to 40 signals per slot; for busier bands raise
-    /// it with [`DecodeConfig::with_candidates`].
+    /// sets for much less belief-propagation work, and in further passes
+    /// 50 as many as 200. Validated up to 40 signals per slot; for busier
+    /// bands raise them with [`DecodeConfig::with_candidates`] and
+    /// [`DecodeConfig::with_later_candidates`]. [`Decoder::decode`] runs
+    /// the first pass only.
     pub const HOST: DecodeConfig = DecodeConfig {
         rule: CheckRule::SumProduct,
         max_rounds: 30,
         llr_scale: 4.0,
         min_score: 0,
         candidates: 100,
+        passes: 3,
+        later_candidates: 50,
+        subtract: SubtractConfig::DEFAULT.with_segment(2 * crate::SAMPLES_PER_SYMBOL),
     };
 
     /// Small targets: normalised min-sum, which costs about a third as
-    /// much per round as sum-product, and 75 candidates; otherwise as
+    /// much per round as sum-product, 75 candidates and one pass (a small
+    /// target cannot hold the slot's residual); otherwise as
     /// [`DecodeConfig::HOST`].
     ///
     /// Fewer candidates trim the cost further for a small target's budget.
@@ -154,6 +176,7 @@ impl DecodeConfig {
     pub const SMALL: DecodeConfig = DecodeConfig {
         rule: CheckRule::MinSum,
         candidates: 75,
+        passes: 1,
         ..DecodeConfig::HOST
     };
 
@@ -182,6 +205,38 @@ impl DecodeConfig {
         DecodeConfig { candidates, ..self }
     }
 
+    /// With `passes` decoding passes (1–3).
+    pub const fn with_passes(self, passes: u8) -> Self {
+        DecodeConfig { passes, ..self }
+    }
+
+    /// With `later_candidates` candidates in every pass after the first.
+    pub const fn with_later_candidates(self, later_candidates: usize) -> Self {
+        DecodeConfig {
+            later_candidates,
+            ..self
+        }
+    }
+
+    /// With subtraction settings `subtract`.
+    pub const fn with_subtract(self, subtract: SubtractConfig) -> Self {
+        DecodeConfig { subtract, ..self }
+    }
+
+    /// Entries the candidate buffer needs: [`DecodeConfig::candidates`],
+    /// or [`DecodeConfig::later_candidates`] if larger and more than one
+    /// pass is configured.
+    pub const fn candidate_capacity(&self) -> usize {
+        if self.passes > 1 && self.later_candidates > self.candidates {
+            self.later_candidates
+        } else {
+            self.candidates
+        }
+    }
+
+    /// The most decoding passes.
+    pub const MAX_PASSES: u8 = 3;
+
     /// The largest soft-bit scale accepted. Far beyond any useful value
     /// (4 is the default); much larger scales overflow belief propagation's
     /// sums and give meaningless results.
@@ -190,8 +245,10 @@ impl DecodeConfig {
     fn check(&self) -> Result<(), Error> {
         // NaN fails both comparisons.
         let scale_ok = self.llr_scale > 0.0 && self.llr_scale <= Self::MAX_LLR_SCALE;
-        let count_ok = (1..=usize::from(u16::MAX)).contains(&self.candidates);
-        if scale_ok && count_ok {
+        let counts = 1..=usize::from(u16::MAX);
+        let count_ok = counts.contains(&self.candidates) && counts.contains(&self.later_candidates);
+        let passes_ok = (1..=Self::MAX_PASSES).contains(&self.passes);
+        if scale_ok && count_ok && passes_ok && self.subtract.validate().is_ok() {
             Ok(())
         } else {
             Err(Error::InvalidConfig)
@@ -360,6 +417,8 @@ impl core::fmt::Debug for DecodeList<'_> {
             .field("all_zero", &self.all_zero)
             .field("crc_failed", &self.crc_failed)
             .field("not_converged", &self.not_converged)
+            .field("pass_start", &self.pass_start)
+            .field("earlier", &self.earlier)
             .finish()
     }
 }
@@ -436,8 +495,8 @@ impl<'a> Decoder<'a> {
     /// A decoder for `band` at the start of a slot. `levels` needs
     /// [`Band::spectrogram_len`] entries, `sync_scratch`
     /// [`Decoder::sync_scratch_len`] and `candidates` at least
-    /// `config.candidates` ([`Error::BufferTooSmall`] otherwise);
-    /// [`Error::InvalidConfig`] for a bad configuration.
+    /// [`DecodeConfig::candidate_capacity`] ([`Error::BufferTooSmall`]
+    /// otherwise); [`Error::InvalidConfig`] for a bad configuration.
     pub fn new(
         front: &'a mut FrontEnd,
         levels: &'a mut [u8],
@@ -447,7 +506,8 @@ impl<'a> Decoder<'a> {
         config: DecodeConfig,
     ) -> Result<Self, Error> {
         config.check()?;
-        if sync_scratch.len() < Self::sync_scratch_len(band) || candidates.len() < config.candidates
+        if sync_scratch.len() < Self::sync_scratch_len(band)
+            || candidates.len() < config.candidate_capacity()
         {
             return Err(Error::BufferTooSmall);
         }
@@ -507,9 +567,23 @@ impl<'a> Decoder<'a> {
         self.spec.rows_filled()
     }
 
-    /// Step 1: searches the rows filled so far and lists the candidates.
+    /// Step 1: searches the rows filled so far and lists the candidates
+    /// (at most [`DecodeConfig::candidates`]).
     pub fn find_candidates(&mut self) -> SyncReport {
-        let out = &mut self.candidates[..self.config.candidates];
+        self.search(self.config.candidates)
+    }
+
+    /// Step 1 of a pass after the first: as [`Decoder::find_candidates`],
+    /// keeping at most [`DecodeConfig::later_candidates`].
+    pub fn find_later_candidates(&mut self) -> SyncReport {
+        self.search(self.config.later_candidates)
+    }
+
+    fn search(&mut self, limit: usize) -> SyncReport {
+        // At most the buffer: a single-pass configuration's buffer may hold
+        // fewer than its later-pass count.
+        let n = limit.min(self.candidates.len());
+        let out = &mut self.candidates[..n];
         // The buffer sizes were checked in `new`, so this cannot fail.
         self.sync = sync::find_candidates(&self.spec, self.config.min_score, self.scratch, out)
             .unwrap_or_default();
@@ -581,6 +655,8 @@ impl<'a> Decoder<'a> {
     /// Steps 1–3 on one thread: [`Decoder::find_candidates`], then
     /// [`Decoder::decode_candidate`] for every candidate in order, each
     /// result pushed into `list` (emptied first). Returns the report.
+    /// One pass, whatever [`DecodeConfig::passes`] says (further passes
+    /// need the audio: [`Decoder::decode_passes`]).
     pub fn decode(
         &mut self,
         scratch: &mut CandidateScratch,
@@ -595,6 +671,132 @@ impl<'a> Decoder<'a> {
             }
         }
         self.report(list)
+    }
+
+    /// Every configured pass ([`DecodeConfig::passes`]) over one slot's
+    /// audio, on one thread, into `list` (emptied first). Returns the
+    /// multi-pass report: pass 1's (input counters, candidate counts,
+    /// rejection and duplicate counts) with [`DecodeReport::decoded`] and
+    /// [`DecodeReport::decodes_truncated`] taken over the whole list.
+    ///
+    /// `audio[0]` is slot sample 0; the first `skip` samples are missing
+    /// input (neither read nor written); a buffer shorter than a slot is a
+    /// slot cut short. Each pass runs [`Decoder::start_slot`],
+    /// [`Decoder::skip`]`(skip)` and [`Decoder::feed`]`(&audio[skip..])`,
+    /// the search ([`Decoder::find_candidates`] in pass 1,
+    /// [`Decoder::find_later_candidates`] after it) and every candidate in
+    /// order. Before each further pass, the previous pass's new decodes are
+    /// subtracted from `audio` in list order ([`subtract`] with
+    /// [`DecodeConfig::subtract`]) and [`DecodeList::next_pass`] is called;
+    /// a pass that adds no decode to the list ends the loop. So on return
+    /// `audio` holds the slot less every decode of every pass but the last
+    /// (with one pass it is unchanged), and a payload is listed once, at its
+    /// first decode.
+    ///
+    /// With one pass this is [`Decoder::decode`] after feeding the audio:
+    /// the same list and report.
+    pub fn decode_passes(
+        &mut self,
+        audio: &mut [f32],
+        skip: usize,
+        scratch: &mut CandidateScratch,
+        list: &mut DecodeList<'_>,
+    ) -> DecodeReport {
+        self.decode_passes_staged(audio, skip, scratch, list, |_| {})
+    }
+
+    /// [`Decoder::decode_passes`], calling `event` as each step of each
+    /// pass ends (for timing) and with each pass's own counts. The result
+    /// is the same.
+    pub fn decode_passes_staged(
+        &mut self,
+        audio: &mut [f32],
+        skip: usize,
+        scratch: &mut CandidateScratch,
+        list: &mut DecodeList<'_>,
+        mut event: impl FnMut(PassEvent<'_>),
+    ) -> DecodeReport {
+        list.clear();
+        let mut first = DecodeReport::default();
+        // The list entries of the last pass.
+        let mut begin = 0;
+        for pass in 1..=self.config.passes {
+            let mut subtracted = 0;
+            if pass > 1 {
+                for i in begin..list.len {
+                    // A decode's frequency and time are always valid for
+                    // the waveform, and the settings were checked in `new`,
+                    // so this does not fail; if it did, the audio would be
+                    // left as it was.
+                    let _ = subtract(audio, &list.entries[i], skip, &self.config.subtract);
+                    subtracted += 1;
+                }
+                list.next_pass();
+                event(PassEvent::Step {
+                    pass,
+                    step: PassStep::Subtract,
+                });
+            }
+            let before = list.tally();
+            self.start_slot();
+            self.skip(skip);
+            self.feed(audio.get(skip..).unwrap_or(&[]));
+            event(PassEvent::Step {
+                pass,
+                step: PassStep::Feed,
+            });
+            if pass == 1 {
+                self.find_candidates();
+            } else {
+                self.find_later_candidates();
+            }
+            event(PassEvent::Step {
+                pass,
+                step: PassStep::Sync,
+            });
+            let mut bp_rounds = 0;
+            for i in 0..self.sync.kept {
+                let r = self.decode_candidate_staged(i, scratch, |stage| {
+                    event(PassEvent::Step {
+                        pass,
+                        step: PassStep::Candidate(stage),
+                    })
+                });
+                bp_rounds += usize::from(scratch.last_rounds());
+                if let Some(r) = r {
+                    // In order by construction, so this cannot fail.
+                    let _ = list.push(i, &r);
+                }
+            }
+            let after = list.tally();
+            let mut report = self.report(list);
+            report.decoded = (after.len - before.len) + (after.truncated - before.truncated);
+            report.decodes_truncated = after.truncated - before.truncated;
+            report.duplicates = after.duplicates - before.duplicates;
+            report.all_zero_rejected = after.all_zero - before.all_zero;
+            report.crc_failed = after.crc_failed - before.crc_failed;
+            report.not_converged = after.not_converged - before.not_converged;
+            event(PassEvent::Done(&PassReport {
+                pass,
+                first: before.len,
+                subtracted,
+                earlier_duplicates: after.earlier - before.earlier,
+                bp_rounds,
+                report,
+            }));
+            if pass == 1 {
+                first = report;
+            }
+            begin = before.len;
+            if after.len == before.len {
+                break;
+            }
+        }
+        DecodeReport {
+            decoded: list.len + list.truncated,
+            decodes_truncated: list.truncated,
+            ..first
+        }
     }
 
     /// The report for the last search and `list`.
@@ -619,6 +821,57 @@ impl<'a> Decoder<'a> {
     }
 }
 
+/// One step of a pass, reported by [`Decoder::decode_passes_staged`] as
+/// it ends. Adding a step is a breaking change on purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassStep {
+    /// The previous pass's decodes subtracted (passes after the first).
+    Subtract,
+    /// `start_slot`, `skip` and `feed`.
+    Feed,
+    /// The sync search.
+    Sync,
+    /// One stage of one candidate's decode.
+    Candidate(Stage),
+}
+
+/// What [`Decoder::decode_passes_staged`] reports as it goes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum PassEvent<'r> {
+    /// A step of pass `pass` (from 1) ended.
+    Step {
+        /// The pass, from 1.
+        pass: u8,
+        /// The step.
+        step: PassStep,
+    },
+    /// A pass ended: its own counts.
+    Done(&'r PassReport),
+}
+
+/// One pass's counts (for profiling and measurement; the output's report
+/// is [`Decoder::decode_passes`]'s return value).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct PassReport {
+    /// The pass, from 1.
+    pub pass: u8,
+    /// The list index of the pass's first new entry (the list's length
+    /// when it began).
+    pub first: usize,
+    /// Decodes subtracted before the pass (0 in pass 1).
+    pub subtracted: usize,
+    /// Of [`PassReport::report`]'s duplicates, those of a payload listed
+    /// by an earlier pass: a subtraction that left a decodable signal.
+    pub earlier_duplicates: usize,
+    /// Belief-propagation rounds run in the pass, over every candidate.
+    pub bp_rounds: usize,
+    /// The pass's search and input counters, and the list's counts during
+    /// the pass ([`DecodeReport::decoded`]: new entries plus truncated).
+    pub report: DecodeReport,
+}
+
 /// The decodes of a slot, in candidate-index order, over the caller's
 /// storage (its length is the capacity).
 pub struct DecodeList<'a> {
@@ -630,6 +883,22 @@ pub struct DecodeList<'a> {
     all_zero: usize,
     crc_failed: usize,
     not_converged: usize,
+    /// The list's length when the current pass began, and duplicates of
+    /// entries before it.
+    pass_start: usize,
+    earlier: usize,
+}
+
+/// A [`DecodeList`]'s counts at one moment.
+#[derive(Clone, Copy)]
+struct Tally {
+    len: usize,
+    truncated: usize,
+    duplicates: usize,
+    all_zero: usize,
+    crc_failed: usize,
+    not_converged: usize,
+    earlier: usize,
 }
 
 impl<'a> DecodeList<'a> {
@@ -644,7 +913,39 @@ impl<'a> DecodeList<'a> {
             all_zero: 0,
             crc_failed: 0,
             not_converged: 0,
+            pass_start: 0,
+            earlier: 0,
         }
+    }
+
+    fn tally(&self) -> Tally {
+        Tally {
+            len: self.len,
+            truncated: self.truncated,
+            duplicates: self.duplicates,
+            all_zero: self.all_zero,
+            crc_failed: self.crc_failed,
+            not_converged: self.not_converged,
+            earlier: self.earlier,
+        }
+    }
+
+    /// Starts another pass over the same slot: the next result pushed is
+    /// candidate 0 again. Nothing else changes: the entries and counts
+    /// stay, and a payload already listed (by any pass) is a duplicate.
+    pub fn next_pass(&mut self) {
+        self.next = 0;
+        self.pass_start = self.len;
+    }
+
+    /// Decodes in the list.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the list holds no decode.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 
     /// Empties the list and its counts.
@@ -672,11 +973,14 @@ impl<'a> DecodeList<'a> {
             Ok(d) => {
                 // Truncated payloads are not kept: a repeat of one counts
                 // as another truncated decode.
-                if self.entries[..self.len]
+                if let Some(j) = self.entries[..self.len]
                     .iter()
-                    .any(|e| e.payload == d.payload)
+                    .position(|e| e.payload == d.payload)
                 {
                     self.duplicates += 1;
+                    if j < self.pass_start {
+                        self.earlier += 1;
+                    }
                 } else if self.len < self.entries.len() {
                     self.entries[self.len] = *d;
                     self.len += 1;

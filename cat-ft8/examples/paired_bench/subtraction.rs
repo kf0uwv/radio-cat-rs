@@ -31,7 +31,11 @@ use crate::{parse_config, provenance, Setup};
 
 /// Parses `seg=N,drift=0|1` (either part optional; empty for the default).
 pub fn parse_subtract(spec: &str) -> Result<SubtractConfig, String> {
-    let mut c = SubtractConfig::DEFAULT;
+    merge_subtract(SubtractConfig::DEFAULT, spec)
+}
+
+/// `c` with the settings of `spec` (as [`parse_subtract`]) applied.
+pub fn merge_subtract(mut c: SubtractConfig, spec: &str) -> Result<SubtractConfig, String> {
     for kv in spec.split(',').filter(|s| !s.is_empty()) {
         let (k, v) = kv
             .split_once('=')
@@ -541,200 +545,268 @@ pub fn suppression(spec: &str, grid: &str, trials: usize) -> Result<(), String> 
 
 // --------------------------------------------------------------- passes
 
-/// Further passes after the single pass (passes 2 and 3).
+/// Further passes measured after the single pass (passes 2 and 3).
 const PASSES: usize = 2;
+
+/// One setting of the `passes` grid: the decoder setup with three passes.
+struct Variant {
+    label: String,
+    setup: Setup,
+}
+
+/// The settings of GRID (keys `seg`, `drift`, `later`) on top of `setup`,
+/// each with three passes.
+fn variants(setup: &Setup, grid: &str) -> Result<Vec<Variant>, String> {
+    expand_grid(grid, "")
+        .iter()
+        .map(|combo| {
+            let mut c = setup.config.with_passes(PASSES as u8 + 1);
+            let mut sub = String::new();
+            for kv in combo.split(',').filter(|s| !s.is_empty()) {
+                match kv.split_once('=') {
+                    Some(("later", v)) => {
+                        c = c.with_later_candidates(v.parse().map_err(|e| format!("later: {e}"))?)
+                    }
+                    _ => {
+                        sub.push_str(kv);
+                        sub.push(',');
+                    }
+                }
+            }
+            c = c.with_subtract(merge_subtract(c.subtract, &sub)?);
+            Ok(Variant {
+                label: format!("{},later={}", label(&c.subtract), c.later_candidates),
+                setup: Setup {
+                    config: c,
+                    ..*setup
+                },
+            })
+        })
+        .collect()
+}
 
 /// One setting's further passes on one slot.
 #[derive(Default, Clone)]
 struct Real {
-    /// Decoded by pass 2 or 3 at the latest, of the sent messages.
+    /// Decoded by the end of pass 2 or 3, of the sent messages.
     real: [usize; PASSES],
-    /// Decoded by a real pass and not by the oracle pass, by pass.
+    /// Decoded by then and not by the oracle passes.
     real_not_oracle: [usize; PASSES],
-    /// Per pass: payloads of earlier passes decoded again (duplicates), not
-    /// transmitted (false decodes), decodes subtracted before the pass.
+    /// Per further pass: payloads of earlier passes decoded again
+    /// (duplicates), decodes not transmitted, decodes subtracted before the
+    /// pass, decodes the full list dropped.
     duplicates: [usize; PASSES],
     false_decodes: [usize; PASSES],
     subtracted: [usize; PASSES],
-    /// SNRs of the duplicated messages.
-    duplicate_snrs: Vec<f64>,
-    /// Seconds per subtraction (all threads busy), and the further passes'
-    /// decode seconds.
-    subtract_seconds: Vec<f64>,
+    truncated: [usize; PASSES],
+    /// Whether pass 3 ran (pass 2 added something).
+    ran3: bool,
+    /// Seconds (all threads busy): subtraction in the slot, and each
+    /// further pass's decode (feed, search, candidates).
+    subtract_seconds: f64,
     decode_seconds: [f64; PASSES],
 }
 
-/// One slot of the `passes` mode: the single pass, the oracle passes and
-/// each setting's real passes.
+/// One slot of the `passes` mode: the single pass, the oracle passes (per
+/// later-pass candidate count) and each setting's real passes.
 #[derive(Default)]
 struct PassSlot {
     size: usize,
     sent: usize,
-    /// Decoded by pass 1, and by oracle pass 2 or 3 at the latest.
     single: usize,
-    oracle: [usize; PASSES],
+    /// Per distinct later-pass count: decoded by oracle pass 2 or 3 at the
+    /// latest.
+    oracle: Vec<[usize; PASSES]>,
     real: Vec<Real>,
-}
-
-/// The real passes of one setting with the bench's own loop.
-fn real_passes(
-    slot: &crate::sets::Slot,
-    p1: &crate::record::Decoded,
-    setup: &Setup,
-    cfg: &SubtractConfig,
-) -> (Real, Vec<Vec<bool>>) {
-    let sent = &slot.sent;
-    let skip = slot.skip;
-    let mut out = Real::default();
-    let mut residual = vec![0.0f32; skip];
-    residual.extend_from_slice(&slot.samples);
-    let mut known: Vec<u128> = p1.decodes.iter().map(|d| d.payload).collect();
-    let mut found: Vec<bool> = p1.outcomes.iter().map(|&o| o == Outcome::Decoded).collect();
-    let mut new: Vec<DecodeRecord> = p1.decodes.clone();
-    let mut found_by_pass = Vec::new();
-    for pass in 0..PASSES {
-        for d in &new {
-            let t = Instant::now();
-            subtract(&mut residual, &to_decode(d), skip, cfg).unwrap();
-            out.subtract_seconds.push(t.elapsed().as_secs_f64());
-        }
-        out.subtracted[pass] = new.len();
-        let t = Instant::now();
-        let d = decode_input(&residual[skip..], skip, sent, setup);
-        out.decode_seconds[pass] = t.elapsed().as_secs_f64();
-        new.clear();
-        for x in &d.decodes {
-            if known.contains(&x.payload) {
-                out.duplicates[pass] += 1;
-                if let Some(s) = sent.iter().find(|s| s.payload == x.payload) {
-                    out.duplicate_snrs.push(s.snr);
-                }
-                continue;
-            }
-            match sent.iter().position(|s| s.payload == x.payload) {
-                Some(k) => found[k] = true,
-                None => out.false_decodes[pass] += 1,
-            }
-            known.push(x.payload);
-            new.push(x.clone());
-        }
-        out.real[pass] = found.iter().filter(|&&f| f).count();
-        found_by_pass.push(found.clone());
-    }
-    (out, found_by_pass)
 }
 
 fn pass_slot(
     set: &str,
     block: &str,
     index: usize,
-    setup: &Setup,
-    grid: &[SubtractConfig],
+    variants: &[Variant],
+    laters: &[usize],
 ) -> PassSlot {
     let slot = build(set, block, index);
     let sent = &slot.sent;
     let skip = slot.skip;
+    let base = variants[0].setup;
+    let p1 = decode_input(&slot.samples, skip, sent, &base.single());
+    let first: Vec<bool> = p1.outcomes.iter().map(|&o| o == Outcome::Decoded).collect();
     let mut out = PassSlot {
         size: sent.len(),
         sent: sent.len(),
+        single: first.iter().filter(|&&f| f).count(),
         ..PassSlot::default()
     };
-    let p1 = decode_input(&slot.samples, skip, sent, setup);
-    out.single = p1
-        .outcomes
-        .iter()
-        .filter(|&&o| o == Outcome::Decoded)
-        .count();
     // Oracle passes: the slot rebuilt without every message decoded so far
-    // (true waveforms, same noise).
+    // (true waveforms, same noise), decoded with the later passes' count.
     let ns = noise_seed(slot_seed(set, block, index));
-    let mut found_o: Vec<bool> = p1.outcomes.iter().map(|&o| o == Outcome::Decoded).collect();
-    let mut oracle_by_pass = Vec::new();
-    for pass in 0..PASSES {
-        let left: Vec<Sent> = sent
-            .iter()
-            .zip(&found_o)
-            .filter(|(_, f)| !**f)
-            .map(|(s, _)| s.clone())
-            .collect();
-        let d = decode_input(&render(&left, ns)[skip..], skip, &left, setup);
-        for x in &d.decodes {
-            if let Some(k) = sent.iter().position(|s| s.payload == x.payload) {
-                found_o[k] = true;
-            }
+    let mut oracle_found: Vec<Vec<Vec<bool>>> = Vec::new();
+    for &later in laters {
+        let setup = Setup {
+            config: base.config.with_later_candidates(later),
+            ..base
         }
-        out.oracle[pass] = found_o.iter().filter(|&&f| f).count();
-        oracle_by_pass.push(found_o.clone());
-    }
-    for cfg in grid {
-        let (mut real, found_by_pass) = real_passes(&slot, &p1, setup, cfg);
-        for pass in 0..PASSES {
-            real.real_not_oracle[pass] = found_by_pass[pass]
+        .later();
+        let mut found = first.clone();
+        let mut by_pass = Vec::new();
+        let mut counts = [0; PASSES];
+        for c in counts.iter_mut() {
+            let left: Vec<Sent> = sent
                 .iter()
-                .zip(&oracle_by_pass[pass])
-                .filter(|(r, o)| **r && !**o)
-                .count();
+                .zip(&found)
+                .filter(|(_, f)| !**f)
+                .map(|(s, _)| s.clone())
+                .collect();
+            let d = decode_input(&render(&left, ns)[skip..], skip, &left, &setup);
+            for x in &d.decodes {
+                if let Some(k) = sent.iter().position(|s| s.payload == x.payload) {
+                    found[k] = true;
+                }
+            }
+            *c = found.iter().filter(|&&f| f).count();
+            by_pass.push(found.clone());
         }
-        out.real.push(real);
+        out.oracle.push(counts);
+        oracle_found.push(by_pass);
+    }
+    for v in variants {
+        let o = laters
+            .iter()
+            .position(|&l| l == v.setup.config.later_candidates)
+            .unwrap_or(0);
+        let d = decode_input(&slot.samples, skip, sent, &v.setup);
+        let passes = d.passes.clone().unwrap_or_default();
+        let mut r = Real {
+            ran3: passes.len() > 2,
+            subtract_seconds: d
+                .seconds
+                .iter()
+                .filter(|(k, _)| k == "subtract")
+                .map(|(_, t)| t)
+                .sum(),
+            ..Real::default()
+        };
+        for (k, oracle) in oracle_found[o].iter().enumerate() {
+            // Entries listed by the end of pass k + 2.
+            let end = passes
+                .get(k + 2)
+                .map_or(d.decodes.len(), |p| p.first as usize);
+            let found: Vec<bool> = sent
+                .iter()
+                .map(|s| d.decodes[..end].iter().any(|x| x.payload == s.payload))
+                .collect();
+            r.real[k] = found.iter().filter(|&&f| f).count();
+            r.real_not_oracle[k] = found
+                .iter()
+                .zip(oracle)
+                .filter(|(a, b)| **a && !**b)
+                .count();
+            let Some(p) = passes.get(k + 1) else { continue };
+            r.duplicates[k] = p.earlier as usize;
+            r.subtracted[k] = p.subtracted as usize;
+            r.truncated[k] = p.truncated as usize;
+            r.false_decodes[k] = d.decodes[(p.first as usize).min(end)..end]
+                .iter()
+                .filter(|x| !sent.iter().any(|s| s.payload == x.payload))
+                .count();
+            let prefix = format!("pass{}_", k + 2);
+            r.decode_seconds[k] = d
+                .seconds
+                .iter()
+                .filter(|(n, _)| n.starts_with(&prefix) && !n.ends_with("subtract"))
+                .map(|(_, t)| t)
+                .sum();
+        }
+        out.real.push(r);
     }
     out
 }
 
-/// Further passes on a crowded set with the bench's own loop, for every
-/// setting of GRID: subtraction of each pass's new decodes in list order,
-/// then the residual decoded again with the same configuration; beside the
-/// oracle passes (computed once).
+/// Further passes with `Decoder::decode_passes` on a crowded set (SET
+/// `crowded`, `wide` or `fading`) for every setting of GRID (keys `seg`,
+/// `drift`, `later`; default: CONFIG's own): the single pass, the oracle
+/// passes at each later-pass count, and three passes per setting.
 pub fn passes(spec: &str, block: &str, set: &str, grid: &str) -> Result<(), String> {
     if !["crowded", "wide", "fading"].contains(&set) {
         return Err(format!("passes takes crowded, wide or fading, not {set}"));
     }
     let setup = parse_config(spec)?;
-    let grid = parse_grid(grid, "")?;
+    let variants = variants(&setup, grid)?;
+    let mut laters: Vec<usize> = variants
+        .iter()
+        .map(|v| v.setup.config.later_candidates)
+        .collect();
+    laters.sort_unstable();
+    laters.dedup();
     println!(
-        "config {spec}: {:?}\nsubtraction {}\n{}",
+        "config {spec}: {:?}\nsettings: {}\n{}",
         setup.config,
-        grid.iter().map(label).collect::<Vec<_>>().join("; "),
+        variants
+            .iter()
+            .map(|v| v.label.as_str())
+            .collect::<Vec<_>>()
+            .join("; "),
         provenance()
     );
     let t = Instant::now();
     let per = par_map(set_size(set).unwrap_or(0), |i| {
-        pass_slot(set, block, i, &setup, &grid)
+        pass_slot(set, block, i, &variants, &laters)
     });
     eprintln!("passes {set}-{block}: {:.0} s", t.elapsed().as_secs_f64());
-    for (g, cfg) in grid.iter().enumerate() {
-        println!("\n######## subtraction {}", label(cfg));
-        report_passes(set, block, &per, g);
+    for (g, v) in variants.iter().enumerate() {
+        let o = laters
+            .iter()
+            .position(|&l| l == v.setup.config.later_candidates)
+            .unwrap_or(0);
+        println!("\n######## {}", v.label);
+        report_passes(set, block, &per, g, o);
     }
-    if grid.len() > 1 {
-        println!("\n== summary ({set}, {block}): share of the oracle's gain +1 / +2, duplicates p2 / p3, false p2 / p3");
-        let all: Vec<&PassSlot> = per.iter().collect();
-        let single: usize = all.iter().map(|p| p.single).sum();
-        let oracle: Vec<usize> = (0..PASSES)
-            .map(|k| all.iter().map(|p| p.oracle[k]).sum())
-            .collect();
-        for (g, cfg) in grid.iter().enumerate() {
-            let sum = |f: &dyn Fn(&Real) -> usize| all.iter().map(|p| f(&p.real[g])).sum::<usize>();
-            let share = |k: usize| {
-                let real = sum(&|r| r.real[k]);
-                100.0 * (real as f64 - single as f64) / (oracle[k] as f64 - single as f64).max(1.0)
-            };
-            println!(
-                "  {:<22} {:>6.1}% / {:>6.1}%   {:>4} / {:>4}   {} / {}",
-                label(cfg),
-                share(0),
-                share(1),
-                sum(&|r| r.duplicates[0]),
-                sum(&|r| r.duplicates[1]),
-                sum(&|r| r.false_decodes[0]),
-                sum(&|r| r.false_decodes[1]),
-            );
-        }
+    println!("\n== summary ({set}, {block}): decoded % +1 / +2 (single {:.1}%), oracle +1 / +2, share of the oracle's gain +1 / +2, duplicates p2 / p3, false p2 / p3, truncated p2 / p3, subtraction and pass 2 / 3 decode ms per slot (all threads busy)",
+        100.0 * per.iter().map(|p| p.single).sum::<usize>() as f64 / per.iter().map(|p| p.sent).sum::<usize>().max(1) as f64);
+    let sent: usize = per.iter().map(|p| p.sent).sum();
+    let single: usize = per.iter().map(|p| p.single).sum();
+    let pct = |a: usize| 100.0 * a as f64 / sent.max(1) as f64;
+    for (g, v) in variants.iter().enumerate() {
+        let o = laters
+            .iter()
+            .position(|&l| l == v.setup.config.later_candidates)
+            .unwrap_or(0);
+        let sum = |f: &dyn Fn(&Real) -> usize| per.iter().map(|p| f(&p.real[g])).sum::<usize>();
+        let oracle = |k: usize| per.iter().map(|p| p.oracle[o][k]).sum::<usize>();
+        let share = |k: usize| {
+            100.0 * (sum(&|r| r.real[k]) as f64 - single as f64)
+                / (oracle(k) as f64 - single as f64).max(1.0)
+        };
+        let ms = |f: &dyn Fn(&Real) -> f64| {
+            1e3 * per.iter().map(|p| f(&p.real[g])).sum::<f64>() / per.len().max(1) as f64
+        };
+        println!(
+            "  {:<28} {:>5.1} / {:>5.1}  {:>5.1} / {:>5.1}  {:>6.1}% / {:>6.1}%  {:>3} / {:>3}  {} / {}  {} / {}  {:>5.1}, {:>5.1} / {:>5.1}",
+            v.label,
+            pct(sum(&|r| r.real[0])),
+            pct(sum(&|r| r.real[1])),
+            pct(oracle(0)),
+            pct(oracle(1)),
+            share(0),
+            share(1),
+            sum(&|r| r.duplicates[0]),
+            sum(&|r| r.duplicates[1]),
+            sum(&|r| r.false_decodes[0]),
+            sum(&|r| r.false_decodes[1]),
+            sum(&|r| r.truncated[0]),
+            sum(&|r| r.truncated[1]),
+            ms(&|r| r.subtract_seconds),
+            ms(&|r| r.decode_seconds[0]),
+            ms(&|r| r.decode_seconds[1]),
+        );
     }
     Ok(())
 }
 
-/// The `passes` tables of setting `g`.
-fn report_passes(set: &str, block: &str, per: &[PassSlot], g: usize) {
+/// The `passes` tables of setting `g`, against oracle `o`.
+fn report_passes(set: &str, block: &str, per: &[PassSlot], g: usize, o: usize) {
     let mut sizes: BTreeMap<usize, Vec<&PassSlot>> = BTreeMap::new();
     for p in per {
         sizes.entry(p.size).or_default().push(p);
@@ -748,7 +820,9 @@ fn report_passes(set: &str, block: &str, per: &[PassSlot], g: usize) {
     let sum =
         |v: &[&PassSlot], f: &dyn Fn(&PassSlot) -> usize| v.iter().map(|p| f(p)).sum::<usize>();
     let pct = |a: usize, b: usize| 100.0 * a as f64 / b.max(1) as f64;
-    println!("\n== {set} ({block}): messages decoded, % of transmitted (real pass / oracle pass)");
+    println!(
+        "\n== {set} ({block}): messages decoded, % of transmitted (real passes / oracle passes)"
+    );
     println!(
         "  {:>5} {:>6} {:>8} {:>16} {:>16} {:>10} {:>10}",
         "size", "sent", "single", "+1 real/oracle", "+2 real/oracle", "share +1", "share +2"
@@ -759,7 +833,7 @@ fn report_passes(set: &str, block: &str, per: &[PassSlot], g: usize) {
         let real: Vec<usize> = (0..PASSES)
             .map(|k| sum(v, &|p| p.real[g].real[k]))
             .collect();
-        let oracle: Vec<usize> = (0..PASSES).map(|k| sum(v, &|p| p.oracle[k])).collect();
+        let oracle: Vec<usize> = (0..PASSES).map(|k| sum(v, &|p| p.oracle[o][k])).collect();
         let share = |k: usize| {
             100.0 * (real[k] as f64 - single as f64) / (oracle[k] as f64 - single as f64).max(1.0)
         };
@@ -775,22 +849,31 @@ fn report_passes(set: &str, block: &str, per: &[PassSlot], g: usize) {
         );
     }
     let last = &groups.last().unwrap().1;
-    println!("  counts (all): single {}, real +1 {}, +2 {}; oracle +1 {}, +2 {}; decoded by a real pass but not the oracle: +1 {}, +2 {}",
+    println!("  counts (all): single {}, real +1 {}, +2 {}; oracle +1 {}, +2 {}; decoded by the real passes but not the oracle: +1 {}, +2 {}; slots with a pass 3: {}",
         sum(last, &|p| p.single),
         sum(last, &|p| p.real[g].real[0]),
         sum(last, &|p| p.real[g].real[1]),
-        sum(last, &|p| p.oracle[0]),
-        sum(last, &|p| p.oracle[1]),
+        sum(last, &|p| p.oracle[o][0]),
+        sum(last, &|p| p.oracle[o][1]),
         sum(last, &|p| p.real[g].real_not_oracle[0]),
         sum(last, &|p| p.real[g].real_not_oracle[1]),
+        sum(last, &|p| usize::from(p.real[g].ran3)),
     );
     println!("  (share +k: real gain over the single pass / oracle gain, same configuration; may exceed 100%)");
     println!(
-        "\n== duplicates (earlier payloads decoded again) and false decodes, per further pass"
+        "\n== duplicates (earlier payloads decoded again), false decodes and truncation, per further pass"
     );
     println!(
-        "  {:>5} {:>12} {:>12} {:>12} {:>12} {:>8} {:>8}",
-        "size", "subtr. p2", "dup p2", "subtr. p3", "dup p3", "false p2", "false p3"
+        "  {:>5} {:>10} {:>12} {:>10} {:>12} {:>8} {:>8} {:>8} {:>8}",
+        "size",
+        "subtr. p2",
+        "dup p2",
+        "subtr. p3",
+        "dup p3",
+        "false p2",
+        "false p3",
+        "trunc p2",
+        "trunc p3"
     );
     for (name, v) in &groups {
         let s2 = sum(v, &|p| p.real[g].subtracted[0]);
@@ -798,7 +881,7 @@ fn report_passes(set: &str, block: &str, per: &[PassSlot], g: usize) {
         let s3 = sum(v, &|p| p.real[g].subtracted[1]);
         let d3 = sum(v, &|p| p.real[g].duplicates[1]);
         println!(
-            "  {:>5} {:>12} {:>12} {:>12} {:>12} {:>8} {:>8}",
+            "  {:>5} {:>10} {:>12} {:>10} {:>12} {:>8} {:>8} {:>8} {:>8}",
             name,
             s2,
             format!("{d2} ({:.2}%)", pct(d2, s2)),
@@ -806,30 +889,18 @@ fn report_passes(set: &str, block: &str, per: &[PassSlot], g: usize) {
             format!("{d3} ({:.2}%)", pct(d3, s3)),
             sum(v, &|p| p.real[g].false_decodes[0]),
             sum(v, &|p| p.real[g].false_decodes[1]),
+            sum(v, &|p| p.real[g].truncated[0]),
+            sum(v, &|p| p.real[g].truncated[1]),
         );
     }
-    let mut snrs: Vec<f64> = per
-        .iter()
-        .flat_map(|p| p.real[g].duplicate_snrs.iter().copied())
-        .collect();
-    snrs.sort_by(f64::total_cmp);
-    let mut hist: BTreeMap<i64, usize> = BTreeMap::new();
-    for s in &snrs {
-        *hist.entry((s / 5.0).floor() as i64 * 5).or_default() += 1;
-    }
-    println!("  duplicates by the message's SNR (5 dB bins, lower edge): {hist:?}");
-    let mut sub: Vec<f64> = per
-        .iter()
-        .flat_map(|p| p.real[g].subtract_seconds.iter().copied())
-        .collect();
-    let total: f64 = sub.iter().sum();
     let slots = per.len().max(1) as f64;
-    let mut dec2: Vec<f64> = per.iter().map(|p| p.real[g].decode_seconds[0]).collect();
+    let mean =
+        |f: &dyn Fn(&Real) -> f64| 1e3 * per.iter().map(|p| f(&p.real[g])).sum::<f64>() / slots;
     println!(
-        "\ncost (all threads busy): subtraction median {:.2} ms per call, {:.1} ms per slot on average; pass-2 decode median {:.1} ms",
-        1e3 * median(&mut sub),
-        1e3 * total / slots,
-        1e3 * median(&mut dec2)
+        "\ncost (all threads busy, mean per slot): subtraction {:.1} ms; pass 2 decode {:.1} ms, pass 3 {:.1} ms",
+        mean(&|r| r.subtract_seconds),
+        mean(&|r| r.decode_seconds[0]),
+        mean(&|r| r.decode_seconds[1]),
     );
 }
 

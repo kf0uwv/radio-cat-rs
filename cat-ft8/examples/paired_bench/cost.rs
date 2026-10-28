@@ -69,3 +69,113 @@ pub fn cost(spec_a: &str, spec_b: &str, slots: usize, runs: usize) -> Result<(),
     }
     Ok(())
 }
+
+/// The multi-pass cost statistic: every 40-message slot of the crowded
+/// set's main block (all 200, or the first SLOTS), decoded with A and B
+/// interleaved (the order alternating by run), one thread, RUNS times (at
+/// least 5). Per slot the median of its runs' total decode time; reported:
+/// the largest and the mean of those medians, the slot that is largest,
+/// and per step (summed over passes, and per pass) the mean of the
+/// per-slot medians. The deterministic work per pass is printed beside it:
+/// candidates through belief propagation, rounds and subtractions.
+pub fn slot_cost(spec_a: &str, spec_b: &str, slots: usize, runs: usize) -> Result<(), String> {
+    use crate::record::decode_input;
+    let setups = [parse_config(spec_a)?, parse_config(spec_b)?];
+    let slots = slots.clamp(1, 200);
+    let input: Vec<Slot> = (0..slots)
+        .map(|k| build("crowded", "main", 400 + k))
+        .collect();
+    let runs = runs.max(5);
+    // [config][slot][run] -> step seconds.
+    let mut times: Vec<Vec<Vec<BTreeMap<String, f64>>>> = vec![vec![Vec::new(); slots]; 2];
+    let mut work: [BTreeMap<String, u64>; 2] = Default::default();
+    for r in 0..runs {
+        let order = if r % 2 == 0 { [0, 1] } else { [1, 0] };
+        for which in order {
+            for (k, s) in input.iter().enumerate() {
+                let d = decode_input(&s.samples, s.skip, &s.sent, &setups[which]);
+                let mut m: BTreeMap<String, f64> = d.seconds.into_iter().collect();
+                let total: f64 = m
+                    .iter()
+                    .filter(|(k, _)| !k.starts_with("pass"))
+                    .map(|(_, v)| v)
+                    .sum();
+                m.insert("total".into(), total);
+                times[which][k].push(m);
+                if r == 0 {
+                    let w = &mut work[which];
+                    match &d.passes {
+                        Some(ps) => {
+                            for p in ps {
+                                *w.entry(format!("pass{} candidates", p.pass)).or_default() +=
+                                    p.kept;
+                                *w.entry(format!("pass{} BP rounds", p.pass)).or_default() +=
+                                    p.bp_rounds;
+                                *w.entry(format!("pass{} subtractions", p.pass)).or_default() +=
+                                    p.subtracted;
+                                *w.entry(format!("pass{} slots", p.pass)).or_default() += 1;
+                            }
+                        }
+                        None => {
+                            *w.entry("pass1 candidates".into()).or_default() += d.counts.kept;
+                            *w.entry("pass1 BP rounds".into()).or_default() += d.bp_rounds;
+                            *w.entry("pass1 slots".into()).or_default() += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        quantile(&v, 0.5).unwrap_or(f64::NAN)
+    };
+    println!(
+        "{slots} crowded 40-message slots (main), {runs} interleaved runs, one thread; per slot the median of its runs (ms):"
+    );
+    for (which, spec) in [spec_a, spec_b].iter().enumerate() {
+        let per: Vec<f64> = (0..slots)
+            .map(|k| median(times[which][k].iter().map(|m| m["total"]).collect()))
+            .collect();
+        let (worst_k, worst) = per
+            .iter()
+            .copied()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap_or((0, f64::NAN));
+        let mean = per.iter().sum::<f64>() / slots as f64;
+        println!(
+            "  {} {spec}: worst {:.1} ms (slot {}), mean {:.1} ms",
+            if which == 0 { "A" } else { "B" },
+            worst * 1e3,
+            400 + worst_k,
+            mean * 1e3
+        );
+        let keys: std::collections::BTreeSet<String> = times[which]
+            .iter()
+            .flat_map(|runs| runs.iter().flat_map(|m| m.keys().cloned()))
+            .collect();
+        let mut line = String::from("    mean of per-slot medians:");
+        for key in keys.iter().filter(|k| *k != "total") {
+            let m: f64 = (0..slots)
+                .map(|k| {
+                    median(
+                        times[which][k]
+                            .iter()
+                            .map(|m| m.get(key).copied().unwrap_or(0.0))
+                            .collect(),
+                    )
+                })
+                .sum::<f64>()
+                / slots as f64;
+            line.push_str(&format!(" {key} {:.2};", m * 1e3));
+        }
+        println!("{line}");
+        let mut line = String::from("    work per slot (mean):");
+        for (k, v) in &work[which] {
+            line.push_str(&format!(" {k} {:.1};", *v as f64 / slots as f64));
+        }
+        println!("{line}");
+    }
+    Ok(())
+}

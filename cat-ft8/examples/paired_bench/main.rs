@@ -18,6 +18,7 @@
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- run CONFIG OUTDIR [SETS] [BLOCK]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- compare OLDDIR NEWDIR [--partial]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- cost CONFIG_A CONFIG_B [SLOTS] [RUNS]
+//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- slotcost CONFIG_A CONFIG_B [SLOTS] [RUNS]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- ceiling CONFIG [BLOCK] [SET]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- suppression CONFIG [GRID] [TRIALS]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- passes CONFIG [BLOCK] [SET] [GRID]
@@ -59,8 +60,12 @@
 //!
 //! **CONFIG** is `host` or `small` (the small setup: 200–2900 Hz, min-sum,
 //! 64 decodes) followed by optional `,key=value` changes: `rule=sp|ms`,
-//! `rounds=N`, `scale=X`, `candidates=N`, `min_score=N`. Example:
-//! `host,candidates=100`.
+//! `rounds=N`, `scale=X`, `candidates=N`, `min_score=N`, and for further
+//! passes `passes=N` (1–3), `later=N` (candidates in every pass after the
+//! first), `seg=N` and `drift=0|1` (the subtraction). Examples:
+//! `host,candidates=100`, `host,passes=3,later=150,seg=2880`. With more
+//! than one pass, `run` decodes with `decode_passes` and saves each pass's
+//! counts (single-pass records are unchanged).
 //!
 //! **run** decodes every slot (all threads; results do not depend on the
 //! thread count) and writes `OUTDIR/<set>-<block>.jsonl`: one JSON object
@@ -96,6 +101,13 @@
 //! sizes, for RUNS rounds (default and minimum 5), and prints each stage's
 //! median.
 //!
+//! **slotcost** is the multi-pass cost statistic: every 40-message slot of
+//! the crowded set's main block (SLOTS, default and at most 200), each
+//! decoded by A and B interleaved, one thread, RUNS times (at least 5);
+//! per slot the median of its runs' total; it prints the largest and the
+//! mean of those medians, each step's mean (summed over passes and per
+//! pass), and the work per pass (candidates, rounds, subtractions).
+//!
 //! **Misses by cause.** `run` also saves, per transmitted message, its
 //! outcome: decoded (its payload is in the output) or, judged by position,
 //! why not. A candidate is on a message when its refined tone 0 is within
@@ -117,7 +129,8 @@
 //! decoder. Each transmitted message is also decoded alone, in a slot with
 //! the same noise and the other signals left out. The oracle passes then
 //! decode the slot rebuilt without every message decoded so far (true
-//! waveforms, same noise), twice: a same-configuration reference for what
+//! waveforms, same noise), twice, with the later passes' candidate count
+//! (CONFIG's `later`): a same-configuration reference for what
 //! further passes could gain with perfect reference waveforms (not a
 //! bound: a real pass decodes different input). The "ceiling" column
 //! counts a message decoded by the single pass, alone or by an oracle
@@ -150,15 +163,15 @@
 //! Input cut at 13.5 s and starting 1 s late are conditions too. It fails
 //! if the bench's generator differs from `Synth` by more than 10⁻³.
 //!
-//! **passes** runs further passes with the bench's own loop on a crowded
+//! **passes** runs `Decoder::decode_passes` with three passes on a crowded
 //! set (SET `crowded`, `wide` or `fading`; BLOCK as above) for every
-//! setting of GRID (default: the default setting): each pass's new
-//! decodes are subtracted in list order and the residual is decoded again
-//! with the same configuration, twice; the single pass and the oracle
-//! passes are run once for all settings. It reports the decodes gained beside
-//! the oracle passes (and the share of the oracle's gain recovered),
-//! earlier payloads decoded again (duplicates: the main sign of a poor
-//! subtraction), false decodes per pass, and the cost.
+//! setting of GRID (keys `seg`, `drift` and `later`, the later passes'
+//! candidate count; default: CONFIG's own); the single pass and the oracle
+//! passes (at each later count) are run once for all settings. It reports
+//! the decodes gained by passes 2 and 3 beside the oracle passes (and the
+//! share of the oracle's gain recovered), earlier payloads decoded again
+//! (duplicates: the main sign of a poor subtraction), false decodes and
+//! list truncation per pass, and the cost.
 //!
 //! **subcost** times `subtract` on one thread: the single-pass decodes of
 //! SLOTS (default 20) 40-message crowded slots subtracted in list order,
@@ -189,6 +202,28 @@ pub struct Setup {
     pub band: Band,
     pub config: DecodeConfig,
     pub decodes: usize,
+}
+
+impl Setup {
+    /// The same setup decoding one pass.
+    pub fn single(&self) -> Setup {
+        Setup {
+            config: self.config.with_passes(1),
+            ..*self
+        }
+    }
+
+    /// One pass with the later passes' candidate count: what an oracle
+    /// pass after the first decodes with.
+    pub fn later(&self) -> Setup {
+        Setup {
+            config: self
+                .config
+                .with_passes(1)
+                .with_candidates(self.config.later_candidates),
+            ..*self
+        }
+    }
 }
 
 pub fn parse_config(spec: &str) -> Result<Setup, String> {
@@ -225,6 +260,11 @@ pub fn parse_config(spec: &str) -> Result<Setup, String> {
             "scale" => s.config.with_llr_scale(num(v)? as f32),
             "candidates" => s.config.with_candidates(num(v)? as usize),
             "min_score" => s.config.with_min_score(num(v)? as i32),
+            "passes" => s.config.with_passes(num(v)? as u8),
+            "later" => s.config.with_later_candidates(num(v)? as usize),
+            "seg" | "drift" => s
+                .config
+                .with_subtract(subtraction::merge_subtract(s.config.subtract, kv)?),
             _ => return Err(format!("unknown setting {k}")),
         };
     }
@@ -270,7 +310,7 @@ pub fn provenance() -> String {
 
 // ----------------------------------------------------------------- main
 
-const USAGE: &str = "usage: paired_bench run CONFIG OUTDIR [SETS] [BLOCK] | compare OLDDIR NEWDIR [--partial] | cost A B [SLOTS] [RUNS] | ceiling CONFIG [BLOCK] [SET] | suppression CONFIG [GRID] [TRIALS] | passes CONFIG [BLOCK] [SET] [GRID] | subcost CONFIG [SUB] [SLOTS] [RUNS]";
+const USAGE: &str = "usage: paired_bench run CONFIG OUTDIR [SETS] [BLOCK] | compare OLDDIR NEWDIR [--partial] | cost A B [SLOTS] [RUNS] | slotcost A B [SLOTS] [RUNS] | ceiling CONFIG [BLOCK] [SET] | suppression CONFIG [GRID] [TRIALS] | passes CONFIG [BLOCK] [SET] [GRID] | subcost CONFIG [SUB] [SLOTS] [RUNS]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -306,6 +346,9 @@ fn main() -> ExitCode {
             .and_then(|s| {
                 num(4, 5).and_then(|r| subtraction::subtract_cost(c, arg(2).unwrap_or(""), s, r))
             })
+            .map(|()| true),
+        (Some("slotcost"), Some(x), Some(y)) => num(3, 200)
+            .and_then(|s| num(4, 5).and_then(|r| cost::slot_cost(x, y, s, r)))
             .map(|()| true),
         (Some("cost"), Some(x), Some(y)) => num(3, 42)
             .and_then(|s| num(4, 5).and_then(|r| cost::cost(x, y, s, r)))

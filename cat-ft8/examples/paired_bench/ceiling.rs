@@ -101,6 +101,9 @@ fn ceiling_slot(
             .filter(|x| !sent.iter().any(|s| s.payload == x.payload))
             .count() as u64
     };
+    // The single pass and the alone decodes with the first pass's
+    // settings, the oracle passes with the later passes' candidate count.
+    let (setup, later) = (&setup.single(), &setup.later());
     let single = decode_input(&slot.samples, 0, sent, setup);
     n.false_single = not_sent(&single);
     let alone: Vec<Outcome> = sent
@@ -126,7 +129,7 @@ fn ceiling_slot(
             .filter(|(_, f)| f.is_none())
             .map(|(s, _)| s.clone())
             .collect();
-        let d = decode_input(&render(&left, ns), 0, &left, setup);
+        let d = decode_input(&render(&left, ns), 0, &left, later);
         n.false_oracle[pass] += not_sent(&d);
         for x in &d.decodes {
             if let Some(k) = sent.iter().position(|s| s.payload == x.payload) {
@@ -193,7 +196,7 @@ pub fn ceiling(spec: &str, block: &str, set: &str) -> Result<(), String> {
     let setup = parse_config(spec)?;
     println!("config {spec}: {:?}\n{}", setup.config, provenance());
     let t = Instant::now();
-    let p50 = sweep_half_point(block, &setup).ok_or("the sweep has no 50% point")?;
+    let p50 = sweep_half_point(block, &setup.single()).ok_or("the sweep has no 50% point")?;
     println!(
         "single-pass 50% point (sweep, {block}): {p50:.3} dB ({:.0} s)",
         t.elapsed().as_secs_f64()
