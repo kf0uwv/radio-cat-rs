@@ -18,6 +18,7 @@ use cat_ft8::message::{pack, NoHashes, Payload};
 use cat_ft8::waveform::{synthesize, Placement};
 use cat_ft8::{encode_payload, SLOT_SAMPLES};
 
+use crate::channel::{self, Channel};
 use crate::common::{add_noise, amplitude, fnv1a, Rng, NOISE_RMS};
 
 // ---------------------------------------------------------------- seeds
@@ -73,7 +74,7 @@ fn grid(r: &mut Rng) -> String {
 }
 
 /// A random packable message whose payload is not in `avoid`.
-fn message(r: &mut Rng, avoid: &[Payload]) -> (String, Payload) {
+pub fn message(r: &mut Rng, avoid: &[Payload]) -> (String, Payload) {
     loop {
         let (a, b) = (callsign(r), callsign(r));
         let text = match below(r, 6) {
@@ -102,6 +103,11 @@ pub struct Sent {
     pub freq: f64,
     pub dt: f64,
     pub snr: f64,
+    /// A fade, drift and a start between samples (the `fading` set only):
+    /// the waveform starts at exactly (0.5 + dt)·12 000 samples and is made
+    /// by the bench's own generator. `None`: `Synth` at the nearest
+    /// sample, constant amplitude and frequency.
+    pub channel: Option<Channel>,
 }
 
 /// A slot: its point label, the samples to feed after `skip` missing ones,
@@ -125,10 +131,16 @@ impl Slot {
     }
 }
 
-fn add_signal(out: &mut [f32], s: &Sent) {
+pub fn add_signal(out: &mut [f32], s: &Sent) {
+    let payload = Payload::from_bits(s.payload).unwrap();
+    if let Some(ch) = &s.channel {
+        let start = (0.5 + s.dt) * 12_000.0;
+        let amp = f64::from(amplitude(s.snr, NOISE_RMS));
+        channel::render(out, &encode_payload(&payload), s.freq, start, amp, ch);
+        return;
+    }
     let mut p = Placement::slot(s.freq as f32, s.dt as f32).unwrap();
     p.amplitude = amplitude(s.snr, NOISE_RMS);
-    let payload = Payload::from_bits(s.payload).unwrap();
     synthesize(&encode_payload(&payload), &p, out).unwrap();
 }
 
@@ -150,6 +162,7 @@ pub fn set_size(set: &str) -> Option<usize> {
         "sweep" => Some(15 * 1_000),
         "crowded" => Some(3 * 200),
         "wide" => Some(4 * 200),
+        "fading" => Some(3 * 200),
         "edges" => Some(EDGE_CASES.len() * 100),
         "empty" => Some(2_300),
         _ => None,
@@ -203,6 +216,7 @@ fn crowd(r: &mut Rng, n: usize, lo_db: f64, span_db: f64) -> Vec<Sent> {
             freq: 200.0 + 2_600.0 * r.uniform(),
             dt: -0.3 + r.uniform(),
             snr: lo_db + span_db * r.uniform(),
+            channel: None,
         });
     }
     sent
@@ -273,6 +287,7 @@ pub fn build(set: &str, block: &str, index: usize) -> Slot {
             freq,
             dt,
             snr,
+            channel: None,
         }
     };
     let (point, sent, skip, cut) = match set {
@@ -293,6 +308,20 @@ pub fn build(set: &str, block: &str, index: usize) -> Slot {
         "wide" => {
             let n = [10, 20, 30, 40][index / 200];
             let sent = crowd(&mut r, n, -22.0, 27.0);
+            (format!("{n}"), sent, 0, SLOT_SAMPLES)
+        }
+        "fading" => {
+            let n = [10, 20, 40][index / 200];
+            let mut sent = crowd(&mut r, n, -16.0, 22.0);
+            for s in &mut sent {
+                // Field order is draw order.
+                s.channel = Some(Channel {
+                    fade_hz: 0.05 + 0.95 * r.uniform(),
+                    fade_depth: 0.9 * r.uniform(),
+                    fade_phase: r.uniform(),
+                    drift: -0.2 + 0.4 * r.uniform(),
+                });
+            }
             (format!("{n}"), sent, 0, SLOT_SAMPLES)
         }
         "edges" => {

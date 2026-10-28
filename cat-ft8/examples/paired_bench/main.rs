@@ -19,6 +19,9 @@
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- compare OLDDIR NEWDIR [--partial]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- cost CONFIG_A CONFIG_B [SLOTS] [RUNS]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- ceiling CONFIG [BLOCK] [SET]
+//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- suppression CONFIG [SUB] [TRIALS]
+//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- passes CONFIG [BLOCK] [SET] [SUB]
+//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- subcost CONFIG [SUB] [SLOTS] [RUNS]
 //! ```
 //!
 //! **Sets** (encoder-made; each slot's seed comes from its set, block and
@@ -34,6 +37,13 @@
 //!   20, 30 and 40 distinct messages per slot (same offsets, overlaps
 //!   allowed), 200 slots per size; its own seeds (not in the default
 //!   SETS);
+//! - `fading`: crowded slots (10, 20 and 40 messages, −16…+6 dB, the same
+//!   offsets) whose signals fade, drift and start between samples: each
+//!   has a sinusoidal amplitude fade at 0.05–1 Hz with a depth of 0–0.9
+//!   (the SNR is the unfaded peak's), a linear drift of −0.2…+0.2 Hz/s
+//!   (zero at the middle) and a start at exactly (0.5 + dt)·12 000
+//!   samples, made by the bench's own `f64` generator (`channel.rs`);
+//!   its own seeds (not in the default SETS);
 //! - `edges`: one signal at −18 dB (near the decode threshold, so a loss
 //!   shows), 100 slots per case: starts at ±1.6/±2.0/±2.4 s, tone 0 near
 //!   each end of both bands, input cut at 13.5 s, input starting 1 s late;
@@ -103,7 +113,7 @@
 //! probability 2⁻¹⁴, so the estimate is the CRC failures per slot × 2⁻¹⁴).
 //!
 //! **ceiling** measures what subtraction could gain on a crowded set (SET:
-//! `crowded`, the default, or `wide`) of BLOCK (default `main`), without changing the
+//! `crowded`, the default, `wide` or `fading`) of BLOCK (default `main`), without changing the
 //! decoder. Each transmitted message is also decoded alone, in a slot with
 //! the same noise and the other signals left out. The oracle passes then
 //! decode the slot rebuilt without every message decoded so far (true
@@ -115,15 +125,46 @@
 //! duplicates, the single-pass misses by cause and what recovers them,
 //! and the counts by SNR relative to the single-pass 50% point of the
 //! sweep set in the same block (computed first).
+//!
+//! **SUB** is a subtraction setting for `decode::subtract`: empty for the
+//! default, or `seg=N` (samples per amplitude segment) and/or `drift=0|1`,
+//! comma-separated.
+//!
+//! **suppression** measures how much of one decoded signal `subtract`
+//! removes, over TRIALS (default 100) seeded slots per condition: SNR
+//! (−20…+20 dB), start offset (−2…+2.5 s, and starts a quarter and half a
+//! sample off the grid), frequency (band edges, fractions of a bin), fade
+//! rate (depth 0.9) and drift. Each signal comes from the bench's own
+//! generator and is decoded by the single pass first; the decode is what
+//! is subtracted. It reports the signal left (residual less noise, over
+//! the signal's energy) with every estimate made, with the true start
+//! imposed, on the noiseless signal, and on the noiseless signal with the
+//! true start (rounded to a sample), frequency and drift imposed (the
+//! whole-sample start's share); the fine estimates' errors beside the
+//! decoder's; and a segment-length sweep.
+//!
+//! **passes** runs further passes with the bench's own loop on a crowded
+//! set (SET `crowded`, `wide` or `fading`; BLOCK as above): each pass's new
+//! decodes are subtracted in list order and the residual is decoded again
+//! with the same configuration, twice. It reports the decodes gained beside
+//! the oracle passes (and the share of the oracle's gain recovered),
+//! earlier payloads decoded again (duplicates: the main sign of a poor
+//! subtraction), false decodes per pass, and the cost.
+//!
+//! **subcost** times `subtract` on one thread: the single-pass decodes of
+//! SLOTS (default 20) 40-message crowded slots subtracted in list order,
+//! RUNS times (at least 5); the median per call.
 
 #[path = "../../tests/common/mod.rs"]
 mod common;
 
 mod ceiling;
+mod channel;
 mod compare;
 mod cost;
 mod record;
 mod sets;
+mod subtraction;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -220,7 +261,7 @@ pub fn provenance() -> String {
 
 // ----------------------------------------------------------------- main
 
-const USAGE: &str = "usage: paired_bench run CONFIG OUTDIR [SETS] [BLOCK] | compare OLDDIR NEWDIR [--partial] | cost A B [SLOTS] [RUNS] | ceiling CONFIG [BLOCK] [SET]";
+const USAGE: &str = "usage: paired_bench run CONFIG OUTDIR [SETS] [BLOCK] | compare OLDDIR NEWDIR [--partial] | cost A B [SLOTS] [RUNS] | ceiling CONFIG [BLOCK] [SET] | suppression CONFIG [SUB] [TRIALS] | passes CONFIG [BLOCK] [SET] [SUB] | subcost CONFIG [SUB] [SLOTS] [RUNS]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -242,6 +283,21 @@ fn main() -> ExitCode {
             ceiling::ceiling(c, arg(2).unwrap_or("main"), arg(3).unwrap_or("crowded"))
                 .map(|()| true)
         }
+        (Some("suppression"), Some(c), _) => num(3, 100)
+            .and_then(|n| subtraction::suppression(c, arg(2).unwrap_or(""), n))
+            .map(|()| true),
+        (Some("passes"), Some(c), _) => subtraction::passes(
+            c,
+            arg(2).unwrap_or("main"),
+            arg(3).unwrap_or("crowded"),
+            arg(4).unwrap_or(""),
+        )
+        .map(|()| true),
+        (Some("subcost"), Some(c), _) => num(3, 20)
+            .and_then(|s| {
+                num(4, 5).and_then(|r| subtraction::subtract_cost(c, arg(2).unwrap_or(""), s, r))
+            })
+            .map(|()| true),
         (Some("cost"), Some(x), Some(y)) => num(3, 42)
             .and_then(|s| num(4, 5).and_then(|r| cost::cost(x, y, s, r)))
             .map(|()| true),

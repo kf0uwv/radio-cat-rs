@@ -27,6 +27,7 @@ use cat_ft8::decode::{
 };
 use serde_json::Value;
 
+use crate::channel::Channel;
 use crate::common::par_map;
 use crate::sets::{build, set_size, slot_seed, Sent, Slot};
 use crate::{parse_config, provenance, Setup};
@@ -109,9 +110,19 @@ impl SlotResult {
             let _ =
                 write!(
                 o,
-                "{}{{\"payload\":\"{:020x}\",\"text\":{},\"freq\":{:?},\"dt\":{:?},\"snr\":{:?}}}",
+                "{}{{\"payload\":\"{:020x}\",\"text\":{},\"freq\":{:?},\"dt\":{:?},\"snr\":{:?}",
                 if i > 0 { "," } else { "" }, s.payload, json_str(&s.text), s.freq, s.dt, s.snr
             );
+            // Only the `fading` set has a channel, so other sets' records
+            // are unchanged.
+            if let Some(c) = &s.channel {
+                let _ = write!(
+                    o,
+                    ",\"channel\":{{\"fade_hz\":{:?},\"fade_depth\":{:?},\"fade_phase\":{:?},\"drift\":{:?}}}",
+                    c.fade_hz, c.fade_depth, c.fade_phase, c.drift
+                );
+            }
+            o.push('}');
         }
         o.push_str("],\"decodes\":[");
         for (i, d) in self.decodes.iter().enumerate() {
@@ -164,6 +175,15 @@ impl SlotResult {
                         freq: s["freq"].as_f64()?,
                         dt: s["dt"].as_f64()?,
                         snr: s["snr"].as_f64()?,
+                        channel: match s.get("channel") {
+                            None => None,
+                            Some(c) => Some(Channel {
+                                fade_hz: c["fade_hz"].as_f64()?,
+                                fade_depth: c["fade_depth"].as_f64()?,
+                                fade_phase: c["fade_phase"].as_f64()?,
+                                drift: c["drift"].as_f64()?,
+                            }),
+                        },
                     })
                 })
                 .collect::<Option<_>>()?,
