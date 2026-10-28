@@ -694,3 +694,89 @@ pass every gate there (it is the gain side) but costs +88% belief
 propagation on the host and more on a scalar FPU (transcendentals per
 edge); whether it fits is a question for instruction counts on the
 small target, not this host. No default change; nothing re-pinned.
+
+## Phase 3 E4: continuing past a CRC-failing codeword, measured (2026-10-27)
+
+Measurement only; the decoder is unchanged (default release binary
+byte-identical to 8c410e0's). Method: `paired_bench crc CONFIG SETS
+BLOCK` decodes each slot as `run` does and, for every candidate whose
+belief propagation stopped at a parity-satisfying codeword that fails
+the CRC (or is all zero), recomputes its soft bits and runs belief
+propagation again without stopping, to the 30-round limit
+(`bp::decode_soft_observed`, `profile` builds only: a copy of
+`decode_soft`'s loop that reports every round whose hard decisions are a
+codeword; a test checks it stops where `decode_soft` does, bit for bit,
+and the bench asserts the same on every candidate re-run). A candidate
+is "on" a transmitted message when tone 0 is within 4 Hz and the start
+within 0.12 s (every one of the decodes matched its own message this
+way). Presets at the E3 defaults; all main sets, the fresh block of
+sweep, crowded and empty, and 20 further seed blocks of the empty set
+(`bulk01`…`bulk20`, 46 000 slots; the same six kinds of input as the
+bulk test). Output in `~/.cache/cat-ft8-paired/e4/`.
+
+**CRC failures** (candidates through belief propagation that end at a
+codeword failing the CRC):
+
+| set (block) | host: failures / candidates | per slot (max) | small: failures / candidates | per slot (max) |
+|---|---|---|---|---|
+| sweep (main) | 227 / 1 500 000 | 0.015 (2) | 132 / 1 125 000 | 0.009 (1) |
+| sweep (fresh) | 221 / 1 500 000 | 0.015 (2) | 114 / 1 125 000 | 0.008 (1) |
+| crowded (main) | 12 / 60 000 | 0.020 (2) | 7 / 45 000 | 0.012 (1) |
+| crowded (fresh) | 14 / 60 000 | 0.023 (1) | 8 / 45 000 | 0.013 (1) |
+| edges (main) | 15 / 130 000 | 0.012 (1) | 10 / 97 500 | 0.008 (1) |
+| empty (main) | 37 / 230 000 | 0.016 (1) | 20 / 172 500 | 0.009 (1) |
+| empty (fresh) | 52 / 230 000 | 0.023 (1) | 34 / 172 500 | 0.015 (1) |
+| empty (20 more blocks) | 678 / 4 600 000 | 0.015 (2) | 383 / 3 450 000 | 0.008 (2) |
+
+About 1.5 per 10 000 candidates on the host (min-sum about 1.1), the
+same with and without signals, at every SNR: they are noise reaching
+some codeword, not near misses. Their mean distance from the nearest
+transmitted codeword is 86–87 bits of 174 on the sweep (a random
+codeword's is about 87) and 72–76 bits on crowded slots (nearest of 10–40
+messages); one per host sweep block, and one in the small main sweep,
+is within 20 bits.
+
+**Messages not decoded with a CRC-failing candidate on them:** host
+sweep 2 of 6 236 missing (main) and 2 of 6 228 (fresh), crowded 2 of
+4 328 and 0 of 4 331, edges 0 of 72; small sweep 1 of 6 303 and 1 of
+6 300, crowded 2 of 4 344 and 0 of 4 352, edges 0 of 262. So at most
+about one missing message in 2 000 even had a candidate that reached a
+wrong codeword.
+
+**Continuing past the failure.** 1 964 CRC-failing candidates continued
+(1 256 host, 708 small) ran 25 421 further rounds (under 0.01% of all
+rounds); in 25 104 of them (98.8%) the hard decisions were still a
+codeword, and in every case the same one. **No continued candidate
+reached a second codeword** — none correct, none wrong, none passing or
+failing the CRC — on any set, block or preset. The same holds past an
+all-zero rejection (79 474 host and 59 692 small candidates, nearly all
+on carriers and clipped input): never another codeword. Flooding belief
+propagation that has settled on a codeword is at a fixed point;
+further rounds only reinforce it.
+
+**False-decode rate.** A codeword that is not the transmitted one passes
+the 14-bit CRC with probability 1/16 384. The current decoder already
+reaches such codewords at the rates above, so its expected false-decode
+rate from belief propagation is about 0.015/16 384 ≈ 9 × 10⁻⁷ per slot on
+the host (about one per 1.1 million slots; small 5 × 10⁻⁷), consistent
+with no false decode in any set (50 600 empty slots per preset).
+Continuing would add the wrong codewords it reaches, times 1/16 384:
+none were reached, so the measured addition is zero; with 1 964
+continued candidates the 95% upper bound (rule of three) is 0.0015 new
+codewords per continued candidate, i.e. at most about 2 × 10⁻⁵ more
+wrong codewords per slot and 1.4 × 10⁻⁹ more expected false decodes per
+slot. The gain is bounded the same way: at most the 0–2 missing
+messages per set that had a CRC-failing candidate on them, and none was
+recovered.
+
+**Recommendation: do not implement continuation past a CRC failure.**
+It reaches nothing (the gain and the risk are both zero as measured),
+and the cases it could address are at most one missing message in
+2 000. CRC failures are already rare and cheap (a failing candidate
+stops early; continuing would cost under 0.01% more rounds, so cost is
+not the reason either). Recovering those few would need a search for a
+*different* codeword near the soft bits (ordered-statistics decoding or
+bit flipping on the least reliable bits), which is a separate step with
+its own false-decode budget: every extra codeword tried adds 1/16 384,
+so it needs the much larger empty-set run the plan names. Nothing
+re-pinned; no default change.

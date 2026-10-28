@@ -800,7 +800,11 @@ E3. [x] **Fewer candidates.** (`HOST` 100, `SMALL` 75; paired gates and
           than after E1. `SMALL` follows only if it passes its own gates.
         - Pinning as above. After E3, E2's measurement is repeated.
     ◆ Checkpoint E3.
-E4. [ ] **Continuing past a CRC-failing codeword — measurement only.**
+E4. [x] **Continuing past a CRC-failing codeword — measurement only.**
+        (Measured: about 1.5 CRC failures per 10 000 candidates; after a
+        CRC failure belief propagation never reached another codeword in
+        1 964 continued candidates; not recommended. Findings, "Phase 3
+        E4".)
         Results identical: count CRC failures per candidate and per slot
         on every set; for messages not decoded, how often a candidate on
         them failed by CRC; and, by running further rounds in the bench

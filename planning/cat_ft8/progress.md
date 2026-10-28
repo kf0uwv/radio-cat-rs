@@ -674,6 +674,21 @@
   propagation −47%. `SMALL` with sum-product is the mirror image (the
   same messages, sides swapped) at +25% total, +88% belief propagation.
   No default change; nothing re-pinned. Stopped at the E2 checkpoint.
+- E4 measured (findings, "Phase 3 E4: continuing past a CRC-failing
+  codeword, measured"). Bench only: `paired_bench crc` and, in `profile`
+  builds, `bp::decode_soft_observed` (a copy of `decode_soft`'s loop
+  that reports every codeword round and can run on; tests pin it to
+  `decode_soft`'s stop, result and state). CRC failures about 0.015 per
+  slot (1.5 per 10 000 candidates host, 1.1 small), the same on empty
+  input; at most 2 missing messages per set had a CRC-failing candidate
+  on them; continuing to the round limit reached no second codeword in
+  1 964 candidates (nor past 139 166 all-zero rejections). Expected
+  false-decode rate as decoded ≈ 9 × 10⁻⁷ per slot (host); continuing
+  adds none measured. Recommendation: do not implement. Decoder
+  unchanged: default release binary byte-identical to 8c410e0's, golden
+  hashes unchanged, default runs record-for-record identical to
+  `e3-final` (b = c = 0 on every set and block). Stopped at the E4
+  checkpoint; results to the user.
 
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
