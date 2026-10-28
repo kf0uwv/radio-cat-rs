@@ -808,6 +808,25 @@
   docs with `-D warnings` (default, no-std, profile); MSRV 1.75 library
   build. Stopped at Checkpoint S2.
 
+## Session: 2026-10-28 (S2 fix round)
+
+- Shortest segment 960; `valid` flags dropped (forward fill, leading
+  segments back-filled); one set of step sums in the time search;
+  `SUBTRACT_STACK_BYTES` 4 536 B, frame chain ~7.3 KB on thumbv8m.
+- Drift weight |z|²; suppression and passes re-run (unchanged to 0.1 dB
+  and a tenth of a point); pins re-pinned (findings, "S2 fix round").
+- `subtract` reads input as the front end does (non-finite → 0, clamp
+  ±2¹⁶); tests for a junk-filled skipped region, low tone 0, NaN/∞/huge
+  samples, clipped input; `suppression` input conditions (cut, late).
+- Bench: generator check fails above 1e-3; `drift=` validated; one GRID
+  argument for `suppression` and `passes` sweeps.
+- Docs: time-search stop rule, `left_db` limits, generator figure, cost
+  text, `atan2_turns` source (checked against A&S p. 81), NOTICE line.
+- Build-path check: same-path builds of 23d8336 and d4fd2d3 differ here
+  (b3ead07b vs ce6a2549), as from a second path; WAV output identical.
+- Pass 1 identical (release binary ce6a2549 unchanged, run records equal
+  to e3-final). CI-equivalent checks pass.
+
 ## Error Log
 | Timestamp | Error | Attempt | Resolution |
 |-----------|-------|---------|------------|

@@ -822,8 +822,8 @@ E4. [x] **Continuing past a CRC-failing codeword — measurement only.**
 
 ## Phase 4: subtraction and further passes — APPROVED (2026-10-27, revised after review)
 
-Status: **S0 and S2 done; S1 not needed; at Checkpoint S2, S3 not
-started.** (Before S2: S0 done, results identical, and revised after
+Status: **S0 and S2 done (S2 fix round done 2026-10-28); S1 not needed;
+S3 approved and in progress.** (Before S2: S0 done, results identical, and revised after
 review; S1–S3 then awaited the user's approval, given 2026-10-28.) No subtraction code is in the decoder.
 The ADR amendment draft is in ADR 0024 ("Amendment (draft): subtraction
 and further passes"). Revision: the bench was split and its reports

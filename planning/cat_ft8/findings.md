@@ -1091,7 +1091,7 @@ than SNR at +10 dB; segment 1 920, drift on):
 | start +0 / +0.25 / +0.5 sample | 100 each | −37.7 / −37.7 / −37.7 | −37.7 | −104.2 / −63.8 / −57.7 | none / −63.8 / −57.7 (largest −56.4) |
 | tone 0 at 100, 101.56, 200, 1 500, 1 500.78, 1 501.56, 2 850, 3 050 Hz | 100 each | −37.7 … −37.8 | −37.7 … −37.8 | −63.1 … −64.8 | ≤ −63.1 / ≤ −57.1 |
 | fade 0.05 / 0.1 / 0.2 / 0.5 / 1 / 2 Hz (depth 0.9) | 100 each | −34.0 / −33.9 / −33.7 / −31.3 / −23.4 / −13.3 | the same | −60.7 / −55.1 / −48.3 / −35.0 / −23.9 / −13.3 | ≤ −63.2 / largest −53.3 (2 Hz) |
-| drift 0.02 / 0.05 / 0.1 / 0.2 Hz/s | 100 each | −37.6 / −37.6 / −37.7 / −37.5 | −37.6 … −37.7 | −64.0 / −62.5 / −59.2 / −52.2 | ≤ −63.5 / ≤ −57.0 |
+| drift 0.02 / 0.05 / 0.1 / 0.2 Hz/s | 100 each | −37.6 / −37.6 / −37.7 / −37.5 | −37.6 … −37.8 | −64.0 / −62.5 / −59.2 / −52.2 | ≤ −63.5 / ≤ −57.0 |
 | drift 0.5 Hz/s | 100 | −36.4 [−37.7, −9.8] | −37.6 | −42.1 | −62.8 / −57.8 |
 
 - In noise the residue is the amplitude estimate's noise: it falls 1 dB
@@ -1173,8 +1173,15 @@ pass decoded 3 messages the oracle pass did not (fading main: 18 and
   rate from the CRC was not computed per pass here; S3's bar).
 - **The fading set** decodes fewer in the single pass (63.3% against
   crowded's 69.1%) and keeps nearly the same share of the oracle's gain
-  (94.9% against 96.6%); drift on or off makes no difference there
-  (±0.2 Hz/s: one-symbol segments follow it either way).
+  (94.9% against 96.6%); drift estimation on or off makes no
+  difference to the pass gain (94.9% / 91.6% on, 94.9% / 91.4% off).
+  One-symbol segments do not fully follow drift on their own (single
+  signals at +10 dB without the drift estimate: −30.0 dB at 0.1 Hz/s and
+  −20.6 dB at 0.2 Hz/s, against −37.7 and −37.5 with it). A likely cause,
+  not measured separately: the set's drifts are uniform in ±0.2 Hz/s and
+  its signals at −16…+6 dB, where the amplitude estimate's noise alone
+  leaves −12…−34 dB, so the extra residue matters only for the few
+  strong signals that drift fast.
 
 **Segment length on the passes** (host, main; share +1 / +2, duplicates
 p2 / p3):
@@ -1202,8 +1209,10 @@ call (3.28–3.32 in two runs; 3.23–3.35 per slot), about 80 ms for a
 skipping the confirming timing pass when the start moved by ⅛ symbol or
 less, an integer quadratic phase for the drift and whole-block loops
 halved it without changing the suppression (≤ 0.1 dB). Each call runs
-the reference generator two or three times over the waveform (timing,
-amplitude, subtraction), about 0.7 ms each. In `passes` (all threads
+the reference generator three to five times (one to three timing steps,
+each over the symbols' middle halves only, then amplitude and
+subtraction over the whole waveform; one more timing run in the rare
+case that a repeated step finds nothing), about 0.7 ms per full run. In `passes` (all threads
 busy) a further pass's decode took 51 ms median. Against the multi-pass
 budget (worst 40-signal slot ≤ 250 ms in total) this is tight; S3
 measures it, and the subtraction cost is the first candidate for
@@ -1238,3 +1247,85 @@ binary is byte-identical to b3ead07b.
 other host; fades deeper than 0.9 or not sinusoidal (Rayleigh); drift
 that is not linear; the expected false decodes per further pass from
 the CRC.
+
+## S2 fix round (2026-10-28)
+
+Outputs in `~/.cache/cat-ft8-paired/s2/fix/` (this round) and
+`~/.cache/cat-ft8-paired/s2/logs/` (the S2 logs: stack and flash report,
+WAV-identity outputs, `subcost`).
+
+- **Shortest segment 960 samples** (was 480, which measured worse in
+  every condition). The per-segment `valid` flags are gone: a segment
+  without an estimate takes the previous one's as the amplitude pass
+  goes, those before the first estimate are filled afterwards. The time
+  search keeps one set of step sums (a repeated step that finds nothing
+  takes the sums again where the estimate came from; rare). Results
+  identical: with the old drift weight the default and whole-waveform
+  pins were unchanged.
+- **Stack.** `SUBTRACT_STACK_BYTES` 4 536 B (was 6 836). On thumbv8m
+  (`check.sh --stack`, host image): `subtract`'s frame 4 504 B (was
+  7 432 B, everything inlined); the time search's sums are now an
+  out-of-line closure of 2 800 B and the amplitude/subtraction block loop
+  one of 2 232 B, so the deepest chain is about 7 300 B. A version with
+  one call site for the sums kept the chain at about 6 900 B but was 10%
+  slower (interleaved `subcost`, 3.7 against 3.4 ms), so it was not kept.
+  Flash: host image 90 820 B (S2 90 296 B); small and encoder images
+  unchanged (83 504 B, 35 848 B).
+- **Input as the front end takes it.** `subtract` now reads a non-finite
+  sample as 0.0 and clamps a finite one to ±2¹⁶, and writes a changed
+  sample as that value less the estimate. Identical for ordinary input
+  (pins unchanged by it); costs about 4% (`subcost`, interleaved with
+  d4fd2d3: 3.29–3.41 against 3.45–3.49 ms per call).
+- **Drift weight** |z|² instead of |re| + |im| (the latter depends on the
+  groups' phase). Suppression (`fix/suppression-host-100.txt`, 100
+  trials per condition) is unchanged to 0.1 dB in every condition except
+  drift 0.5 Hz/s's 90% quantile (−9.1 dB, was −9.8). Passes (host main,
+  share of the oracle's gain +1 / +2 and duplicates p2 / p3): crowded
+  1 920 96.6% / 94.8%, 1 / 11 (unchanged), 3 840 98.9% / 98.2%, 5 / 36
+  (was 99.0% / 98.2%, 4 / 36); wide 1 920 93.0% / 89.6% (+2 was
+  89.5%); fading 3 840 97.5% / 95.2%, 27 / 51 (was 97.4% / 95.1%,
+  27 / 52); every other entry of the S2 table unchanged; fresh seeds:
+  crowded 1 920 97.3% / 95.5%, 3 840 99.1% / 98.6%; wide 92.3% / 89.5%
+  and 96.7% / 94.8%; fading 94.1% / 91.0% and 96.9% / 94.9%. No false
+  decodes.
+- **Pins** (`subtract::tests::deterministic_and_pinned`): default
+  0x0c03f1faaa51307a → 0xf67781b25882c626 (drift weight); 960 samples,
+  drift off 0xfc2a9cb5fdf776ce (new setting, replaces 480 samples, drift
+  off, 0x2e0bf0eb311b0c28); whole waveform, drift on 0xfa0729dc78e8af7d
+  → 0xd6d805c967815885 (drift weight).
+- **Tests added:** a skipped region holding NaN, ∞, 1e30 or −3e4 gives a
+  result bit-identical to the zero-filled run and is left as it was; tone
+  0 at 25 and 60 Hz (noiseless, below −40 dB); NaN and −∞ samples (in a
+  symbol's middle half and at a boundary) give the same result as zeros
+  there, 1e30 the same as 2¹⁶; a strong signal clipped at 60% of its peak
+  in noise loses 7.3 dB of the slot's energy.
+- **`suppression`** gained input conditions: cut at 13.5 s and starting
+  1 s late, at +10 and 0 dB: −37.7 / −37.8 dB and −27.8 / −27.6 dB, the
+  same as whole slots. It now fails if the bench generator differs from
+  `Synth` by more than 10⁻³ (measured 6.58 × 10⁻⁴); `drift=` takes only 0
+  or 1; the segment sweeps of `suppression` and `passes` are one GRID
+  argument (`seg=1920|3840,drift=1|0`; grids joined with `;`).
+- **Another generator.** An independent check with another FT8
+  generator's waveforms found subtraction as good as on this crate's:
+  identical residue from −16 to +10 dB SNR, and a −68 dB noiseless floor
+  from a 1–2-sample offset of the ramps. `left_db` cannot see that kind
+  of residue (it measures only along the reference waveform); its docs and
+  `subtract_wav`'s now say so.
+- **`atan2_turns`**: the coefficients are the six-term odd polynomial
+  F. Mazzoli gives (2021), attributed by him to C. Hastings Jr.,
+  *Approximations for Digital Computers* (1955); checked against
+  Abramowitz and Stegun (page 81): not their 4.4.47 (Hastings' five
+  terms, 1e-5) nor 4.4.49 (degree 17, Carlson and Goldstein). Measured
+  error 1.7 × 10⁻⁶ rad; the test bound is now 5 × 10⁻⁷ turn (was 2 × 10⁻⁶).
+- **Build paths.** Binary hashes depend on the build path. Built here
+  from this repository's path with the same target directory, 23d8336
+  and d4fd2d3 give different bytes (b3ead07b… and ce6a2549…); built from
+  a second path, they differ too (7a722d9c… and 42db0537…). So the S2
+  byte change is the source change (the new module moving code between
+  codegen units), not the path; the two binaries' decode output is
+  identical (`s2/logs/wav-identity-*.txt`, byte-identical). Compare
+  binaries only when both are built from the same path.
+- **Pass 1 unchanged:** release `cat-ft8-decode` ce6a2549… as at
+  d4fd2d3; `paired_bench run` of every default set, both presets,
+  record-for-record identical to `e3-final` (and to `s2/identity`, with
+  outcomes); golden pins pass.
