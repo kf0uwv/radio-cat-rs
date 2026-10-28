@@ -17,12 +17,14 @@
 //! buffer), `Synth::new`, `fill`, `mix`, `skip` and `fill_phase`, plus
 //! `sin_turns`/`cos_turns`; and the decoder (`Decoder::new`, `feed`,
 //! `feed_i16`, `skip`, `decode`, `DecodeList`, `finish`) in one
-//! configuration, with every buffer in statics: the small configuration by
-//! default, the host configuration with the `host` feature, none with
-//! `encoder-only` (a baseline for the decoder's size); `check.sh` builds
-//! every image. The check-node rule is a run-time field of the
-//! configuration, so both rules are linked in either decoder image. Linking at all proves the core
-//! needs neither an allocator nor `std`; `check.sh` then rejects any
+//! configuration, plus `decode::subtract` in the host image (subtraction
+//! is a host feature; the small image does not link it), with every
+//! buffer in statics: the small configuration by default, the host
+//! configuration with the `host` feature, none with `encoder-only` (a
+//! baseline for the decoder's size); `check.sh` builds every image. The
+//! check-node rule is a run-time field of the configuration, so both
+//! rules are linked in either decoder image. Linking at all proves the
+//! core needs neither an allocator nor `std`; `check.sh` then rejects any
 //! soft-double helper (`__aeabi_d*`, `__*df*`) in the image. Only code
 //! reachable from here is linked, so a new floating-point entry point must
 //! be called here too.
@@ -189,4 +191,28 @@ fn decode_a_slot(table: &mut CallTable<16>, sink: &mut f32, rows: &mut usize) {
         *sink += d.snr_db + d.freq_hz;
         *rows += text.map_or(0, str::len);
     });
+    #[cfg(feature = "host")]
+    subtract_one(list.finish_payloads(), sink);
+}
+
+/// A residual buffer for `subtract` in `.bss`: a slot cut short (the core
+/// takes any length).
+#[cfg(feature = "host")]
+static mut RESIDUAL: [f32; 2_048] = [0.0; 2_048];
+
+/// `decode::subtract` for the first decode. Not inlined, and the buffer is
+/// a static, so `check.sh --stack` reports subtraction's own frame.
+#[cfg(feature = "host")]
+#[inline(never)]
+fn subtract_one(decodes: &[Decode], sink: &mut f32) {
+    use cat_ft8::decode::{subtract, SubtractConfig};
+    // SAFETY: called once from `_start`, which is not re-entered, so this
+    // is the only reference to the static.
+    let audio = unsafe { &mut *addr_of_mut!(RESIDUAL) };
+    audio[100] = black_box(0.5);
+    if let Some(d) = decodes.first() {
+        if let Ok(s) = subtract(audio, d, black_box(16), &SubtractConfig::DEFAULT) {
+            *sink += s.energy + s.left_db().unwrap_or(0.0) + audio[200];
+        }
+    }
 }

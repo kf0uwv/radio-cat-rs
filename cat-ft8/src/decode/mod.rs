@@ -17,6 +17,10 @@
 //! sync search, soft bits, belief propagation and the CRC, behind the
 //! [`Decoder`] and [`DecodeList`] API (see the [`decoder`] module).
 //!
+//! [`subtract`] removes one decoded signal from a slot's audio, for
+//! decoding the residual again (ADR 0024, amendment "subtraction and
+//! further passes").
+//!
 //! The stages (`sync`, `soft`, `bp`) are crate-private; the `profile`
 //! feature makes them public for measurement benches only.
 
@@ -35,6 +39,7 @@ pub(crate) mod snr;
 pub mod soft;
 #[cfg(not(feature = "profile"))]
 pub(crate) mod soft;
+mod subtract;
 #[cfg(feature = "profile")]
 #[doc(hidden)]
 pub mod sync;
@@ -51,6 +56,10 @@ pub use decoder::{
 };
 pub use frontend::{Band, FrontEnd, Spectrogram, BIN_HZ, HOP, ROWS, ROW_ORIGIN};
 pub use snr::SNR_FLOOR_DB;
+pub use subtract::{subtract, SubtractConfig, Subtraction, STACK_BYTES as SUBTRACT_STACK_BYTES};
+#[cfg(feature = "profile")]
+#[doc(hidden)]
+pub use subtract::{subtract_fixed, Fixed};
 pub use sync::{Candidate, SyncReport};
 
 /// Bytes of the decoder's static tables (FFT twiddles, real-split

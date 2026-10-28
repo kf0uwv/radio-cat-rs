@@ -99,6 +99,52 @@ pub(crate) fn exp2_neg(y: f32) -> f32 {
     }
 }
 
+// Minimax coefficients of atan(z)/z in z² on [0, 1] (absolute error of
+// atan below 1.2e-5 rad), divided by 2π so the result is in turns.
+const A1: f32 = 0.999_977_3 / core::f32::consts::TAU;
+const A3: f32 = -0.332_623_5 / core::f32::consts::TAU;
+const A5: f32 = 0.193_543_5 / core::f32::consts::TAU;
+const A7: f32 = -0.116_432_9 / core::f32::consts::TAU;
+const A9: f32 = 0.052_653_32 / core::f32::consts::TAU;
+const A11: f32 = -0.011_721_2 / core::f32::consts::TAU;
+
+/// `|x|` (`f32::abs` is not in `core` on the minimum Rust).
+#[inline]
+pub(crate) fn abs(x: f32) -> f32 {
+    f32::from_bits(x.to_bits() & 0x7fff_ffff)
+}
+
+/// The angle of `(x, y)` in turns, in [−½, ½] (`atan2(y, x) / 2π`): 0
+/// for `(0, 0)` and for non-finite input. Absolute error below 2 × 10⁻⁶
+/// turn (1.2 × 10⁻⁵ rad).
+///
+/// The argument is reduced to the first octant (|z| ≤ 1, z = min/max of
+/// |x| and |y|) and `atan(z)` taken from an odd polynomial of degree 11.
+pub(crate) fn atan2_turns(y: f32, x: f32) -> f32 {
+    let (ax, ay) = (abs(x), abs(y));
+    let big = if ax > ay { ax } else { ay };
+    // False for NaN as well; infinities would give NaN in z.
+    let usable = big > 0.0 && big.is_finite();
+    if !usable {
+        return 0.0;
+    }
+    let small = if ax > ay { ay } else { ax };
+    let z = small / big;
+    let z2 = z * z;
+    let mut t = z * (A1 + z2 * (A3 + z2 * (A5 + z2 * (A7 + z2 * (A9 + z2 * A11)))));
+    if ay > ax {
+        t = 0.25 - t;
+    }
+    if x < 0.0 {
+        t = 0.5 - t;
+    }
+    if y < 0.0 {
+        -t
+    } else {
+        t
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +221,29 @@ mod tests {
         assert_eq!(exp2_neg(-127.0), 0.0);
         assert_eq!(exp2_neg(f32::NAN), 0.0);
         assert_eq!(exp2_neg(3.0), 1.0); // positive arguments are clamped to 0
+    }
+
+    #[test]
+    fn atan2_turns_matches_libm_closely() {
+        let mut worst = 0.0f64;
+        for i in 0..3_600 {
+            let a = f64::from(i) * core::f64::consts::TAU / 3_600.0;
+            for r in [1e-30f64, 1e-3, 1.0, 7.5e3, 1e30] {
+                let (x, y) = ((r * libm::cos(a)) as f32, (r * libm::sin(a)) as f32);
+                let exact = libm::atan2(f64::from(y), f64::from(x)) / core::f64::consts::TAU;
+                let mut d = (f64::from(atan2_turns(y, x)) - exact).abs();
+                d = d.min((d - 1.0).abs()); // ±½ turn are the same angle
+                worst = worst.max(d);
+            }
+        }
+        assert!(worst < 2e-6, "worst {worst}");
+        assert_eq!(atan2_turns(0.0, 0.0), 0.0);
+        assert_eq!(atan2_turns(f32::NAN, 1.0), 0.0);
+        assert_eq!(atan2_turns(1.0, f32::INFINITY), 0.0);
+        assert_eq!(atan2_turns(0.0, 1.0), 0.0);
+        assert_eq!(atan2_turns(1.0, 0.0), 0.25);
+        assert_eq!(atan2_turns(0.0, -1.0), 0.5);
+        assert_eq!(atan2_turns(-1.0, 0.0), -0.25);
     }
 
     #[test]
