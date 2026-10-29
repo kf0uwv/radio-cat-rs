@@ -397,3 +397,66 @@ fn phase_increment_stays_below_two_to_the_31() {
     let mut block = [0.0f32; 1_000];
     while synth.fill(&mut block) == block.len() {}
 }
+
+#[test]
+fn phase_runs_match_the_per_sample_generator() {
+    // Every tone triple appears (a de Bruijn-like walk over the tones),
+    // plus encoded messages; bases low, middle and the highest accepted.
+    let mut walk = [0u8; SYMBOL_COUNT];
+    let mut x = 0x2545_f491u32;
+    for t in walk.iter_mut() {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        *t = (x % 8) as u8;
+    }
+    let mut top = 6_000.0f32 - 7.0 * TONE_SPACING_HZ;
+    while Synth::new(&[7; SYMBOL_COUNT], top, 1.0).is_err() {
+        top = f32::from_bits(top.to_bits() - 1);
+    }
+    let cases = [
+        (symbols_of("CQ K1ABC FN42"), 1500.0f32),
+        (symbols_of("K1ABC W9XYZ -11"), 0.4),
+        (walk, 812.5),
+        ([7; SYMBOL_COUNT], top),
+        ([0; SYMBOL_COUNT], 3.125),
+    ];
+    for (symbols, base) in cases {
+        let mut want = Vec::with_capacity(WAVEFORM_SAMPLES);
+        let mut r = Synth::new(&symbols, base, 1.0).unwrap();
+        r.run(WAVEFORM_SAMPLES, |p, e| want.push((p, e)));
+        for block in [1usize, 7, 240, 705, 706, 960, 961, 1214, 1215, 1920, 4097] {
+            for skip_every in [0usize, 2, 3] {
+                let mut s = Synth::new(&symbols, base, 1.0).unwrap();
+                let (mut phase, mut env, mut buf) =
+                    (vec![0u32; block], vec![0.0f32; block], vec![0u32; block]);
+                let mut j = 0;
+                let mut i = 0;
+                loop {
+                    i += 1;
+                    let n = if skip_every > 0 && i % skip_every == 0 {
+                        s.skip_with(&mut buf)
+                    } else {
+                        let n = s.fill_phase(&mut phase, &mut env);
+                        for k in 0..n {
+                            assert_eq!(
+                                (phase[k], env[k].to_bits()),
+                                (want[j + k].0, want[j + k].1.to_bits()),
+                                "base {base} block {block} skip {skip_every} sample {}",
+                                j + k
+                            );
+                        }
+                        n
+                    };
+                    j += n;
+                    assert_eq!(s.position(), j);
+                    if n < block {
+                        break;
+                    }
+                }
+                assert_eq!(j, WAVEFORM_SAMPLES);
+                assert_eq!(s.phase, r.phase, "base {base} block {block}");
+            }
+        }
+    }
+}

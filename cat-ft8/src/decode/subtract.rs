@@ -360,7 +360,7 @@ fn blocks(
             f(j0, &phase[..n], &env[..n]);
             j0 += n;
         } else {
-            let n = s.skip(BLOCK);
+            let n = s.skip_with(&mut phase);
             if n == 0 {
                 break;
             }

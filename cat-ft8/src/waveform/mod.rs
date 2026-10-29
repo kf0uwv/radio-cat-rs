@@ -117,6 +117,14 @@ const _: () = assert!(PULSE_FIRST <= SAMPLES_PER_SYMBOL);
 const _: () = assert!(2 * PULSE_FIRST > SAMPLES_PER_SYMBOL);
 // The ramps lie within the first and last symbols.
 const _: () = assert!(RAMP_SAMPLES <= SAMPLES_PER_SYMBOL);
+/// Within a symbol, the previous symbol's pulse is non-zero before this
+/// sample (`s + PULSE_FIRST <= ns`) ...
+const PREV_END: usize = SAMPLES_PER_SYMBOL + 1 - PULSE_FIRST;
+/// ... the current one's is read mirrored from this sample on
+/// (`ns + s > 2·ns − s`), and the next one's is non-zero from
+/// `PULSE_FIRST` on: the runs of `Synth::increments`.
+const MIRROR: usize = SAMPLES_PER_SYMBOL / 2 + 1;
+const _: () = assert!(PREV_END <= MIRROR && MIRROR <= PULSE_FIRST);
 
 /// The pulse `g` at sample `i` of `0..PULSE_SAMPLES` (centre at 2880).
 #[cfg(test)]
@@ -250,13 +258,113 @@ impl Synth {
     /// (for example `cos_turns`/`sin_turns` of it, to subtract a decoded
     /// signal). Returns how many; at most the shorter slice's length.
     pub fn fill_phase(&mut self, phase: &mut [u32], envelope: &mut [f32]) -> usize {
-        let n = phase.len().min(envelope.len());
-        let mut k = 0;
-        self.run(n, |p, env| {
-            phase[k] = p;
-            envelope[k] = env;
-            k += 1;
-        })
+        let n = phase.len().min(envelope.len()).min(self.remaining());
+        let (phase, envelope) = (&mut phase[..n], &mut envelope[..n]);
+        let pos = self.pos;
+        // The increments first, then their running sum (the phase before
+        // each sample): the same integer additions as `run`.
+        self.increments(pos, phase);
+        let mut p = self.phase;
+        for x in phase.iter_mut() {
+            let step = *x;
+            *x = p;
+            p = p.wrapping_add(step);
+        }
+        self.phase = p;
+        self.pos = pos + n;
+        // `run`'s envelope: `envelope(j)` in the first and last symbols
+        // (exactly 1.0 there beyond the ramps), 1.0 elsewhere.
+        envelope.fill(1.0);
+        let ramps = [
+            0..RAMP_SAMPLES,
+            WAVEFORM_SAMPLES - RAMP_SAMPLES..WAVEFORM_SAMPLES,
+        ];
+        for r in ramps {
+            for j in r.start.max(pos)..r.end.min(pos + n) {
+                envelope[j - pos] = self::envelope(j);
+            }
+        }
+        n
+    }
+
+    /// [`skip`](Self::skip) over up to `buf.len()` samples, with `buf` as
+    /// working storage (its contents are overwritten): the same phase,
+    /// through the generator of [`fill_phase`](Self::fill_phase).
+    pub(crate) fn skip_with(&mut self, buf: &mut [u32]) -> usize {
+        let n = buf.len().min(self.remaining());
+        let buf = &mut buf[..n];
+        self.increments(self.pos, buf);
+        // Integer addition modulo 2³²: any order gives the same sum.
+        let step = buf.iter().fold(0u32, |a, &b| a.wrapping_add(b));
+        self.phase = self.phase.wrapping_add(step);
+        self.pos += n;
+        n
+    }
+
+    /// The phase increments of waveform samples `pos..pos + out.len()`
+    /// (within the waveform) into `out`: the values [`Synth::run`] adds,
+    /// from the same products and sums in the same order, but computed in
+    /// runs over each symbol's parts where the same pulses overlap (the
+    /// previous symbol's and the current one's rising half, the current
+    /// one's rising half alone, its falling half alone, its falling half
+    /// and the next symbol's), so the loops have no per-sample branches or
+    /// bounds checks and vectorise.
+    #[inline]
+    fn increments(&self, pos: usize, out: &mut [u32]) {
+        const NS: usize = SAMPLES_PER_SYMBOL;
+        const PF: usize = PULSE_FIRST;
+        let last = SYMBOL_COUNT - 1;
+        let tone = |m: usize| f32::from(self.symbols[m.min(last)]);
+        let base = self.base_hz;
+        let step = |dev: f32| increment_lanes((base + TONE_SPACING_HZ * dev) * TURNS_PER_HZ);
+        let pulse = &PULSE_HALF[..];
+        let end = pos + out.len();
+        let mut p = pos;
+        let mut out = out;
+        while p < end {
+            let sym = p / NS;
+            let (prev, cur, next) = (tone(sym.saturating_sub(1)), tone(sym), tone(sym + 1));
+            let s0 = p - sym * NS;
+            let s1 = NS.min(s0 + (end - p));
+            let cut = |x: usize| x.clamp(s0, s1);
+            let (a, b, c) = (cut(PREV_END), cut(MIRROR), cut(PF));
+            let (o1, rest) = core::mem::take(&mut out).split_at_mut(a - s0);
+            let (o2, rest) = rest.split_at_mut(b - a);
+            let (o3, rest) = rest.split_at_mut(c - b);
+            let (o4, rest) = rest.split_at_mut(s1 - c);
+            out = rest;
+            // s in s0..a: the current pulse at NS + s, the previous one's
+            // at NS − s.
+            if a > s0 {
+                let g = &pulse[NS + s0 - PF..NS + a - PF];
+                let h = &pulse[NS + 1 - a - PF..NS + 1 - s0 - PF];
+                for ((y, &g), &h) in o1.iter_mut().zip(g).zip(h.iter().rev()) {
+                    *y = step(cur * g + prev * h);
+                }
+            }
+            // s in a..b: the current pulse at NS + s alone.
+            if b > a {
+                for (y, &g) in o2.iter_mut().zip(&pulse[NS + a - PF..NS + b - PF]) {
+                    *y = step(cur * g);
+                }
+            }
+            // s in b..c: the current pulse mirrored, at 2·NS − s, alone.
+            if c > b {
+                let g = &pulse[2 * NS + 1 - c - PF..2 * NS + 1 - b - PF];
+                for (y, &g) in o3.iter_mut().zip(g.iter().rev()) {
+                    *y = step(cur * g);
+                }
+            }
+            // s in c..s1: the current pulse mirrored and the next one's at s.
+            if s1 > c {
+                let g = &pulse[2 * NS + 1 - s1 - PF..2 * NS + 1 - c - PF];
+                let h = &pulse[c - PF..s1 - PF];
+                for ((y, &g), &h) in o4.iter_mut().zip(g.iter().rev()).zip(h) {
+                    *y = step(cur * g + next * h);
+                }
+            }
+            p += s1 - s0;
+        }
     }
 
     /// Advances by up to `n` samples without producing them (phase still
@@ -339,6 +447,15 @@ fn increment(x: f32) -> u32 {
     {
         x as i32 as u32
     }
+}
+
+/// [`increment`] for [`Synth::increments`]' loops: through `i32` on every
+/// target (the same value on [0, 2³¹)), which converts several lanes at
+/// once where the loop vectorises.
+#[inline(always)]
+fn increment_lanes(x: f32) -> u32 {
+    debug_assert!(x < 2_147_483_648.0, "phase increment {x} reaches 2^31");
+    x as i32 as u32
 }
 
 /// Where and how loud to put a whole waveform in a buffer.
