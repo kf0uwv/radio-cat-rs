@@ -50,7 +50,12 @@
 //! 4. **Subtraction.** The amplitude is interpolated linearly between
 //!    segment centres (held constant before the first and after the
 //!    last) and the scaled reference subtracted. A segment with too few
-//!    usable samples takes its neighbour's amplitude.
+//!    usable samples takes its neighbour's amplitude. With segments of up
+//!    to two symbols this runs behind step 3 in the same run of the
+//!    reference: the reference's samples are held (at most a segment and
+//!    a half, 5 760 samples) until the amplitudes on both sides are
+//!    known. Longer segments, or a first estimate that comes too late to
+//!    hold, run the reference again for it; the result is the same.
 //!
 //! Only the audio from `skip` to the end of the buffer is read or
 //! written: the skipped region (missing input, zero by convention) stays
@@ -97,10 +102,12 @@ const MIDDLE: f32 = WAVEFORM_SAMPLES as f32 / 2.0;
 
 /// Upper bound on [`subtract`]'s own stack storage, bytes: the per-symbol
 /// correlations, one set of per-group step sums, the per-segment
-/// amplitudes and one block of reference phase and envelope. (The
-/// compiler's frame adds scalars, temporaries and call overhead; the
-/// embedded link check reports it.)
-pub const STACK_BYTES: usize = SYMBOL_COUNT * 8 + GROUPS * 15 * 8 + MAX_SEGMENTS * 8 + BLOCK * 8;
+/// amplitudes, one block of reference phase and envelope, and the
+/// reference held between the amplitude fit and the subtraction (46 080
+/// bytes of the 50 616). (The compiler's frame adds scalars, temporaries
+/// and call overhead; the embedded link check reports it.)
+pub const STACK_BYTES: usize =
+    SYMBOL_COUNT * 8 + GROUPS * 15 * 8 + MAX_SEGMENTS * 8 + BLOCK * 8 + HELD * 8;
 
 /// Settings of [`subtract`]. Start from [`SubtractConfig::DEFAULT`] and
 /// change fields with the `with_*` setters (the type is non-exhaustive).
@@ -247,7 +254,7 @@ pub fn subtract(
     skip: usize,
     config: &SubtractConfig,
 ) -> Result<Subtraction, Error> {
-    run(audio, decode, skip, config, Fixed::default())
+    run(audio, decode, skip, config, Fixed::default(), HELD)
 }
 
 /// Estimates to impose instead of measuring them (measurement only).
@@ -271,7 +278,7 @@ pub fn subtract_fixed(
     config: &SubtractConfig,
     fixed: Fixed,
 ) -> Result<Subtraction, Error> {
-    run(audio, decode, skip, config, fixed)
+    run(audio, decode, skip, config, fixed, HELD)
 }
 
 /// The usable audio: slot samples `lo..hi`.
@@ -575,6 +582,7 @@ fn run(
     skip: usize,
     config: &SubtractConfig,
     fixed: Fixed,
+    hold: usize,
 ) -> Result<Subtraction, Error> {
     config.validate()?;
     let tones = encode_payload(&decode.payload);
@@ -637,12 +645,23 @@ fn run(
     out.drift_hz_per_s = drift;
     let correction = Correction::new(offset, drift);
 
-    // 3. Amplitude per segment.
+    // 3. Amplitude per segment, and 4. subtraction (`Removal`).
     let seg = config.segment;
     let segments = WAVEFORM_SAMPLES.div_ceil(seg);
+    let (lo, end) = usable.range(start, 0, WAVEFORM_SAMPLES);
     let mut amp = [(0.0f32, 0.0f32); MAX_SEGMENTS];
     let mut first_valid: Option<usize> = None;
-    let end = usable.range(start, 0, WAVEFORM_SAMPLES).1;
+    // Fused: the fit's reference samples are held (up to `hold` of them,
+    // at most `HELD`) until the amplitudes they need are known, then
+    // subtracted (`done` is the first sample not yet subtracted, `written`
+    // the end of those held). Otherwise, or if the held samples would
+    // overflow (a late first estimate), the rest is subtracted with a
+    // second run of the reference. Both give the same result.
+    let hold = hold.min(HELD);
+    let mut fused = hold > 0 && seg <= FUSED_SEGMENT;
+    let mut held = [(0.0f32, 0.0f32); HELD];
+    let (mut done, mut written) = (lo, lo);
+    let mut removal: Option<Removal> = None;
     {
         let mut corr = correction;
         let mut sums = Sums::default();
@@ -658,118 +677,265 @@ fn run(
                     corr.skip(n);
                 } else {
                     corr.skip(a);
+                    if fused && j0 + b - done > hold {
+                        fused = false;
+                    }
                     let xs = &audio[(start + (j0 + a) as i64) as usize..][..b - a];
-                    for ((&p, &w), &x) in phase[a..b].iter().zip(&env[a..b]).zip(xs) {
-                        let q = p.wrapping_add(corr.next());
-                        sums.add(input(x), w * cos_turns(q), w * sin_turns(q));
+                    if fused {
+                        let mut h = (j0 + a) % HELD;
+                        for ((&p, &w), &x) in phase[a..b].iter().zip(&env[a..b]).zip(xs) {
+                            let q = p.wrapping_add(corr.next());
+                            let r = (w * cos_turns(q), w * sin_turns(q));
+                            sums.add(input(x), r.0, r.1);
+                            held[h] = r;
+                            h += 1;
+                            if h == HELD {
+                                h = 0;
+                            }
+                        }
+                        written = j0 + b;
+                    } else {
+                        for ((&p, &w), &x) in phase[a..b].iter().zip(&env[a..b]).zip(xs) {
+                            let q = p.wrapping_add(corr.next());
+                            sums.add(input(x), w * cos_turns(q), w * sin_turns(q));
+                        }
                     }
                     corr.skip(n - b);
                 }
                 let next = j0 + n;
                 if next % seg == 0 || next >= end {
                     // A segment without an estimate takes the previous
-                    // one's (those before the first estimate are filled
-                    // below).
+                    // one's; those before the first estimate take it.
                     let k = j0 / seg;
                     match sums.solve(seg.min(WAVEFORM_SAMPLES - k * seg)) {
                         Some(ab) => {
                             amp[k] = ab;
-                            first_valid.get_or_insert(k);
+                            if first_valid.is_none() {
+                                first_valid = Some(k);
+                                amp[..k].fill(ab);
+                            }
                         }
                         None if k > 0 => amp[k] = amp[k - 1],
                         None => {}
                     }
                     sums = Sums::default();
+                    // The samples before centre k need amplitudes up to k.
+                    if fused && first_valid.is_some() && k + 1 < segments {
+                        let to = centre(seg, k).min(written);
+                        let r = removal.get_or_insert_with(|| Removal::new(seg, amp[0]));
+                        r.held(&amp, segments, &held, audio, start, done, to);
+                        done = done.max(to);
+                    }
                 }
             },
         );
     }
-    // Segments before the first estimate take it; those after the usable
-    // audio (never visited) the last one.
-    let Some(first_valid) = first_valid else {
+    // Segments after the usable audio (never visited) take the last one.
+    if first_valid.is_none() {
         return Ok(out);
-    };
-    for k in 0..first_valid {
-        amp[k] = amp[first_valid];
     }
     for k in end.div_ceil(seg)..segments {
         amp[k] = amp[k - 1];
     }
-
-    // 4. Subtraction, with the residue's projection per segment. The
-    // amplitude is linear between segment centres (whole samples, since
-    // segments are whole blocks): amp[k] + (j − centre k)·slope.
-    let centre = |k: usize| k * seg + seg.min(WAVEFORM_SAMPLES - k * seg) / 2;
-    let line = |k: usize| -> (usize, (f32, f32), (f32, f32)) {
-        if k + 1 < segments {
-            let span = 1.0 / (centre(k + 1) - centre(k)) as f32;
-            let slope = (
-                (amp[k + 1].0 - amp[k].0) * span,
-                (amp[k + 1].1 - amp[k].1) * span,
-            );
-            (centre(k + 1), amp[k], slope)
-        } else {
-            (usize::MAX, amp[k], (0.0, 0.0))
-        }
-    };
-    // Before the first centre the amplitude is constant; `k` is then the
-    // interval's left centre once inside one.
-    let mut k: Option<usize> = None;
-    let (mut from, mut base, mut slope, mut until) = (0, amp[0], (0.0f32, 0.0f32), centre(0));
-    let mut corr = correction;
-    let mut sums = Sums::default();
-    let mut energy = 0.0f32;
-    let (mut residue, mut residue_noise) = (0.0f32, 0.0f32);
-    let mut changed = 0usize;
-    blocks(
-        &synth,
-        end,
-        |_| true,
-        |j0, phase, env| {
-            let n = phase.len();
-            let (a, b) = usable.range(start, j0, n);
-            let (a, b) = (a - j0, b - j0);
-            if a == b {
-                corr.skip(n);
-            } else {
-                corr.skip(a);
-                let xs = &mut audio[(start + (j0 + a) as i64) as usize..][..b - a];
-                for (i, ((&p, &w), x)) in phase[a..b].iter().zip(&env[a..b]).zip(xs).enumerate() {
-                    let j = j0 + a + i;
-                    while j >= until {
-                        let next = k.map_or(0, |k| k + 1);
-                        k = Some(next);
-                        let (end_of, v, sl) = line(next);
-                        (from, base, slope, until) = (centre(next), v, sl, end_of);
-                    }
-                    let t = if j > from { (j - from) as f32 } else { 0.0 };
-                    let (ra, rb) = (base.0 + t * slope.0, base.1 + t * slope.1);
-                    let q = p.wrapping_add(corr.next());
-                    let (rc, rs) = (w * cos_turns(q), w * sin_turns(q));
-                    let est = ra * rc + rb * rs;
-                    *x = input(*x) - est;
-                    energy += est * est;
-                    sums.add(*x, rc, rs);
+    let r = removal.get_or_insert_with(|| Removal::new(seg, amp[0]));
+    if fused {
+        r.held(&amp, segments, &held, audio, start, done, written);
+    } else {
+        // The samples from `done` on, from a second run of the reference.
+        let mut corr = correction;
+        let mut at = 0;
+        blocks(
+            &synth,
+            end,
+            |j0| j0 + BLOCK > done,
+            |j0, phase, env| {
+                let (a, b) = usable.range(start, j0, phase.len());
+                let (a, b) = (a.max(done).min(b) - j0, b - j0);
+                corr.skip(j0 + a - at);
+                for i in a..b {
+                    let q = phase[i].wrapping_add(corr.next());
+                    let (rc, rs) = (env[i] * cos_turns(q), env[i] * sin_turns(q));
+                    let j = j0 + i;
+                    r.sample(
+                        &amp,
+                        segments,
+                        j,
+                        &mut audio[(start + j as i64) as usize],
+                        rc,
+                        rs,
+                    );
                 }
-                changed += b - a;
-                corr.skip(n - b);
-            }
-            let next = j0 + n;
-            if next % seg == 0 || next >= end {
-                let s = j0 / seg;
-                if let Some((e, noise)) = sums.projection(seg.min(WAVEFORM_SAMPLES - s * seg)) {
-                    residue += e;
-                    residue_noise += noise;
-                }
-                sums = Sums::default();
-            }
-        },
-    );
-    out.samples = changed;
-    out.energy = energy;
-    out.residue = residue;
-    out.residue_noise = residue_noise;
+                at = j0 + b;
+            },
+        );
+    }
+    r.finish_segment();
+    out.samples = r.changed;
+    out.energy = r.energy;
+    out.residue = r.residue;
+    out.residue_noise = r.residue_noise;
     Ok(out)
+}
+
+/// The longest segment whose amplitude fit and subtraction share one run of
+/// the reference (two symbols; longer segments run it twice).
+const FUSED_SEGMENT: usize = 2 * T;
+/// Reference samples held between the fit and the subtraction: a segment
+/// and a half of the longest fused segment (from one segment's centre to
+/// the next segment's end).
+const HELD: usize = FUSED_SEGMENT * 3 / 2;
+
+/// The centre of segment `k` (a whole sample: segments are whole blocks).
+fn centre(seg: usize, k: usize) -> usize {
+    k * seg + seg.min(WAVEFORM_SAMPLES - k * seg) / 2
+}
+
+/// Step 4, fed the usable samples in order with their reference: the
+/// amplitude linear between segment centres, amp[k] + (j − centre k)·slope
+/// (constant before the first centre and after the last), the
+/// subtraction, and the residue's projection per segment.
+struct Removal {
+    seg: usize,
+    /// The interval's left centre once inside one (`None` before the first).
+    k: Option<usize>,
+    from: usize,
+    base: (f32, f32),
+    slope: (f32, f32),
+    until: usize,
+    /// The residual's sums over segment `cur`'s samples so far.
+    sums: Sums,
+    cur: usize,
+    cur_end: usize,
+    energy: f32,
+    residue: f32,
+    residue_noise: f32,
+    changed: usize,
+}
+
+impl Removal {
+    /// Before the first centre; `amp0` is the first segment's amplitude
+    /// (final).
+    fn new(seg: usize, amp0: (f32, f32)) -> Self {
+        Removal {
+            seg,
+            k: None,
+            from: 0,
+            base: amp0,
+            slope: (0.0, 0.0),
+            until: centre(seg, 0),
+            sums: Sums::default(),
+            cur: 0,
+            cur_end: 0,
+            energy: 0.0,
+            residue: 0.0,
+            residue_noise: 0.0,
+            changed: 0,
+        }
+    }
+
+    /// Adds segment `cur`'s projection (none without samples) and empties
+    /// the sums.
+    fn finish_segment(&mut self) {
+        let seg = self.seg;
+        if let Some((e, noise)) = self
+            .sums
+            .projection(seg.min(WAVEFORM_SAMPLES - self.cur * seg))
+        {
+            self.residue += e;
+            self.residue_noise += noise;
+        }
+        self.sums = Sums::default();
+    }
+
+    /// Moves to sample `j` (the one after the last given): finishes the
+    /// segment it leaves and enters the interval holding it. The
+    /// amplitudes up to the segment after that interval must be final.
+    #[inline]
+    fn enter(&mut self, amp: &[(f32, f32); MAX_SEGMENTS], segments: usize, j: usize) {
+        let seg = self.seg;
+        if j >= self.cur_end {
+            self.finish_segment();
+            self.cur = j / seg;
+            self.cur_end = (self.cur + 1) * seg;
+        }
+        while j >= self.until {
+            let next = self.k.map_or(0, |k| k + 1);
+            self.k = Some(next);
+            self.from = centre(seg, next);
+            self.base = amp[next];
+            if next + 1 < segments {
+                let span = 1.0 / (centre(seg, next + 1) - centre(seg, next)) as f32;
+                self.slope = (
+                    (amp[next + 1].0 - amp[next].0) * span,
+                    (amp[next + 1].1 - amp[next].1) * span,
+                );
+                self.until = centre(seg, next + 1);
+            } else {
+                self.slope = (0.0, 0.0);
+                self.until = usize::MAX;
+            }
+        }
+    }
+
+    /// Subtracts the reference `refs[i]` of samples `j0 + i` from `xs[i]`;
+    /// within one segment and one interval (after [`Removal::enter`]).
+    #[inline(always)]
+    fn run(&mut self, j0: usize, xs: &mut [f32], refs: &[(f32, f32)]) {
+        let (from, base, slope) = (self.from, self.base, self.slope);
+        let mut energy = self.energy;
+        let mut sums = self.sums;
+        for (i, (x, &(rc, rs))) in xs.iter_mut().zip(refs).enumerate() {
+            let j = j0 + i;
+            let t = if j > from { (j - from) as f32 } else { 0.0 };
+            let (ra, rb) = (base.0 + t * slope.0, base.1 + t * slope.1);
+            let est = ra * rc + rb * rs;
+            *x = input(*x) - est;
+            energy += est * est;
+            sums.add(*x, rc, rs);
+        }
+        self.energy = energy;
+        self.sums = sums;
+        self.changed += xs.len();
+    }
+
+    /// Subtracts the reference `(rc, rs)` of sample `j` (the one after the
+    /// last given) from `x`.
+    fn sample(
+        &mut self,
+        amp: &[(f32, f32); MAX_SEGMENTS],
+        segments: usize,
+        j: usize,
+        x: &mut f32,
+        rc: f32,
+        rs: f32,
+    ) {
+        self.enter(amp, segments, j);
+        self.run(j, core::slice::from_mut(x), &[(rc, rs)]);
+    }
+
+    /// Subtracts samples `from..to` (reference sample j at slot sample
+    /// `start + j`), whose reference is held at `j % HELD`.
+    #[allow(clippy::too_many_arguments)]
+    fn held(
+        &mut self,
+        amp: &[(f32, f32); MAX_SEGMENTS],
+        segments: usize,
+        held: &[(f32, f32); HELD],
+        audio: &mut [f32],
+        start: i64,
+        from: usize,
+        to: usize,
+    ) {
+        let mut j = from;
+        while j < to {
+            self.enter(amp, segments, j);
+            let h = j % HELD;
+            let stop = to.min(self.cur_end).min(self.until).min(j + (HELD - h));
+            let xs = &mut audio[(start + j as i64) as usize..][..stop - j];
+            self.run(j, xs, &held[h..][..stop - j]);
+            j = stop;
+        }
+    }
 }
 
 /// The frequency correction's phase, sample by sample: an offset and a

@@ -383,12 +383,35 @@ fn settings_and_inputs_are_checked() {
 
 #[test]
 fn stack_storage_is_bounded() {
-    const _: () = assert!(MAX_SEGMENTS == 158 && STACK_BYTES < 8 * 1024);
+    const _: () = assert!(MAX_SEGMENTS == 158 && STACK_BYTES < 52 * 1024);
     // Every segment count `run` can use fits.
     for seg in
         (SubtractConfig::MIN_SEGMENT..=WAVEFORM_SAMPLES).step_by(SubtractConfig::SEGMENT_STEP)
     {
         assert!(WAVEFORM_SAMPLES.div_ceil(seg) <= MAX_SEGMENTS, "{seg}");
     }
-    assert_eq!(STACK_BYTES, 4_536);
+    assert_eq!(STACK_BYTES, 50_616);
+}
+
+#[test]
+fn held_and_rerun_references_give_identical_results() {
+    // The reference held between the fit and the subtraction, a second
+    // run of it (hold 0), and holds small enough to overflow part-way
+    // (the rest from a second run): bit-identical residuals and estimates.
+    let slot = noisy_slot();
+    for (f, dt) in [(1_234.5f32, 0.31f32), (1_234.5, -1.2)] {
+        let d = decode_near(f, dt);
+        for seg in [960, T, 2 * T] {
+            for (skip, cut) in [(0, SLOT_SAMPLES), (30_000, 90_000)] {
+                let config = SubtractConfig::DEFAULT.with_segment(seg);
+                let mut want = None;
+                for hold in [HELD, 0, 1_000, 2_500] {
+                    let mut a = slot[..cut].to_vec();
+                    let r = run(&mut a, &d, skip, &config, Fixed::default(), hold).unwrap();
+                    let h = hash(&a, &r);
+                    assert_eq!(*want.get_or_insert(h), h, "{f} {dt} {seg} {skip} {hold}");
+                }
+            }
+        }
+    }
 }
