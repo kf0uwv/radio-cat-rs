@@ -385,21 +385,19 @@ impl<'a> Spectrogram<'a> {
     fn finish_row(&mut self) {
         let width = self.band.stored_bins();
         let row = &mut self.levels[self.rows * width..(self.rows + 1) * width];
-        let (mut floored, mut top) = (0, 0);
         power_bins(
             &self.front.window,
             &mut self.front.fft,
             self.band.first_bin(),
             width,
             |i, p| {
-                let level = level_of(log2_power(p));
-                floored += usize::from(level == 0);
-                top += usize::from(level == u8::MAX);
-                row[i] = level;
+                for (level, &p) in row[i..i + p.len()].iter_mut().zip(p) {
+                    *level = level_of(log2_power(p));
+                }
             },
         );
-        self.floored += floored;
-        self.top += top;
+        self.floored += row.iter().filter(|&&l| l == 0).count();
+        self.top += row.iter().filter(|&&l| l == u8::MAX).count();
         self.rows += 1;
     }
 }

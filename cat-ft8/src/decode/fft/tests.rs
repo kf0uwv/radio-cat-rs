@@ -332,3 +332,48 @@ fn a_full_scale_sine_centred_in_a_bin_reads_one() {
 fn table_bytes_matches_the_statics() {
     assert_eq!(TABLE_BYTES, table_bytes_of_statics());
 }
+
+#[test]
+fn transform_equals_the_reference_bit_for_bit() {
+    // Noise at several scales (to ±2¹⁶ after the window), silence, an
+    // impulse and a constant: every output value equal to the reference's
+    // bits, but for the sign of a zero.
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
+    };
+    let mut inputs: Vec<[Complex; N]> = Vec::new();
+    for scale in [1e-6f32, 0.03, 1.0, 65_536.0] {
+        for _ in 0..8 {
+            let mut x = [Complex::ZERO; N];
+            for v in x.iter_mut() {
+                *v = Complex {
+                    re: scale * next(),
+                    im: scale * next(),
+                };
+            }
+            inputs.push(x);
+        }
+    }
+    inputs.push([Complex::ZERO; N]);
+    let mut impulse = [Complex::ZERO; N];
+    impulse[7] = Complex { re: 1.0, im: -2.0 };
+    inputs.push(impulse);
+    inputs.push([Complex { re: 0.25, im: 0.0 }; N]);
+    for x in inputs {
+        let (mut a, mut b) = (x, x);
+        fft(&mut a);
+        fft_reference(&mut b);
+        for (i, (p, q)) in a.iter().zip(&b).enumerate() {
+            for (u, v) in [(p.re, q.re), (p.im, q.im)] {
+                assert!(
+                    u.to_bits() == v.to_bits() || (u == 0.0 && v == 0.0),
+                    "bin {i}: {u:e} {v:e}"
+                );
+            }
+        }
+    }
+}

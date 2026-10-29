@@ -143,6 +143,62 @@ fn hann(n: usize) -> f32 {
 /// In-place 1 920-point complex DFT of `buf`, whose input is already in
 /// digit-reversed order. Output in natural order.
 fn fft(buf: &mut [Complex; N]) {
+    // One call per entry of `STAGES` (checked at compile time below).
+    stage::<4>(buf, 1);
+    stage::<4>(buf, 4);
+    stage::<4>(buf, 16);
+    stage::<2>(buf, 64);
+    stage::<3>(buf, 128);
+    stage::<5>(buf, 384);
+}
+
+const _: () = {
+    let calls = [4, 4, 4, 2, 3, 5];
+    let mut i = 0;
+    while i < STAGES.len() {
+        assert!(STAGES[i] == calls[i]);
+        i += 1;
+    }
+};
+
+/// One radix-`R` stage over sub-transforms of length `l`: for each
+/// `k < l` and each block of `l · R` values,
+/// out[q] = Σ_m a[m] · W_span^(m · (k + q·l)), summed in the order of `m`.
+/// The `m = 0` twiddle is exactly 1 (`TWIDDLES[0]` = [1.0, −0.0]), so that
+/// product is the value itself and is not computed. (Its sign of zero may
+/// differ from the product's, which no later `+ − ×` or the power can
+/// tell.) The twiddles depend only on `k`, so they are read once per `k`.
+#[inline(always)]
+fn stage<const R: usize>(buf: &mut [Complex; N], l: usize) {
+    let span = l * R;
+    let step = N / span; // W_span^x = W_N^(x · step)
+    for k in 0..l {
+        let mut w = [[Complex::ZERO; R]; R];
+        for (m, wm) in w.iter_mut().enumerate().skip(1) {
+            for (q, wmq) in wm.iter_mut().enumerate() {
+                *wmq = Complex::from_pair(TWIDDLES[(m * (k + q * l) * step) % N]);
+            }
+        }
+        for block in buf.chunks_exact_mut(span) {
+            let mut a = [Complex::ZERO; R];
+            for (m, am) in a.iter_mut().enumerate() {
+                *am = block[k + m * l];
+            }
+            for q in 0..R {
+                let mut acc = a[0];
+                for m in 1..R {
+                    acc = acc.add(a[m].mul(w[m][q]));
+                }
+                block[k + q * l] = acc;
+            }
+        }
+    }
+}
+
+/// The transform as first written (every product, `% N` per twiddle): the
+/// reference [`fft`] is checked against.
+#[cfg(test)]
+pub(crate) fn fft_reference(buf: &mut [Complex; N]) {
     let mut l = 1;
     for &r in STAGES.iter() {
         let span = l * r;
@@ -230,13 +286,20 @@ pub(crate) fn power_spectrum(
     out: &mut [f32],
 ) {
     let count = out.len();
-    power_bins(samples, buf, first_bin, count, |i, p| out[i] = p);
+    power_bins(samples, buf, first_bin, count, |i, p| {
+        out[i..i + p.len()].copy_from_slice(p)
+    });
 }
 
-/// Calls `f(i, power)` for bins `first_bin + i`, i in `0..count`, of the
-/// Hann-windowed spectrum of `samples` (normalised as in
-/// [`power_spectrum`]), without a buffer for the powers.
-pub(crate) fn power_bins<F: FnMut(usize, f32)>(
+/// Powers handed to the caller at a time by [`power_bins`].
+pub(crate) const POWER_CHUNK: usize = 64;
+
+/// Calls `f(i, powers)` with the powers of bins `first_bin + i ..`, in
+/// order and in chunks of at most [`POWER_CHUNK`], for bins `first_bin ..
+/// first_bin + count` of the Hann-windowed spectrum of `samples`
+/// (normalised as in [`power_spectrum`]). Chunks let the caller's
+/// per-bin work run as a plain loop over values (which vectorises).
+pub(crate) fn power_bins<F: FnMut(usize, &[f32])>(
     samples: &[f32; WINDOW],
     buf: &mut FftBuffer,
     first_bin: usize,
@@ -245,9 +308,16 @@ pub(crate) fn power_bins<F: FnMut(usize, f32)>(
 ) {
     assert!(first_bin + count <= BINS, "bins beyond the transform");
     spectrum(samples, buf);
-    for i in 0..count {
-        let x = real_bin(&buf.work, first_bin + i);
-        f(i, (x.re * x.re + x.im * x.im) * POWER_SCALE);
+    let mut p = [0.0f32; POWER_CHUNK];
+    let mut i = 0;
+    while i < count {
+        let n = (count - i).min(POWER_CHUNK);
+        for (j, slot) in p[..n].iter_mut().enumerate() {
+            let x = real_bin(&buf.work, first_bin + i + j);
+            *slot = (x.re * x.re + x.im * x.im) * POWER_SCALE;
+        }
+        f(i, &p[..n]);
+        i += n;
     }
 }
 
