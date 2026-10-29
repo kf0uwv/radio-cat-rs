@@ -442,6 +442,10 @@ impl core::fmt::Debug for CandidateScratch {
 /// between passes (about 51 KB in all). The caller decides where it lives
 /// (`new` is `const`, so it can be a `static`); its contents between calls
 /// do not matter. A pass 1 run separately takes [`PassesScratch::candidate`].
+///
+/// On a small target, place it in a `static` (or other memory set aside
+/// for it) rather than in a local: [`PassesScratch::new`] returns it by
+/// value, and a local would put about 51 KB on the stack.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct PassesScratch {
@@ -760,7 +764,9 @@ impl<'a> Decoder<'a> {
     /// **Memory.** `scratch` ([`PassesScratch`], about 51 KB) is the
     /// caller's; besides the decoder's own frames, a subtraction needs
     /// [`SUBTRACT_STACK_BYTES`](super::SUBTRACT_STACK_BYTES) of stack plus
-    /// its call frames (about 7.4 KB in all in the Cortex-M33 link check),
+    /// its call frames (about 7.4 KB in all in the Cortex-M33 link check:
+    /// `subtract` and its time search's frames; the larger figure in
+    /// ADR 0024 adds the check program's own frames above them),
     /// only when more than one pass runs.
     pub fn decode_passes(
         &mut self,

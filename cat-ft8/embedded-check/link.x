@@ -17,7 +17,8 @@
  * with 1 MiB of flash and 512 KiB of RAM (the small image's statics fit in
  * 256 KiB; the host image's, with the subtraction's working storage, do
  * not). Only sizes matter; the program is linked, measured and inspected,
- * never run. check.sh prints each image's static RAM. */
+ * never run. check.sh prints each image's static RAM and fails above each
+ * image's own ceiling (256 KiB small and encoder-only, 512 KiB host). */
 MEMORY
 {
   FLASH : ORIGIN = 0x00000000, LENGTH = 1M

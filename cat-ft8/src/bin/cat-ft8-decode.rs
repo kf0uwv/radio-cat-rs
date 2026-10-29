@@ -266,7 +266,9 @@ impl Times {
 }
 
 /// The `--profile` line: per-pass keys follow the others when more than one
-/// pass is configured.
+/// pass is configured. `peak_bytes` leaves out the subtraction's working
+/// storage (`SubtractScratch`, in `PassesScratch`); the key is kept as it
+/// was so the output does not change.
 fn profile_line(
     setup: &Setup,
     seconds: &[(String, f64)],

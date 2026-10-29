@@ -939,9 +939,10 @@ impl Removal {
         self.changed += xs.len();
     }
 
-    /// Subtracts samples `from..from + refs.len()` (the one after the
-    /// last given on; reference sample j at slot sample `start + j`), whose
-    /// references are `refs`, in runs within one segment and one interval.
+    /// Subtracts samples `from..from + refs.len()`, whose references are
+    /// `refs`, in runs within one segment and one interval. `from` must
+    /// follow the last sample given; reference sample j is at slot sample
+    /// `start + j`.
     #[inline]
     fn refs(
         &mut self,
