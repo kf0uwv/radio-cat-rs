@@ -1246,6 +1246,46 @@ Done 2026-10-29 (59bb2c7, 2dd54dc, c3f080f; findings, "O1 fix round").
 Item 3's subcost found the second reference run (segments beyond two
 symbols) about 12% slower than at 36cc440; c3f080f fixes it.
 
+## O2: second decode-time round (2026-10-29)
+
+Same ground rules as O1: results bit-identical to the O1 fix round (pins,
+multi-pass pins, the 24 subtraction anchors, `run` records with timings
+removed, the decode command on the 800 WAV slots), the same `f32`
+operations in the same order, no new soft-float helpers on Cortex-M; up
+to five steps, each timed on x86-64 and the Cortex-A76 against the one
+before and kept only if it wins on one without losing on the other.
+
+1. Profile first (`perf` on x86-64; stage timers and `subcost` on the
+   A76) and pick targets from it.
+2. Steps kept: the reference generator in runs per symbol part
+   (08d5d8e); `exp2_neg`'s floor without a conversion on x86-64
+   (fbc5857); sync scored a start row at a time (27bb0d5); the
+   generator's increments without a conversion on x86-64 (d6bab4f).
+   Rejected: the envelope-multiply skip with an `f32` offset counter
+   (slower on both hosts); step 2's floor on AArch64 (no gain).
+3. Review items from the O1 delta review (b39ce66): per-image static RAM
+   ceilings in `check.sh` (small and encoder-only 256 KiB, host 512
+   KiB); `peak_bytes` documented as leaving out the subtraction scratch
+   (key unchanged); `PassesScratch` steered to a `static`; the
+   `Removal::refs` wording; the 7.4 KB and 14 KB frame figures told
+   apart.
+4. Identity at every step's clean commit; the release test suite and a
+   `run` identity block on the A76 at the final commit; the release
+   decode command's output on the 800 WAV slots.
+
+Done 2026-10-29 (findings, "Decode time, optimisation round (O2)").
+
+### Open API question (decide before the API freeze)
+
+`PassesScratch` holds the candidate scratch and the subtraction scratch
+by value, so they always sit together. A target that wants them in
+different memories (the 5 KB candidate scratch in fast RAM, the 46 KB
+subtraction scratch elsewhere), or that already has a `static
+CandidateScratch`, cannot split them. The alternative is a separate
+`&mut SubtractScratch` argument to `decode_passes*` and
+`decode_further_passes*`, with no combined type. Kept as it is for now;
+to be settled before the API is frozen.
+
 ## Later (not in this round)
 
 - Contiguous codeword layout and table CRC, as profiled optimisations that

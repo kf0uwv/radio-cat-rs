@@ -1816,3 +1816,149 @@ The O1 speed is kept (x86 subtract 71.4–71.6 ms per slot against
 **Not measured:** any Cortex-M at run time (frames and flash only);
 whether a real Cortex-M target's stack layout matches the link check's
 per-function frames (the chain figures are sums of those).
+
+## Decode time, optimisation round (O2, 2026-10-29)
+
+Four changes, each bit-identical to the O1 fix round's code (c3f080f,
+b465b75): 08d5d8e, fbc5857, 27bb0d5 and d6bab4f; then b39ce66 (review
+items, no change to results). Outputs kept locally (not committed).
+Hosts as before: the x86-64 desktop, and a Raspberry Pi 5 (Cortex-A76,
+2.4 GHz; generic `aarch64-unknown-linux-gnu` build, one benchmark at a
+time; throttle flags 0x50000 before and after every timing run: sticky
+bits only).
+
+**Where the time went** at the start (`perf` on x86-64, three passes):
+belief propagation 26%, the subtraction's amplitude fit 16%, the
+reference generator (`fill_phase` 12%, `skip` 3%), the FFT 10%, the
+removal loop 9%, the time search's correlations 7%, the sync search 6%.
+In the subtraction alone (`subcost`): fit 33%, generator 30%, removal
+18%, correlations 14%. On the Pi (stage timers, per 40-signal slot):
+subtraction 147 ms, belief propagation 41, feed 31, sync 18.4. The
+annotated hot loops showed two things the O1 profile had not: the
+generator's per-sample branches and bounds checks, and, in every
+vectorised loop that converts `f32` to an integer, the saturating `as`
+conversion done a lane at a time on x86-64 (SSE2 has no saturating
+conversion; AArch64's is one instruction and saturates).
+
+`slotcost host,passes=1 host 200 5` (200 crowded 40-signal slots, per
+slot the median of 5 interleaved runs; worst / mean ms), each step
+against the one before, two rounds, binaries alternated:
+
+| step | x86-64 | Cortex-A76 | stage it targets (per slot) |
+|---|---|---|---|
+| base (c3f080f code) | 142.8 / 132.1, 142.6 / 132.4 | 262.1 / 241.2, 261.8 / 240.9 | |
+| 1. generator in runs (08d5d8e) | 136.9 / 126.8, 138.2 / 127.5 | 237.1 / 219.5, 237.1 / 219.5 | subtract 71.3–71.6 → 66.4–66.8 (x86), 147.2 → 125.9 (A76) |
+| 2. `exp2_neg` floor (fbc5857), against 08d5d8e | 138.4 / 129.2, 139.8 / 128.0 → 132.8 / 122.7, 131.0 / 121.5 | 237.8 / 220.2 → 237.2 / 219.7, 237.5 / 220.0 (same code there) | BP 32.0–32.3 → 25.8–26.0 (x86) |
+| 3. sync by rows (27bb0d5), against fbc5857 | 134.4 / 122.1, 131.3 / 121.2 → 126.8 / 116.2, 127.8 / 116.4 | 237.2 / 219.7, 237.5 / 220.0 → 223.5 / 206.0, 223.7 / 206.2 | sync 8.53 → 3.55 (x86), 18.4–18.8 → 4.67 (A76) |
+| 4. increments without a conversion (d6bab4f) | → 125.8 / 114.7, 123.3 / 114.7 | → 223.6 / 206.2, 223.7 / 206.2 (same code there) | subtract 66.6–66.8 → 64.5 (x86) |
+| **final (b39ce66) against base, same session** | **144.3 / 133.6, 145.1 / 132.7 → 123.8 / 114.6, 126.1 / 114.5** | **262.0 / 241.1, 261.9 / 241.0 → 223.6 / 206.1, 223.6 / 206.1** | |
+
+Final stages (x86-64 / Cortex-A76, ms per slot, base → final):
+subtract 72.0 → 64.4 / 147.2 → 126.1; belief propagation 32.1 → 26.2 /
+41.6 → 41.4; sync 8.55 → 3.6 / 18.35 → 4.67; feed 15.4 / 31.3
+unchanged. Single pass (`host,passes=1`): x86 worst 26.7–26.8 → 21.7–22.2
+ms, mean 25.5 → 21.0–21.2; A76 38.8–38.9 → 34.2, 37.4 → 32.8.
+`subcost host seg=3840 20 5` per call, base → final: x86 2.06–2.12 →
+1.85–1.88 ms (three rounds); A76 4.261–4.262 → 3.651 ms (two rounds).
+
+1. **Reference generator in runs** (08d5d8e). `Synth::fill_phase` and the
+   time search's skips (`Synth::skip_with`, crate-internal) form the
+   phase increments a symbol part at a time: where the previous symbol's
+   pulse and the current one's rising half overlap, the rising half
+   alone, the falling half alone, the falling half with the next
+   symbol's pulse. The products and sums are `run`'s, in the same order;
+   the increments are then added in order (integer arithmetic, so the
+   skip may sum them in any order). No per-sample branch or bounds
+   check: the float part vectorises (on x86-64 the conversion still went
+   a lane at a time, see 4). Tested equal, phase and envelope bit for
+   bit, to the per-sample generator for five tone sets (every tone triple
+   among them) and bases up to the highest accepted, blocks of 1 to 4 097
+   samples around every run boundary, with skips between. `fill`, `mix`
+   and `skip` (the encoder's) are unchanged. `subcost`: x86 2.05–2.09 →
+   1.92–1.95 ms per call, A76 4.263 → 3.646.
+2. **`exp2_neg` floor without a conversion on x86-64** (fbc5857). The
+   sum-product round's tanh loop vectorised but converted `y as i32` a
+   lane at a time. On x86-64 ⌊y⌋ now comes from y + 1.5·2²³ (spacing 1
+   there, so the sum is y rounded, held in the low mantissa bits), one
+   less if that rounded up: the same integer, every float operation
+   unchanged (tested at every `f32` in −126…0). Other targets keep the
+   conversion.
+3. **Sync by rows** (27bb0d5). The candidate search scored each (start
+   row, base bin) on its own: 21 spectrogram row lookups and eight levels
+   summed per point. It now fills a start row of the score grid at once,
+   a spectrogram row at a time, the inner loop along the bins over
+   slices. Integer sums of the same terms in another order: equal
+   (tested at every bin of 69 start rows, three bands, full and partial
+   slots against `costas_score`, which stays for the refinement).
+4. **Generator increments without a conversion on x86-64** (d6bab4f). The
+   increment, in [0, 2³¹), from the same exact floor: the top 15 bits
+   ⌊x / 2¹⁶⌋, the low 16 bits ⌊x − 2¹⁶·⌊x / 2¹⁶⌋⌋ (the scaling exact, the
+   difference a multiple of x's spacing below 2¹⁶): the same integer as
+   `as i32` (tested at every `f32` in [0, 2³¹)). Small: `subcost` x86
+   1.92–1.95 → 1.85–1.89 ms per call (three rounds each, no overlap),
+   slot mean −1.5 ms; other targets unchanged.
+
+**Rejected** (results identical in each):
+
+- Step 2's floor on AArch64 as well: 237.8 / 220.2 and 237.9 / 220.4
+  against 237.2 / 219.7 and 237.5 / 220.0 (BP 41.2–41.4 either way); its
+  one-instruction conversion is kept, and Cortex-M's.
+- `as i64` in step 1's lane loop on x86-64 (as `increment` does): 1.93–1.95
+  against 1.93–1.99 ms per call, no gain.
+- Skipping the envelope multiply in the blocks where the envelope is 1.0
+  (all but the first and last; `1.0 · v` is `v`) in the fit, the second
+  reference run and the correlations, with the removal's offset counted
+  in `f32` instead of converted per sample: x86 1.85–1.90 → 2.11–2.14 ms
+  per call, the envelope part alone 2.09–2.13; A76 3.673 → 3.888.
+
+**Identity.** After each step, at its clean commit, built in this
+repository's path: all unit and integration tests and pins (multi-pass
+pins and the 24 subtraction anchors included); `paired_bench run` with
+timings removed equal to the S3 fix round's records for `host` (38 900,
+every set and block) and to its single-pass records for `host,passes=1`
+and `small` (34 800 each): 0 differing, at 08d5d8e, fbc5857, 27bb0d5,
+d6bab4f and b39ce66. The release `cat-ft8-decode` built at b39ce66 from
+this repository's path (sha256 in progress.md): its output on the 800
+WAV slots (`host` and `small`, `host,passes=1` and `small`; plain,
+`--raw` and `--profile` with timings removed) is byte-identical to
+b465b75's. Raspberry Pi 5, b39ce66: the release test suite (all eight
+test executables, ignored tests included: 149 + 12 + 7 + 5 + 2 + 2 + 1
+bulk) passes (throttle flags 0x50000 before and after); `paired_bench
+run host` and `small` on sweep and crowded (main) there: records equal to
+x86-64's and to the references (15 600 each, 0 differing). That run uses
+every core, and the under-voltage flag was current at the start of the
+`host` part and the end of the `small` part (0x50005): not a timing run,
+and its records are equal, but the board's supply was at its limit.
+
+**Sizes** (`check.sh --stack`, thumbv8m.main-none-eabihf; base → final):
+
+| | base | final |
+|---|---|---|
+| small image flash | 85 680 B | 86 492 B (+472 `fill_phase`, +340 sync) |
+| host image flash | 94 060 B | 94 896 B |
+| encoder-only flash | 36 116 B | 36 548 B (+432 `fill_phase`) |
+| static RAM (small / host / encoder) | 212 280 / 287 928 / 0 B | unchanged |
+| `subtract` / its closure / `blocks` frames (host) | 4 552 / 2 800 / 2 192 B | unchanged |
+| `fill_phase` frame (host) | 176 B | 72 B (+ `increments` 88 B, `skip_with` 32 B) |
+| sync row closure | (none) | 96 B |
+
+The check program calls `fill_phase` in every image (it exercises each
+public floating-point entry point), so all three carry the new one; an
+encoder that does not call it is unchanged. thumbv7em-none-eabihf: small
+86 006 → 86 782 B, host 94 482 → 95 242, encoder-only 36 158 → 36 586.
+Soft-float helper call sites unchanged in all three images on both
+targets (small and encoder-only one each of `__aeabi_f2lz`,
+`__aeabi_l2f`, `__aeabi_uldivmod`; host 5, 2, 2). On Cortex-M the
+conversions of steps 2 and 4 are not used; step 1 removes per-sample
+branches there too, step 3 per-point lookups, but no Cortex-M was run.
+
+**Measurement note.** Binaries for the Pi built from extracted archives
+of different commits into one shared target directory came out stale:
+the archives' files carry the commit time, older than the directory's
+last build, and cargo's unit hashes do not include the source path, so
+cargo kept the previous binary (two "different" builds were the same
+file). Caught by their hashes and by a stage time that could not
+change; the affected Pi runs were discarded and every timed binary was
+rebuilt in its own target directory. The numbers above are from those.
+
+**Not measured:** any Cortex-M at run time.

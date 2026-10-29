@@ -922,3 +922,51 @@
   final commit of this round (the planning commit changes no input of
   the build; same bytes as at c3f080f): sha256
   56f3786f1744977263f771c7e1178d7b9bd828ed28bbdbcb1b6018fa502704e2.
+
+## Session: 2026-10-29 (O2, decode time)
+
+- Profile: `perf` on x86-64 (three passes and `subcost`), stage timers on
+  the Cortex-A76. Targets: the reference generator's per-sample
+  branches, saturating `f32` → integer conversions done a lane at a time
+  on x86-64 (SSE2), the sync search's per-point lookups.
+- 08d5d8e: `fill_phase` / `skip_with` form increments in runs per symbol
+  part (vectorised), then add them in order. Subtract per call x86
+  2.05–2.09 → 1.92–1.95 ms, A76 4.263 → 3.646.
+- fbc5857: `exp2_neg` floor via 1.5·2²³ on x86-64 only. BP per slot
+  32.0–32.3 → 25.8–26.0 ms (x86); A76 unchanged (kept its conversion).
+- 27bb0d5: sync scores a start row at a time. Sync per slot 8.53 → 3.55
+  ms (x86), 18.4 → 4.67 (A76).
+- d6bab4f: generator increments via the exact floor on x86-64. Subtract
+  per call 1.92–1.95 → 1.85–1.89 ms; A76 unchanged.
+- Rejected: envelope-multiply skip with an `f32` offset counter (x86
+  +13%, A76 +6%); step 2's floor on AArch64 (no gain); `as i64` in the
+  lane loop (no gain).
+- b39ce66: `check.sh` static RAM ceilings per image (tested failing at a
+  lowered limit); `peak_bytes`, `PassesScratch`, `Removal::refs` and
+  frame-figure docs. `PassesScratch` shape left as an open API question
+  (task_plan.md).
+- 40-signal slot, three passes, worst / mean, base → final, same
+  session: x86 144.3 / 133.6, 145.1 / 132.7 → 123.8 / 114.6, 126.1 /
+  114.5 ms; Raspberry Pi 5 262.0 / 241.1, 261.9 / 241.0 → 223.6 / 206.1
+  (both rounds).
+- Identity at each step's clean commit: run records = S3 fix round's
+  (host 38 900, passes=1 and small 34 800 each, 0 differing); final
+  decode command's 800-WAV output byte-identical to b465b75's.
+- Raspberry Pi 5 at b39ce66: release test suite passes (ignored tests
+  included); `run host` / `small` (sweep and crowded, main) records =
+  x86's (under-voltage flag seen during that all-core run; records
+  equal).
+- Sizes (thumbv8m): small 85 680 → 86 492 B, host 94 060 → 94 896,
+  encoder-only 36 116 → 36 548; static RAM and the subtraction frames
+  unchanged; soft-float helper call sites unchanged (thumbv8m and
+  thumbv7em).
+- Stale Pi binaries from a shared target directory (archive mtimes older
+  than the last build) found by hash; those runs discarded, every timed
+  binary rebuilt in its own target directory.
+- CI-equivalent checks before each code commit (fmt, clippy workspace,
+  all features and thumbv8m, workspace and release tests, thumbv8m
+  build, `check.sh` and `--stack`, MSRV 1.75, profile and no-std tests,
+  docs, bulk).
+- Release `cat-ft8-decode` built from this repository's path at b39ce66
+  (the planning commit changes no input of the build): sha256
+  2e689a03bddd57840dbb027176ee683fcc791a425b58f2b828625645bb550059.
