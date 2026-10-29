@@ -449,13 +449,31 @@ fn increment(x: f32) -> u32 {
     }
 }
 
-/// [`increment`] for [`Synth::increments`]' loops: through `i32` on every
-/// target (the same value on [0, 2³¹)), which converts several lanes at
-/// once where the loop vectorises.
+/// [`increment`] for [`Synth::increments`]' loops: the same value on
+/// [0, 2³¹), in a form that converts several lanes at once where the loop
+/// vectorises. On x86-64, where the saturating `as i32` is converted a lane
+/// at a time (SSE2), without a float-to-integer conversion: the top 15 bits
+/// are ⌊x / 2¹⁶⌋ and the low 16 bits ⌊x − 2¹⁶·⌊x / 2¹⁶⌋⌋, each step exact
+/// (the scaling by 2¹⁶ either way, and the difference, a multiple of x's
+/// spacing below 2¹⁶); elsewhere through `i32`, one instruction (AArch64
+/// converts lanes at once).
 #[inline(always)]
 fn increment_lanes(x: f32) -> u32 {
-    debug_assert!(x < 2_147_483_648.0, "phase increment {x} reaches 2^31");
-    x as i32 as u32
+    debug_assert!(
+        (0.0..2_147_483_648.0).contains(&x),
+        "phase increment {x} outside [0, 2^31)"
+    );
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::decode::math::floor_small;
+        let hi = floor_small(x * (1.0 / 65_536.0));
+        let lo = floor_small(x - hi as f32 * 65_536.0);
+        ((hi as u32) << 16).wrapping_add(lo as u32)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        x as i32 as u32
+    }
 }
 
 /// Where and how loud to put a whole waveform in a buffer.

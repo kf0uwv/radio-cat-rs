@@ -460,3 +460,41 @@ fn phase_runs_match_the_per_sample_generator() {
         }
     }
 }
+
+/// `increment_lanes` against `as i32 as u32` at every `f32` in [0, 2³¹)
+/// in `stride` steps of the bit pattern, and at the edges.
+fn increment_lanes_matches(stride: usize) {
+    let top = 2_147_483_648.0f32.to_bits();
+    let mut n = 0usize;
+    for bits in (0..top).step_by(stride) {
+        let x = f32::from_bits(bits);
+        assert_eq!(increment_lanes(x), x as i32 as u32, "{x}");
+        n += 1;
+    }
+    assert!(n > 1_000_000_000 / stride, "{n}");
+    let below = f32::from_bits(top - 1);
+    for x in [
+        0.0f32,
+        0.5,
+        1.0,
+        65_535.9,
+        65_536.0,
+        8_388_607.5,
+        8_388_608.0,
+        below,
+    ] {
+        assert_eq!(increment_lanes(x), x as i32 as u32, "{x}");
+    }
+}
+
+#[test]
+fn increment_lanes_matches_the_conversion() {
+    increment_lanes_matches(9_973);
+}
+
+/// Every `f32` in [0, 2³¹) (about 1.3·10⁹ values; run in release).
+#[test]
+#[ignore]
+fn increment_lanes_matches_the_conversion_everywhere() {
+    increment_lanes_matches(1);
+}

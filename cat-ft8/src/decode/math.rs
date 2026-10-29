@@ -126,7 +126,7 @@ fn floor_by_truncation(y: f32) -> i32 {
 /// correcting (`y as i32`, minus one if that is above y).
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 #[inline(always)]
-fn floor_small(y: f32) -> i32 {
+pub(crate) fn floor_small(y: f32) -> i32 {
     const MAGIC: f32 = 12_582_912.0; // 1.5·2²³
     let big = y + MAGIC;
     let r = (big.to_bits() as i32).wrapping_sub(MAGIC.to_bits() as i32);
