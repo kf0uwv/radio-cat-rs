@@ -273,69 +273,36 @@ pub fn decode_soft(
     for round in 1..=max_rounds {
         *rounds_run = round;
         *next = *llr;
-        for (c, row) in msg.iter_mut().enumerate() {
-            let (v, n) = check(c);
-            // Unused lanes stay 0.0 (their results are discarded).
-            let mut q = [0.0f32; LANES];
-            for j in 0..n {
-                q[j] = total[usize::from(v[j])] - row[j];
-            }
-            match rule {
-                CheckRule::SumProduct => {
-                    // All `LANES` lanes, used or not, so the tanh and atanh
-                    // passes vectorise on hosts with f32 SIMD; each used
-                    // lane's arithmetic is unchanged. On a scalar FPU the
-                    // padding costs about one lane in seven of extra
-                    // tanh/atanh work (checks have degree 6 or 7). The
-                    // small configuration uses min-sum, which has no
-                    // transcendentals; whether small targets should use
-                    // sum-product is to be re-checked with instruction
-                    // counts on such a target.
-                    let mut t = [0.0f32; LANES];
-                    for (tj, &x) in t.iter_mut().zip(q.iter()) {
-                        *tj = tanh_half(x);
-                    }
-                    // Products of all the others, by prefix and suffix, in
-                    // the same order as before.
-                    let mut prefix = [1.0f32; LANES + 1];
-                    for j in 0..n {
-                        prefix[j + 1] = prefix[j] * t[j];
-                    }
-                    let mut others = [0.0f32; LANES];
-                    let mut suffix = 1.0f32;
-                    for j in (0..n).rev() {
-                        others[j] = prefix[j] * suffix;
-                        suffix *= t[j];
-                    }
-                    let mut m = [0.0f32; LANES];
-                    for (mj, &p) in m.iter_mut().zip(others.iter()) {
-                        *mj = twice_atanh(p);
-                    }
-                    row[..n].copy_from_slice(&m[..n]);
+        if rule == CheckRule::SumProduct {
+            sum_product_round(total, next, msg);
+        } else {
+            for (c, row) in msg.iter_mut().enumerate() {
+                let (v, n) = check(c);
+                let mut q = [0.0f32; LANES];
+                for j in 0..n {
+                    q[j] = total[usize::from(v[j])] - row[j];
                 }
-                CheckRule::MinSum => {
-                    let (mut min1, mut min2, mut at) = (f32::MAX, f32::MAX, 0);
-                    let mut negatives = 0u32;
-                    for (j, &x) in q.iter().enumerate().take(n) {
-                        let a = if x < 0.0 { -x } else { x };
-                        negatives += u32::from(x < 0.0);
-                        if a < min1 {
-                            min2 = min1;
-                            min1 = a;
-                            at = j;
-                        } else if a < min2 {
-                            min2 = a;
-                        }
-                    }
-                    for (j, &x) in q.iter().enumerate().take(n) {
-                        let others_negative = negatives - u32::from(x < 0.0);
-                        let mag = ALPHA * if j == at { min2 } else { min1 };
-                        row[j] = if others_negative % 2 == 1 { -mag } else { mag };
+                let (mut min1, mut min2, mut at) = (f32::MAX, f32::MAX, 0);
+                let mut negatives = 0u32;
+                for (j, &x) in q.iter().enumerate().take(n) {
+                    let a = if x < 0.0 { -x } else { x };
+                    negatives += u32::from(x < 0.0);
+                    if a < min1 {
+                        min2 = min1;
+                        min1 = a;
+                        at = j;
+                    } else if a < min2 {
+                        min2 = a;
                     }
                 }
-            }
-            for j in 0..n {
-                next[usize::from(v[j])] += row[j];
+                for (j, &x) in q.iter().enumerate().take(n) {
+                    let others_negative = negatives - u32::from(x < 0.0);
+                    let mag = ALPHA * if j == at { min2 } else { min1 };
+                    row[j] = if others_negative % 2 == 1 { -mag } else { mag };
+                }
+                for j in 0..n {
+                    next[usize::from(v[j])] += row[j];
+                }
             }
         }
         core::mem::swap(total, next);
@@ -349,6 +316,54 @@ pub fn decode_soft(
         }
     }
     Err(BpFailure::NotConverged)
+}
+
+/// One sum-product round: every check's new messages into `msg`, added to
+/// `next` check by check in order. Done in phases over all checks (inputs,
+/// tanh, products, atanh, then the sums), so the tanh and atanh passes are
+/// long plain loops; each value's arithmetic is that of one check at a time.
+/// Not inlined: its 2 656-byte array stays off the min-sum path's frame.
+#[inline(never)]
+fn sum_product_round(total: &[f32; N], next: &mut [f32; N], msg: &mut [[f32; MAX_DEGREE]; M]) {
+    // Unused lanes stay 0.0: tanh and atanh give 0.0 there, discarded.
+    let mut t = [[0.0f32; LANES]; M];
+    for (c, (tc, row)) in t.iter_mut().zip(msg.iter()).enumerate() {
+        let (v, n) = check(c);
+        for j in 0..n {
+            tc[j] = total[usize::from(v[j])] - row[j];
+        }
+    }
+    for tc in t.iter_mut() {
+        for x in tc.iter_mut() {
+            *x = tanh_half(*x);
+        }
+    }
+    // Products of all the others, by prefix and suffix, in place.
+    for (c, tc) in t.iter_mut().enumerate() {
+        let n = usize::from(DEGREES[c]);
+        let mut prefix = [1.0f32; LANES + 1];
+        for j in 0..n {
+            prefix[j + 1] = prefix[j] * tc[j];
+        }
+        let mut suffix = 1.0f32;
+        for j in (0..n).rev() {
+            let tj = tc[j];
+            tc[j] = prefix[j] * suffix;
+            suffix *= tj;
+        }
+    }
+    for tc in t.iter_mut() {
+        for x in tc.iter_mut() {
+            *x = twice_atanh(*x);
+        }
+    }
+    for (c, (row, tc)) in msg.iter_mut().zip(t.iter()).enumerate() {
+        let (v, n) = check(c);
+        row[..n].copy_from_slice(&tc[..n]);
+        for j in 0..n {
+            next[usize::from(v[j])] += row[j];
+        }
+    }
 }
 
 #[cfg(test)]
