@@ -304,14 +304,7 @@ impl Synth {
                 let freq = self.base_hz + TONE_SPACING_HZ * dev;
                 let env = if ramped { envelope(sym * ns + s) } else { 1.0 };
                 emit(phase, env);
-                // `freq` is positive and below half the sample rate (checked
-                // in `new`), so the increment is in [0, 2³¹): converting
-                // through `i32` is exact there and gives the same value as
-                // a direct `as u32`. The signed conversion is a single
-                // instruction on Cortex-M (as `as u32` is) and shorter than
-                // `as u32` on x86-64; through `i64` it would be a library
-                // call on 32-bit targets.
-                phase = phase.wrapping_add((freq * TURNS_PER_HZ) as i32 as u32);
+                phase = phase.wrapping_add(increment(freq * TURNS_PER_HZ));
             }
             pos += s_end - s_start;
         }
@@ -319,6 +312,25 @@ impl Synth {
         self.pos = pos;
         self.phase = phase;
         produced
+    }
+}
+
+/// A phase increment in [0, 2³¹) (`freq` is positive and below half the
+/// sample rate, checked in [`Synth::new`]) as the `u32` it is. Every
+/// conversion below is exact on that range and gives the same value as a
+/// direct `as u32`. On 64-bit targets the conversion goes through `i64`
+/// (one instruction on x86-64 and AArch64, and measured faster on x86-64
+/// than through `i32`); elsewhere through `i32`, a single instruction on
+/// Cortex-M, where `i64` would be a library call.
+#[inline(always)]
+fn increment(x: f32) -> u32 {
+    #[cfg(target_pointer_width = "64")]
+    {
+        x as i64 as u32
+    }
+    #[cfg(not(target_pointer_width = "64"))]
+    {
+        x as i32 as u32
     }
 }
 
