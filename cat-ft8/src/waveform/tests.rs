@@ -360,3 +360,40 @@ fn golden_hashes() {
     let want: Vec<(u64, u64)> = GOLDEN.iter().map(|g| (g.2, g.3)).collect();
     assert_eq!(got, want);
 }
+
+#[test]
+fn phase_increment_stays_below_two_to_the_31() {
+    // The largest base frequency `Synth::new` accepts.
+    let mut base = 6_000.0f32 - 7.0 * TONE_SPACING_HZ;
+    while Synth::new(&[7; SYMBOL_COUNT], base, 1.0).is_err() {
+        base = f32::from_bits(base.to_bits() - 1);
+    }
+    // Every deviation `run` forms (each tone triple, each sample of a
+    // symbol, the same terms in the same order) at that base.
+    let ns = SAMPLES_PER_SYMBOL;
+    let mut top = 0.0f32;
+    for prev in 0..8u8 {
+        for cur in 0..8u8 {
+            for next in 0..8u8 {
+                let (prev, cur, next) = (f32::from(prev), f32::from(cur), f32::from(next));
+                for s in 0..ns {
+                    let mut dev = cur * PULSE_HALF[(ns + s).min(2 * ns - s) - tables::PULSE_FIRST];
+                    if s + tables::PULSE_FIRST <= ns {
+                        dev += prev * PULSE_HALF[ns - s - tables::PULSE_FIRST];
+                    }
+                    if s >= tables::PULSE_FIRST {
+                        dev += next * PULSE_HALF[s - tables::PULSE_FIRST];
+                    }
+                    top = top.max((base + TONE_SPACING_HZ * dev) * TURNS_PER_HZ);
+                }
+            }
+        }
+    }
+    std::println!("base {base}, largest increment {top}");
+    assert!(top < 2_147_483_648.0, "{top}");
+    // And through the generator itself (the debug assertion in
+    // `increment` checks every sample in a debug build).
+    let mut synth = Synth::new(&[7; SYMBOL_COUNT], base, 1.0).unwrap();
+    let mut block = [0.0f32; 1_000];
+    while synth.fill(&mut block) == block.len() {}
+}

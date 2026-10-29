@@ -336,8 +336,9 @@ fn table_bytes_matches_the_statics() {
 #[test]
 fn transform_equals_the_reference_bit_for_bit() {
     // Noise at several scales (to ±2¹⁶ after the window), silence, an
-    // impulse and a constant: every output value equal to the reference's
-    // bits, but for the sign of a zero.
+    // impulse, a constant, subnormals, signed zeros and full-scale
+    // coherent input: every output value equal to the reference's bits,
+    // but for the sign of a zero. (Finite input only: see `stage`.)
     let mut seed = 0x2545_f491_4f6c_dd1du64;
     let mut next = || {
         seed ^= seed << 13;
@@ -363,6 +364,62 @@ fn transform_equals_the_reference_bit_for_bit() {
     impulse[7] = Complex { re: 1.0, im: -2.0 };
     inputs.push(impulse);
     inputs.push([Complex { re: 0.25, im: 0.0 }; N]);
+    // Subnormals: noise below f32's smallest normal (about 1.2e-38), and
+    // the smallest subnormal and its negative alternating.
+    for _ in 0..4 {
+        let mut x = [Complex::ZERO; N];
+        for v in x.iter_mut() {
+            *v = Complex {
+                re: 1e-39 * next(),
+                im: 1e-39 * next(),
+            };
+        }
+        inputs.push(x);
+    }
+    let tiny = f32::from_bits(1);
+    let mut alternating = [Complex::ZERO; N];
+    for (i, v) in alternating.iter_mut().enumerate() {
+        let s = if i % 3 == 0 { -tiny } else { tiny };
+        *v = Complex { re: s, im: -s };
+    }
+    inputs.push(alternating);
+    // +0 and −0 mixed: all zeros with random signs, and the same with a
+    // few nonzero values among them.
+    for sparse in [false, true] {
+        let mut x = [Complex::ZERO; N];
+        for (i, v) in x.iter_mut().enumerate() {
+            let (a, b) = (next(), next());
+            *v = Complex {
+                re: if a < 0.0 { -0.0 } else { 0.0 },
+                im: if b < 0.0 { -0.0 } else { 0.0 },
+            };
+            if sparse && i % 97 == 5 {
+                v.re = 3.0 * a;
+            }
+        }
+        inputs.push(x);
+    }
+    // Full scale and coherent (the largest growth): ±2¹⁶ in both parts
+    // at one frequency, so every stage adds in phase into one bin (about
+    // 1.8e8), at bin 0 (a constant), a bin on the grid and one between.
+    for cycles in [0.0f64, 37.0, 412.5] {
+        let mut x = [Complex::ZERO; N];
+        for (n, v) in x.iter_mut().enumerate() {
+            let t = 2.0 * core::f64::consts::PI * cycles * n as f64 / N as f64;
+            let (c, s) = (libm::cos(t), libm::sin(t));
+            *v = Complex {
+                re: (65_536.0 * c) as f32,
+                im: (65_536.0 * s) as f32,
+            };
+        }
+        inputs.push(x);
+    }
+    let mut full = [Complex {
+        re: 65_536.0,
+        im: -65_536.0,
+    }; N];
+    full[1].re = -65_536.0;
+    inputs.push(full);
     for x in inputs {
         let (mut a, mut b) = (x, x);
         fft(&mut a);

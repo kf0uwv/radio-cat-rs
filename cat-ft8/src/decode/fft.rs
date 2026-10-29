@@ -168,6 +168,16 @@ const _: () = {
 /// product is the value itself and is not computed. (Its sign of zero may
 /// differ from the product's, which no later `+ − ×` or the power can
 /// tell.) The twiddles depend only on `k`, so they are read once per `k`.
+///
+/// **Precondition: finite input.** Skipping the product equals computing it
+/// only for finite values: with an infinite component the product's
+/// `inf · −0` is NaN where the value itself stays infinite. The input is
+/// finite and bounded by construction (the front end's `classify` turns a
+/// non-finite sample into 0 and clamps the rest to ±[`INPUT_LIMIT`]; the
+/// window is at most 1), and no intermediate can overflow: every output is
+/// at most `N` × 2¹⁶ × √2 ≈ 1.8·10⁸ in magnitude.
+///
+/// [`INPUT_LIMIT`]: super::frontend::INPUT_LIMIT
 #[inline(always)]
 fn stage<const R: usize>(buf: &mut [Complex; N], l: usize) {
     let span = l * R;
@@ -299,6 +309,12 @@ pub(crate) const POWER_CHUNK: usize = 64;
 /// first_bin + count` of the Hann-windowed spectrum of `samples`
 /// (normalised as in [`power_spectrum`]). Chunks let the caller's
 /// per-bin work run as a plain loop over values (which vectorises).
+///
+/// `samples` must be finite and within ±[`INPUT_LIMIT`], as the front end's
+/// `classify` leaves them: the transform's stages rely on it to be bit for
+/// bit the full set of products (see `stage`).
+///
+/// [`INPUT_LIMIT`]: super::frontend::INPUT_LIMIT
 pub(crate) fn power_bins<F: FnMut(usize, &[f32])>(
     samples: &[f32; WINDOW],
     buf: &mut FftBuffer,

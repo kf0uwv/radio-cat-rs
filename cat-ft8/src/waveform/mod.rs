@@ -324,6 +324,13 @@ impl Synth {
 /// Cortex-M, where `i64` would be a library call.
 #[inline(always)]
 fn increment(x: f32) -> u32 {
+    // The targets agree only below 2³¹: at 2³¹ `as i32` saturates to
+    // 2³¹ − 1 while `as i64 as u32` gives 2³¹. The margin: `new` keeps the
+    // top tone below 6 000 Hz and `TURNS_PER_HZ` is 357 913.9375 (2³² /
+    // 12 000 rounded down), so the largest increment, at the largest base
+    // accepted and any tones, is 2³¹ − 256 (tested), two `f32` steps
+    // below the limit.
+    debug_assert!(x < 2_147_483_648.0, "phase increment {x} reaches 2^31");
     #[cfg(target_pointer_width = "64")]
     {
         x as i64 as u32
