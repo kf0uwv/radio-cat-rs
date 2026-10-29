@@ -877,3 +877,18 @@
 | Timestamp | Error | Attempt | Resolution |
 |-----------|-------|---------|------------|
 | 2026-10-25 | Stage timings ~6 µs each | 1 | `Instant::now()` overhead on this host; time each stage as one batch |
+
+## Session: 2026-10-28 (O1, decode time)
+
+- 4752586: subtraction behind the amplitude fit (reference pairs held,
+  one generator run fewer); 46 KB more stack in `subtract`.
+- 5f53377: FFT stages by radix (const generic), spectrum levels in
+  chunks of 64 (vectorised loop); feed −65% (x86 and Cortex-A76).
+- c554d6a: `Synth` increment through `i64` on 64-bit (x86 −5%, A76 none).
+- 4fe722c: sum-product round in phases, not inlined (BP −18% / −15%).
+- 40-signal slot, three passes, worst / mean: x86 221.0 / 203.8 →
+  142.1 / 132.5 ms; Raspberry Pi 5 395.8 / 367.2 → 262.2 / 241.3 ms.
+- Identity after every step: pins, 960-case subtraction grid, run
+  records of host / host,passes=1 / small = s3b (0 differing); final
+  decode binary's 800-WAV output = 3ed1aa0's. Rejected variants with
+  numbers in findings ("Decode time, optimisation round").

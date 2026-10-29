@@ -1565,3 +1565,128 @@ Review fixes after the S3 checkpoint; decode results unchanged. Code at
   pass order) and the profile's slot counts, which equal the sums of the
   unchanged per-pass keys, and the added `passes_end`; with
   `host,passes=1` and `small` it equals cea0bc2's but for `"pass": 1`.
+
+## Decode time, optimisation round (O1, 2026-10-28)
+
+Four changes to the multi-pass decode's cost, each bit-identical; code at
+4752586, 5f53377, c554d6a and 4fe722c. Outputs in
+`~/.cache/cat-ft8-paired/o1/`. Hosts: the x86-64 desktop of the earlier
+measurements, and a Raspberry Pi 5 (Cortex-A76, 2.4 GHz; generic
+`aarch64-unknown-linux-gnu` build, one benchmark at a time, its throttle
+flags read before and after every run: none current in any run).
+
+**Where the time went** (`slotcost host,passes=1 host 200 5`, 40-signal
+slots, three passes, one thread; per slot, mean of the per-slot medians):
+subtraction 107 / 207 ms (x86 / Pi), feed 43 / 89 ms (three passes),
+belief propagation 40 / 50 ms, sync 8.5 / 18 ms. In `perf` (x86): the
+amplitude-and-subtraction loops 24%, belief propagation 22%, the FFT
+and spectrum levels 19%, the reference generator (`fill_phase`) 16%.
+
+| step | x86 worst / mean, ms | Pi worst / mean, ms | the stage it targets |
+|---|---|---|---|
+| base (36cc440) | 219.9 / 204.4 | 396.2 / 367.7 | |
+| 1. one run of the reference for fit and subtraction | 187.5 / 173.1 | 328.2 / 307.4 | subtract 107.5 → 76.8 (x86), 207.4 → 147.3 (Pi) |
+| 2. FFT stages by radix, levels in chunks | 157.1 / 145.5 | 270.4 / 249.6 | feed 43.1 → 15.5 (x86), 88.7 → 31.3 (Pi) |
+| 3. `Synth` increment through `i64` on 64-bit | (subcost −5%) | (no change) | subtract per call 2.21–2.25 → 2.08–2.12 ms (x86), 4.266 → 4.266 (Pi) |
+| 4. sum-product round in phases | 151.2 / 141.8 → 144.4 / 136.0 (40 slots) | 263.9 / 248.5 → 256.8 / 241.3 (40 slots; inlined variant) | BP 39.5–40.0 → 32.5–32.8 (x86), 50.2 → 42.6 (Pi) |
+| **final (4fe722c)** | **142.1 / 132.5** (base again 221.0 / 203.8) | **262.2 / 241.3** (base again 395.8 / 367.2) | subtract 71.5 / 147.5, feed 15.3 / 31.3, BP 32.0 / 41.4, sync 8.7 / 18.4 |
+
+Single pass (`host,passes=1`): x86 worst 40.9 → 27.1 ms, mean 38.6 →
+25.4; Pi 62.2 → 38.8, 60.6 → 37.4. Steps 1, 2 and the final rows are
+200 slots × 5 runs interleaved by configuration, the binaries run one
+after another; steps 3 and 4 were timed alternately in rounds (3 rounds
+of `subcost host seg=3840 20 5`, or 2 rounds of 40-slot `slotcost`).
+
+1. **Subtraction behind the fit.** The amplitude fit already computes
+   each sample's corrected reference (envelope times cosine and sine of
+   the phase); with segments up to two symbols it now holds those pairs
+   (at most a segment and a half, 5 760 samples) and subtracts each
+   sample as soon as the amplitudes of the segments on both sides of its
+   interval are final. A second run of the generator, the frequency
+   correction and the sine table is gone. Longer segments, or a first
+   estimate that comes too late to hold everything since the first
+   usable sample, run the reference a second time as before (a test
+   forces holds of 0, 1 000 and 2 500 samples, overflowing part-way both
+   before and after the first estimate: identical results). The
+   subtraction loop runs between events (segment end, interval end, wrap
+   of the held buffer) with its state in locals. `subcost host seg=3840`:
+   3.09–3.18 → 2.20–2.24 ms per call (x86), 6.00 → 4.27 ms (Pi).
+   **Stack:** `SUBTRACT_STACK_BYTES` 4 536 → 50 616 B (the held pairs are
+   46 080 B); on thumbv8m `subtract`'s frame (host image) is 50 632 B,
+   was about 7.3 KB of chained frames. Holding only the phase (23 040 B)
+   and recomputing the cosine and sine measured 2.64–2.68 ms per call
+   (x86), against 2.20 for the pairs, so the pairs were kept: the host
+   image is the only one that links `subtract`, and the residual it
+   needs (720 000 B) dwarfs it. Host image flash 91 140 → 92 296 B.
+2. **FFT.** Each of the six stages is a const-generic radix-R pass with
+   the twiddles read once per `k` and the blocks inside, replacing one
+   loop whose radix, inner loops and twiddle index (`% N` per product)
+   were all at run time. The products are the same and summed in the
+   same order; the `m = 0` twiddle is exactly [1, −0], so that product is
+   the value itself (only the sign of a zero can differ, which no later
+   `+ − ×` or the power can see). The old transform stays as a test
+   reference: equal bit for bit, zeros aside, on noise at four scales,
+   silence, an impulse and a constant. The real-split powers then go to
+   the front end 64 at a time, so `log2` and the level quantisation run
+   as a plain loop (it vectorises; the floor and top counts are taken
+   from the finished row). `frontend_bench` per 80 ms row: 80 → 42 µs
+   (stages) → 28 µs (chunks) on x86; 162 → 57 µs on the Pi.
+   **Small targets:** small image flash 83 776 → 85 476 B (+1 700 B, the
+   unrolled stages), `finish_row` frame 232 → 464 B (the chunk), no new
+   soft-float helper call (thumbv8m and thumbv7em: `__aeabi_f2lz`,
+   `__aeabi_l2f`, `__aeabi_uldivmod` one call site each, as before). The
+   stages should also run faster there (no per-product index arithmetic
+   or run-time radix loops), but no Cortex-M was measured.
+3. **`Synth` increment.** `as i64 as u32` on 64-bit targets, `as i32 as
+   u32` elsewhere (same value on [0, 2³¹)); 32-bit images unchanged in
+   helper calls. A clear win on x86 only: AArch64's conversions saturate
+   in hardware at either width.
+4. **Sum-product in phases.** One round forms all 83 checks' inputs,
+   runs tanh over all, the prefix and suffix products per check, atanh
+   over all, then adds the messages to the variable sums check by check
+   in the original order; each value's operations are unchanged. Not
+   inlined, so its 2 656-byte array stays off the min-sum path: the
+   small image's decode frame went 2 560 → 2 496 B, the round's own frame
+   is 2 744 B (on the call chain only with sum-product); small flash
+   +204 B. Inlined it was as fast but put the array in every decode's
+   frame (5 056 B on the small image).
+
+**Rejected** (results identical in each; x86 unless stated):
+
+- Holding only the phase in step 1: 2.64–2.68 against 2.20–2.24 ms per
+  call (half the stack).
+- Copying the fit's sums and correction into locals per block: 2.20–2.21
+  against 2.20–2.22 ms per call, no gain.
+- `Removal::sample` left to the inliner (not inlined): 2.65 ms per call
+  against 2.43 forced inline, and 2.22 with the event-run loop kept.
+- FFT stages `#[inline(never)]` (one copy per radix): small flash −300 B
+  but feed 35.5 against 28 µs per row.
+- FFT twiddle indices advanced incrementally instead of `% N`: 36.4–36.8
+  against 28.0–30.0 µs per row.
+- The `i64` increment on the Pi: no gain (kept for x86, see 3).
+
+**Identity.** After every step: all unit and integration tests and pins
+(including the multi-pass golden hashes and the subtraction pins); a
+grid of 960 subtractions (four decodes, eight segment lengths from 960
+to the whole waveform, drift on and off, five skips, three cuts) with
+residual and estimate hashes equal to the base's (steps 1 and 2);
+`paired_bench run` records with timings removed equal to
+`s3b/accept` for `host` (38 900 records, every set and block), and to
+`s3b/identity` for `host,passes=1` and `small` (34 800 each): 0
+differing in each, after each of the four steps. Release `cat-ft8-decode`
+built at 4fe722c from this repository's path, sha256
+aea5d6bf91c6d94c1a3371028ec508c23fe6b63608121ae6413d4904eacd68ba: on the
+800 WAV slots (`host` and `small`, `host,passes=1` and `small`; plain,
+`--raw` and `--profile` with timings removed) its output is
+byte-identical to 3ed1aa0's (the code of 36cc440).
+
+**CI-equivalent checks** before each commit: fmt, clippy (workspace and
+cat-ft8 all features, thumbv8m), workspace tests, thumbv8m build,
+`check.sh` (and `--stack` for the sizes above), MSRV 1.75, profile and
+no-std tests, docs, the bulk test.
+
+**Not measured:** any Cortex-M (flash and frames only); the Pi with a
+CPU-specific build (earlier: no gain from `target-cpu=cortex-a76`).
+Still open: the reference generator (`fill_phase` and `skip` in the time
+search, about 14% of the x86 profile after these steps) and the time
+search's correlations (6%).
