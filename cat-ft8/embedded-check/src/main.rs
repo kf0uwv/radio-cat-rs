@@ -200,18 +200,28 @@ fn decode_a_slot(table: &mut CallTable<16>, sink: &mut f32, rows: &mut usize) {
 #[cfg(feature = "host")]
 static mut RESIDUAL: [f32; 2_048] = [0.0; 2_048];
 
+/// `subtract`'s working storage in `.bss`, as on a real target.
+#[cfg(feature = "host")]
+static mut SUBTRACT_SCRATCH: cat_ft8::decode::SubtractScratch =
+    cat_ft8::decode::SubtractScratch::new();
+
 /// `decode::subtract` for the first decode. Not inlined, and the buffer is
 /// a static, so `check.sh --stack` reports subtraction's own frame.
 #[cfg(feature = "host")]
 #[inline(never)]
 fn subtract_one(decodes: &[Decode], sink: &mut f32) {
     use cat_ft8::decode::{subtract, SubtractConfig};
-    // SAFETY: called once from `_start`, which is not re-entered, so this
-    // is the only reference to the static.
-    let audio = unsafe { &mut *addr_of_mut!(RESIDUAL) };
+    // SAFETY: called once from `_start`, which is not re-entered, so these
+    // are the only references to the statics.
+    let (audio, scratch) = unsafe {
+        (
+            &mut *addr_of_mut!(RESIDUAL),
+            &mut *addr_of_mut!(SUBTRACT_SCRATCH),
+        )
+    };
     audio[100] = black_box(0.5);
     if let Some(d) = decodes.first() {
-        if let Ok(s) = subtract(audio, d, black_box(16), &SubtractConfig::DEFAULT) {
+        if let Ok(s) = subtract(audio, d, black_box(16), &SubtractConfig::DEFAULT, scratch) {
             *sink += s.energy + s.left_db().unwrap_or(0.0) + audio[200];
         }
     }

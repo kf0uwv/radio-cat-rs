@@ -21,7 +21,7 @@
 
 use cat_ft8::decode::{
     Band, Candidate, CandidateScratch, Decode, DecodeConfig, DecodeList, DecodeReport, Decoder,
-    FrontEnd, CANDIDATES, HOST_DECODES,
+    FrontEnd, PassesScratch, CANDIDATES, HOST_DECODES,
 };
 use cat_ft8::message::{CallHashes, NoHashes, Payload};
 use cat_ft8::waveform::{synthesize, Placement};
@@ -131,7 +131,7 @@ pub fn decode_passes_setup(
         .decode_passes(
             &mut residual,
             skip,
-            &mut Box::new(CandidateScratch::new()),
+            &mut Box::new(PassesScratch::new()),
             &mut list,
         )
         .report;

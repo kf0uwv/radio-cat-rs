@@ -14,12 +14,14 @@
  */
 
 /* Minimal memory map for the cat-ft8 link check: a Cortex-M33-class part
- * with 1 MiB of flash and 256 KiB of RAM. Only sizes matter; the program
- * is linked, measured and inspected, never run. */
+ * with 1 MiB of flash and 512 KiB of RAM (the small image's statics fit in
+ * 256 KiB; the host image's, with the subtraction's working storage, do
+ * not). Only sizes matter; the program is linked, measured and inspected,
+ * never run. check.sh prints each image's static RAM. */
 MEMORY
 {
   FLASH : ORIGIN = 0x00000000, LENGTH = 1M
-  RAM   : ORIGIN = 0x20000000, LENGTH = 256K
+  RAM   : ORIGIN = 0x20000000, LENGTH = 512K
 }
 
 ENTRY(_start);

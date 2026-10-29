@@ -85,7 +85,7 @@ use super::frontend::BIN_HZ;
 use super::frontend::{Band, FrontEnd, Spectrogram};
 use super::snr;
 use super::soft::soft_bits_at;
-use super::subtract::{subtract, SubtractConfig};
+use super::subtract::{subtract, SubtractConfig, SubtractScratch};
 use super::sync::{self, Candidate, SyncReport, ROW_SECONDS};
 use crate::ldpc::N;
 use crate::message::{unpack, CallHashes, MessageType, Payload};
@@ -138,7 +138,10 @@ pub struct DecodeConfig {
     /// Decoding passes, 1–3, run by [`Decoder::decode_passes`]: after each
     /// pass but the last, that pass's decodes are subtracted from the audio
     /// and the residual is decoded again. 1 is the single-pass decoder.
-    /// [`Decoder::decode`] always runs one pass.
+    /// [`Decoder::decode`] always runs one pass. More than one needs the
+    /// slot's audio as a writable buffer (720 000 bytes for a whole slot),
+    /// a [`PassesScratch`] and the subtraction's stack (see
+    /// [`Decoder::decode_passes`]).
     pub passes: u8,
     /// Candidates kept by the sync search in every pass after the first
     /// (1–65 535); the candidate buffer needs at least this many entries
@@ -219,7 +222,11 @@ impl DecodeConfig {
         DecodeConfig { candidates, ..self }
     }
 
-    /// With `passes` decoding passes (1–3).
+    /// With `passes` decoding passes (1–3). More than one runs only through
+    /// [`Decoder::decode_passes`] (or [`Decoder::decode_further_passes`]),
+    /// which needs the audio buffer, a [`PassesScratch`] (about 51 KB) and
+    /// [`SUBTRACT_STACK_BYTES`](super::SUBTRACT_STACK_BYTES) of stack plus
+    /// call frames for each subtraction.
     pub const fn with_passes(self, passes: u8) -> Self {
         DecodeConfig { passes, ..self }
     }
@@ -426,6 +433,31 @@ impl CandidateScratch {
 impl core::fmt::Debug for CandidateScratch {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CandidateScratch").finish_non_exhaustive()
+    }
+}
+
+/// Working storage for [`Decoder::decode_passes`] and
+/// [`Decoder::decode_further_passes`]: a [`CandidateScratch`] for the
+/// candidates of every pass and a [`SubtractScratch`] for the subtractions
+/// between passes (about 51 KB in all). The caller decides where it lives
+/// (`new` is `const`, so it can be a `static`); its contents between calls
+/// do not matter. A pass 1 run separately takes [`PassesScratch::candidate`].
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+pub struct PassesScratch {
+    /// For each candidate of every pass.
+    pub candidate: CandidateScratch,
+    /// For each subtraction between passes.
+    pub subtract: SubtractScratch,
+}
+
+impl PassesScratch {
+    /// Zeroed storage (usable in a `static` initialiser).
+    pub const fn new() -> Self {
+        PassesScratch {
+            candidate: CandidateScratch::new(),
+            subtract: SubtractScratch::new(),
+        }
     }
 }
 
@@ -724,11 +756,17 @@ impl<'a> Decoder<'a> {
     ///
     /// With one pass this is [`Decoder::decode`] after feeding the audio:
     /// the same list, and the same report in [`PassesReport::report`].
+    ///
+    /// **Memory.** `scratch` ([`PassesScratch`], about 51 KB) is the
+    /// caller's; besides the decoder's own frames, a subtraction needs
+    /// [`SUBTRACT_STACK_BYTES`](super::SUBTRACT_STACK_BYTES) of stack plus
+    /// its call frames (about 7.4 KB in all in the Cortex-M33 link check),
+    /// only when more than one pass runs.
     pub fn decode_passes(
         &mut self,
         audio: &mut [f32],
         skip: usize,
-        scratch: &mut CandidateScratch,
+        scratch: &mut PassesScratch,
         list: &mut DecodeList<'_>,
     ) -> PassesReport {
         self.decode_passes_staged(audio, skip, scratch, list, |_| ControlFlow::Continue(()))
@@ -750,13 +788,21 @@ impl<'a> Decoder<'a> {
         &mut self,
         audio: &mut [f32],
         skip: usize,
-        scratch: &mut CandidateScratch,
+        scratch: &mut PassesScratch,
         list: &mut DecodeList<'_>,
         mut event: impl FnMut(PassEvent<'_>) -> ControlFlow<()>,
     ) -> PassesReport {
         list.clear();
         let mut stop = false;
-        let first = self.pass(1, audio, skip, scratch, list, &mut event, &mut stop);
+        let first = self.pass(
+            1,
+            audio,
+            skip,
+            &mut scratch.candidate,
+            list,
+            &mut event,
+            &mut stop,
+        );
         stop |= event(PassEvent::Done(&first)).is_break();
         self.further_passes(audio, skip, scratch, list, stop, event)
     }
@@ -777,11 +823,16 @@ impl<'a> Decoder<'a> {
     /// `f32::from(x) / 32 768.0` (exactly; the scale is a power of two), so
     /// with `audio` holding those values the list, report and residual are
     /// bit for bit those of [`Decoder::decode_passes`] on `audio`.
+    ///
+    /// **Memory** as for [`Decoder::decode_passes`]: `scratch` is the
+    /// caller's (pass 1 can use its [`PassesScratch::candidate`]), and each
+    /// subtraction needs [`SUBTRACT_STACK_BYTES`](super::SUBTRACT_STACK_BYTES)
+    /// of stack plus its call frames.
     pub fn decode_further_passes(
         &mut self,
         audio: &mut [f32],
         skip: usize,
-        scratch: &mut CandidateScratch,
+        scratch: &mut PassesScratch,
         list: &mut DecodeList<'_>,
     ) -> PassesReport {
         self.decode_further_passes_staged(audio, skip, scratch, list, |_| ControlFlow::Continue(()))
@@ -794,7 +845,7 @@ impl<'a> Decoder<'a> {
         &mut self,
         audio: &mut [f32],
         skip: usize,
-        scratch: &mut CandidateScratch,
+        scratch: &mut PassesScratch,
         list: &mut DecodeList<'_>,
         event: impl FnMut(PassEvent<'_>) -> ControlFlow<()>,
     ) -> PassesReport {
@@ -807,7 +858,7 @@ impl<'a> Decoder<'a> {
         &mut self,
         audio: &mut [f32],
         skip: usize,
-        scratch: &mut CandidateScratch,
+        scratch: &mut PassesScratch,
         list: &mut DecodeList<'_>,
         mut stop: bool,
         mut event: impl FnMut(PassEvent<'_>) -> ControlFlow<()>,
@@ -849,7 +900,13 @@ impl<'a> Decoder<'a> {
                 // waveform, and the settings were checked in `new`, so
                 // this does not fail; if it did, the audio would be left
                 // as it was and the failure counted.
-                let r = subtract(audio, &list.entries[i], skip, &self.config.subtract);
+                let r = subtract(
+                    audio,
+                    &list.entries[i],
+                    skip,
+                    &self.config.subtract,
+                    &mut scratch.subtract,
+                );
                 debug_assert!(r.is_ok(), "subtracting entry {i}: {r:?}");
                 if r.is_ok() {
                     subtracted += 1;
@@ -872,7 +929,15 @@ impl<'a> Decoder<'a> {
                 break;
             }
             list.next_pass();
-            let mut done = self.pass(pass, audio, skip, scratch, list, &mut event, &mut stop);
+            let mut done = self.pass(
+                pass,
+                audio,
+                skip,
+                &mut scratch.candidate,
+                list,
+                &mut event,
+                &mut stop,
+            );
             done.subtracted = subtracted;
             done.subtract_failed = failed;
             stop |= event(PassEvent::Done(&done)).is_break();

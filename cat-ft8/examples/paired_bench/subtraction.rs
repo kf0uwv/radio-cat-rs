@@ -18,7 +18,9 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use cat_ft8::decode::{subtract, subtract_fixed, Decode, Fixed, SubtractConfig, Subtraction};
+use cat_ft8::decode::{
+    subtract, subtract_fixed, Decode, Fixed, SubtractConfig, SubtractScratch, Subtraction,
+};
 use cat_ft8::message::Payload;
 use cat_ft8::{encode_payload, SAMPLE_RATE, SLOT_SAMPLES, WAVEFORM_SAMPLES};
 
@@ -322,14 +324,16 @@ fn trial(
     };
     let dec = to_decode(rec);
     let true_start = start.round() as i64;
+    let scratch = std::cell::RefCell::new(Box::new(SubtractScratch::new()));
     let run = |input: &[f32], cfg: &SubtractConfig, fixed: Fixed| -> (Vec<f32>, Subtraction) {
         let mut res = input.to_vec();
-        let s = subtract_fixed(&mut res, &dec, skip, cfg, fixed).unwrap();
+        let s =
+            subtract_fixed(&mut res, &dec, skip, cfg, fixed, &mut scratch.borrow_mut()).unwrap();
         (res, s)
     };
     let t = Instant::now();
     let mut res = audio.clone();
-    let s = subtract(&mut res, &dec, skip, config).unwrap();
+    let s = subtract(&mut res, &dec, skip, config, &mut scratch.borrow_mut()).unwrap();
     let seconds = t.elapsed().as_secs_f64();
     let full = left_db(&res, &audio, &clean);
     let at_start = Fixed {
@@ -366,7 +370,7 @@ fn trial(
         .iter()
         .map(|c| {
             let mut x = audio.clone();
-            subtract(&mut x, &dec, skip, c).unwrap();
+            subtract(&mut x, &dec, skip, c, &mut scratch.borrow_mut()).unwrap();
             left_db(&x, &audio, &clean)
         })
         .collect();
@@ -917,13 +921,14 @@ pub fn subtract_cost(spec: &str, sub: &str, slots: usize, runs: usize) -> Result
     });
     let mut per_call: Vec<f64> = Vec::new();
     let mut calls = 0usize;
+    let mut scratch = Box::new(SubtractScratch::new());
     for (audio, decodes) in &picked {
         let mut times = Vec::new();
         for _ in 0..runs.max(5) {
             let mut res = audio.clone();
             let t = Instant::now();
             for d in decodes {
-                subtract(&mut res, d, 0, &cfg).unwrap();
+                subtract(&mut res, d, 0, &cfg, &mut scratch).unwrap();
             }
             times.push(t.elapsed().as_secs_f64());
         }

@@ -19,8 +19,10 @@
 //! [`Synth::fill_phase`] (a whole-sample start), estimates where and how
 //! the signal actually sits in the audio, and subtracts the scaled
 //! reference in place. It reads only the audio, the decode and its
-//! arguments: no spectrogram and no decoder state. Its working storage is
-//! on the stack and bounded (`SUBTRACT_STACK_BYTES`); it allocates nothing.
+//! arguments: no spectrogram and no decoder state. It allocates nothing:
+//! the reference held between steps 3 and 4 is in the caller's
+//! [`SubtractScratch`] (46 080 bytes, usable as a `static`), and the rest of
+//! its working storage is on the stack and bounded (`SUBTRACT_STACK_BYTES`).
 //!
 //! 1. **Fine time.** For each symbol the audio is correlated with the
 //!    unit reference over the symbol's middle half, giving one complex
@@ -102,12 +104,43 @@ const MIDDLE: f32 = WAVEFORM_SAMPLES as f32 / 2.0;
 
 /// Upper bound on [`subtract`]'s own stack storage, bytes: the per-symbol
 /// correlations, one set of per-group step sums, the per-segment
-/// amplitudes, one block of reference phase and envelope, and the
-/// reference held between the amplitude fit and the subtraction (46 080
-/// bytes of the 50 616). (The compiler's frame adds scalars, temporaries
-/// and call overhead; the embedded link check reports it.)
-pub const STACK_BYTES: usize =
-    SYMBOL_COUNT * 8 + GROUPS * 15 * 8 + MAX_SEGMENTS * 8 + BLOCK * 8 + HELD * 8;
+/// amplitudes and one block of reference phase and envelope. (The
+/// compiler's frame adds scalars, temporaries and call overhead; the
+/// embedded link check reports it.) The held reference is not on the
+/// stack: it is the caller's [`SubtractScratch`].
+pub const STACK_BYTES: usize = SYMBOL_COUNT * 8 + GROUPS * 15 * 8 + MAX_SEGMENTS * 8 + BLOCK * 8;
+
+/// Working storage for [`subtract`]: the reference held between the
+/// amplitude fit and the subtraction (46 080 bytes). The caller decides
+/// where it lives (a `static`, a task's memory, a `Box`); its contents
+/// between calls do not matter, and it is not cleared per call (each call
+/// writes every sample it reads first). One per thread that subtracts.
+#[derive(Clone)]
+pub struct SubtractScratch {
+    held: [(f32, f32); HELD],
+}
+
+impl SubtractScratch {
+    /// Zeroed storage (usable in a `static` initialiser).
+    pub const fn new() -> Self {
+        SubtractScratch {
+            held: [(0.0, 0.0); HELD],
+        }
+    }
+}
+
+impl Default for SubtractScratch {
+    fn default() -> Self {
+        SubtractScratch::new()
+    }
+}
+
+/// Working storage only: its contents are not printed.
+impl core::fmt::Debug for SubtractScratch {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SubtractScratch").finish_non_exhaustive()
+    }
+}
 
 /// Settings of [`subtract`]. Start from [`SubtractConfig::DEFAULT`] and
 /// change fields with the `with_*` setters (the type is non-exhaustive).
@@ -235,7 +268,9 @@ fn ratio_db(a: f32, b: f32) -> Option<f32> {
 }
 
 /// Subtracts the signal of `decode` from `audio` in place and returns the
-/// estimates.
+/// estimates. `scratch` is working storage (its contents do not matter);
+/// the stack needed beyond it is bounded by [`STACK_BYTES`] plus the
+/// frames (`SUBTRACT_STACK_BYTES` in [`crate::decode`]).
 ///
 /// `audio[0]` is slot sample 0 (the nominal start is sample 6 000); the
 /// first `skip` samples are missing input and are neither read nor
@@ -253,8 +288,9 @@ pub fn subtract(
     decode: &Decode,
     skip: usize,
     config: &SubtractConfig,
+    scratch: &mut SubtractScratch,
 ) -> Result<Subtraction, Error> {
-    run(audio, decode, skip, config, Fixed::default(), HELD)
+    run(audio, decode, skip, config, Fixed::default(), HELD, scratch)
 }
 
 /// Estimates to impose instead of measuring them (measurement only).
@@ -277,8 +313,9 @@ pub fn subtract_fixed(
     skip: usize,
     config: &SubtractConfig,
     fixed: Fixed,
+    scratch: &mut SubtractScratch,
 ) -> Result<Subtraction, Error> {
-    run(audio, decode, skip, config, fixed, HELD)
+    run(audio, decode, skip, config, fixed, HELD, scratch)
 }
 
 /// The usable audio: slot samples `lo..hi`.
@@ -583,6 +620,7 @@ fn run(
     config: &SubtractConfig,
     fixed: Fixed,
     hold: usize,
+    scratch: &mut SubtractScratch,
 ) -> Result<Subtraction, Error> {
     config.validate()?;
     let tones = encode_payload(&decode.payload);
@@ -656,10 +694,12 @@ fn run(
     // subtracted (`done` is the first sample not yet subtracted, `written`
     // the end of those held). Otherwise, or if the held samples would
     // overflow (a late first estimate), the rest is subtracted with a
-    // second run of the reference. Both give the same result.
+    // second run of the reference. Both give the same result. Only
+    // samples written in this call are read back, so `held` is not
+    // cleared.
     let hold = hold.min(HELD);
     let mut fused = hold > 0 && seg <= FUSED_SEGMENT;
-    let mut held = [(0.0f32, 0.0f32); HELD];
+    let held = &mut scratch.held;
     let (mut done, mut written) = (lo, lo);
     let mut removal: Option<Removal> = None;
     {
@@ -723,7 +763,7 @@ fn run(
                     if fused && first_valid.is_some() && k + 1 < segments {
                         let to = centre(seg, k).min(written);
                         let r = removal.get_or_insert_with(|| Removal::new(seg, amp[0]));
-                        r.held(&amp, segments, &held, audio, start, done, to);
+                        r.held(&amp, segments, held, audio, start, done, to);
                         done = done.max(to);
                     }
                 }
@@ -739,7 +779,7 @@ fn run(
     }
     let r = removal.get_or_insert_with(|| Removal::new(seg, amp[0]));
     if fused {
-        r.held(&amp, segments, &held, audio, start, done, written);
+        r.held(&amp, segments, held, audio, start, done, written);
     } else {
         // The samples from `done` on, from a second run of the reference.
         let mut corr = correction;

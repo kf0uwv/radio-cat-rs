@@ -677,7 +677,7 @@ fn passes_into(
     let report = dec.decode_passes_staged(
         &mut residual,
         skip,
-        &mut CandidateScratch::new(),
+        &mut Box::new(PassesScratch::new()),
         &mut list,
         |e| {
             if let PassEvent::Done(r) = e {
@@ -983,7 +983,14 @@ fn the_event_callback_can_stop_the_passes() {
         (1, PassesEnd::Stopped, 1)
     );
     let mut want = slot.clone();
-    subtract(&mut want, &all[0], 0, &host.subtract).unwrap();
+    subtract(
+        &mut want,
+        &all[0],
+        0,
+        &host.subtract,
+        &mut Box::new(SubtractScratch::new()),
+    )
+    .unwrap();
     assert!(same_bits(&residual, &want));
     // With one pass there is nothing to stop.
     let (_, report, _, _) = passes_into(&slot, 0, host.with_passes(1), HOST_DECODES, |_| {
@@ -1010,13 +1017,13 @@ fn further_passes_after_a_pass_fed_as_i16_blocks_match_decode_passes() {
         let mut dec = b.decoder(DecodeConfig::HOST);
         let mut store = [Decode::EMPTY; HOST_DECODES];
         let mut list = DecodeList::new(&mut store);
-        let mut scratch = CandidateScratch::new();
+        let mut scratch = Box::new(PassesScratch::new());
         // Pass 1 as the audio arrives: the missing start, then blocks.
         dec.skip(skip);
         for block in pcm[skip..].chunks(1_000) {
             dec.feed_i16(block);
         }
-        dec.decode(&mut scratch, &mut list);
+        dec.decode(&mut scratch.candidate, &mut list);
         // The residual buffer: slot sample 0 on, the skipped part unread.
         let mut residual = audio.clone();
         let report = dec.decode_further_passes(&mut residual, skip, &mut scratch, &mut list);
@@ -1066,7 +1073,7 @@ fn staged_passes_report_their_steps_in_order() {
     let report = dec.decode_passes_staged(
         &mut audio,
         0,
-        &mut CandidateScratch::new(),
+        &mut Box::new(PassesScratch::new()),
         &mut list,
         |e| {
             if let PassEvent::Step { pass, step } = e {

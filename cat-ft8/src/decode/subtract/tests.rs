@@ -43,6 +43,21 @@ fn slot_with(freq_hz: f32, dt: f32, amp: f32) -> Vec<f32> {
     s
 }
 
+/// [`subtract`] with scratch storage whose contents are left from other
+/// calls (not cleared): the result must not depend on them.
+fn sub(
+    audio: &mut [f32],
+    decode: &Decode,
+    skip: usize,
+    config: &SubtractConfig,
+) -> Result<Subtraction, Error> {
+    std::thread_local! {
+        static SCRATCH: core::cell::RefCell<std::boxed::Box<SubtractScratch>> =
+            core::cell::RefCell::new(std::boxed::Box::new(SubtractScratch::new()));
+    }
+    SCRATCH.with(|s| subtract(audio, decode, skip, config, &mut s.borrow_mut()))
+}
+
 fn energy(x: &[f32]) -> f64 {
     x.iter().map(|&v| f64::from(v) * f64::from(v)).sum()
 }
@@ -63,7 +78,7 @@ fn noiseless_signal_is_suppressed_below_the_floor() {
     ] {
         let clean = slot_with(freq, dt, 0.1);
         let mut audio = clean.clone();
-        let r = subtract(
+        let r = sub(
             &mut audio,
             &decode_near(freq, dt),
             0,
@@ -131,7 +146,7 @@ fn noisy_slot_is_suppressed_to_the_noise() {
     let clean = slot_with(freq, 0.31, amplitude_for(5.0));
     let audio = noisy_slot();
     let mut residual = audio.clone();
-    let r = subtract(
+    let r = sub(
         &mut residual,
         &decode_near(freq, 0.31),
         0,
@@ -157,7 +172,7 @@ fn a_slot_cut_short_is_handled() {
     // Cut at 13.5 s: the waveform's last 1.86 s are missing.
     let cut = 162_000;
     let mut audio = clean[..cut].to_vec();
-    let r = subtract(
+    let r = sub(
         &mut audio,
         &decode_near(freq, dt),
         0,
@@ -170,7 +185,7 @@ fn a_slot_cut_short_is_handled() {
     assert!(left < -40.0, "{left:.1} dB {r:?}");
     // A buffer that ends before the waveform starts changes nothing.
     let mut early = clean[..6_000].to_vec();
-    let r = subtract(
+    let r = sub(
         &mut early,
         &decode_near(freq, dt),
         0,
@@ -180,7 +195,7 @@ fn a_slot_cut_short_is_handled() {
     assert_eq!(r.samples, 0);
     assert_eq!(early, clean[..6_000]);
     // Nor does an empty one.
-    let r = subtract(&mut [], &decode_near(freq, dt), 0, &SubtractConfig::DEFAULT).unwrap();
+    let r = sub(&mut [], &decode_near(freq, dt), 0, &SubtractConfig::DEFAULT).unwrap();
     assert_eq!(r.samples, 0);
 }
 
@@ -196,7 +211,7 @@ fn a_segment_with_too_few_samples_takes_the_previous_estimate() {
     let start = Placement::slot(freq, dt).unwrap().start as usize;
     let cut = start + 30 * 2 * T + 100;
     let mut audio = clean[..cut].to_vec();
-    let r = subtract(&mut audio, &decode_near(freq, dt), 0, &config).unwrap();
+    let r = sub(&mut audio, &decode_near(freq, dt), 0, &config).unwrap();
     assert_eq!(r.samples, cut - start);
     let tail = db(energy(&audio[cut - 100..]), energy(&clean[cut - 100..cut]));
     assert!(tail < -30.0, "{tail:.1} dB {r:?}");
@@ -213,7 +228,7 @@ fn a_skipped_region_is_neither_read_nor_written() {
     let skip = 12_000;
     audio[..skip].fill(0.0);
     let clean = audio.clone();
-    let r = subtract(
+    let r = sub(
         &mut audio,
         &decode_near(freq, dt),
         skip,
@@ -226,7 +241,7 @@ fn a_skipped_region_is_neither_read_nor_written() {
     for junk in [f32::NAN, f32::INFINITY, 1.0e30, -3.0e4] {
         let mut other = clean.clone();
         other[..skip].fill(junk);
-        let ro = subtract(
+        let ro = sub(
             &mut other,
             &decode_near(freq, dt),
             skip,
@@ -247,7 +262,7 @@ fn a_skipped_region_is_neither_read_nor_written() {
     assert!(left < -40.0, "{left:.1} dB {r:?}");
     // Skipping everything changes nothing.
     let mut all = clean.clone();
-    let r = subtract(
+    let r = sub(
         &mut all,
         &decode_near(freq, dt),
         SLOT_SAMPLES,
@@ -272,8 +287,8 @@ fn non_finite_and_huge_samples_are_taken_as_the_front_end_takes_them() {
             a[i] = junk;
             z[i] = 0.0;
         }
-        let ra = subtract(&mut a, &decode_near(freq, dt), 0, &SubtractConfig::DEFAULT).unwrap();
-        let rz = subtract(&mut z, &decode_near(freq, dt), 0, &SubtractConfig::DEFAULT).unwrap();
+        let ra = sub(&mut a, &decode_near(freq, dt), 0, &SubtractConfig::DEFAULT).unwrap();
+        let rz = sub(&mut z, &decode_near(freq, dt), 0, &SubtractConfig::DEFAULT).unwrap();
         assert_eq!(hash(&a, &ra), hash(&z, &rz), "{junk}");
         assert!(a.iter().all(|x| x.is_finite()));
         assert!(ra.samples > 0 && ra.left_db().unwrap() < -15.0, "{ra:?}");
@@ -283,8 +298,8 @@ fn non_finite_and_huge_samples_are_taken_as_the_front_end_takes_them() {
     let mut z = clean.clone();
     a[bad[0]] = 1.0e30;
     z[bad[0]] = INPUT_LIMIT;
-    let ra = subtract(&mut a, &decode_near(freq, dt), 0, &SubtractConfig::DEFAULT).unwrap();
-    let rz = subtract(&mut z, &decode_near(freq, dt), 0, &SubtractConfig::DEFAULT).unwrap();
+    let ra = sub(&mut a, &decode_near(freq, dt), 0, &SubtractConfig::DEFAULT).unwrap();
+    let rz = sub(&mut z, &decode_near(freq, dt), 0, &SubtractConfig::DEFAULT).unwrap();
     assert_eq!(hash(&a, &ra), hash(&z, &rz));
     assert!(a.iter().all(|x| x.is_finite()) && ra.energy.is_finite());
 }
@@ -300,7 +315,7 @@ fn a_clipped_signal_is_mostly_removed() {
         *x = x.clamp(-0.06, 0.06);
     }
     let before = energy(&audio);
-    let r = subtract(
+    let r = sub(
         &mut audio,
         &decode_near(freq, dt),
         0,
@@ -327,8 +342,8 @@ fn deterministic_and_pinned() {
     ] {
         let mut a = noisy_slot();
         let mut b = noisy_slot();
-        let ra = subtract(&mut a, &d, 0, &config).unwrap();
-        let rb = subtract(&mut b, &d, 0, &config).unwrap();
+        let ra = sub(&mut a, &d, 0, &config).unwrap();
+        let rb = sub(&mut b, &d, 0, &config).unwrap();
         assert_eq!(hash(&a, &ra), hash(&b, &rb));
         pins.push(hash(&a, &ra));
     }
@@ -356,14 +371,11 @@ fn settings_and_inputs_are_checked() {
         WAVEFORM_SAMPLES + SubtractConfig::SEGMENT_STEP,
     ] {
         let config = SubtractConfig::DEFAULT.with_segment(segment);
-        assert_eq!(
-            subtract(&mut audio, &d, 0, &config),
-            Err(Error::InvalidConfig)
-        );
+        assert_eq!(sub(&mut audio, &d, 0, &config), Err(Error::InvalidConfig));
     }
     let bad_dt = Decode { dt: f32::NAN, ..d };
     assert_eq!(
-        subtract(&mut audio, &bad_dt, 0, &SubtractConfig::DEFAULT),
+        sub(&mut audio, &bad_dt, 0, &SubtractConfig::DEFAULT),
         Err(Error::NonFinite)
     );
     let bad_freq = Decode {
@@ -371,11 +383,11 @@ fn settings_and_inputs_are_checked() {
         ..d
     };
     assert_eq!(
-        subtract(&mut audio, &bad_freq, 0, &SubtractConfig::DEFAULT),
+        sub(&mut audio, &bad_freq, 0, &SubtractConfig::DEFAULT),
         Err(Error::FrequencyOutOfRange)
     );
     // Silence: nothing to align with, nothing changed.
-    let r = subtract(&mut audio, &d, 0, &SubtractConfig::DEFAULT).unwrap();
+    let r = sub(&mut audio, &d, 0, &SubtractConfig::DEFAULT).unwrap();
     assert_eq!(r.samples, 0);
     assert!(audio.iter().all(|x| x.to_bits() == 0));
     assert_eq!(r.residue_db(), None);
@@ -383,14 +395,16 @@ fn settings_and_inputs_are_checked() {
 
 #[test]
 fn stack_storage_is_bounded() {
-    const _: () = assert!(MAX_SEGMENTS == 158 && STACK_BYTES < 52 * 1024);
+    const _: () = assert!(MAX_SEGMENTS == 158 && STACK_BYTES < 5 * 1024);
+    assert_eq!(core::mem::size_of::<SubtractScratch>(), HELD * 8);
+    assert_eq!(HELD * 8, 46_080);
     // Every segment count `run` can use fits.
     for seg in
         (SubtractConfig::MIN_SEGMENT..=WAVEFORM_SAMPLES).step_by(SubtractConfig::SEGMENT_STEP)
     {
         assert!(WAVEFORM_SAMPLES.div_ceil(seg) <= MAX_SEGMENTS, "{seg}");
     }
-    assert_eq!(STACK_BYTES, 50_616);
+    assert_eq!(STACK_BYTES, 4_536);
 }
 
 #[test]
@@ -398,20 +412,260 @@ fn held_and_rerun_references_give_identical_results() {
     // The reference held between the fit and the subtraction, a second
     // run of it (hold 0), and holds small enough to overflow part-way
     // (the rest from a second run): bit-identical residuals and estimates.
+    // 4 080, the shortest segment beyond `FUSED_SEGMENT`, always takes the
+    // second run. The scratch starts as NaN and keeps every earlier call's
+    // contents: they must not matter.
     let slot = noisy_slot();
+    let mut scratch = std::boxed::Box::new(SubtractScratch::new());
+    scratch.held.fill((f32::NAN, f32::NAN));
     for (f, dt) in [(1_234.5f32, 0.31f32), (1_234.5, -1.2)] {
         let d = decode_near(f, dt);
-        for seg in [960, T, 2 * T] {
+        for seg in [960, T, 2 * T, 2 * T + SubtractConfig::SEGMENT_STEP] {
             for (skip, cut) in [(0, SLOT_SAMPLES), (30_000, 90_000)] {
                 let config = SubtractConfig::DEFAULT.with_segment(seg);
                 let mut want = None;
                 for hold in [HELD, 0, 1_000, 2_500] {
                     let mut a = slot[..cut].to_vec();
-                    let r = run(&mut a, &d, skip, &config, Fixed::default(), hold).unwrap();
+                    let r = run(
+                        &mut a,
+                        &d,
+                        skip,
+                        &config,
+                        Fixed::default(),
+                        hold,
+                        &mut scratch,
+                    )
+                    .unwrap();
                     let h = hash(&a, &r);
                     assert_eq!(*want.get_or_insert(h), h, "{f} {dt} {seg} {skip} {hold}");
                 }
             }
         }
     }
+}
+
+/// Residual and estimate hashes recorded with the subtraction before the
+/// reference was held between the fit and the subtraction (one run of the
+/// reference per step): segments beyond `FUSED_SEGMENT` (4 080, 7 680, the
+/// whole waveform), the host's 3 840, a skip that delays the first
+/// estimate, a cut, drift on and off, a start inside the slot and one
+/// before it. The held and the rerun paths must both still give these.
+#[test]
+fn anchored_to_the_unheld_subtraction() {
+    let slot = noisy_slot();
+    let mut got = Vec::new();
+    let mut fails = Vec::new();
+    for &(f, dt, seg, drift, skip, cut, want) in &[
+        (
+            1_234.5f32,
+            0.31f32,
+            3840,
+            true,
+            0,
+            SLOT_SAMPLES,
+            0x8bf8_b71a_ad43_d273u64,
+        ),
+        (
+            1_234.5,
+            0.31,
+            7680,
+            true,
+            0,
+            SLOT_SAMPLES,
+            0xd37e_34a5_2f3f_216f,
+        ),
+        (
+            1_234.5,
+            0.31,
+            7680,
+            false,
+            0,
+            SLOT_SAMPLES,
+            0xcd52_e6d3_905d_f9f0,
+        ),
+        (
+            1_234.5,
+            0.31,
+            WAVEFORM_SAMPLES,
+            true,
+            0,
+            SLOT_SAMPLES,
+            0xd6d8_05c9_6781_5885,
+        ),
+        (
+            1_234.5,
+            0.31,
+            WAVEFORM_SAMPLES,
+            false,
+            0,
+            SLOT_SAMPLES,
+            0x7301_2fd1_6516_cfb0,
+        ),
+        (
+            1_234.5,
+            0.31,
+            4080,
+            true,
+            0,
+            SLOT_SAMPLES,
+            0xf5a3_e203_dd8e_d9c2,
+        ),
+        (
+            1_234.5,
+            0.31,
+            4080,
+            false,
+            0,
+            SLOT_SAMPLES,
+            0x3d59_e784_b821_803f,
+        ),
+        (
+            1_234.5,
+            0.31,
+            3840,
+            true,
+            30_000,
+            SLOT_SAMPLES,
+            0x51b0_c0d7_864c_2a6d,
+        ),
+        (
+            1_234.5,
+            0.31,
+            3840,
+            false,
+            30_000,
+            90_000,
+            0xd17a_4ff8_0543_805d,
+        ),
+        (1_234.5, 0.31, 1920, true, 0, 90_000, 0x7b8d_3724_992e_efd2),
+        (
+            1_234.5,
+            0.31,
+            4080,
+            true,
+            30_000,
+            90_000,
+            0x083c_ebfe_16fa_aaec,
+        ),
+        (
+            1_234.5,
+            0.31,
+            7680,
+            true,
+            30_000,
+            90_000,
+            0x75b0_f7a5_a39d_bfec,
+        ),
+        (
+            1_234.5,
+            -1.2,
+            3840,
+            true,
+            0,
+            SLOT_SAMPLES,
+            0xfd0e_5a7e_ea5c_579b,
+        ),
+        (
+            1_234.5,
+            -1.2,
+            7680,
+            true,
+            0,
+            SLOT_SAMPLES,
+            0xa329_0edf_63a4_b1c2,
+        ),
+        (
+            1_234.5,
+            -1.2,
+            7680,
+            false,
+            0,
+            SLOT_SAMPLES,
+            0x794d_80c7_ee1d_02b0,
+        ),
+        (
+            1_234.5,
+            -1.2,
+            WAVEFORM_SAMPLES,
+            true,
+            0,
+            SLOT_SAMPLES,
+            0xfe83_5183_b372_9b9e,
+        ),
+        (
+            1_234.5,
+            -1.2,
+            WAVEFORM_SAMPLES,
+            false,
+            0,
+            SLOT_SAMPLES,
+            0x539b_a53f_2510_78c5,
+        ),
+        (
+            1_234.5,
+            -1.2,
+            4080,
+            true,
+            0,
+            SLOT_SAMPLES,
+            0x3301_e6fa_5b3f_dd75,
+        ),
+        (
+            1_234.5,
+            -1.2,
+            4080,
+            false,
+            0,
+            SLOT_SAMPLES,
+            0x1314_230f_7803_5574,
+        ),
+        (
+            1_234.5,
+            -1.2,
+            3840,
+            true,
+            30_000,
+            SLOT_SAMPLES,
+            0xe27a_42a5_16a1_f909,
+        ),
+        (
+            1_234.5,
+            -1.2,
+            3840,
+            false,
+            30_000,
+            90_000,
+            0xb599_78fc_68ba_5194,
+        ),
+        (1_234.5, -1.2, 1920, true, 0, 90_000, 0xb94f_12b5_52cb_9d6c),
+        (
+            1_234.5,
+            -1.2,
+            4080,
+            true,
+            30_000,
+            90_000,
+            0xe9a1_2acf_e399_5b55,
+        ),
+        (
+            1_234.5,
+            -1.2,
+            7680,
+            true,
+            30_000,
+            90_000,
+            0x2cea_3cd8_2d1f_cd42,
+        ),
+    ] {
+        let d = decode_near(f, dt);
+        let config = SubtractConfig::DEFAULT.with_segment(seg).with_drift(drift);
+        let mut a = slot[..cut].to_vec();
+        let r = sub(&mut a, &d, skip, &config).unwrap();
+        let h = hash(&a, &r);
+        got.push(h);
+        if h != want {
+            fails.push((f, dt, seg, drift, skip, cut));
+        }
+    }
+    assert!(fails.is_empty(), "{fails:?} {got:x?}");
 }

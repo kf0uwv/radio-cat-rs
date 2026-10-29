@@ -54,12 +54,14 @@ pub(crate) mod testutil;
 pub use bp::{BpFailure, CheckRule};
 pub use decoder::{
     CandidateResult, CandidateScratch, Decode, DecodeConfig, DecodeList, DecodeReport, Decoder,
-    PassEvent, PassReport, PassStep, PassesEnd, PassesReport, Stage, CANDIDATES, HOST_DECODES,
-    SMALL_DECODES,
+    PassEvent, PassReport, PassStep, PassesEnd, PassesReport, PassesScratch, Stage, CANDIDATES,
+    HOST_DECODES, SMALL_DECODES,
 };
 pub use frontend::{Band, FrontEnd, Spectrogram, BIN_HZ, HOP, ROWS, ROW_ORIGIN};
 pub use snr::SNR_FLOOR_DB;
-pub use subtract::{subtract, SubtractConfig, Subtraction, STACK_BYTES as SUBTRACT_STACK_BYTES};
+pub use subtract::{
+    subtract, SubtractConfig, SubtractScratch, Subtraction, STACK_BYTES as SUBTRACT_STACK_BYTES,
+};
 #[cfg(feature = "profile")]
 #[doc(hidden)]
 pub use subtract::{subtract_fixed, Fixed};

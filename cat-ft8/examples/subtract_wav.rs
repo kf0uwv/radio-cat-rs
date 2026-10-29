@@ -52,7 +52,7 @@ use std::process::ExitCode;
 
 use cat_ft8::decode::{
     subtract, Band, Candidate, CandidateScratch, Decode, DecodeConfig, DecodeList, Decoder,
-    FrontEnd, SubtractConfig, CANDIDATES, HOST_DECODES, SMALL_DECODES,
+    FrontEnd, SubtractConfig, SubtractScratch, CANDIDATES, HOST_DECODES, SMALL_DECODES,
 };
 use cat_ft8::message::CallTable;
 use cat_ft8::{wav, SAMPLE_RATE, SLOT_SAMPLES};
@@ -154,8 +154,9 @@ fn run(a: &Args) -> Result<(), String> {
         decodes.push((*d, text));
     });
 
+    let mut scratch = Box::new(SubtractScratch::new());
     for (d, text) in &decodes {
-        let s = subtract(&mut audio, d, 0, &a.subtract).map_err(|e| e.to_string())?;
+        let s = subtract(&mut audio, d, 0, &a.subtract, &mut scratch).map_err(|e| e.to_string())?;
         let line = json!({
             "message": text,
             "freq": d.freq_hz,
