@@ -1216,6 +1216,36 @@ Done 2026-10-28 (00c7cbe, 0d3c912, 3ed1aa0; findings, "S3 fix round").
 `check.sh` keeps allowing `__aeabi_f2lz`: `subtract` and
 `Placement::slot` need the `i64` range.
 
+## O1 fix round (2026-10-29, after the O1 review)
+
+Results stay bit-identical to 36cc440 (pins, multi-pass pins, `run`
+records with timings removed, the decode command on the 800 WAV slots);
+the O1 speed is kept and re-measured.
+
+1. Caller-provided subtraction scratch: `SubtractScratch` (`const fn
+   new`) for `subtract` / `subtract_fixed`, `PassesScratch` (candidate +
+   subtraction) for `decode_passes*` / `decode_further_passes*`; not
+   folded into `CandidateScratch`; not cleared per call.
+   `SUBTRACT_STACK_BYTES` back to 4 536 B. CLI, bench, examples, tests,
+   embedded check, ADR.
+2. Docs: memory and stack on `decode_passes`, `decode_further_passes`,
+   `DecodeConfig::passes` and `with_passes`; ADR 0024 link-check figures.
+3. Subtraction anchors in the repository: hashes recorded with 36cc440
+   (segments 4 080, 7 680, the whole waveform and 3 840; skip 30 000;
+   cut 90 000; drift on and off); the held/rerun test adds 4 080. Subcost
+   at segments beyond two symbols, base against final.
+4. FFT: the finite, bounded input precondition stated; the reference
+   test adds subnormals, signed zeros and full-scale coherent input.
+5. `Synth::increment`: `debug_assert!` below 2³¹, the margin tested.
+6. AArch64 at run time: the release test suite and a `run` identity
+   block on a Raspberry Pi 5, records compared with x86-64.
+7. The record identity pass from the committed final tree.
+8. `slotcost` and `subcost` on both hosts, base and final in one session.
+
+Done 2026-10-29 (59bb2c7, 2dd54dc, c3f080f; findings, "O1 fix round").
+Item 3's subcost found the second reference run (segments beyond two
+symbols) about 12% slower than at 36cc440; c3f080f fixes it.
+
 ## Later (not in this round)
 
 - Contiguous codeword layout and table CRC, as profiled optimisations that

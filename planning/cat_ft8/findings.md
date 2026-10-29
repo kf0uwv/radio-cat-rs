@@ -1569,8 +1569,8 @@ Review fixes after the S3 checkpoint; decode results unchanged. Code at
 ## Decode time, optimisation round (O1, 2026-10-28)
 
 Four changes to the multi-pass decode's cost, each bit-identical; code at
-4752586, 5f53377, c554d6a and 4fe722c. Outputs in
-`~/.cache/cat-ft8-paired/o1/`. Hosts: the x86-64 desktop of the earlier
+4752586, 5f53377, c554d6a and 4fe722c. Outputs kept locally (not
+committed). Hosts: the x86-64 desktop of the earlier
 measurements, and a Raspberry Pi 5 (Cortex-A76, 2.4 GHz; generic
 `aarch64-unknown-linux-gnu` build, one benchmark at a time, its throttle
 flags read before and after every run: none current in any run).
@@ -1690,3 +1690,129 @@ CPU-specific build (earlier: no gain from `target-cpu=cortex-a76`).
 Still open: the reference generator (`fill_phase` and `skip` in the time
 search, about 14% of the x86 profile after these steps) and the time
 search's correlations (6%).
+
+## O1 fix round (2026-10-29)
+
+Changes after the O1 review, each with results bit-identical to 36cc440;
+code at 59bb2c7, 2dd54dc and c3f080f. Outputs kept locally (not
+committed). Hosts as in O1 (x86-64 desktop; Raspberry Pi 5, Cortex-A76,
+2.4 GHz, generic `aarch64-unknown-linux-gnu` build, one benchmark at a
+time; throttle flags 0x50000 before and after every run: the sticky
+"has occurred" bits only, nothing current).
+
+1. **Caller-provided subtraction scratch** (59bb2c7). The 46 080-byte
+   held reference moved off `subtract`'s stack into `SubtractScratch`
+   (`const fn new`, so it can be a `static`), passed to `subtract` and
+   `subtract_fixed`. `decode_passes*` and `decode_further_passes*` take
+   a `PassesScratch` (a `CandidateScratch` and a `SubtractScratch`;
+   public fields, so a pass 1 run separately uses its `candidate`) rather
+   than a second argument: one object for the caller to place, and
+   single-pass users keep the 5.1 KB `CandidateScratch`. The scratch is
+   not cleared per call: a call reads only held samples it wrote, and the
+   tests run with a NaN-filled scratch that keeps earlier calls'
+   contents. `SUBTRACT_STACK_BYTES` 50 616 → 4 536 B. Docs on
+   `decode_passes`, `decode_further_passes`, `DecodeConfig::passes` and
+   `with_passes` now state the scratch and the stack the passes need.
+   V0 API change, no version bump.
+2. **Subtraction anchors** (59bb2c7). `anchored_to_the_unheld_subtraction`
+   pins 24 residual-and-estimate hashes recorded with 36cc440's
+   subtraction (one run of the reference per step): segments 3 840,
+   4 080 (just above the fused limit, full hold), 7 680 and the whole
+   waveform, drift on and off, skip 30 000 (the first estimate comes
+   late), cut 90 000, a start inside the slot and one before it. The
+   held/rerun equality test adds segment 4 080. A 1 080-case grid (four
+   decodes, segments 960 to the whole waveform with 4 080, drift on and
+   off, five skips, three cuts) equals 36cc440's at the final code.
+3. **The rerun path was slower** (found by item 2's timing, fixed in
+   c3f080f). With segments longer than two symbols the reference is run
+   a second time for the subtraction; since O1 that path entered the
+   interval logic and a one-sample run per sample, about 12% slower than
+   36cc440 (x86 3.44–3.57 against 3.04–3.11 ms per call; Pi 6.76
+   against 6.00). Now each block's pairs go into the start of the
+   scratch (unused on this path) and are subtracted in runs, with the
+   frequency correction in a local over the block (`perf` showed its
+   state stored and reloaded every sample). `subcost host seg=N 20 5`,
+   per call, three rounds x86 / two Pi, binaries alternated in each:
+
+   | segment | 36cc440 | O1 (11a9221) | final (c3f080f) |
+   |---|---|---|---|
+   | 3 840 (fused), x86 | 3.06–3.15 | 2.08–2.10 | 2.06–2.09 |
+   | 7 680, x86 | 3.07–3.11 | 3.49–3.57 | 2.79–2.86 |
+   | whole waveform, x86 | 3.02–3.11 | 3.44–3.49 | 2.80–2.84 |
+   | 3 840 (fused), Pi | 6.004 | 4.270 | 4.262 |
+   | 7 680, Pi | 6.001–6.005 | 6.757–6.777 | 5.736–5.739 |
+   | whole waveform, Pi | 6.001–6.004 | 6.757–6.761 | 5.738 |
+
+4. **FFT precondition** (2dd54dc). `stage` and `power_bins` state that
+   skipping the m = 0 product is exact for finite input only (`inf · −0`
+   is NaN), which the front end's clamp guarantees, with every output
+   below about 1.8·10⁸. The reference test adds subnormal noise, the
+   smallest subnormal alternating in sign, signed zeros (alone and with
+   a few nonzero values), and full-scale coherent input (±2¹⁶ at bin 0,
+   a bin on the grid, one between, and a constant).
+5. **`Synth` increment** (2dd54dc). `debug_assert!(x < 2³¹)` in
+   `increment`. A test forms every deviation `run` can (each tone triple,
+   each sample) at the largest base `Synth::new` accepts (5 956.2495 Hz):
+   the largest increment is 2 147 483 392 (2³¹ − 256, two `f32` steps
+   below the limit), and the generator runs there in debug builds.
+
+**Stack and flash** (thumbv8m.main-none-eabihf, `check.sh --stack`):
+
+| | 36cc440 | O1 (11a9221) | final (c3f080f) |
+|---|---|---|---|
+| small image flash | 83 776 B | 85 680 B | 85 680 B |
+| host image flash | 91 132 B | 94 128 B | 94 060 B |
+| host image static RAM | 241 848 B | 241 848 B | 287 928 B (scratch in `.bss`) |
+| `subtract` frame (host image) | 4 504 B | 50 632 B | 4 552 B |
+| its time-search closure | 2 800 B | 2 800 B | 2 800 B |
+| decoder path frame (small) | 2 560 B | 2 496 B | 2 496 B |
+| `finish_row` | 232 B | 464 B | 464 B |
+| `SUBTRACT_STACK_BYTES` | 4 536 | 50 616 | 4 536 |
+
+The link check's model RAM went from 256 to 512 KiB: the host image's
+statics no longer fit 256 KiB once the scratch is a static (the small
+image's 212 280 B still do). Soft-float helper call sites unchanged on
+thumbv8m and thumbv7em in all three images (small and encoder-only one
+each of `__aeabi_f2lz`, `__aeabi_l2f`, `__aeabi_uldivmod`; host 5, 2, 2).
+The `--profile` memory keys of the decode command are unchanged, so
+`peak_bytes` still leaves out the subtraction scratch (it left out the
+same bytes on the stack before); adding it would change the output.
+
+**Decode time** (`slotcost host,passes=1 host 200 5`, the 200 40-signal
+crowded slots, per-slot median of 5 interleaved runs; base, O1 and final
+one after another, two rounds, same session):
+
+| | x86 worst / mean, ms | Pi worst / mean, ms |
+|---|---|---|
+| 36cc440, 3 passes | 224.7 / 202.2, 216.4 / 200.8 | 396.1 / 367.6, 395.6 / 367.1 |
+| 11a9221, 3 passes | 142.4 / 132.3, 142.5 / 132.4 | 262.3 / 241.3, 262.2 / 241.4 |
+| c3f080f, 3 passes | 143.8 / 132.4, 143.2 / 132.1 | 262.2 / 241.3, 261.5 / 240.7 |
+| 36cc440, 1 pass | 39.5 / 38.0, 39.7 / 38.3 | 62.5 / 60.7, 62.3 / 60.5 |
+| 11a9221, 1 pass | 26.2 / 25.2, 26.8 / 25.3 | 38.8 / 37.4, 38.9 / 37.4 |
+| c3f080f, 1 pass | 27.6 / 25.4, 26.6 / 25.5 | 38.9 / 37.5, 38.7 / 37.3 |
+
+The O1 speed is kept (x86 subtract 71.4–71.6 ms per slot against
+71.8–71.9 at O1, 106 at 36cc440; work counts equal).
+
+**Identity**, all at clean commits (`config.txt` without `+dirty`):
+
+- `paired_bench run` at c3f080f (and before at 2dd54dc), timings
+  removed: `host` equal to `s3b/accept` (38 900 records, every set and
+  block), `host,passes=1` and `small` equal to `s3b/identity` (34 800
+  each); 0 differing in each.
+- Raspberry Pi 5: the release test suite of c3f080f (all eight test
+  executables, ignored tests included: 143 + 12 + 7 + 5 + 2 + 2 + 1
+  bulk) passes, so every pin, the multi-pass pins and the subtraction
+  anchors hold on AArch64 at run time. `paired_bench run host` and
+  `small` on sweep and crowded (main) there: records equal to x86's and
+  to `s3b` (15 600 each, 0 differing; the comparison flags 567 of 600
+  slots when host is compared with small).
+- Release `cat-ft8-decode` built from this repository's path at the
+  final commit (sha256 in progress.md): its output on the 800 WAV slots
+  (`host` and `small`, `host,passes=1` and `small`; plain, `--raw` and
+  `--profile` with timings removed) is byte-identical to 11a9221's and
+  3ed1aa0's.
+
+**Not measured:** any Cortex-M at run time (frames and flash only);
+whether a real Cortex-M target's stack layout matches the link check's
+per-function frames (the chain figures are sums of those).

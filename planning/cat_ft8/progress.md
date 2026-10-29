@@ -892,3 +892,33 @@
   records of host / host,passes=1 / small = s3b (0 differing); final
   decode binary's 800-WAV output = 3ed1aa0's. Rejected variants with
   numbers in findings ("Decode time, optimisation round").
+
+## Session: 2026-10-29 (O1 fix round)
+
+- 59bb2c7: `SubtractScratch` / `PassesScratch` from the caller;
+  `SUBTRACT_STACK_BYTES` 50 616 -> 4 536 B (thumbv8m `subtract` frame
+  50 632 -> 4 560 B); docs on the multi-pass calls; ADR figures;
+  subtraction anchors recorded with 36cc440 (4 080, 7 680, whole
+  waveform, skip 30 000, cut 90 000, drift on/off).
+- 2dd54dc: FFT finite-input precondition and wider reference test;
+  `Synth` increment `debug_assert!` with the margin tested (2³¹ − 256).
+- c3f080f: the second reference run (segments beyond two symbols) a
+  block at a time through the scratch; it was about 12% slower than
+  36cc440 since O1, now about 7–9% faster (x86 2.79–2.86 against
+  3.02–3.11 ms per call; Pi 5.74 against 6.00).
+- Identity at clean c3f080f: run records = s3b (host 38 900, passes=1
+  and small 34 800 each, 0 differing); 1 080-case subtraction grid =
+  36cc440; 800-WAV output = 11a9221's and 3ed1aa0's.
+- Raspberry Pi 5: release test suite passes; `run host` / `small`
+  (sweep and crowded, main) records = x86's.
+- Slot cost kept: 40-signal slots, three passes, worst / mean x86
+  143.8 / 132.4 ms (O1 142.4 / 132.3), Pi 262.2 / 241.3 (O1 262.3 /
+  241.3).
+- CI-equivalent checks before each code commit (fmt, clippy workspace
+  and all features and thumbv8m, workspace tests, thumbv8m build,
+  `check.sh` and `--stack`, MSRV 1.75, profile and no-std tests, docs,
+  bulk).
+- Release `cat-ft8-decode` built from this repository's path at the
+  final commit of this round (the planning commit changes no input of
+  the build; same bytes as at c3f080f): sha256
+  56f3786f1744977263f771c7e1178d7b9bd828ed28bbdbcb1b6018fa502704e2.
