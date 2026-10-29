@@ -111,10 +111,12 @@ const MIDDLE: f32 = WAVEFORM_SAMPLES as f32 / 2.0;
 pub const STACK_BYTES: usize = SYMBOL_COUNT * 8 + GROUPS * 15 * 8 + MAX_SEGMENTS * 8 + BLOCK * 8;
 
 /// Working storage for [`subtract`]: the reference held between the
-/// amplitude fit and the subtraction (46 080 bytes). The caller decides
-/// where it lives (a `static`, a task's memory, a `Box`); its contents
-/// between calls do not matter, and it is not cleared per call (each call
-/// writes every sample it reads first). One per thread that subtracts.
+/// amplitude fit and the subtraction (46 080 bytes; with segments longer
+/// than two symbols, one block of a second run of the reference). The
+/// caller decides where it lives (a `static`, a task's memory, a `Box`);
+/// its contents between calls do not matter, and it is not cleared per
+/// call (each call writes every sample it reads first). One per thread
+/// that subtracts.
 #[derive(Clone)]
 pub struct SubtractScratch {
     held: [(f32, f32); HELD],
@@ -781,7 +783,9 @@ fn run(
     if fused {
         r.held(&amp, segments, held, audio, start, done, written);
     } else {
-        // The samples from `done` on, from a second run of the reference.
+        // The samples from `done` on, from a second run of the reference,
+        // a block at a time through the start of `held` (nothing held is
+        // needed any more).
         let mut corr = correction;
         let mut at = 0;
         blocks(
@@ -792,19 +796,16 @@ fn run(
                 let (a, b) = usable.range(start, j0, phase.len());
                 let (a, b) = (a.max(done).min(b) - j0, b - j0);
                 corr.skip(j0 + a - at);
-                for i in a..b {
-                    let q = phase[i].wrapping_add(corr.next());
-                    let (rc, rs) = (env[i] * cos_turns(q), env[i] * sin_turns(q));
-                    let j = j0 + i;
-                    r.sample(
-                        &amp,
-                        segments,
-                        j,
-                        &mut audio[(start + j as i64) as usize],
-                        rc,
-                        rs,
-                    );
+                // The correction in a local over the block: kept in
+                // registers rather than stored back every sample.
+                let mut c = corr;
+                let refs = &mut held[..b - a];
+                for (r, (&p, &w)) in refs.iter_mut().zip(phase[a..b].iter().zip(&env[a..b])) {
+                    let q = p.wrapping_add(c.next());
+                    *r = (w * cos_turns(q), w * sin_turns(q));
                 }
+                corr = c;
+                r.refs(&amp, segments, refs, audio, start, j0 + a);
                 at = j0 + b;
             },
         );
@@ -938,23 +939,31 @@ impl Removal {
         self.changed += xs.len();
     }
 
-    /// Subtracts the reference `(rc, rs)` of sample `j` (the one after the
-    /// last given) from `x`.
-    fn sample(
+    /// Subtracts samples `from..from + refs.len()` (the one after the
+    /// last given on; reference sample j at slot sample `start + j`), whose
+    /// references are `refs`, in runs within one segment and one interval.
+    #[inline]
+    fn refs(
         &mut self,
         amp: &[(f32, f32); MAX_SEGMENTS],
         segments: usize,
-        j: usize,
-        x: &mut f32,
-        rc: f32,
-        rs: f32,
+        refs: &[(f32, f32)],
+        audio: &mut [f32],
+        start: i64,
+        from: usize,
     ) {
-        self.enter(amp, segments, j);
-        self.run(j, core::slice::from_mut(x), &[(rc, rs)]);
+        let to = from + refs.len();
+        let mut j = from;
+        while j < to {
+            self.enter(amp, segments, j);
+            let stop = to.min(self.cur_end).min(self.until);
+            let xs = &mut audio[(start + j as i64) as usize..][..stop - j];
+            self.run(j, xs, &refs[j - from..stop - from]);
+            j = stop;
+        }
     }
 
-    /// Subtracts samples `from..to` (reference sample j at slot sample
-    /// `start + j`), whose reference is held at `j % HELD`.
+    /// Subtracts samples `from..to`, whose reference is held at `j % HELD`.
     #[allow(clippy::too_many_arguments)]
     fn held(
         &mut self,
@@ -968,11 +977,10 @@ impl Removal {
     ) {
         let mut j = from;
         while j < to {
-            self.enter(amp, segments, j);
+            // Up to the end of the ring buffer at a time.
             let h = j % HELD;
-            let stop = to.min(self.cur_end).min(self.until).min(j + (HELD - h));
-            let xs = &mut audio[(start + j as i64) as usize..][..stop - j];
-            self.run(j, xs, &held[h..][..stop - j]);
+            let stop = to.min(j + (HELD - h));
+            self.refs(amp, segments, &held[h..][..stop - j], audio, start, j);
             j = stop;
         }
     }
