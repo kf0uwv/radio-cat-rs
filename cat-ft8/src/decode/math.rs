@@ -87,8 +87,12 @@ pub(crate) fn exp2_neg(y: f32) -> f32 {
     // out-of-range lanes compute on 0.0 and are replaced by 0.0 at the end.
     let in_range = y >= -126.0; // false for NaN
     let y = if !in_range || y > 0.0 { 0.0 } else { y };
-    let t = y as i32; // truncates toward zero
-    let n = if (t as f32) > y { t - 1 } else { t };
+    // The same ⌊y⌋ either way; on x86-64 without the conversion, which does
+    // not vectorise there.
+    #[cfg(target_arch = "x86_64")]
+    let n = floor_small(y);
+    #[cfg(not(target_arch = "x86_64"))]
+    let n = floor_by_truncation(y);
     let f = y - n as f32;
     let p = 1.0 + f * (E1 + f * (E2 + f * (E3 + f * (E4 + f * (E5 + f * (E6 + f * E7))))));
     let r = p * f32::from_bits(((n + 127) as u32) << 23);
@@ -96,6 +100,40 @@ pub(crate) fn exp2_neg(y: f32) -> f32 {
         r
     } else {
         0.0
+    }
+}
+
+/// ⌊y⌋ for y in [−2²², 2²²]: truncate, then one less if that is above y.
+#[cfg_attr(target_arch = "x86_64", allow(dead_code))]
+#[inline(always)]
+fn floor_by_truncation(y: f32) -> i32 {
+    let t = y as i32; // truncates toward zero
+    if (t as f32) > y {
+        t - 1
+    } else {
+        t
+    }
+}
+
+/// [`floor_by_truncation`] with no float-to-integer conversion (Rust's
+/// saturating `as i32` does not vectorise on x86-64 SSE2, which converted
+/// each lane separately in `exp2_neg`'s loop; elsewhere the conversion is
+/// one instruction, saturating in hardware, and is kept). Adding 1.5·2²³
+/// lands in [2²³, 2²⁴), where the spacing is 1, so the sum is y rounded
+/// to an integer r, and r is the sum's low mantissa bits; one less if
+/// that rounded up. Every operation is exact but the rounding to r, and r
+/// is then corrected to ⌊y⌋, so the result equals truncating and
+/// correcting (`y as i32`, minus one if that is above y).
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+#[inline(always)]
+fn floor_small(y: f32) -> i32 {
+    const MAGIC: f32 = 12_582_912.0; // 1.5·2²³
+    let big = y + MAGIC;
+    let r = (big.to_bits() as i32).wrapping_sub(MAGIC.to_bits() as i32);
+    if big - MAGIC > y {
+        r - 1
+    } else {
+        r
     }
 }
 
@@ -303,5 +341,33 @@ mod tests {
             }
         }
         assert_eq!(h, 0x0d68_2590_515e_d35b, "sweep hash {h:#018x}");
+    }
+
+    /// `floor_small` against truncation at every `f32` from −126 to 0 in
+    /// `stride` steps of the bit pattern, and at both zeros.
+    fn floor_small_matches(stride: usize) {
+        // Negative floats' bit patterns grow with the magnitude.
+        let mut n = 0;
+        for bits in ((-0.0f32).to_bits()..=(-126.0f32).to_bits()).step_by(stride) {
+            n += 1;
+            let y = f32::from_bits(bits);
+            assert_eq!(floor_small(y), floor_by_truncation(y), "{y}");
+        }
+        assert!(n > 1_000_000_000 / stride, "{n}");
+        for y in [0.0f32, -0.0, -126.0, -125.5, -0.5, -1.5, -2.5] {
+            assert_eq!(floor_small(y), floor_by_truncation(y), "{y}");
+        }
+    }
+
+    #[test]
+    fn floor_small_matches_truncation() {
+        floor_small_matches(9_973);
+    }
+
+    /// Every `f32` in −126…0 (about 1.1·10⁹ values; run in release).
+    #[test]
+    #[ignore]
+    fn floor_small_matches_truncation_everywhere() {
+        floor_small_matches(1);
     }
 }
