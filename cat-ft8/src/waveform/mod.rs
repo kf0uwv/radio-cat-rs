@@ -108,8 +108,8 @@ const TURN: f32 = 4_294_967_296.0;
 /// Phase increment per hertz per sample.
 const TURNS_PER_HZ: f32 = TURN / SAMPLE_RATE as f32;
 
-// The current symbol's pulse is never in the zero prefix, so the loop in
-// `Synth::run` reads it without a check.
+// The current symbol's pulse is never in the zero prefix, so
+// `Synth::increments` reads it in every run.
 const _: () = assert!(PULSE_FIRST <= SAMPLES_PER_SYMBOL);
 // At most two pulses overlap any sample: the previous symbol's run
 // (s ≤ ns − PULSE_FIRST) and the next symbol's (s ≥ PULSE_FIRST) are
@@ -233,11 +233,7 @@ impl Synth {
     /// many; fewer than `out.len()` only at the end of the waveform.
     pub fn fill(&mut self, out: &mut [f32]) -> usize {
         let amp = self.amplitude;
-        let mut k = 0;
-        self.run(out.len(), |phase, env| {
-            out[k] = amp * env * sin_turns(phase);
-            k += 1;
-        })
+        self.render(out, |y, phase, env| *y = amp * env * sin_turns(phase))
     }
 
     /// Adds the next samples into `out` (mixing with what is there) and
@@ -245,11 +241,30 @@ impl Synth {
     /// except in the sign of zero: `0.0 + (−0.0)` is `+0.0`.
     pub fn mix(&mut self, out: &mut [f32]) -> usize {
         let amp = self.amplitude;
-        let mut k = 0;
-        self.run(out.len(), |phase, env| {
-            out[k] += amp * env * sin_turns(phase);
-            k += 1;
-        })
+        self.render(out, |y, phase, env| *y += amp * env * sin_turns(phase))
+    }
+
+    /// The samples of [`fill`](Self::fill) and [`mix`](Self::mix): the
+    /// phase and envelope of [`fill_phase`](Self::fill_phase) a chunk of
+    /// [`CHUNK`] samples at a time (in a stack buffer), each sample then
+    /// written by `put(sample, phase, envelope)`.
+    #[inline(always)]
+    fn render(&mut self, out: &mut [f32], put: impl Fn(&mut f32, u32, f32)) -> usize {
+        let mut phase = [0u32; CHUNK];
+        let mut env = [0.0f32; CHUNK];
+        let mut done = 0;
+        for block in out.chunks_mut(CHUNK) {
+            let k = block.len();
+            let n = self.fill_phase(&mut phase[..k], &mut env[..k]);
+            for ((y, &p), &e) in block[..n].iter_mut().zip(&phase[..n]).zip(&env[..n]) {
+                put(y, p, e);
+            }
+            done += n;
+            if n < k {
+                break;
+            }
+        }
+        done
     }
 
     /// The next samples' carrier phase (one turn = 2³², starting at 0 on
@@ -262,7 +277,7 @@ impl Synth {
         let (phase, envelope) = (&mut phase[..n], &mut envelope[..n]);
         let pos = self.pos;
         // The increments first, then their running sum (the phase before
-        // each sample): the same integer additions as `run`.
+        // each sample).
         self.increments(pos, phase);
         let mut p = self.phase;
         for x in phase.iter_mut() {
@@ -272,8 +287,7 @@ impl Synth {
         }
         self.phase = p;
         self.pos = pos + n;
-        // `run`'s envelope: `envelope(j)` in the first and last symbols
-        // (exactly 1.0 there beyond the ramps), 1.0 elsewhere.
+        // `envelope(j)` on the ramps, exactly 1.0 elsewhere.
         envelope.fill(1.0);
         let ramps = [
             0..RAMP_SAMPLES,
@@ -302,13 +316,22 @@ impl Synth {
     }
 
     /// The phase increments of waveform samples `pos..pos + out.len()`
-    /// (within the waveform) into `out`: the values [`Synth::run`] adds,
-    /// from the same products and sums in the same order, but computed in
-    /// runs over each symbol's parts where the same pulses overlap (the
-    /// previous symbol's and the current one's rising half, the current
-    /// one's rising half alone, its falling half alone, its falling half
-    /// and the next symbol's), so the loops have no per-sample branches or
-    /// bounds checks and vectorise.
+    /// (within the waveform) into `out`: [`increment`] of
+    /// `(base + Δf · dev) · TURNS_PER_HZ` at each sample.
+    ///
+    /// Symbol m's pulse covers samples [(m−1)T, (m+2)T), so sample s of
+    /// symbol m gets the current symbol's pulse at NS + s and the previous
+    /// and next symbols' at 2·NS + s and s (the stored half read mirrored
+    /// about its centre). The previous symbol's term is exactly zero from
+    /// `PREV_END` on and the next one's before `PULSE_FIRST`, so at most
+    /// one of them applies (the const asserts above) and `dev` is
+    /// `cur · g` plus that term, if any: adding a +0.0 term to these
+    /// non-negative sums would change nothing, so this is bit-identical to
+    /// summing all three. The loops run over each symbol's parts where the
+    /// same pulses overlap (the previous symbol's and the current one's
+    /// rising half, the current one's rising half alone, its falling half
+    /// alone, its falling half and the next symbol's), with no per-sample
+    /// branch or bounds check, so they vectorise.
     #[inline]
     fn increments(&self, pos: usize, out: &mut [u32]) {
         const NS: usize = SAMPLES_PER_SYMBOL;
@@ -316,7 +339,7 @@ impl Synth {
         let last = SYMBOL_COUNT - 1;
         let tone = |m: usize| f32::from(self.symbols[m.min(last)]);
         let base = self.base_hz;
-        let step = |dev: f32| increment_lanes((base + TONE_SPACING_HZ * dev) * TURNS_PER_HZ);
+        let step = |dev: f32| increment((base + TONE_SPACING_HZ * dev) * TURNS_PER_HZ);
         let pulse = &PULSE_HALF[..];
         let end = pos + out.len();
         let mut p = pos;
@@ -370,95 +393,39 @@ impl Synth {
     /// Advances by up to `n` samples without producing them (phase still
     /// advances); returns how many.
     pub fn skip(&mut self, n: usize) -> usize {
-        self.run(n, |_, _| {})
-    }
-
-    /// The core loop: symbol by symbol, sample by sample, calling `emit`
-    /// with each sample's phase and envelope, then advancing the phase.
-    fn run<F: FnMut(u32, f32)>(&mut self, n: usize, mut emit: F) -> usize {
-        let ns = SAMPLES_PER_SYMBOL;
-        let end = self.pos + n.min(self.remaining());
-        let last = SYMBOL_COUNT - 1;
-        let tone = |m: usize| f32::from(self.symbols[m.min(last)]);
-        let mut pos = self.pos;
-        let mut phase = self.phase;
-        while pos < end {
-            let sym = pos / ns;
-            let (prev, cur, next) = (tone(sym.saturating_sub(1)), tone(sym), tone(sym + 1));
-            let s_start = pos - sym * ns;
-            let s_end = ns.min(s_start + (end - pos));
-            // Only the first and last symbols reach the ramps; elsewhere
-            // the envelope is exactly 1.0.
-            let ramped = sym == 0 || sym == last;
-            for s in s_start..s_end {
-                // Symbol m's pulse covers samples [(m−1)T, (m+2)T): this
-                // sample gets the previous symbol's pulse at 2ns + s, the
-                // current one's at ns + s and the next one's at s (mirrored
-                // about 2880). The previous symbol's term is exactly zero
-                // after sample ns − PULSE_FIRST and the next symbol's before
-                // PULSE_FIRST; those terms are skipped, and at most one of
-                // them applies (the const assert above). Adding a +0.0 term
-                // to these non-negative sums changes nothing, so this is
-                // bit-identical to summing all three. (Splitting the symbol
-                // into three explicit runs reads more clearly but measured
-                // 4–6% slower, so the per-sample checks stay.)
-                let mut dev = cur * PULSE_HALF[(ns + s).min(2 * ns - s) - PULSE_FIRST];
-                if s + PULSE_FIRST <= ns {
-                    dev += prev * PULSE_HALF[ns - s - PULSE_FIRST]; // `+` is commutative in IEEE-754
-                }
-                if s >= PULSE_FIRST {
-                    dev += next * PULSE_HALF[s - PULSE_FIRST];
-                }
-                let freq = self.base_hz + TONE_SPACING_HZ * dev;
-                let env = if ramped { envelope(sym * ns + s) } else { 1.0 };
-                emit(phase, env);
-                phase = phase.wrapping_add(increment(freq * TURNS_PER_HZ));
-            }
-            pos += s_end - s_start;
+        let mut buf = [0u32; CHUNK];
+        let n = n.min(self.remaining());
+        let mut left = n;
+        while left > 0 {
+            left -= self.skip_with(&mut buf[..left.min(CHUNK)]);
         }
-        let produced = pos - self.pos;
-        self.pos = pos;
-        self.phase = phase;
-        produced
+        n
     }
 }
 
-/// A phase increment in [0, 2³¹) (`freq` is positive and below half the
-/// sample rate, checked in [`Synth::new`]) as the `u32` it is. Every
-/// conversion below is exact on that range and gives the same value as a
-/// direct `as u32`. On 64-bit targets the conversion goes through `i64`
-/// (one instruction on x86-64 and AArch64, and measured faster on x86-64
-/// than through `i32`); elsewhere through `i32`, a single instruction on
-/// Cortex-M, where `i64` would be a library call.
+/// Samples per chunk in [`Synth::fill`], [`Synth::mix`] and
+/// [`Synth::skip`]: their stack buffers take 8 bytes per sample.
+const CHUNK: usize = 64;
+
+/// A phase increment `x`, in [0, 2³¹), as the `u32` it truncates to (as
+/// `x as i64 as u32` on every target). `x` is positive because `freq` is
+/// positive and below half the sample rate (checked in [`Synth::new`]).
+///
+/// On x86-64, where the saturating `as` conversion of a vectorised loop
+/// goes a lane at a time (SSE2), without a float-to-integer conversion:
+/// the top 15 bits are ⌊x / 2¹⁶⌋ and the low 16 bits ⌊x − 2¹⁶·⌊x / 2¹⁶⌋⌋,
+/// each step exact (the scaling by 2¹⁶ either way, and the difference, a
+/// multiple of x's spacing below 2¹⁶). Elsewhere through `i32`: one
+/// instruction on AArch64 (lanes at once) and on Cortex-M, where `i64`
+/// would be a library call.
 #[inline(always)]
 fn increment(x: f32) -> u32 {
-    // The targets agree only below 2³¹: at 2³¹ `as i32` saturates to
+    // The `as` forms agree only below 2³¹: at 2³¹ `as i32` saturates to
     // 2³¹ − 1 while `as i64 as u32` gives 2³¹. The margin: `new` keeps the
     // top tone below 6 000 Hz and `TURNS_PER_HZ` is 357 913.9375 (2³² /
     // 12 000 rounded down), so the largest increment, at the largest base
     // accepted and any tones, is 2³¹ − 256 (tested), two `f32` steps
     // below the limit.
-    debug_assert!(x < 2_147_483_648.0, "phase increment {x} reaches 2^31");
-    #[cfg(target_pointer_width = "64")]
-    {
-        x as i64 as u32
-    }
-    #[cfg(not(target_pointer_width = "64"))]
-    {
-        x as i32 as u32
-    }
-}
-
-/// [`increment`] for [`Synth::increments`]' loops: the same value on
-/// [0, 2³¹), in a form that converts several lanes at once where the loop
-/// vectorises. On x86-64, where the saturating `as i32` is converted a lane
-/// at a time (SSE2), without a float-to-integer conversion: the top 15 bits
-/// are ⌊x / 2¹⁶⌋ and the low 16 bits ⌊x − 2¹⁶·⌊x / 2¹⁶⌋⌋, each step exact
-/// (the scaling by 2¹⁶ either way, and the difference, a multiple of x's
-/// spacing below 2¹⁶); elsewhere through `i32`, one instruction (AArch64
-/// converts lanes at once).
-#[inline(always)]
-fn increment_lanes(x: f32) -> u32 {
     debug_assert!(
         (0.0..2_147_483_648.0).contains(&x),
         "phase increment {x} outside [0, 2^31)"

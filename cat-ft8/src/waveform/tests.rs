@@ -368,8 +368,8 @@ fn phase_increment_stays_below_two_to_the_31() {
     while Synth::new(&[7; SYMBOL_COUNT], base, 1.0).is_err() {
         base = f32::from_bits(base.to_bits() - 1);
     }
-    // Every deviation `run` forms (each tone triple, each sample of a
-    // symbol, the same terms in the same order) at that base.
+    // Every deviation the generator forms (each tone triple, each sample
+    // of a symbol, the same terms in the same order) at that base.
     let ns = SAMPLES_PER_SYMBOL;
     let mut top = 0.0f32;
     for prev in 0..8u8 {
@@ -398,34 +398,116 @@ fn phase_increment_stays_below_two_to_the_31() {
     while synth.fill(&mut block) == block.len() {}
 }
 
+/// The per-sample generator the runs of `Synth::increments` replaced, kept
+/// as the reference: symbol by symbol, sample by sample, each sample's
+/// phase and envelope, the increment converted by truncation through
+/// `i64` (the original conversion on 64-bit targets).
+fn reference(symbols: &[u8; SYMBOL_COUNT], base: f32) -> (Vec<(u32, f32)>, u32) {
+    let ns = SAMPLES_PER_SYMBOL;
+    let pf = tables::PULSE_FIRST;
+    let last = SYMBOL_COUNT - 1;
+    let tone = |m: usize| f32::from(symbols[m.min(last)]);
+    let mut out = Vec::with_capacity(WAVEFORM_SAMPLES);
+    let mut phase = 0u32;
+    for sym in 0..SYMBOL_COUNT {
+        let (prev, cur, next) = (tone(sym.saturating_sub(1)), tone(sym), tone(sym + 1));
+        for s in 0..ns {
+            let mut dev = cur * PULSE_HALF[(ns + s).min(2 * ns - s) - pf];
+            if s + pf <= ns {
+                dev += prev * PULSE_HALF[ns - s - pf];
+            }
+            if s >= pf {
+                dev += next * PULSE_HALF[s - pf];
+            }
+            let freq = base + TONE_SPACING_HZ * dev;
+            let env = if sym == 0 || sym == last {
+                envelope(sym * ns + s)
+            } else {
+                1.0
+            };
+            out.push((phase, env));
+            phase = phase.wrapping_add((freq * TURNS_PER_HZ) as i64 as u32);
+        }
+    }
+    (out, phase)
+}
+
+/// A de Bruijn sequence B(8, 3), read cyclically: every tone triple
+/// appears exactly once among its 512 windows of three.
+fn de_bruijn_8_3() -> Vec<u8> {
+    // Concatenated Lyndon words of length dividing 3 (Fredricksen,
+    // Kessler and Maiorana), in the recursive form.
+    fn db(t: usize, p: usize, a: &mut [u8; 4], seq: &mut Vec<u8>) {
+        if t > 3 {
+            if 3 % p == 0 {
+                seq.extend_from_slice(&a[1..=p]);
+            }
+        } else {
+            a[t] = a[t - p];
+            db(t + 1, p, a, seq);
+            for j in a[t - p] + 1..8 {
+                a[t] = j;
+                db(t + 1, t, a, seq);
+            }
+        }
+    }
+    let mut seq = Vec::new();
+    db(1, 1, &mut [0; 4], &mut seq);
+    seq
+}
+
+#[test]
+fn de_bruijn_windows_hold_every_tone_triple() {
+    let seq = de_bruijn_8_3();
+    assert_eq!(seq.len(), 512);
+    let mut seen = [false; 512];
+    for w in de_bruijn_windows() {
+        for t in w.windows(3) {
+            seen[usize::from(t[0]) * 64 + usize::from(t[1]) * 8 + usize::from(t[2])] = true;
+        }
+    }
+    assert!(seen.iter().all(|&x| x));
+}
+
+/// The cyclic B(8, 3) cut into symbol sets of 79 that overlap by two, so
+/// that every tone triple lies inside one of them.
+fn de_bruijn_windows() -> Vec<[u8; SYMBOL_COUNT]> {
+    let seq = de_bruijn_8_3();
+    let step = SYMBOL_COUNT - 2;
+    (0..seq.len().div_ceil(step))
+        .map(|w| core::array::from_fn(|k| seq[(w * step + k) % seq.len()]))
+        .collect()
+}
+
 #[test]
 fn phase_runs_match_the_per_sample_generator() {
-    // Every tone triple appears (a de Bruijn-like walk over the tones),
-    // plus encoded messages; bases low, middle and the highest accepted.
-    let mut walk = [0u8; SYMBOL_COUNT];
-    let mut x = 0x2545_f491u32;
-    for t in walk.iter_mut() {
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        *t = (x % 8) as u8;
-    }
+    // Encoded messages, the de Bruijn windows (every tone triple), and
+    // constant tones; bases low, middle and the highest accepted.
     let mut top = 6_000.0f32 - 7.0 * TONE_SPACING_HZ;
     while Synth::new(&[7; SYMBOL_COUNT], top, 1.0).is_err() {
         top = f32::from_bits(top.to_bits() - 1);
     }
-    let cases = [
-        (symbols_of("CQ K1ABC FN42"), 1500.0f32),
-        (symbols_of("K1ABC W9XYZ -11"), 0.4),
-        (walk, 812.5),
-        ([7; SYMBOL_COUNT], top),
-        ([0; SYMBOL_COUNT], 3.125),
+    let mut cases = vec![
+        (symbols_of("CQ K1ABC FN42"), 1500.0f32, true),
+        (symbols_of("K1ABC W9XYZ -11"), 0.4, true),
+        ([7; SYMBOL_COUNT], top, true),
+        ([0; SYMBOL_COUNT], 3.125, true),
     ];
-    for (symbols, base) in cases {
-        let mut want = Vec::with_capacity(WAVEFORM_SAMPLES);
-        let mut r = Synth::new(&symbols, base, 1.0).unwrap();
-        r.run(WAVEFORM_SAMPLES, |p, e| want.push((p, e)));
-        for block in [1usize, 7, 240, 705, 706, 960, 961, 1214, 1215, 1920, 4097] {
+    for (k, w) in de_bruijn_windows().into_iter().enumerate() {
+        // The windows at fewer block sizes (the blocks matter at the run
+        // boundaries, which the cases above cover).
+        cases.push((w, if k % 2 == 0 { 812.5 } else { top }, false));
+    }
+    for (symbols, base, all_blocks) in cases {
+        let (want, end_phase) = reference(&symbols, base);
+        let blocks: &[usize] = if all_blocks {
+            &[
+                1, 7, 63, 64, 65, 240, 705, 706, 960, 961, 1214, 1215, 1920, 4097,
+            ]
+        } else {
+            &[961, 4097]
+        };
+        for &block in blocks {
             for skip_every in [0usize, 2, 3] {
                 let mut s = Synth::new(&symbols, base, 1.0).unwrap();
                 let (mut phase, mut env, mut buf) =
@@ -435,7 +517,11 @@ fn phase_runs_match_the_per_sample_generator() {
                 loop {
                     i += 1;
                     let n = if skip_every > 0 && i % skip_every == 0 {
-                        s.skip_with(&mut buf)
+                        if i % 4 == 0 {
+                            s.skip(block)
+                        } else {
+                            s.skip_with(&mut buf)
+                        }
                     } else {
                         let n = s.fill_phase(&mut phase, &mut env);
                         for k in 0..n {
@@ -455,20 +541,73 @@ fn phase_runs_match_the_per_sample_generator() {
                     }
                 }
                 assert_eq!(j, WAVEFORM_SAMPLES);
-                assert_eq!(s.phase, r.phase, "base {base} block {block}");
+                assert_eq!(s.phase, end_phase, "base {base} block {block}");
             }
         }
     }
 }
 
-/// `increment_lanes` against `as i32 as u32` at every `f32` in [0, 2³¹)
-/// in `stride` steps of the bit pattern, and at the edges.
-fn increment_lanes_matches(stride: usize) {
+#[test]
+fn samples_match_the_per_sample_generator() {
+    // `fill`, `mix` and `skip` against the reference's phase and
+    // envelope, `amplitude · envelope · sin(phase)`, in blocks that cross
+    // their chunks and the run boundaries, interleaved.
+    let cases = [
+        (symbols_of("CQ K1ABC FN42"), 1500.0f32, 0.7f32),
+        (de_bruijn_windows()[3], 2_812.5, -1.25),
+        ([5; SYMBOL_COUNT], 1.0, 3.0),
+    ];
+    for (symbols, base, amp) in cases {
+        let (want, end_phase) = reference(&symbols, base);
+        let sample = |j: usize| amp * want[j].1 * sin_turns(want[j].0);
+        for block in [1usize, 63, 64, 65, 129, 480, 961, 4097] {
+            let mut s = Synth::new(&symbols, base, amp).unwrap();
+            let mut buf = vec![0.0f32; block];
+            let (mut j, mut i) = (0, 0);
+            loop {
+                i += 1;
+                let n = match i % 3 {
+                    0 => s.skip(block + i % 7).min(block),
+                    1 => {
+                        let n = s.fill(&mut buf);
+                        for (k, y) in buf[..n].iter().enumerate() {
+                            assert_eq!(y.to_bits(), sample(j + k).to_bits(), "{}", j + k);
+                        }
+                        n
+                    }
+                    _ => {
+                        let base_buf: Vec<f32> = (0..block).map(|k| k as f32 * 0.5 - 3.0).collect();
+                        buf.copy_from_slice(&base_buf);
+                        let n = s.mix(&mut buf);
+                        for (k, (y, x)) in buf[..n].iter().zip(&base_buf).enumerate() {
+                            let w = x + sample(j + k);
+                            assert_eq!(y.to_bits(), w.to_bits(), "{}", j + k);
+                        }
+                        assert_eq!(buf[n..], base_buf[n..]);
+                        n
+                    }
+                };
+                // `skip` may move further than the block.
+                j = s.position();
+                if n < block || s.remaining() == 0 {
+                    break;
+                }
+            }
+            assert_eq!(j, WAVEFORM_SAMPLES, "block {block}");
+            assert_eq!(s.phase, end_phase, "block {block}");
+        }
+    }
+}
+
+/// `increment` against the original conversion, truncation through
+/// `i64`, at every `f32` in [0, 2³¹) in `stride` steps of the bit pattern,
+/// and at the edges.
+fn increment_matches(stride: usize) {
     let top = 2_147_483_648.0f32.to_bits();
     let mut n = 0usize;
     for bits in (0..top).step_by(stride) {
         let x = f32::from_bits(bits);
-        assert_eq!(increment_lanes(x), x as i32 as u32, "{x}");
+        assert_eq!(increment(x), x as i64 as u32, "{x}");
         n += 1;
     }
     assert!(n > 1_000_000_000 / stride, "{n}");
@@ -483,18 +622,18 @@ fn increment_lanes_matches(stride: usize) {
         8_388_608.0,
         below,
     ] {
-        assert_eq!(increment_lanes(x), x as i32 as u32, "{x}");
+        assert_eq!(increment(x), x as i64 as u32, "{x}");
     }
 }
 
 #[test]
-fn increment_lanes_matches_the_conversion() {
-    increment_lanes_matches(9_973);
+fn increment_matches_truncation() {
+    increment_matches(9_973);
 }
 
 /// Every `f32` in [0, 2³¹) (about 1.3·10⁹ values; run in release).
 #[test]
 #[ignore]
-fn increment_lanes_matches_the_conversion_everywhere() {
-    increment_lanes_matches(1);
+fn increment_matches_truncation_everywhere() {
+    increment_matches(1);
 }
