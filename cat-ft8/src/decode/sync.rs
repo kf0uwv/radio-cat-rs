@@ -113,8 +113,6 @@ pub fn find_candidates(
     )
 }
 
-/// The sync score of a candidate at `start_row`, base bin `base`, or
-/// `None` if fewer than two Costas arrays lie in the filled rows.
 /// [`costas_score`] at every base bin `0..out.len()` of one start row, into
 /// `out` (`i32::MIN` where there is none): the same integer sums, added in
 /// another order (exact), a row of the spectrogram at a time so the inner
@@ -122,18 +120,8 @@ pub fn find_candidates(
 fn costas_scores(spec: &Spectrogram<'_>, start_row: i32, out: &mut [i32]) {
     let cols = out.len();
     let rows = spec.rows_filled() as i32;
-    let present = COSTAS_POSITIONS
-        .iter()
-        .filter(|&&pos| {
-            let first = start_row + 2 * pos as i32;
-            first >= 0 && first + 2 * (COSTAS.len() as i32 - 1) < rows
-        })
-        .count() as i32;
-    if present < 2 {
-        out.fill(i32::MIN);
-        return;
-    }
     out.fill(0);
+    let mut present = 0i32;
     for &pos in COSTAS_POSITIONS.iter() {
         let first = start_row + 2 * pos as i32;
         let last = first + 2 * (COSTAS.len() as i32 - 1);
@@ -165,6 +153,11 @@ fn costas_scores(spec: &Spectrogram<'_>, start_row: i32, out: &mut [i32]) {
                 out[b] += 8 * i32::from(sent[b]) - all;
             }
         }
+        present += 1;
+    }
+    if present < 2 {
+        out.fill(i32::MIN);
+        return;
     }
     // 6 / n with n = 2 or 3: × 3 or × 2, exact.
     let scale = 6 / present;
@@ -173,6 +166,8 @@ fn costas_scores(spec: &Spectrogram<'_>, start_row: i32, out: &mut [i32]) {
     }
 }
 
+/// The sync score of a candidate at `start_row`, base bin `base`, or
+/// `None` if fewer than two Costas arrays lie in the filled rows.
 pub(crate) fn costas_score(spec: &Spectrogram<'_>, start_row: i32, base: usize) -> Option<i32> {
     let rows = spec.rows_filled() as i32;
     let (mut sum, mut present) = (0i32, 0i32);

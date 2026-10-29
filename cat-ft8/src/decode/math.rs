@@ -124,9 +124,20 @@ fn floor_by_truncation(y: f32) -> i32 {
 /// that rounded up. Every operation is exact but the rounding to r, and r
 /// is then corrected to ⌊y⌋, so the result equals truncating and
 /// correcting (`y as i32`, minus one if that is above y).
+///
+/// Domain: y in [−2²², 2²²] (not NaN), where the sum lies in [2²³, 2²⁴]
+/// and r in its bits is exact (at 2²⁴ the carry into the exponent still
+/// gives 2²²); outside it the result is wrong. Callers: `exp2_neg`
+/// (clamped to [−126, 0]) and the waveform's phase increment (in
+/// [0, 2¹⁶]). Relies on round-to-nearest without excess precision (SSE2
+/// on x86-64, where it is used).
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 #[inline(always)]
 pub(crate) fn floor_small(y: f32) -> i32 {
+    debug_assert!(
+        (-4_194_304.0..=4_194_304.0).contains(&y),
+        "floor_small: {y} outside [-2^22, 2^22]"
+    );
     const MAGIC: f32 = 12_582_912.0; // 1.5·2²³
     let big = y + MAGIC;
     let r = (big.to_bits() as i32).wrapping_sub(MAGIC.to_bits() as i32);
