@@ -167,6 +167,13 @@ jobs:
       - name: No decodes in noise or carriers
         run: cargo test --release -p cat-ft8 --test decode_bulk -- --ignored --nocapture
 
+      - name: Exhaustive f32 floor and conversion checks (x86-64)
+        # The x86-64 floor without a conversion (exp2_neg, the waveform's
+        # phase increment) against truncation at every f32 of its domain;
+        # the default tests only sample it. #[ignore]d like the bulk run;
+        # a few seconds in release. Every such test ends in `_everywhere`.
+        run: cargo test --release -p cat-ft8 --lib -- --ignored _everywhere
+
   ft8-aarch64:
     name: cat-ft8 on aarch64 (Linux)
     runs-on: ubuntu-24.04-arm

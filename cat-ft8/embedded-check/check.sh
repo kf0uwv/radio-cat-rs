@@ -17,11 +17,9 @@
 # thumbv8m.main-none-eabihf in three images (the small decoder
 # configuration, the host configuration, and the encoder alone), prints
 # each image's size (flash = .text + .rodata + .data; static RAM = .data +
-# .bss), and fails if an image's static RAM is above its model's (256 KiB
-# for the small and encoder-only images, 512 KiB for the host image, whose
-# statics include the subtraction's working storage; `link.x` maps 512 KiB
-# for all three, so the small image's ceiling is checked here, not by the
-# linker), if any image has unresolved symbols or references
+# .bss), and fails if an image's static RAM is above its ceiling (the
+# `ram_limit` table below, the one place they are set; `link.x` only maps
+# enough RAM for the largest), if any image has unresolved symbols or references
 # soft-double helpers (`__aeabi_d*`, `__*df*`): the core must use `f32`
 # only. Only code reachable from
 # `src/main.rs` is linked and so checked. With `--stack`, also prints the
@@ -54,9 +52,11 @@ for variant in small host encoder-only; do
     small) features="" ;;
     *) features="--features $variant" ;;
   esac
+  # Static RAM ceilings: the host image's statics include the
+  # subtraction's working storage.
   case "$variant" in
-    host) ram_limit=524288 ;;
-    *) ram_limit=262144 ;;
+    host) ram_limit=524288 ;;   # 512 KiB
+    *) ram_limit=262144 ;;      # 256 KiB: small, encoder-only
   esac
   echo "==== image: $variant"
   # shellcheck disable=SC2086 # $features is deliberately split
@@ -69,10 +69,10 @@ for variant in small host encoder-only; do
 
   echo "== size ($elf)"
   "$size" -A "$elf" | grep -E '^(section|\.text|\.rodata|\.data|\.bss)'
-  "$size" -A "$elf" | awk '$1==".text"||$1==".rodata"||$1==".data"{f+=$2} $1==".data"||$1==".bss"{r+=$2}
-    END {printf "flash %d B, RAM (static) %d B\n", f, r}'
-  ram="$("$size" -A "$elf" | awk '$1==".data"||$1==".bss"{r+=$2} END {print r+0}')"
-  echo "== static RAM $ram B (ceiling $ram_limit B)"
+  read -r flash ram < <("$size" -A "$elf" \
+    | awk '$1==".text"||$1==".rodata"||$1==".data"{f+=$2} $1==".data"||$1==".bss"{r+=$2}
+      END {print f+0, r+0}')
+  echo "flash $flash B, RAM (static) $ram B (ceiling $ram_limit B)"
   [ "$ram" -le "$ram_limit" ] || { echo "FAIL: static RAM $ram B above $ram_limit B" >&2; exit 1; }
   echo "== undefined symbols (must be none)"
   undef="$("$nm" -u "$elf" || true)"
