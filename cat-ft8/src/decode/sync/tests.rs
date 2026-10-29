@@ -39,7 +39,12 @@ fn run(grid: &[Vec<Option<i32>>], k: usize) -> (Vec<P>, SyncReport) {
     let (rows, cols) = (grid.len(), grid[0].len());
     let mut scratch = vec![0i32; 3 * cols];
     let mut out = vec![P::default(); k];
-    let r = select(rows, cols, |q, b| grid[q][b], 0, &mut scratch, &mut out, P).unwrap();
+    let fill = |q: usize, row: &mut [i32]| {
+        for (b, s) in row.iter_mut().enumerate() {
+            *s = grid[q][b].unwrap_or(i32::MIN);
+        }
+    };
+    let r = select(rows, cols, fill, 0, &mut scratch, &mut out, P).unwrap();
     out.truncate(r.kept);
     (out, r)
 }
@@ -256,6 +261,49 @@ fn refinement_moves_towards_sub_grid_offsets() {
                     "offset ({fb}, {fr}) axis {axis}: {g} for {w}"
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn row_scores_equal_the_single_scores() {
+    // Signals and noise, in a full slot and in slots cut where one, two
+    // and all three Costas arrays of some start rows are filled; every
+    // start row the search visits and a few beyond, every base bin.
+    let mut slot = empty_slot();
+    add_noise(&mut slot, NOISE_RMS, 11);
+    for (k, msg) in ["CQ K1ABC FN42", "K1ABC W9XYZ -11", "W9XYZ K1ABC R-07"]
+        .iter()
+        .enumerate()
+    {
+        let amp = amplitude_for(-8.0 + 6.0 * k as f64);
+        add_signal(
+            &mut slot,
+            &symbols_of(msg),
+            hz(100 + 300 * k),
+            -1.5 + 1.4 * k as f32,
+            amp,
+        );
+    }
+    for band in [
+        Band::DEFAULT,
+        Band::SMALL,
+        Band::from_hz(1_000, 1_200).unwrap(),
+    ] {
+        for samples in [SLOT_SAMPLES, 50_000, 90_000, 130_000, 3_000] {
+            let mut built = Built::new(band);
+            built.with(&slot[..samples], |spec| {
+                let cols = band.base_bins();
+                let mut row = vec![0i32; cols];
+                let first = NOMINAL_START_ROW - MAX_START_OFFSET - 3;
+                for start in first..first + START_ROWS as i32 + 6 {
+                    costas_scores(spec, start, &mut row);
+                    for (b, &got) in row.iter().enumerate() {
+                        let want = costas_score(spec, start, b).unwrap_or(i32::MIN);
+                        assert_eq!(got, want, "samples {samples} start {start} base {b}");
+                    }
+                }
+            });
         }
     }
 }

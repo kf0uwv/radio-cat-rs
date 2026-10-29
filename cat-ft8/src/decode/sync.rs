@@ -101,7 +101,7 @@ pub fn find_candidates(
     select(
         START_ROWS,
         cols,
-        |q, b| costas_score(spec, first_row + q as i32, b),
+        |q, out| costas_scores(spec, first_row + q as i32, out),
         min_score,
         scratch,
         out,
@@ -115,6 +115,64 @@ pub fn find_candidates(
 
 /// The sync score of a candidate at `start_row`, base bin `base`, or
 /// `None` if fewer than two Costas arrays lie in the filled rows.
+/// [`costas_score`] at every base bin `0..out.len()` of one start row, into
+/// `out` (`i32::MIN` where there is none): the same integer sums, added in
+/// another order (exact), a row of the spectrogram at a time so the inner
+/// loop runs along the bins and vectorises.
+fn costas_scores(spec: &Spectrogram<'_>, start_row: i32, out: &mut [i32]) {
+    let cols = out.len();
+    let rows = spec.rows_filled() as i32;
+    let present = COSTAS_POSITIONS
+        .iter()
+        .filter(|&&pos| {
+            let first = start_row + 2 * pos as i32;
+            first >= 0 && first + 2 * (COSTAS.len() as i32 - 1) < rows
+        })
+        .count() as i32;
+    if present < 2 {
+        out.fill(i32::MIN);
+        return;
+    }
+    out.fill(0);
+    for &pos in COSTAS_POSITIONS.iter() {
+        let first = start_row + 2 * pos as i32;
+        let last = first + 2 * (COSTAS.len() as i32 - 1);
+        if first < 0 || last >= rows {
+            continue;
+        }
+        for (j, &tone) in COSTAS.iter().enumerate() {
+            let Some(row) = spec.row((first + 2 * j as i32) as usize) else {
+                // Unreachable (rows below `rows_filled` are filled); as
+                // `costas_score`, no score.
+                out.fill(i32::MIN);
+                return;
+            };
+            // The eight tones' levels at every base bin, as slices along
+            // the bins.
+            let at = |t: usize| &row[2 * t..2 * t + cols];
+            let (t0, t1, t2, t3) = (at(0), at(1), at(2), at(3));
+            let (t4, t5, t6, t7) = (at(4), at(5), at(6), at(7));
+            let sent = at(usize::from(tone));
+            for b in 0..cols {
+                let all = i32::from(t0[b])
+                    + i32::from(t1[b])
+                    + i32::from(t2[b])
+                    + i32::from(t3[b])
+                    + i32::from(t4[b])
+                    + i32::from(t5[b])
+                    + i32::from(t6[b])
+                    + i32::from(t7[b]);
+                out[b] += 8 * i32::from(sent[b]) - all;
+            }
+        }
+    }
+    // 6 / n with n = 2 or 3: × 3 or × 2, exact.
+    let scale = 6 / present;
+    for s in out.iter_mut() {
+        *s *= scale;
+    }
+}
+
 pub(crate) fn costas_score(spec: &Spectrogram<'_>, start_row: i32, base: usize) -> Option<i32> {
     let rows = spec.rows_filled() as i32;
     let (mut sum, mut present) = (0i32, 0i32);
@@ -170,7 +228,8 @@ pub fn refine(spec: &Spectrogram<'_>, c: &Candidate) -> (f32, f32) {
 }
 
 /// Local-maximum suppression and top-K selection over a `rows × cols`
-/// score grid given by `score(q, b)`, visited row by row with a rolling
+/// score grid whose row q `score(q, row)` fills (`i32::MIN` for no
+/// score), visited row by row with a rolling
 /// three-row buffer. Keeps points scoring at least `min_score`, ordered by
 /// score descending, then (q, b) ascending; `make` builds the entries.
 pub(crate) fn select<T, S, M>(
@@ -183,7 +242,7 @@ pub(crate) fn select<T, S, M>(
     make: M,
 ) -> Result<SyncReport, Error>
 where
-    S: Fn(usize, usize) -> Option<i32>,
+    S: Fn(usize, &mut [i32]),
     M: Fn(usize, usize, i32) -> T,
     T: Copy + HasScore,
 {
@@ -194,10 +253,7 @@ where
     let mut report = SyncReport::default();
     let mut count = 0usize;
     let fill = |scratch: &mut [i32], q: usize| {
-        let slot = &mut scratch[(q % 3) * cols..(q % 3 + 1) * cols];
-        for (b, s) in slot.iter_mut().enumerate() {
-            *s = score(q, b).unwrap_or(NONE);
-        }
+        score(q, &mut scratch[(q % 3) * cols..(q % 3 + 1) * cols]);
     };
     if rows == 0 {
         return Ok(report);
