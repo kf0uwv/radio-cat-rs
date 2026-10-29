@@ -960,8 +960,8 @@
   encoder-only 36 116 → 36 548; static RAM and the subtraction frames
   unchanged; soft-float helper call sites unchanged (thumbv8m and
   thumbv7em).
-- Stale Pi binaries from a shared target directory (archive mtimes older
-  than the last build) found by hash; those runs discarded, every timed
+- Stale Pi binaries built from extracted source archives into one target
+  directory (archive mtimes older than the last build) found by hash; those runs discarded, every timed
   binary rebuilt in its own target directory.
 - CI-equivalent checks before each code commit (fmt, clippy workspace,
   all features and thumbv8m, workspace and release tests, thumbv8m
@@ -970,3 +970,29 @@
 - Release `cat-ft8-decode` built from this repository's path at b39ce66
   (the planning commit changes no input of the build): sha256
   2e689a03bddd57840dbb027176ee683fcc791a425b58f2b828625645bb550059.
+
+## Session: 2026-10-29 (O2 fix round)
+
+- 0cd4248: `fill`/`mix`/`skip` through `fill_phase`/`skip_with` over a
+  64-sample stack chunk; per-sample `run` deleted (kept in tests as the
+  reference); one `increment` helper, one cfg site; de Bruijn B(8,3)
+  windows in the generator tests; `increment` tested against `as i64`.
+  Encoder x86 `synthesize` 409–411 → 368–373 µs per waveform, `fill`
+  609–611 → 565–570, `skip` 233–235 → 217–220. Flash −1.0 to −1.2 KB per
+  image (thumbv8m and thumbv7em); `fill`/`mix` frames 160 → 584 B.
+  1 000 encoder cases hashed: identical to 0186703.
+- 7694d25: `costas_score` doc in place; `present` counted in the main
+  loop; `floor_small` domain doc and `debug_assert!`.
+- 69c5bd6: `check.sh` ceilings in one table, one awk; CI runs the
+  `_everywhere` tests in release on x86-64.
+- An apparent 0.8% decode slowdown came from building the base at
+  another path (code placement); rebuilt at the same path, equal.
+  A revert of the `present` change made on that evidence was undone.
+- Identity at 69c5bd6: tests (debug, no-std, release, ignored in
+  release), clippy four targets and workspace, `check.sh --stack`, MSRV;
+  run records = S3 fix round's (0 differing); 800-WAV output = b465b75's;
+  Raspberry Pi 5 release test suite with ignored tests passes (0x50000
+  before and after).
+- Release `cat-ft8-decode` built from this repository's path at 69c5bd6:
+  sha256 96339c7a67b12366b6a864a0860978b813b8004f3a89360ff3e4f0d72a3fb9a9.
+- Not done: Cortex-M run time (microcontroller unavailable; open item).

@@ -1275,6 +1275,37 @@ before and kept only if it wins on one without losing on the other.
 
 Done 2026-10-29 (findings, "Decode time, optimisation round (O2)").
 
+### O2 fix round (2026-10-29, after the O2 reviews)
+
+Results bit-identical to b465b75 on every target, as in O2.
+
+1. One generator: `fill`, `mix` and `skip` through `fill_phase` /
+   `skip_with` over a 64-sample stack chunk; the per-sample `run` and its
+   stale timing comment deleted; `increment` and `increment_lanes` one
+   helper with one cfg site. Encoder output proved equal (tests against
+   the per-sample reference; 1 000 cases of `synthesize`, `fill`, `mix`
+   and `skip` hashed against 0186703); encoder timed before and after;
+   flash, frames and static RAM per image on thumbv8m and thumbv7em.
+2. Docs and tidying: `costas_score`'s doc back in place; `present`
+   counted in `costas_scores`' main loop; `floor_small` domain doc and
+   `debug_assert!`; check.sh's RAM ceilings in one table.
+3. Tests: "every tone triple" made true with de Bruijn B(8,3) windows;
+   `increment` against the original `as i64` truncation; the exhaustive
+   `_everywhere` tests in CI's release job on x86-64.
+4. Identity and timing at the final code commit (69c5bd6): tests,
+   clippy on four targets, `run` records, the 800-WAV output, x86
+   `slotcost` against 0186703, the A76 test suite.
+
+Done 2026-10-29 (findings, "O2 fix round").
+
+### Open items
+
+- **Cortex-M run time of `fill_phase` and `find_candidates`** (asked in
+  the O2 review before calling the round done for microcontrollers).
+  Not attempted: the bench microcontroller was in use for other work.
+  Steps 1 and 3 of O2 and the chunked encoder change the code shape
+  there; only flash and frames are measured.
+
 ### Open API question (decide before the API freeze)
 
 `PassesScratch` holds the candidate scratch and the subtraction scratch

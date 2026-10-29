@@ -1871,8 +1871,10 @@ ms, mean 25.5 → 21.0–21.2; A76 38.8–38.9 → 34.2, 37.4 → 32.8.
    skip may sum them in any order). No per-sample branch or bounds
    check: the float part vectorises (on x86-64 the conversion still went
    a lane at a time, see 4). Tested equal, phase and envelope bit for
-   bit, to the per-sample generator for five tone sets (every tone triple
-   among them) and bases up to the highest accepted, blocks of 1 to 4 097
+   bit, to the per-sample generator for five tone sets (two encoded
+   messages, two constant tones and a pseudo-random walk, which covers
+   some but not all tone triples; the fix round adds windows of a de
+   Bruijn sequence that cover every one) and bases up to the highest accepted, blocks of 1 to 4 097
    samples around every run boundary, with skips between. `fill`, `mix`
    and `skip` (the encoder's) are unchanged. `subcost`: x86 2.05–2.09 →
    1.92–1.95 ms per call, A76 4.263 → 3.646.
@@ -1952,8 +1954,8 @@ targets (small and encoder-only one each of `__aeabi_f2lz`,
 conversions of steps 2 and 4 are not used; step 1 removes per-sample
 branches there too, step 3 per-point lookups, but no Cortex-M was run.
 
-**Measurement note.** Binaries for the Pi built from extracted archives
-of different commits into one shared target directory came out stale:
+**Measurement note.** Binaries for the Pi built from extracted source
+archives of different commits into one target directory came out stale:
 the archives' files carry the commit time, older than the directory's
 last build, and cargo's unit hashes do not include the source path, so
 cargo kept the previous binary (two "different" builds were the same
@@ -1962,3 +1964,108 @@ change; the affected Pi runs were discarded and every timed binary was
 rebuilt in its own target directory. The numbers above are from those.
 
 **Not measured:** any Cortex-M at run time.
+
+## O2 fix round (2026-10-29)
+
+Three code commits after the O2 reviews, results bit-identical to
+b465b75: 0cd4248 (one generator), 7694d25 (sync and `floor_small`
+docs), 69c5bd6 (`check.sh` ceilings, CI).
+
+1. **One generator** (0cd4248). `fill`, `mix` and `skip` take their
+   phase and envelope from `fill_phase` and `skip_with` over a 64-sample
+   stack chunk; the per-sample `run` loop and its comment (the "4–6%
+   slower" that 08d5d8e disproved) are gone, so an image that encodes and
+   decodes links one generator. `increment` and `increment_lanes` are one
+   helper with one cfg site: the exact floor on x86-64, `as i32`
+   elsewhere (equal to the old `as i64` on [0, 2³¹), so AArch64's scalar
+   path changes its conversion but not its values).
+   - Equality: the per-sample generator stays in the tests as the
+     reference (`as i64` truncation, as originally); `fill_phase` with
+     `skip`/`skip_with` between, and `fill`, `mix` (onto a non-zero
+     buffer) and `skip` interleaved, are compared bit for bit with it at
+     block sizes across the chunk and run boundaries. The tone sets now
+     include a de Bruijn sequence B(8, 3) cut into 79-symbol windows that
+     overlap by two, so every tone triple is covered (checked by a test).
+     `increment` is compared with `x as i64 as u32` at sampled `f32`
+     values and, in the ignored test, at every one in [0, 2³¹) (passes on
+     x86-64 and on the Cortex-A76). An out-of-tree program hashed every
+     output of `synthesize` (zeroed and non-zero buffers, starts from
+     −30 000 to 170 000), `fill`/`mix`/`skip` interleaved at 14 block
+     sizes and a whole-waveform `fill`, for 1 000 cases (encoded messages
+     and random symbol sets; bases including the smallest positive, 0.4
+     and the highest accepted; amplitudes 1, −0.25, 0 and random):
+     identical to 0186703's.
+   - Encoder time, x86-64 (that program, best of 20, per waveform, three
+     alternated rounds, both builds from this repository's path):
+     `synthesize` 408.8–411.3 → 368.1–372.9 µs, `fill` in 480-sample
+     blocks 608.8–610.8 → 564.7–569.7, `skip` of the whole waveform
+     233.1–235.0 → 216.6–220.1. A 32-sample chunk was slower (`fill`
+     609–612, `skip` 273–276 µs, against 64's 568–572 and 218–220):
+     not kept.
+   - Sizes (`check.sh --stack`, 0186703 → 69c5bd6), flash:
+
+     | image | thumbv8m.main | thumbv7em |
+     |---|---|---|
+     | small | 86 492 → 85 332 B | 86 774 → 85 618 B |
+     | host | 94 896 → 93 656 B | 95 234 → 94 002 B |
+     | encoder-only | 36 548 → 35 536 B | 36 586 → 35 578 B |
+
+     Static RAM unchanged (212 280 / 287 928 / 0 B). Frames on both
+     targets: `fill` and `mix` 160 → 584 B (the chunk's phase and
+     envelope, 512 B), `skip` 56 → 296 B (280 in the host image), with
+     `fill_phase` (112 B) and `increments` (88 B) below them, so the
+     encoder's deepest path grows by about 620 B, to about 780 B. The
+     largest frames (the check program's 4.1–4.2 KB, `subtract`'s 4 552 /
+     4 560 B and its 2 800 B) are unchanged. Soft-float helper call sites
+     unchanged in all six images; five more `__aeabi_memclr4` calls (the
+     chunk buffers are zeroed per call).
+2. **Docs and tidying** (7694d25). `costas_score`'s doc comment is back
+   above it. `costas_scores` counts the Costas arrays present in its main
+   loop instead of a pre-pass (a start row with fewer than two still gets
+   no score; such rows now do their sums before discarding them; sync
+   time unchanged, 3.55–3.57 ms per three-pass slot). `floor_small`
+   documents its domain, [−2²², 2²²] (the sum's bits stay exact up to
+   2²⁴), and checks it with `debug_assert!`.
+3. **Ceilings and CI** (69c5bd6). `check.sh`'s per-image RAM ceilings
+   are set in one table that the header and `link.x` refer to; one awk
+   pass gives flash and RAM, printed with the ceiling (tested failing at
+   a lowered limit). CI's release job runs the ignored `_everywhere`
+   tests (both exhaustive floors, about 4 s in release).
+
+**Decode time.** `slotcost host,passes=1 host 200 5`, alternated, x86-64,
+worst / mean ms, both builds from this repository's path: 0186703 124.4 /
+115.0, 124.3 / 114.5; 69c5bd6 124.2 / 115.1, 124.3 / 114.7 (single pass
+20.9–21.1 either way; subtraction 64.4–65.2, sync 3.54–3.56 either way):
+no change, as expected (the decoder's code is unchanged but for the sync
+loop and addresses).
+
+**Measurement note: the build path moves code.** Built from a worktree
+at another path, 0186703 measured 0.8% faster than 69c5bd6 built here,
+over eight alternated rounds (three-pass mean 113.4–114.8 against
+114.6–116.5 ms, the subtraction 0.4–1.3 ms of it), with the subtraction's
+machine code identical but for addresses. The same commit built at the
+two paths places `subtract::run` 160 bytes apart, and a variant
+without the sync change, built here, gave 69c5bd6's address and 114.4 ms
+(the sync change was briefly reverted on the first evidence, then kept). Rebuilt here, 0186703 matched 69c5bd6 (above). Timed comparisons
+need both binaries built from the same path, as well as in separate
+target directories.
+
+**Identity** (69c5bd6, built in its own target directories): unit,
+integration and doc tests (debug with all features, no-std, release)
+and the ignored tests in release (the two exhaustive floors, the bulk
+run); clippy `-D warnings` on x86-64 and AArch64 (all targets, all
+features), thumbv7em and thumbv8m (`--lib --no-default-features`), and
+the workspace; `check.sh` and `--stack`; MSRV 1.75 library build;
+`paired_bench run` with timings removed equal to the S3 fix round's
+records: `host` 38 900 (every set, both blocks), `host,passes=1` and
+`small` 34 800 each, 0 differing. The release `cat-ft8-decode` (sha256
+in progress.md): its output on the 800 WAV slots (`host` and `small`,
+`host,passes=1` and `small`; plain, `--raw` and `--profile`, timings
+removed) byte-identical to b465b75's. Raspberry Pi 5: the release test
+suite with the ignored tests (lib 149 with the two table printers
+skipped, then 2 + 12 + 1 bulk + 7 + 2 + 5, including `increment` and `floor_small` at every value) passes;
+throttle flags 0x50000 before and after.
+
+**Not done:** a Cortex-M run time of `fill_phase` and `find_candidates`
+(asked in the O2 review); the microcontroller was not available. Open
+item in task_plan.md. Encoder time on the Cortex-A76 not measured.
