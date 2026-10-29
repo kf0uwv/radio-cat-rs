@@ -181,7 +181,9 @@ pub fn envelope(j: usize) -> f32 {
 /// calls, so blocks of any size give the same samples as one call.
 ///
 /// Memory: the 79 symbols and a few scalars (about 100 bytes); the pulse
-/// and sine tables are static. `Clone` forks a generator at its current
+/// and sine tables are static. [`fill`](Self::fill), [`mix`](Self::mix) and
+/// [`skip`](Self::skip) work through a stack chunk of 64 samples (about
+/// 0.8 KB at the deepest on thumbv8m). `Clone` forks a generator at its current
 /// position (for example to build a reference signal from part-way in).
 #[derive(Debug, Clone)]
 pub struct Synth {
@@ -404,7 +406,8 @@ impl Synth {
 }
 
 /// Samples per chunk in [`Synth::fill`], [`Synth::mix`] and
-/// [`Synth::skip`]: their stack buffers take 8 bytes per sample.
+/// [`Synth::skip`]: their stack buffers take 8 bytes per sample in `fill`
+/// and `mix` (phase and envelope), 4 in `skip`.
 const CHUNK: usize = 64;
 
 /// A phase increment `x`, in [0, 2³¹), as the `u32` it truncates to (as
