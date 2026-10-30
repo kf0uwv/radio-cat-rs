@@ -1558,7 +1558,7 @@ general-to-vector register moves in half-vectorised loops).
    slots; the pins re-pinned with each change explained.
 6. A proposed gate written in findings.md, naming an unused block for
    acceptance; **the acceptance run is not made** until the criteria
-   are reviewed.
+   are settled.
 
 Status (findings, "ninth round"): developed and measured on `o9-vsin`
 (a5c4a6c, a1119ed, ee7c0ce, d4e669e; ADR note 0c6f3bf). Degree 5/4.

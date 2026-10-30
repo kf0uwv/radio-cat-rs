@@ -3644,8 +3644,7 @@ Cortex-A76 with the hygiene of O5–O8 (every timed binary built from one
 source path into its own target directory per commit, SHA-256 checked on
 the Pi, rounds alternated, one benchmark at a time, `vcgencmd
 get_throttled` 0x50000 before and after every Pi run). **Not adopted:
-the gate below is proposed for review; the acceptance run has not been
-made.**
+the gate below is proposed; not yet run.**
 
 ### Design
 
@@ -3690,11 +3689,12 @@ made.**
    index), and the lanes are added `(l0 + l1) + (l2 + l3)` at the end of
    the segment (fit) or block (time search). The order is set by the
    sample index alone, so it is the same on every target, for every
-   scratch size (the held ring is now a multiple of 4 pairs, so 4 samples
-   from a multiple of 4 never wrap) and whether the reference is held or
+   scratch size and whether the reference is held or
    rerun (the existing tests of both pass). Sine sums are taken positive
    and their sign turned once (exact: negation commutes with rounding).
-   Portable Rust only: no `unsafe`, no `std::arch`, `f32`, MSRV 1.75
+   The held ring is rounded down to a multiple of 4 pairs so that 4
+   samples from a multiple of 4 never wrap: for speed only, the sums'
+   order does not depend on it. Portable Rust only: no `unsafe`, no `std::arch`, `f32`, MSRV 1.75
    (`next_multiple_of`), `no_std`.
 
 ### Degree
@@ -3811,9 +3811,10 @@ with bafed37 (an out-of-tree script; lost = decoded by bafed37 only):
 | **degree 5/4 (d4e669e)** | **1** | **0** | **0** | **identical** | 0 | 4 890 of 24 600 `host` |
 
 Per set (both commits): `crowded` 40 452, `wide` 50 996, `fading`
-35 888 decoded over the three blocks, by pass 103 036 / 28 428 / 5 864
-(d4e669e: 5 863 in pass 3); `sweep` 8 764, `edges` 1 228, `empty` 0,
-unchanged; `wide` below −16 dB: 1 788 / 1 887 / 1 843 decoded per block,
+35 888 decoded over the three blocks (127 336), by pass 93 044 / 28 428 /
+5 864 (`crowded` 29 088 / 9 227 / 2 137, `wide` 37 424 / 11 368 /
+2 204, `fading` 26 532 / 7 833 / 1 523; d4e669e: 5 863 in pass 3);
+`sweep` 8 764, `edges` 1 228, `empty` 0, unchanged; `wide` below −16 dB: 1 788 / 1 887 / 1 843 decoded per block,
 none lost or gained. `host,passes=1` and `small`: 19 200 records each,
 all equal to bafed37's. What differs in the `host` records (ee7c0ce):
 later passes' sync point counts (1 448 pass reports), the reported SNR,
@@ -3873,7 +3874,7 @@ and (release suite) the A76. The A76's run records of `main`
   in-place application against `Correction::next` (random states,
   wrapping), and of `lane_bounds`, are new; nothing else moved.
 
-### Proposed gate (for review; not run)
+### Proposed gate (proposed; not yet run)
 
 Written before any acceptance record exists. The candidate is the
 branch's code at d4e669e (a5c4a6c, a1119ed, ee7c0ce, d4e669e and the ADR

@@ -1275,4 +1275,4 @@
   same messages in the same passes in every run; 605 lines differ in
   later-pass parameters and profile counters. Encoder output identical.
 - Proposed gate in findings.md (block `accept3`, unused); **acceptance
-  not run**, pending review.
+  not run**; proposed, not yet run.
