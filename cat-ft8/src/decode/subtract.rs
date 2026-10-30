@@ -21,10 +21,11 @@
 //! reference in place. It reads only the audio, the decode and its
 //! arguments: no spectrogram and no decoder state. It allocates nothing:
 //! the reference held between steps 3 and 4 is in a byte buffer the caller
-//! lends ([`SCRATCH_BYTES`], 46 080 bytes, for one run of the reference;
-//! any buffer that is idle at the time will do, such as the decoder's
-//! spectrogram between passes), and the rest of its working storage is on
-//! the stack and bounded (`SUBTRACT_STACK_BYTES`).
+//! lends ([`SUBTRACT_SCRATCH_BYTES`](SCRATCH_BYTES), 46 080 bytes, for one
+//! run of the reference; any buffer that is idle at the time will do, such
+//! as the decoder's spectrogram between passes), and the rest of its
+//! working storage is on the stack and bounded
+//! ([`SUBTRACT_STACK_BYTES`](STACK_BYTES)).
 //!
 //! 1. **Fine time.** For each symbol the audio is correlated with the
 //!    unit reference over the symbol's middle half, giving one complex
@@ -105,12 +106,14 @@ const HZ_PER_SYMBOL_TURN: f32 = SAMPLE_RATE as f32 / T as f32;
 const MIDDLE: f32 = WAVEFORM_SAMPLES as f32 / 2.0;
 
 /// Upper bound on [`subtract`]'s own stack storage, bytes: the per-symbol
-/// correlations, one set of per-group step sums, the per-segment
-/// amplitudes and one block of reference phase and envelope. (The
-/// compiler's frame adds scalars, temporaries and call overhead; the
-/// embedded link check reports it.) The held reference is not on the
-/// stack: it is in the caller's scratch ([`SCRATCH_BYTES`]).
-pub const STACK_BYTES: usize = SYMBOL_COUNT * 8 + GROUPS * 15 * 8 + MAX_SEGMENTS * 8 + BLOCK * 8;
+/// correlations, one set of per-group step sums and the 15 tone steps'
+/// rotations of the time search, the per-segment amplitudes and one block
+/// of reference phase and envelope. (The compiler's frames add scalars,
+/// temporaries and call overhead; the embedded link check reports them.)
+/// The held reference is not on the stack: it is in the caller's scratch
+/// ([`SUBTRACT_SCRATCH_BYTES`](SCRATCH_BYTES)).
+pub const STACK_BYTES: usize =
+    SYMBOL_COUNT * 8 + GROUPS * 15 * 8 + 15 * 8 + MAX_SEGMENTS * 8 + BLOCK * 8;
 
 /// Bytes of working storage with which [`subtract`] runs the reference
 /// once: a segment and a half of it held between the amplitude fit and the
@@ -118,9 +121,9 @@ pub const STACK_BYTES: usize = SYMBOL_COUNT * 8 + GROUPS * 15 * 8 + MAX_SEGMENTS
 pub const SCRATCH_BYTES: usize = HELD * PAIR;
 
 /// The least working storage [`subtract`] takes: one block of the
-/// reference (240 samples). With less than [`SCRATCH_BYTES`] it runs the
-/// reference a second time where a segment and a half does not fit
-/// (slower; the same result).
+/// reference (240 samples). With less than
+/// [`SUBTRACT_SCRATCH_BYTES`](SCRATCH_BYTES) it runs the reference a second
+/// time where a segment and a half does not fit (slower; the same result).
 pub const MIN_SCRATCH_BYTES: usize = BLOCK * PAIR;
 
 /// Settings of [`subtract`]. Start from [`SubtractConfig::DEFAULT`] and
@@ -250,12 +253,12 @@ fn ratio_db(a: f32, b: f32) -> Option<f32> {
 
 /// Subtracts the signal of `decode` from `audio` in place and returns the
 /// estimates. `scratch` is working storage: any byte buffer of at least
-/// [`MIN_SCRATCH_BYTES`], best [`SCRATCH_BYTES`] or more (the bytes beyond
-/// it are not used). Its size and contents do not change the result, it
-/// is not cleared, and each call writes every byte it reads first, so it
-/// can be any buffer idle during the call. The stack needed beyond it is
-/// bounded by [`STACK_BYTES`] plus the frames (`SUBTRACT_STACK_BYTES` in
-/// [`crate::decode`]).
+/// [`SUBTRACT_MIN_SCRATCH_BYTES`](MIN_SCRATCH_BYTES), best
+/// [`SUBTRACT_SCRATCH_BYTES`](SCRATCH_BYTES) or more (the bytes beyond it
+/// are not used). Its size and contents do not change the result, it is
+/// not cleared, and each call writes every byte it reads first, so it can
+/// be any buffer idle during the call. The stack needed beyond it is
+/// bounded by [`SUBTRACT_STACK_BYTES`](STACK_BYTES) plus the frames.
 ///
 /// `audio[0]` is slot sample 0 (the nominal start is sample 6 000); the
 /// first `skip` samples are missing input and are neither read nor
@@ -267,8 +270,11 @@ fn ratio_db(a: f32, b: f32) -> Option<f32> {
 /// [`Error::NonFinite`] for a non-finite time offset, and
 /// [`Error::FrequencyOutOfRange`] for a frequency the waveform cannot
 /// have; [`Error::BufferTooSmall`] for `scratch` below
-/// [`MIN_SCRATCH_BYTES`]. A decode whose waveform does not overlap the
-/// usable audio changes nothing (`samples` is 0).
+/// [`SUBTRACT_MIN_SCRATCH_BYTES`](MIN_SCRATCH_BYTES). The settings are
+/// checked first, so an invalid configuration is reported as such whatever
+/// the scratch's size. Each error leaves `audio` as it was. A decode whose
+/// waveform does not overlap the usable audio changes nothing (`samples`
+/// is 0).
 pub fn subtract(
     audio: &mut [f32],
     decode: &Decode,

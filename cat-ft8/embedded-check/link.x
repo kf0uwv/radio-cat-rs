@@ -14,9 +14,9 @@
  */
 
 /* Minimal memory map for the cat-ft8 link check: a Cortex-M33-class part
- * with 1 MiB of flash and 256 KiB of RAM, enough for the largest image.
- * Only sizes matter; the program is linked, measured and inspected, never
- * run. Each image's own static RAM ceiling is set and checked in check.sh. */
+ * with 1 MiB of flash and 256 KiB of RAM. Only sizes matter; the program
+ * is linked, measured and inspected, never run. The static RAM ceiling
+ * (this RAM less a stack budget) is set and checked in check.sh. */
 MEMORY
 {
   FLASH : ORIGIN = 0x00000000, LENGTH = 1M

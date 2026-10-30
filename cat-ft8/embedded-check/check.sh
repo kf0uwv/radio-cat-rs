@@ -18,8 +18,8 @@
 # configuration, the host configuration, and the encoder alone), prints
 # each image's size (flash = .text + .rodata + .data; static RAM = .data +
 # .bss), and fails if an image's static RAM is above its ceiling (the
-# `ram_limit` setting below, the one place it is set; `link.x` only maps
-# enough RAM for the largest), if any image has unresolved symbols or references
+# `ram_limit` setting below, the one place it is set: the RAM `link.x` maps
+# less a stated stack budget), if any image has unresolved symbols or references
 # soft-double helpers (`__aeabi_d*`, `__*df*`): the core must use `f32`
 # only. Only code reachable from
 # `src/main.rs` is linked and so checked. With `--stack`, also prints the
@@ -52,10 +52,13 @@ for variant in small host encoder-only; do
     small) features="" ;;
     *) features="--features $variant" ;;
   esac
-  # Static RAM ceiling, the same for every image: 256 KiB. (The
+  # Static RAM ceiling, the same for every image: the link map's 256 KiB
+  # less a 16 KiB stack budget (the deepest path measured, the host image's
+  # subtraction with the check program's frames, is about 14 KB). The
   # subtraction's working storage is the spectrogram's buffer, so the host
-  # image needs no more than the others.)
-  ram_limit=262144
+  # image needs no more than the others.
+  stack_budget=16384
+  ram_limit=$((262144 - stack_budget))
   echo "==== image: $variant"
   # shellcheck disable=SC2086 # $features is deliberately split
   cargo clippy --quiet --manifest-path "$here/Cargo.toml" --target "$target" \

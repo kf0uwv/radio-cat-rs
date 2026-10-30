@@ -740,9 +740,13 @@ impl<'a> Decoder<'a> {
     /// [`Decoder::decode`]. The subtractions between passes hold their
     /// reference (46 080 bytes) in the spectrogram's level buffer, which is
     /// idle until the next pass refills it, so they need no storage of
-    /// their own (a level buffer smaller than that, for a narrow band,
-    /// still gives the same result, a little slower). Besides the decoder's
-    /// own frames, a subtraction needs
+    /// their own. A level buffer smaller than that
+    /// ([`Band::spectrogram_len`] below
+    /// [`SUBTRACT_SCRATCH_BYTES`](super::SUBTRACT_SCRATCH_BYTES): a band of
+    /// 235 base bins or fewer, `hi − lo` up to 731.25 Hz) gives the same
+    /// result, a little slower (the reference is run a second time where
+    /// it does not fit); a level buffer padded to that size restores the
+    /// single run. Besides the decoder's own frames, a subtraction needs
     /// [`SUBTRACT_STACK_BYTES`](super::SUBTRACT_STACK_BYTES) of stack plus
     /// its call frames (about 7.4 KB in all in the Cortex-M33 link check:
     /// `subtract` and its time search's frames; the larger figure in

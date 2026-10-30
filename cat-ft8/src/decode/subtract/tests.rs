@@ -405,7 +405,7 @@ fn stack_storage_is_bounded() {
     {
         assert!(WAVEFORM_SAMPLES.div_ceil(seg) <= MAX_SEGMENTS, "{seg}");
     }
-    assert_eq!(STACK_BYTES, 4_536);
+    assert_eq!(STACK_BYTES, 4_656);
 }
 
 /// Scratch of `len` bytes holding NaN `f32` patterns.
