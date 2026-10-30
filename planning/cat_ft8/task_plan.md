@@ -1518,6 +1518,48 @@ kind (a), 1 knock-on), no false decode or gain, pass 1 identical; but
 the ceiling run's `fading` loss rate is 5 of 12 168, above O7's 9 of
 35 888. 0f0341c stays unmerged; `HOST` keeps 50.
 
+## O9: vector sine and cosine in the subtraction (2026-10-30, gated)
+
+A result-changing CPU round, developed on the local branch `o9-vsin`
+(not `feat/cat-ft8`) and gated later. The A76 profile at O6 puts 53.7%
+of a three-pass slot in the subtraction, the fit loop and the time
+search bound by two table-interpolated sine lookups per sample, which
+the vector units cannot gather (the padded-table attempt of O6 lost to
+general-to-vector register moves in half-vectorised loops).
+
+1. The decoder's per-sample sine and cosine in the subtraction (the
+   fit's reference, the removal's second run, the time search's
+   correlations) from a minimax polynomial on the `u32` phase: integer
+   reduction to the nearest quarter turn, both polynomials on the
+   remainder, swap and signs by bit operations, so that a loop over
+   samples vectorises with nothing scalar inside it. The degree chosen
+   by measured accuracy against the table (largest error over every
+   `u32` phase; the residual left by clean signals) and by A76 time.
+2. Lane-split, fixed-order sums: the fit's five sums and the time
+   search's two in four lanes keyed by the sample index (sample j in
+   lane j % 4, each lane in sample order, the lanes added as
+   `(l0 + l1) + (l2 + l3)`), so the order is the same on every target
+   and does not depend on the scratch size or block splits. Loops are
+   split so that the sine/cosine is a plain map (a loop the compiler
+   vectorises) and the sums a separate pass.
+3. Portable Rust only: no `unsafe`, no `std::arch`, `f32`, MSRV 1.75,
+   `no_std`; no fused multiply-add (Rust never contracts). The encoder
+   (`sin_turns`/`cos_turns`, `Synth`) keeps its table and stays
+   byte-identical; only the decoder's subtraction changes. The time
+   search's 15 rotations per trial keep the table (not per sample).
+4. Steps measured one at a time on the A76 and x86-64 (same hygiene as
+   O5–O8: one source path, a target directory per commit, hashes
+   checked, rounds alternated, throttle flags before and after; under
+   about 2% on the A76 is noise), with static Cortex-M33 instruction
+   counts per sample (thumbv8m host image) and `check.sh --stack`.
+5. Out of tree: the effect on `main`, `cap1`, `cap2` (never `fresh`,
+   `accept2` or any other block): decodes lost and gained against
+   bafed37 per set, false decodes, pass 1 unchanged, and the 800 WAV
+   slots; the pins re-pinned with each change explained.
+6. A proposed gate written in findings.md, naming an unused block for
+   acceptance; **the acceptance run is not made** until the criteria
+   are reviewed.
+
 ## Next: gated, result-changing rounds
 
 Each changes results and needs its own acceptance (the run sets, the
