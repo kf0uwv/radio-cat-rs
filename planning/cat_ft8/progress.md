@@ -1231,3 +1231,16 @@
 - Release `cat-ft8-decode` built from this repository's path at
   1c1c8a8: bit-identical to O7's (sha256
   9bf5630b4cda44c2f09e829c37e50a46b10cb33e68f942d5d6498c49e4bfa7df).
+
+## Session: 2026-10-30 (O8b, later-pass cap re-gate on a new block)
+
+- a616780: re-gate criteria (block `accept2` checked unused; loss kinds
+  (a) ranking and (b) knock-on; lost ≤ 8, pooled ≤ 13; ceiling and
+  `wide` low-SNR rates ≤ O7's), with the classifier's check on `fresh`
+  (2 (a), 1 (b)), committed before the run.
+- One run of `accept2` (ce09c5d vs 0f0341c, ceiling at both counts):
+  **fail** on the ceiling's `fading` rate (5 of 12 168 against O7's
+  9 of 35 888); every other criterion passes (lost 5, pooled 8, all
+  explained; 0 false; 0 gained; pass 1 identical; `wide` < −16 dB 0
+  of 1 814). The cap is dropped; 0f0341c stays on `gate-cap25`.
+- O7's 10 losses reclassified: all ranking losses (a), no knock-on.

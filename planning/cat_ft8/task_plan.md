@@ -1512,6 +1512,12 @@ before any run). Pass: 0f0341c joins the branch with the doc naming
 knock-on losses, then identity, local CI and the Raspberry Pi 5 suite.
 Fail: the cap is dropped; no third block.
 
+Outcome (findings, "re-gate on a new block"): **fail; the cap is
+dropped.** Lost 5 on `accept2` (pooled 8), every loss explained (4 of
+kind (a), 1 knock-on), no false decode or gain, pass 1 identical; but
+the ceiling run's `fading` loss rate is 5 of 12 168, above O7's 9 of
+35 888. 0f0341c stays unmerged; `HOST` keeps 50.
+
 ## Next: gated, result-changing rounds
 
 Each changes results and needs its own acceptance (the run sets, the

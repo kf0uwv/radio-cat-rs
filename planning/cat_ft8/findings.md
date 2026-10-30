@@ -3563,3 +3563,75 @@ used, with no change to 0f0341c.
   loss as being in 40-signal `fading`/`wide` slots, knock-on losses
   behind a deep pass-2 neighbour included, and says
   `with_later_candidates` restores the old behaviour.
+
+### Verdict table (filled in before interpretation)
+
+One attempt on `accept2`: `run host crowded,wide,fading accept2` with
+clean release builds of ce09c5d (cap 50) and 0f0341c (cap 25), each
+from its own worktree and target directory; `ceiling` with `host` and
+`host,later=50` from one build of 0f0341c with an out-of-tree
+per-message dump (the same patch and binary, by SHA-256, as the eighth
+round's ceiling run). Classifier and comparison scripts out of tree;
+records kept locally (not committed).
+
+| criterion | value | result |
+|---|---|---|
+| block never used | no file or content named `accept2` anywhere checked (before the gate commit) | pass |
+| classifier check on `fresh` | 2 of kind (a), 1 of kind (b), 0 unexplained, 0 gains | as expected |
+| false decodes | 0 in 2 000 records at each cap (every pass); 0 in the ceiling run at both counts (single pass, alone, oracle +1, oracle +2, every size) | pass |
+| pass 1 byte-identical | 2 000 of 2 000 records: pass-1 decodes and pass-1 report equal; ceiling single-pass outcome equal for every message | pass |
+| lost on `accept2`, bound 8 | 5 (crowded 0, wide 0, fading 5) | pass |
+| lost pooled with `fresh`, bound 13 | 5 + 3 = 8 | pass |
+| every loss explained | 4 of kind (a), 1 of kind (b), 0 unexplained | pass |
+| gains | 0 | pass (nothing to explain) |
+| `wide` below −16 dB | 0 lost of 1 814 decoded | pass |
+| ceiling: crowded, rate ≤ 0 | 0 of 13 559 | pass |
+| ceiling: wide, rate ≤ 1 / 50 996 | 0 of 17 172 | pass |
+| ceiling: fading, rate ≤ 9 / 35 888 (2.51 × 10⁻⁴) | **5 of 12 168 (4.11 × 10⁻⁴)**; at most 3 allowed | **fail** |
+| 0f0341c unchanged | commit and tree (a3acbf93bd18231df067186ebffe83886b46b583) as gated in the eighth round, so its A76 −8.70% and 800-WAV results stand | carried over |
+
+**Verdict: fail. The later-pass cap is dropped.** 0f0341c stays on its
+local branch unmerged; `HOST` keeps 50 further-pass candidates. Under
+the fixed rule there is no third block.
+
+### Interpretation
+
+**Lost on `accept2` (run records), each classified** (rank =
+candidate index + 1 in that pass at cap 50):
+- `fading` slot 75 (10 signals) `ZC8P J2IS RR73`, −11.4 dB, 310 Hz:
+  pass 2, rank 40 — (a).
+- `fading` slot 411 (40 signals) `KX2QX BN9F HD62`, −9.3 dB, 1 523 Hz:
+  pass 2, rank 42 — (a).
+- `fading` slot 461 (40 signals) `H7HSV BH5QPV +04`, −14.5 dB, 679 Hz:
+  pass 2, rank 38 — (a).
+- `fading` slot 471 (40 signals) `KS9L PR0IZ RR73`, −14.1 dB, 2 195 Hz:
+  pass 3, rank 4, `not_converged` at 25 — (b), behind `LW0D VA0V 73`
+  (−34.3 Hz; at 50 pass 2 rank 28, at 25 pass 3 rank 12). The same
+  mechanism as `fresh` slot 597.
+- `fading` slot 555 (40 signals) `RC2GKO KX5U +03`, −13.4 dB, 1 397 Hz:
+  pass 2, rank 47 — (a).
+
+The run-record criteria all pass; one loss is in a 10-signal slot,
+the first below 20 signals. The ceiling run (its oracle passes remove
+every decoded message with its true waveform and search with the later
+count) loses the same four messages of slots 75, 411, 471 and 555 plus
+one more, `fading` slot 507 `AF1CKV SS3XY 73` (−12.8 dB, 40 signals,
+no sync peak in the single pass, oracle pass 3 at 50, nothing at 25;
+no other message of that slot changes pass), against at most 3 the
+O7 rate allows at this size. It is one criterion and it fails as
+written; 5 against an expected 3.1 is not by itself evidence that
+`accept2` is unusual, and the rule set before the run does not allow
+weighing it.
+
+**O7's 10 losses, classified with the same script** (both commits
+rerun on `main`, `cap1`, `cap2`; 127 336 → 127 326 decoded, as O7
+counted): all 10 are of kind (a) (pass 2 or 3, ranks 27–50); none is a
+knock-on. The knock-on loss has been seen twice, once per new block
+(`fresh` 597, `accept2` 471), both at pass-3 rank 4 behind a pass-2
+neighbour of rank 28–35 within 35 Hz.
+
+What is kept: the measurement that 25 further-pass candidates take
+8.7% off a three-pass A76 slot; the per-message classifier; and, for a
+later attempt at the same saving, the knock-on mechanism (a cap that
+moves a deep pass-2 decode into pass 3 leaves its neighbours without
+a pass that searches the residual without it).
