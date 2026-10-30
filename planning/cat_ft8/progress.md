@@ -598,7 +598,7 @@
   baseline"); no false decodes anywhere. Checks: tests 115 (108 without
   std), golden hashes and floors unchanged, bulk identical, clippy, fmt,
   docs, thumbv8m, 1.75, link check (flash 83 504 B, `.bss` unchanged).
-- E0 checkpoint checked (open-source boundary clean). E0a recorded
+- E0 checkpoint checked. E0a recorded
   in the plan: gate defects, traceable baseline, shared helpers, typed
   records; `last_rounds()` kept public as a deliberate addition.
 - E0a done (decoder library untouched): `compare` fails on MISSING sets,

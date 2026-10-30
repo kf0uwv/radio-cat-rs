@@ -3361,7 +3361,7 @@ table below, filled in before it is interpreted.
   three-pass decode time per slot over every slot of `crowded`, `wide`
   and `fading` (here the `fresh` block, one thread: the `run` records'
   stage times, the process pinned to one core). Same hygiene as O7: both
-  binaries built by `pi_push.sh` from one source path into a target
+  binaries built from one source path into a target
   directory per commit, hashes checked on the Pi, rounds alternated,
   `vcgencmd get_throttled` before and after (0x50000 is this supply's
   baseline). The usual `slotcost` 40-signal crowded figure is reported
@@ -3432,7 +3432,7 @@ in 11 slots the CRC-failure, all-zero or duplicate counts of a
 candidate ranked 26–50 that is no longer tried (e.g. `s0001`: pass 2 kept 50 → 25,
 `bp_rounds` 1 500 → 750).
 
-**Timing** (Raspberry Pi 5, `pi_push.sh` builds of ce09c5d and 0f0341c,
+**Timing** (Raspberry Pi 5, release builds of ce09c5d and 0f0341c,
 SHA-256 checked on the Pi, `paired_bench run host … crowded,wide,fading
 fresh` under `taskset -c 3`, rounds old/new then new/old; ms per slot,
 mean of the records' stage times):

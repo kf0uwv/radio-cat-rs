@@ -8,8 +8,8 @@ work is added retroactively as part of this task, see that file's new
 "Task 12" entry). Source of truth for scope: the orchestrating agent's
 prompt, which itself cites two real, already-fixed source files in the
 sibling apps `ft991a` and `ts570d` as ground truth. Both sibling repos are
-READ-ONLY for this task — nothing under `/home/mattfranklin/.../ft991a` or
-`/home/mattfranklin/.../ts570d` is modified.
+READ-ONLY for this task — nothing in the sibling `ft991a` or `ts570d`
+repositories is modified.
 
 ## Problem being solved
 
