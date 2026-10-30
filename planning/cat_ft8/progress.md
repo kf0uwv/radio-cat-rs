@@ -1022,7 +1022,7 @@
   segments (x86-64 faster, A76 +1.4%) or through a chained iterator
   (slower on both); the CLI freeing its 16-bit samples early (max RSS
   −56 KB only).
-- Proposal: `i16` residual (prototype out of tree): `run host` every set
+- Proposal: `i16` residual (prototyped, not committed): `run host` every set
   PASS, 22 messages gained and 9 lost of the crowded, fading and wide
   sets, no false decodes; 800 WAV slots 10 696 decodes either way.
 - Identity at 93fa40d and 81db219: run records equal to the S3 fix
@@ -1034,3 +1034,39 @@
 - Release `cat-ft8-decode` built from this repository's path at 81db219
   (the planning commit changes no input of the build): sha256
   52c04a9e2098cce5034a62129d1d2a4ab9b5686e7de3e597fc3db69373522fc1.
+
+## Session: 2026-10-29 (O3 fix round)
+
+- 37aa031: `further_passes` calls `Decoder::start_slot` once before a
+  pass's subtractions and takes the level buffer once; a stopped decode
+  leaves no stale candidates (test: `candidates()` empty,
+  `decode_candidate(0)` `None`; failed before the change).
+  `PassesReport` unchanged.
+- 13f88ed: narrow-band decoder test (1000–1500 Hz, exact vs padded level
+  buffer, whole and skip/cut); scratch-size test over the held-and-rerun
+  test's starts, skips, cuts and segments.
+- b37df17: RAM ceiling 256 KiB less a 16 KiB stack budget in `check.sh`
+  (fails at a 20 KiB budget); `SUBTRACT_STACK_BYTES` 4 536 → 4 656 (the
+  rotations); ADR 0024 `subtract` frame 4 600 B; rustdoc shows the
+  `SUBTRACT_*` names; narrow-band threshold (235 base bins) and padding
+  documented; config checked before scratch size documented.
+- Rejected: `held` sliced to the ring once (A76 slot 203.4 → 203.2,
+  subcost unchanged; x86-64 subcost −0.9%, within the spread).
+- A76 profile (out-of-tree sampler, three-pass slot): subtraction 56.7%
+  (fit loop 25.5%, removal 13.3%, time search 13.4% with its generator,
+  fit-run generator 4.5%, frequency estimate ~0), belief propagation
+  24.7%, feed 14.5%, sync 2.4%.
+- BP repeats on identical LLRs in passes 2–3: 463 of 20 000 candidates,
+  13 871 of 521 581 rounds (1.4% of all rounds, about 0.6 ms of 203 on the
+  A76): not worth an exact skip.
+- O3 findings wording: hold at the end of the buffer if row skipping is
+  pursued; 256 KiB is the link-check image (real M33 stream ~956 KB);
+  "prototyped, not committed".
+- Identity at 37aa031 and b37df17: run records equal to the S3 fix
+  round's (0 differing); 800-WAV output equal to b465b75's. Local CI
+  checks, release and exhaustive tests, clippy on four targets pass;
+  Raspberry Pi 5 release suite with ignored tests (lib 154, then 2 + 12 +
+  1 bulk + 7 + 2 + 5) passes; 0x50000 before and after.
+- Release `cat-ft8-decode` built from this repository's path at b37df17
+  (the planning commit changes no input of the build): sha256
+  411b9c38eac68c16dceea39e0b5f48eaeba45db6944bf023f39b07d98ea4328c.

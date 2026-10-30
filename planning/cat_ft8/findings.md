@@ -2178,7 +2178,11 @@ x86-64 1.906–1.941 → 1.846–1.902 (step 1, four rounds) and the A76 3.661
 
 The host image's statics fit 256 KiB again, so every image now has the
 same ceiling and the link map is back to 256 KiB. Soft-float helper call
-sites unchanged (`check.sh`: no `f64` helper in any image).
+sites unchanged (`check.sh`: no `f64` helper in any image). (That figure
+is the link-check image, which runs one decode and one subtraction on a
+short residual. A real multi-pass Cortex-M33 stream needs about 956 KB,
+three quarters of it the 720 000 B residual, so this step saved about 5%
+of the real per-stream memory.)
 
 **Rejected** (results identical in each):
 
@@ -2207,7 +2211,7 @@ sites unchanged (`check.sh`: no `f64` helper in any image).
   WAV read sets the peak); not worth a change.
 
 **Proposal for a separate gated round: an `i16` residual** (result-
-changing; prototyped out of tree, not committed). The residual a
+changing; prototyped, not committed). The residual a
 multi-pass caller keeps is 720 000 B of `f32` per stream, three
 quarters of the host configuration's working memory. Held as 16-bit
 samples (each subtraction's output rounded to the nearest 1/32 768,
@@ -2241,7 +2245,12 @@ each subtraction).
   subtraction touched are equal to the previous pass's, so a later pass
   could skip them bit-identically; with 40 signals spread over ±1 s
   few rows qualify (the slot's first and last few), worth about 10% of
-  feed (a few ms of 206 on the A76). Not attempted.
+  feed (a few ms of 206 on the A76). Not attempted. Since 81db219 the
+  subtractions' held reference overwrites the level buffer's first rows
+  (46 080 B is rows 0–47 of the host band's 976-byte rows, 0–52 of the
+  small band's 880-byte rows), which are among
+  the few such rows; to pursue this, hold the reference at the end of the
+  buffer instead.
 
 **Identity.** At 93fa40d and 81db219 (each a clean tree, built in this
 repository's path): unit, integration and doc tests, the 24 subtraction
@@ -2260,3 +2269,162 @@ throttle flags 0x50000 before and after.
 
 **Not measured:** any Cortex-M at run time (flash, frames and static RAM
 only).
+
+## O3 fix round (2026-10-29)
+
+Three code commits after the O3 reviews, results bit-identical to
+cc68e22 on every target: 37aa031 (no stale candidates after a stop),
+13f88ed (size-independence tests where the rerun path runs), b37df17
+(stack budget under the RAM ceiling; subtraction docs). Hosts and timing
+hygiene as in O3 (every timed pair built from this repository's path into
+its own target directory, hashes compared, rounds alternated, throttle
+flags 0x50000 before and after every Raspberry Pi run).
+
+**Decision rule** (recorded from the O3 review): a difference under about
+2% on the Cortex-A76 target is noise (code placement alone moves a slot
+by 0.4–0.8%), so between two forms within it the simpler one is kept.
+
+1. **A stop leaves the decoder as after `start_slot`** (37aa031). The
+   subtractions' level buffer was taken through the spectrogram once per
+   subtraction (about 35 times a slot), emptying the spectrogram but not
+   the search's candidates, so a decode stopped after a subtraction left
+   100 candidates over no rows. `further_passes` now calls
+   `Decoder::start_slot` once before a pass's subtractions and takes the
+   buffer once for all of them. `PassesReport` is unchanged (its counts
+   were taken before). The stop test checks `candidates()` is empty and
+   `decode_candidate(0)` is `None` (it failed before the change), and
+   that the candidates are kept when no stop is asked for.
+2. **Tests where the rerun path runs** (13f88ed). A decoder test on a
+   1000–1500 Hz band (level buffer 32 384 B, under the 46 080 B of one
+   run's held reference) compares an exact-size level buffer with one
+   padded to `SUBTRACT_SCRATCH_BYTES`: the same decodes, report and
+   residual, whole and with a skip of 12 000 and a cut at 150 000 (two
+   passes, about 5 s in a debug build). The scratch-size test of
+   `subtract` now runs its eight sizes over both starts, both skip/cut
+   pairs and three segment lengths of the held-and-rerun test, one buffer
+   per size kept across the cases (about 4.7 s in debug).
+3. **Ceiling, stack and docs** (b37df17).
+   - `check.sh`: every image's static RAM ceiling is the link map's
+     256 KiB less a stated 16 KiB stack budget (245 760 B); the deepest
+     path measured is about 14 KB (the host image's subtraction with the
+     check program's frames). Set in `check.sh` rather than as a linker
+     `ASSERT`: it is already the one place ceilings live, and its failure
+     names the image and both figures. With a 20 KiB budget (ceiling
+     241 664 B) the host image (241 848 B) fails, as intended; with 16 KiB
+     all three pass (headroom 33 480 / 3 912 / 245 760 B).
+   - `SUBTRACT_STACK_BYTES` counts the time search's 15 rotations
+     (120 B): 4 536 → 4 656. ADR 0024 gives `subtract`'s frame (with its
+     caller, host image) as 4 600 B. Frames and sizes otherwise as at
+     81db219 (flash 85 332 / 93 764 / 35 536 B, static 212 280 /
+     241 848 / 0 B).
+   - Rustdoc link text names the importable `SUBTRACT_*` constants.
+     `decode_passes` states when a level buffer is too small for one run
+     (`Band::spectrogram_len` under 46 080 B: 235 base bins or fewer, a
+     band up to 731.25 Hz wide) and that padding it restores the single
+     run; `subtract` documents that the settings are checked before the
+     scratch size and that every error leaves the audio unchanged.
+
+**Rejected: `held` sliced to the ring once** (`&mut held[..ring * PAIR]`
+before the loops, for the per-sample index's bounds check). The bounds
+check stays (the function grows 14 B on x86-64 and 28 B on AArch64).
+`subcost host seg=3840 20 5`, four alternated rounds: x86-64 1.858–1.920
+(mean 1.881) → 1.836–1.895 (1.865) ms per call, within the rounds'
+spread; A76 3.566–3.578 → 3.566–3.568. `slotcost` on the A76, two
+alternated rounds: 220.3 / 203.4 both → 220.2 / 203.2 both (−0.1%). No
+gain on the target and none clear on x86-64: not kept.
+
+**Time at the final commit.** A76 `slotcost host,passes=1 host 200 5`:
+220.3 / 203.4 ms (subtraction 123.2, belief propagation 41.5, feed 31.3,
+sync 4.7), against 219.4–219.6 / 202.6–202.7 at 81db219 (+0.4%: the step
+1 change is outside every loop; `subcost`, which calls `subtract`
+directly and whose code is unchanged, also moved 3.555 → 3.566–3.578, so
+it is placement). Under the decision rule.
+
+### Where a three-pass slot's time goes on the Cortex-A76
+
+`perf` is not usable on the Pi without system packages (no `perf`
+binary; `perf_event_paranoid` 2 would allow user-space sampling of the
+user's own processes). Instead, an out-of-tree wall-clock sampler (not
+committed) in a copy of `paired_bench`: a 487 µs interval timer signal,
+the interrupted PC from the signal context and the unwound stack, inlined
+frames resolved from line tables (the decoder's hot functions have the
+same code sizes as in the timed binary; only the decoder's per-candidate
+entry points differ, by the hook for the count below). Samples were
+taken only during the three-pass side of `slotcost host,passes=1 host
+200 5` (1 000 slot decodes, 455 062 samples, every one unwound through
+the interrupted frame; the run's three-pass mean was 208.0 ms against
+203.4 unsampled, +2.3%). Shares of the slot, and ms at 203.4:
+
+| | share | ms per slot |
+|---|---|---|
+| **subtraction** | **56.7%** | **115.4** |
+| fit loop (reference cos/sin, least-squares sums, holding the reference) | 25.5% | 51.8 |
+| removal (`Removal`: amplitude interpolation, subtraction, residue sums) | 13.3% | 27.1 |
+| time search: symbol correlations and scores | 10.1% | 20.6 |
+| generator, fit run (`fill_phase`, increments) | 4.5% | 9.2 |
+| time search: its generator runs | 3.3% | 6.7 |
+| frequency estimate | < 0.01% | 0.0 |
+| setup (encode, `Synth::new`) | 0.04% | 0.1 |
+| **belief propagation** | **24.7%** | **50.2** |
+| **feed (spectrogram, FFT)** | **14.5%** | **29.4** |
+| sync | 2.4% | 4.8 |
+| soft bits | 1.4% | 2.8 |
+| refine, SNR, other | 0.4% | 0.8 |
+
+Leaves (share of the slot): the reference's cosine and sine (`sin_turns`)
+8.0% in the fit loop and 4.1% in the time search, 12% in all; the fit
+loop's own body 11.9%; the removal's sums (`Sums::add`) 4.9% and its loop
+4.3%; the input conversion (`input`) 2.2 + 1.9 + 1.9% in the fit loop,
+removal and time search; the sum-product round 9.0% with `exp2_neg` 6.2%
+and `log2` 4.3%; the FFT stages 5.6% and complex multiplies 3.2%. The
+generator is 7.8% in all, half of it the time search's. The same sampler
+on x86-64 (289 949 samples, 126.4 ms mean): subtraction 50.6% (fit loop
+20.1%, removal 10.3%, time search 13.9%, generator 6.2%), belief
+propagation 24.9%, feed 12.1%, consistent with the O3 `perf` profile;
+there the bench's own stage clock reads took 6.7% of the samples (under
+0.01% on the A76), so x86-64 stage times carry that overhead.
+
+So on the target the subtraction's fit and removal loops (39% of the
+slot) and the reference's trigonometry are the next CPU candidates; the
+frequency estimate and setup are nothing.
+
+### Belief propagation repeated on identical LLRs
+
+Counted out of tree (a hook in a copy of the decoder, not committed):
+every candidate's LLRs (bit patterns) and outcome, per pass, on the same
+200 slots; a candidate of pass 2 or 3 counts as a repeat when a candidate
+of an earlier pass at the same (start_row, base) failed with LLRs equal
+bit for bit (hash, then exact compare).
+
+| | candidates | BP rounds |
+|---|---|---|
+| passes 2–3, all | 20 000 | 521 581 |
+| repeating an earlier failure, identical LLRs | 463 (2.3%) | 13 871 (2.7%) |
+| same position, LLRs differ | 4 904 | 90 126 |
+| repeating an earlier success | 0 | 0 |
+
+The repeats are 23 in pass 2 and 440 in pass 3, almost all at the round
+limit (13 871 / 463), and every one ended as before (0 outcome
+mismatches, as BP is deterministic). They are 1.4% of the slot's 980 977
+rounds; at the A76's 41.5 ms of belief propagation per slot that is
+about 0.6 ms of 203 (0.3%), about 0.4 ms of 126 on x86-64. An exact skip
+would also need the stored LLRs (696 B per failed candidate) or a
+collision-proof key, and the same failure accounting. Not worth it.
+
+**Identity.** At 37aa031 and b37df17 (clean trees, built in this
+repository's path): `paired_bench run` with timings removed equal to the
+S3 fix round's records (`host` 38 900, every set and block;
+`host,passes=1` and `small` 34 800 each; 0 differing); the release
+`cat-ft8-decode`'s output on the 800 WAV slots (`host` and `small`,
+`host,passes=1` and `small`; plain, `--raw` and `--profile`) byte-identical
+to b465b75's. At b37df17: fmt, clippy `-D warnings` (workspace; cat-ft8
+all targets and features on x86-64 and AArch64; thumbv8m and thumbv7em
+library), workspace tests, profile and no-std tests, release lib tests
+(150 + 4 ignored) with the 24 subtraction anchors, the exhaustive
+`_everywhere` tests in release, the bulk run, `check.sh` and `--stack`,
+MSRV 1.75, docs. Raspberry Pi 5 at b37df17: the release test suite with
+the ignored tests (lib 154, then 2 + 12 + 1 bulk + 7 + 2 + 5) passes;
+throttle flags 0x50000 before and after. The only visible change is the
+empty candidate list after a stopped decode.
+
+**Not measured:** any Cortex-M at run time.

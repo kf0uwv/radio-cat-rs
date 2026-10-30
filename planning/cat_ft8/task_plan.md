@@ -1339,8 +1339,9 @@ rejected attempts recorded with numbers.
    table read per value; the multi-pass subtraction's held reference in
    buffers idle between passes (no `SubtractScratch` in the decoder).
 3. Changes that would alter results (a narrower residual, fewer
-   spectrogram rebuilds, frequency-domain subtraction) are prototyped out
-   of tree only and written up as proposals for a separate gated round.
+   spectrogram rebuilds, frequency-domain subtraction) are prototyped
+   only (not committed) and written up as proposals for a separate gated
+   round.
 
 Done 2026-10-29 (findings, "CPU and memory per decoded signal (O3)"):
 93fa40d (rotations once per trial) and 81db219 (the subtraction's
@@ -1351,6 +1352,30 @@ numbers: belief propagation over the 522 edges (x86-64 −14% BP, A76
 the hold's write loop. Proposal for a gated round: an `i16` residual
 (720 000 → 360 000 B per stream; no measurable decode change in the
 prototype).
+
+## O3 fix round (2026-10-29)
+
+From the O3 reviews; every step bit-identical to cc68e22 on every target
+(the only visible change: no candidates after a stopped decode).
+
+1. A stopped decode leaves the decoder as after `start_slot`; the level
+   buffer taken once per pass's subtractions.
+2. Tests: narrow band with an exact and a padded level buffer; the
+   scratch-size test over the skip/cut/dt matrix.
+3. RAM ceiling less a stated stack budget; `SUBTRACT_STACK_BYTES` with
+   the rotations; docs (importable names, narrow-band threshold, check
+   order).
+4. One timing (`held` sliced once), kept only if no worse on the A76 and
+   clearly better on x86-64.
+5. Out of tree: a hotspot profile of a three-pass slot on the A76, and
+   the share of passes 2–3 BP runs repeating a failure on identical LLRs.
+
+Done 2026-10-29 (findings, "O3 fix round"): 37aa031, 13f88ed, b37df17;
+the slice rejected (no gain on the A76). Profile: subtraction 57% of the
+A76 slot (fit loop 25%, removal 13%, time search 13%), belief
+propagation 25%, feed 14%. BP repeats on identical LLRs: 1.4% of rounds,
+not worth a skip. Next CPU targets: the fit and removal loops and the
+reference's cosine/sine (12% of the slot).
 
 ## Later (not in this round)
 
