@@ -4047,7 +4047,24 @@ Raspberry Pi 5: the release test suite with the ignored tests passes
 (lib 164, then 2 + 0 + 12 + 1 bulk + 7 + 2 + 5); throttle flags 0x50000
 before and after.
 
-**Not measured:** any Cortex-M at run time (static counts only); a
-fresh A76 profile of the new subtraction; off-air audio; slots beyond
+### After the merge (feat/cat-ft8 at 55bbbff)
+
+Release `cat-ft8-decode` and `paired_bench` byte-identical to
+44d01ba's (and d4e669e's) on x86-64 and AArch64. Local CI as above
+passes (lib 165 with the new lane test). Raspberry Pi 5 release suite
+with the ignored tests passes (lib 165, then 2 + 0 + 12 + 1 bulk + 7 +
+2 + 5); throttle flags 0x50000 before and after.
+
+**A76 profile** (out-of-tree sampler, `slotcost host,passes=1 host 200
+5`, three-pass slot, 348 272 samples; the sampler's own cost puts the
+slot at 156.0 ms against 151.1 without it): subtraction 44.1% (the fit
+loops, inlined in the subtraction's body, 18.5%; removal 8.6%; time
+search 11.1%, its generator 4.0% of that; the generator on the fit path
+5.8%; frequency estimate ~0), belief propagation 31.7%, feed 18.9%,
+sync 3.1%, soft bits 1.8%. At 1b47a55 the subtraction was 53.7% and BP
+26.2%: belief propagation is now the next largest single stage after
+the subtraction's fit.
+
+**Not measured:** any Cortex-M at run time (static counts only); off-air audio; slots beyond
 40 signals; the `ceiling` mode (single-pass by construction: it never
 calls the subtraction; left to the gate).

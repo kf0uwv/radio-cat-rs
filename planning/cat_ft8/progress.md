@@ -1289,3 +1289,8 @@
   −14.8%, x86-64 −19.1%; A76 records equal x86-64's; A76 release suite
   passes. (ee7c0ce would also have passed: nothing changed, −16.9% /
   −12.9%.)
+- Merged: feat/cat-ft8 fast-forwarded to 55bbbff (ADR note on the M33
+  static cost). Release binaries = 44d01ba's on both targets; local CI
+  and the Pi release suite pass. A76 profile: subtraction 44.1% (fit
+  18.5%, time search 11.1%, removal 8.6%, fit-path generator 5.8%), BP
+  31.7%, feed 18.9%.
