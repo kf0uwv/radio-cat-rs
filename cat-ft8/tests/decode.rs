@@ -669,12 +669,14 @@ fn multi_pass_slots() -> Vec<(Vec<f32>, usize, Vec<Payload>)> {
 /// re-pinned the same day when the report's search and rejection counts
 /// became totals over the passes — with the earlier report rebuilt from
 /// the pass reports the earlier pins still hold, so decodes, texts and
-/// residuals are unchanged).
+/// residuals are unchanged; re-pinned when the subtraction's reference
+/// took its sine and cosine from a polynomial and its sums in lanes: the
+/// decodes per slot are unchanged, the residuals' bits are not).
 const MULTI_GOLDEN: [u64; 4] = [
-    0xdb5e_a6a9_8c17_2765,
-    0x3ff6_696a_8eb8_92d1,
-    0x4771_efb6_2764_562f,
-    0x7e11_b969_7004_1fbf,
+    0x5c3a_a495_71d7_9f98,
+    0xc300_58fd_ae50_2a68,
+    0xff5a_4aed_8baa_bf29,
+    0x7225_f672_d6af_550c,
 ];
 const MULTI_COUNTS: [[usize; 6]; 4] = [
     [8, 0, 8, 26, 26, 26],

@@ -203,6 +203,54 @@ pub(crate) fn atan2_turns(y: f32, x: f32) -> f32 {
     }
 }
 
+/// Lanes of the decoder's four-wide loops: samples taken four at a time,
+/// each lane with its own sums, so that the loops map onto 128-bit vector
+/// registers (four `f32` or `u32`). The lanes and the order in which they
+/// are added are fixed by the sample index, not by the target. Lane loops
+/// are written index by index (`for l in 0..LANES`), one statement per
+/// vector operation, which is the form the compiler maps onto registers.
+pub(crate) const LANES: usize = 4;
+
+// Minimax polynomials (absolute error, on |t| ≤ 1/8 turn) for
+// sin(2πt) = t·(S1 + S3·t² + S5·t⁴ + S7·t⁶) and
+// cos(2πt) = C0 + C2·t² + C4·t⁴ + C6·t⁶, rounded to `f32`. Evaluated in
+// `f32` as written below (Horner, no fused multiply-add), the error at
+// every `u32` phase is below 1.6 × 10⁻⁷ for both (tested), against the
+// quarter-wave table's 3.5 × 10⁻⁷.
+const S1: f32 = 6.283_188;
+const S3: f32 = -41.342_97;
+const S5: f32 = 81.760_89;
+const S7: f32 = -81.570_6;
+const C0: f32 = 1.0;
+const C2: f32 = -19.739_225;
+const C4: f32 = 64.933_14;
+const C6: f32 = -84.070_56;
+
+/// `(cos, sin)` of `2π · phase / 2³²`, by polynomial: the phase is reduced
+/// in integer arithmetic to the nearest quarter turn k and a remainder of
+/// at most ⅛ turn, both polynomials are taken on the remainder, and k
+/// swaps them and sets the signs (bit operations, no branch), so a loop
+/// over samples vectorises. Not the waveform's table
+/// ([`sin_turns`](crate::waveform::sin_turns)): the encoder keeps that.
+#[inline(always)]
+pub(crate) fn cos_sin_turns(phase: u32) -> (f32, f32) {
+    let u = phase.wrapping_add(1 << 29);
+    let k = u >> 30;
+    // The remainder in [−2²⁹, 2²⁹), exactly; one rounding to `f32`, then
+    // an exact scaling to turns.
+    let r = (u & 0x3fff_ffff) as i32 - (1 << 29);
+    let t = r as f32 * (1.0 / 4_294_967_296.0);
+    let z = t * t;
+    let s = t * (S1 + z * (S3 + z * (S5 + z * S7)));
+    let c = C0 + z * (C2 + z * (C4 + z * C6));
+    // Quarter k: (cos, sin) = (c, s), (−s, c), (−c, −s), (s, −c).
+    let swap = 0u32.wrapping_sub(k & 1);
+    let (sb, cb) = (s.to_bits(), c.to_bits());
+    let sin = ((cb & swap) | (sb & !swap)) ^ ((k & 2) << 30);
+    let cos = ((sb & swap) | (cb & !swap)) ^ ((k.wrapping_add(1) & 2) << 30);
+    (f32::from_bits(cos), f32::from_bits(sin))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,6 +350,86 @@ mod tests {
         assert_eq!(atan2_turns(1.0, 0.0), 0.25);
         assert_eq!(atan2_turns(0.0, -1.0), 0.5);
         assert_eq!(atan2_turns(-1.0, 0.0), -0.25);
+    }
+
+    /// `cos_sin_turns` against `libm` in `f64` at every `stride`-th phase
+    /// (and at both ends of each quarter's reduced range): largest error
+    /// of either part, and the cosine and sine at the quarter turns exact.
+    fn cos_sin_turns_accurate(stride: usize) -> f64 {
+        let mut worst = 0.0f64;
+        let mut check = |p: u32| {
+            let (c, s) = cos_sin_turns(p);
+            let a = f64::from(p) * core::f64::consts::TAU / 4_294_967_296.0;
+            worst = worst
+                .max((f64::from(c) - libm::cos(a)).abs())
+                .max((f64::from(s) - libm::sin(a)).abs());
+        };
+        for p in (0..=u32::MAX).step_by(stride) {
+            check(p);
+        }
+        for k in 0..4u32 {
+            for d in [0u32, 1, (1 << 29) - 1, 1 << 29, (1 << 29) + 1] {
+                check((k << 30).wrapping_add(d));
+                check((k << 30).wrapping_sub(d));
+            }
+        }
+        assert!(worst < 1.6e-7, "worst {worst:e}");
+        let quarter = [(0u32, (1.0, 0.0)), (1 << 30, (0.0, 1.0))];
+        for (p, cs) in quarter
+            .into_iter()
+            .chain([(2 << 30, (-1.0, 0.0)), (3 << 30, (0.0, -1.0))])
+        {
+            let (c, s) = cos_sin_turns(p);
+            assert_eq!((c, s), cs, "{p:#x}");
+        }
+        worst
+    }
+
+    #[test]
+    fn cos_sin_turns_matches_libm_closely() {
+        cos_sin_turns_accurate(997);
+    }
+
+    /// Every `u32` phase (about 4.3·10⁹; run in release).
+    #[test]
+    #[ignore]
+    fn cos_sin_turns_matches_libm_closely_everywhere() {
+        let worst = cos_sin_turns_accurate(1);
+        std::println!("cos_sin_turns: largest error {worst:e}");
+    }
+
+    #[test]
+    fn cos_sin_turns_pinned() {
+        // The coefficients' bits, and a hash of the outputs over a sweep
+        // of phases: any change in the arithmetic (even one ulp) fails.
+        let bits = [S1, S3, S5, S7, C0, C2, C4, C6].map(f32::to_bits);
+        assert_eq!(
+            bits,
+            [
+                0x40c9_0fe0,
+                0xc225_5f34,
+                0x42a3_8593,
+                0xc2a3_2426,
+                0x3f80_0000,
+                0xc19d_e9ef,
+                0x4281_ddc5,
+                0xc2a8_2420
+            ]
+        );
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for p in (0..=u32::MAX).step_by(65_537) {
+            let (c, s) = cos_sin_turns(p);
+            for b in c
+                .to_bits()
+                .to_le_bytes()
+                .into_iter()
+                .chain(s.to_bits().to_le_bytes())
+            {
+                h ^= u64::from(b);
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        assert_eq!(h, 0x7124_a1fb_8d62_d4eb, "sweep hash {h:#018x}");
     }
 
     #[test]

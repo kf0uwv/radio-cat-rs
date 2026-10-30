@@ -352,9 +352,9 @@ fn deterministic_and_pinned() {
     assert_eq!(
         pins,
         [
-            0xf677_81b2_5882_c626,
-            0xfc2a_9cb5_fdf7_76ce,
-            0xd6d8_05c9_6781_5885
+            0x727f_c9d8_457b_0143,
+            0xfd3e_7789_e0b4_740f,
+            0x9323_f935_d9ef_9997
         ],
         "{pins:x?}"
     );
@@ -578,12 +578,14 @@ fn held_and_rerun_references_give_identical_results() {
     }
 }
 
-/// Residual and estimate hashes recorded with the subtraction before the
-/// reference was held between the fit and the subtraction (one run of the
-/// reference per step): segments beyond `FUSED_SEGMENT` (4 080, 7 680, the
-/// whole waveform), the host's 3 840, a skip that delays the first
-/// estimate, a cut, drift on and off, a start inside the slot and one
-/// before it. The held and the rerun paths must both still give these.
+/// Residual and estimate hashes first recorded with the subtraction before
+/// the reference was held between the fit and the subtraction (one run of
+/// the reference per step), and re-pinned when the reference's sine and
+/// cosine became a polynomial and the fit's sums lane-split (those change
+/// the arithmetic, not the paths): segments beyond `FUSED_SEGMENT` (4 080,
+/// 7 680, the whole waveform), the host's 3 840, a skip that delays the
+/// first estimate, a cut, drift on and off, a start inside the slot and
+/// one before it. The held and the rerun paths must both still give these.
 #[test]
 fn anchored_to_the_unheld_subtraction() {
     let slot = noisy_slot();
@@ -597,7 +599,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0x8bf8_b71a_ad43_d273u64,
+            0xc146_eb80_e1bf_43a2u64,
         ),
         (
             1_234.5,
@@ -606,7 +608,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0xd37e_34a5_2f3f_216f,
+            0xca3d_4dab_2ab8_04b5,
         ),
         (
             1_234.5,
@@ -615,7 +617,7 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             0,
             SLOT_SAMPLES,
-            0xcd52_e6d3_905d_f9f0,
+            0xf9cd_8dc2_7ae8_5d19,
         ),
         (
             1_234.5,
@@ -624,7 +626,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0xd6d8_05c9_6781_5885,
+            0x9323_f935_d9ef_9997,
         ),
         (
             1_234.5,
@@ -633,7 +635,7 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             0,
             SLOT_SAMPLES,
-            0x7301_2fd1_6516_cfb0,
+            0x3044_d400_12e3_af8d,
         ),
         (
             1_234.5,
@@ -642,7 +644,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0xf5a3_e203_dd8e_d9c2,
+            0xc12b_ae61_7c42_ff27,
         ),
         (
             1_234.5,
@@ -651,7 +653,7 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             0,
             SLOT_SAMPLES,
-            0x3d59_e784_b821_803f,
+            0x1c77_73db_33b8_9631,
         ),
         (
             1_234.5,
@@ -660,7 +662,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             30_000,
             SLOT_SAMPLES,
-            0x51b0_c0d7_864c_2a6d,
+            0xfe77_7148_e0ad_f4e5,
         ),
         (
             1_234.5,
@@ -669,9 +671,9 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             30_000,
             90_000,
-            0xd17a_4ff8_0543_805d,
+            0x2a91_4682_eb8a_48f1,
         ),
-        (1_234.5, 0.31, 1920, true, 0, 90_000, 0x7b8d_3724_992e_efd2),
+        (1_234.5, 0.31, 1920, true, 0, 90_000, 0x0437_0a25_6264_bdc3),
         (
             1_234.5,
             0.31,
@@ -679,7 +681,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             30_000,
             90_000,
-            0x083c_ebfe_16fa_aaec,
+            0x807d_8e9b_9bee_80c8,
         ),
         (
             1_234.5,
@@ -688,7 +690,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             30_000,
             90_000,
-            0x75b0_f7a5_a39d_bfec,
+            0x6855_8ee8_647f_fd99,
         ),
         (
             1_234.5,
@@ -697,7 +699,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0xfd0e_5a7e_ea5c_579b,
+            0x9d15_32ce_2c8c_2432,
         ),
         (
             1_234.5,
@@ -706,7 +708,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0xa329_0edf_63a4_b1c2,
+            0x847c_b9e2_3155_cf2a,
         ),
         (
             1_234.5,
@@ -715,7 +717,7 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             0,
             SLOT_SAMPLES,
-            0x794d_80c7_ee1d_02b0,
+            0x4a69_0500_53ed_4079,
         ),
         (
             1_234.5,
@@ -724,7 +726,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0xfe83_5183_b372_9b9e,
+            0xe100_614f_d67f_5f0f,
         ),
         (
             1_234.5,
@@ -733,7 +735,7 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             0,
             SLOT_SAMPLES,
-            0x539b_a53f_2510_78c5,
+            0x4399_c0bc_23b2_f109,
         ),
         (
             1_234.5,
@@ -742,7 +744,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0x3301_e6fa_5b3f_dd75,
+            0x413f_7a8e_1703_b063,
         ),
         (
             1_234.5,
@@ -751,7 +753,7 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             0,
             SLOT_SAMPLES,
-            0x1314_230f_7803_5574,
+            0xdfbc_66d3_7367_c05e,
         ),
         (
             1_234.5,
@@ -760,7 +762,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             30_000,
             SLOT_SAMPLES,
-            0xe27a_42a5_16a1_f909,
+            0x7659_933d_ef5c_65dc,
         ),
         (
             1_234.5,
@@ -769,9 +771,9 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             30_000,
             90_000,
-            0xb599_78fc_68ba_5194,
+            0xbe41_3e05_38dd_993a,
         ),
-        (1_234.5, -1.2, 1920, true, 0, 90_000, 0xb94f_12b5_52cb_9d6c),
+        (1_234.5, -1.2, 1920, true, 0, 90_000, 0xd571_ea1e_d491_7e4b),
         (
             1_234.5,
             -1.2,
@@ -779,7 +781,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             30_000,
             90_000,
-            0xe9a1_2acf_e399_5b55,
+            0x0ac0_a598_0e26_ee68,
         ),
         (
             1_234.5,
@@ -788,7 +790,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             30_000,
             90_000,
-            0x2cea_3cd8_2d1f_cd42,
+            0xca34_0be8_3819_2e3c,
         ),
     ] {
         let d = decode_near(f, dt);
@@ -808,11 +810,13 @@ fn anchored_to_the_unheld_subtraction() {
     assert!(fails.is_empty(), "{fails:?} {got:x?}");
 }
 
-/// [`Correction::skip`] in closed form gives exactly the state of as many
-/// calls of [`Correction::next`], over random states (any phase, step and
+/// The frequency correction taken in closed form ([`Correction::skip`]),
+/// four lanes at a time ([`Correction::lanes`]) and added in place
+/// ([`Correction::apply`]) gives exactly the sample-by-sample sequence of
+/// [`Correction::next`], over random states (any phase, step and
 /// acceleration, wrapping included).
 #[test]
-fn correction_skip_follows_the_sequence() {
+fn correction_in_lanes_and_in_closed_form_follows_the_sequence() {
     let mut x = 0x9e37_79b9_7f4a_7c15u64;
     let mut rnd = move || {
         x ^= x << 13;
@@ -820,6 +824,8 @@ fn correction_skip_follows_the_sequence() {
         x ^= x << 17;
         x
     };
+    let same =
+        |a: &Correction, b: &Correction| (a.phase, a.step, a.accel) == (b.phase, b.step, b.accel);
     for k in 0..2_000 {
         let small = |v: u64| if k % 2 == 0 { v } else { v >> 40 };
         let c0 = Correction {
@@ -827,13 +833,42 @@ fn correction_skip_follows_the_sequence() {
             step: small(rnd()) as i64,
             accel: small(rnd()) as i64,
         };
+        let mut seq = c0;
+        let want: Vec<u32> = (0..64).map(|_| seq.next()).collect();
+        let mut lanes = c0.lanes();
+        let got: Vec<u32> = (0..16).flat_map(|_| lanes.next4()).collect();
+        assert_eq!(got, want);
         for n in [0usize, 1, 2, 3, 4, 5, 63, 240, 1_921, 151_680] {
             let (mut a, mut b) = (c0, c0);
             a.skip(n);
             for _ in 0..n {
                 b.next();
             }
-            assert_eq!((a.phase, a.step), (b.phase, b.step), "skip {n}");
+            assert!(same(&a, &b), "skip {n}");
+        }
+        for n in [0usize, 1, 3, 4, 7, 240] {
+            let phase: Vec<u32> = (0..n).map(|_| rnd() as u32).collect();
+            let mut q = phase.clone();
+            let (mut a, mut b) = (c0, c0);
+            a.apply(&mut q);
+            for (q, p) in q.iter().zip(&phase) {
+                assert_eq!(*q, p.wrapping_add(b.next()), "apply {n}");
+            }
+            assert!(same(&a, &b), "apply {n}");
+        }
+    }
+}
+
+/// The lanes: samples `a..b` of a block split at multiples of `LANES`.
+#[test]
+fn lane_bounds_split_at_multiples_of_the_lanes() {
+    for a in 0..=12 {
+        for b in a..=12 {
+            let (m0, m1) = lane_bounds(a, b);
+            assert!(a <= m0 && m0 <= m1 && m1 <= b, "{a} {b}");
+            assert!(m0 % LANES == 0 || m0 == b, "{a} {b}");
+            assert!(m1 % LANES == 0 || m1 == m0, "{a} {b}");
+            assert!(m0 - a < LANES && b - m1 < LANES, "{a} {b}");
         }
     }
 }

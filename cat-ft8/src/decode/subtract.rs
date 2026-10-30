@@ -77,7 +77,7 @@
 
 use super::decoder::Decode;
 use super::frontend::INPUT_LIMIT;
-use super::math::{atan2_turns, log2_power};
+use super::math::{atan2_turns, cos_sin_turns, log2_power, LANES};
 use crate::waveform::{cos_turns, sin_turns, Placement, Synth, RAMP_SAMPLES};
 use crate::{
     encode_payload, Error, SAMPLES_PER_SYMBOL, SAMPLE_RATE, SYMBOL_COUNT, WAVEFORM_SAMPLES,
@@ -382,7 +382,7 @@ fn blocks(
     synth: &Synth,
     end: usize,
     want: impl Fn(usize) -> bool,
-    mut f: impl FnMut(usize, &[u32], &[f32]),
+    mut f: impl FnMut(usize, &mut [u32], &[f32]),
 ) {
     let mut s = synth.clone();
     let mut phase = [0u32; BLOCK];
@@ -394,7 +394,7 @@ fn blocks(
             if n == 0 {
                 break;
             }
-            f(j0, &phase[..n], &env[..n]);
+            f(j0, &mut phase[..n], &env[..n]);
             j0 += n;
         } else {
             let n = s.skip_with(&mut phase);
@@ -448,6 +448,40 @@ fn input(x: f32) -> f32 {
     } else {
         0.0
     }
+}
+
+/// Four samples' lanes: `xs[0..LANES]` as an array (`xs` holds at least
+/// [`LANES`] values).
+#[inline(always)]
+fn lanes<X: Copy>(xs: &[X]) -> [X; LANES] {
+    [xs[0], xs[1], xs[2], xs[3]]
+}
+
+/// Samples `a..b` of a block that starts at a multiple of [`LANES`], split
+/// as `a..m0` (single samples up to the first multiple of `LANES`),
+/// `m0..m1` (whole lanes) and `m1..b` (single samples after them).
+#[inline(always)]
+fn lane_bounds(a: usize, b: usize) -> (usize, usize) {
+    let m0 = a.next_multiple_of(LANES).min(b);
+    let m1 = (b - b % LANES).max(m0);
+    (m0, m1)
+}
+
+/// Adds `v` to the lane of sample `i` (`i % LANES`); a select per lane,
+/// so the lanes stay in registers.
+#[inline(always)]
+fn add_lane(acc: &mut [f32; LANES], i: usize, v: f32) {
+    for (l, x) in acc.iter_mut().enumerate() {
+        if l == i % LANES {
+            *x += v;
+        }
+    }
+}
+
+/// The lanes' sum, in a fixed order.
+#[inline(always)]
+fn sum_lanes(v: [f32; LANES]) -> f32 {
+    (v[0] + v[1]) + (v[2] + v[3])
 }
 
 /// `a · conj(b)`.
@@ -656,6 +690,83 @@ impl Fit {
     }
 }
 
+/// [`Fit`]'s sums by lane: sample j of the waveform in lane j %
+/// [`LANES`], each lane in sample order, the lanes added in a fixed order
+/// at the end of the segment ([`Fit4::sum`]).
+#[derive(Clone, Copy, Default)]
+struct Fit4 {
+    xc: [f32; LANES],
+    xs: [f32; LANES],
+    cc: [f32; LANES],
+    cs: [f32; LANES],
+    ss: [f32; LANES],
+}
+
+impl Fit4 {
+    /// Four samples, one per lane.
+    #[inline(always)]
+    #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
+    fn add4(&mut self, x: [f32; LANES], c: [f32; LANES], s: [f32; LANES]) {
+        for l in 0..LANES {
+            self.xc[l] += x[l] * c[l];
+            self.xs[l] += x[l] * s[l];
+            self.cc[l] += c[l] * c[l];
+            self.cs[l] += c[l] * s[l];
+            self.ss[l] += s[l] * s[l];
+        }
+    }
+
+    /// One sample, in the lane of waveform sample `j`.
+    #[inline(always)]
+    fn add(&mut self, j: usize, x: f32, c: f32, s: f32) {
+        add_lane(&mut self.xc, j, x * c);
+        add_lane(&mut self.xs, j, x * s);
+        add_lane(&mut self.cc, j, c * c);
+        add_lane(&mut self.cs, j, c * s);
+        add_lane(&mut self.ss, j, s * s);
+    }
+
+    /// The samples `i0..i0 + xs.len()` of a block that starts at a
+    /// multiple of [`LANES`]: the audio `xs` and the reference stored in
+    /// `refs` ([`PAIR`] bytes each).
+    #[inline(always)]
+    #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
+    fn add_all(&mut self, i0: usize, xs: &[f32], refs: &[u8]) {
+        let (m0, m1) = lane_bounds(i0, i0 + xs.len());
+        let one = |f: &mut Fit4, i: usize| {
+            let (c, s) = get(&refs[(i - i0) * PAIR..]);
+            f.add(i, input(xs[i - i0]), c, s);
+        };
+        for i in i0..m0 {
+            one(self, i);
+        }
+        let refs4 = &refs[(m0 - i0) * PAIR..(m1 - i0) * PAIR];
+        for (x, r) in xs[m0 - i0..m1 - i0]
+            .chunks_exact(LANES)
+            .zip(refs4.chunks_exact(LANES * PAIR))
+        {
+            let (mut c, mut s) = ([0.0f32; LANES], [0.0f32; LANES]);
+            for l in 0..LANES {
+                (c[l], s[l]) = get(&r[l * PAIR..]);
+            }
+            self.add4(input4(lanes(x)), c, s);
+        }
+        for i in m1..i0 + xs.len() {
+            one(self, i);
+        }
+    }
+
+    fn sum(&self) -> Fit {
+        Fit {
+            xc: sum_lanes(self.xc),
+            xs: sum_lanes(self.xs),
+            cc: sum_lanes(self.cc),
+            cs: sum_lanes(self.cs),
+            ss: sum_lanes(self.ss),
+        }
+    }
+}
+
 /// The report's sums of one segment's residue: the fit's, and the
 /// residue's energy and sample count.
 #[derive(Clone, Copy, Default)]
@@ -698,7 +809,8 @@ fn run(
 ) -> Result<Subtraction, Error> {
     config.validate()?;
     // The held reference's ring, in pairs.
-    let ring = (held.len() / PAIR).min(HELD);
+    // A multiple of LANES (see the fit's loop).
+    let ring = (held.len() / PAIR).min(HELD) / LANES * LANES;
     if ring < BLOCK {
         return Err(Error::BufferTooSmall);
     }
@@ -782,7 +894,7 @@ fn run(
     let mut removal: Option<Removal> = None;
     {
         let mut corr = correction;
-        let mut fit = Fit::default();
+        let mut fit = Fit4::default();
         blocks(
             &synth,
             end,
@@ -805,24 +917,27 @@ fn run(
                         fused = false;
                     }
                     let xs = &audio[(start + (j0 + a) as i64) as usize..][..b - a];
+                    let q = &mut phase[a..b];
+                    c.apply(q);
                     if fused {
-                        let mut h = (j0 + a) % ring;
-                        for ((&p, &w), &x) in phase[a..b].iter().zip(&env[a..b]).zip(xs) {
-                            let q = p.wrapping_add(c.next());
-                            let r = (w * cos_turns(q), w * sin_turns(q));
-                            f.add(input(x), r.0, r.1);
-                            put(&mut held[h * PAIR..][..PAIR], r);
-                            h += 1;
-                            if h == ring {
-                                h = 0;
-                            }
+                        // The reference into the ring, then the sums from
+                        // it, up to the ring's end at a time.
+                        let mut i = a;
+                        while i < b {
+                            let h = (j0 + i) % ring;
+                            let stop = b.min(i + (ring - h));
+                            let refs = &mut held[h * PAIR..(h + stop - i) * PAIR];
+                            reference(refs, &phase[i..stop], &env[i..stop]);
+                            f.add_all(i, &xs[i - a..stop - a], refs);
+                            i = stop;
                         }
                         written = j0 + b;
                     } else {
-                        for ((&p, &w), &x) in phase[a..b].iter().zip(&env[a..b]).zip(xs) {
-                            let q = p.wrapping_add(c.next());
-                            f.add(input(x), w * cos_turns(q), w * sin_turns(q));
-                        }
+                        // Through the start of `held`: nothing held is
+                        // needed once the fit is not fused.
+                        let refs = &mut held[..(b - a) * PAIR];
+                        reference(refs, &phase[a..b], &env[a..b]);
+                        f.add_all(a, xs, refs);
                     }
                     c.skip(n - b);
                 }
@@ -832,7 +947,7 @@ fn run(
                     // A segment without an estimate takes the previous
                     // one's; those before the first estimate take it.
                     let k = j0 / seg;
-                    match fit.solve(seg.min(WAVEFORM_SAMPLES - k * seg)) {
+                    match fit.sum().solve(seg.min(WAVEFORM_SAMPLES - k * seg)) {
                         Some(ab) => {
                             amp[k] = ab;
                             if first_valid.is_none() {
@@ -843,7 +958,7 @@ fn run(
                         None if k > 0 => amp[k] = amp[k - 1],
                         None => {}
                     }
-                    fit = Fit::default();
+                    fit = Fit4::default();
                     // The samples before centre k need amplitudes up to k.
                     if fused && first_valid.is_some() && k + 1 < segments {
                         let to = centre(seg, k).min(written);
@@ -882,15 +997,11 @@ fn run(
                 // The correction in a local over the block: kept in
                 // registers rather than stored back every sample.
                 let mut c = corr;
+                c.apply(&mut phase[a..b]);
                 let refs = &mut held[..(b - a) * PAIR];
-                for (r, (&p, &w)) in refs
-                    .chunks_exact_mut(PAIR)
-                    .zip(phase[a..b].iter().zip(&env[a..b]))
-                {
-                    let q = p.wrapping_add(c.next());
-                    put(r, (w * cos_turns(q), w * sin_turns(q)));
-                }
+                reference(refs, &phase[a..b], &env[a..b]);
                 corr = c;
+                let refs = &held[..(b - a) * PAIR];
                 r.refs(&amp, segments, refs, audio, start, j0 + a);
                 at = j0 + b;
             },
@@ -930,6 +1041,33 @@ fn put(d: &mut [u8], r: (f32, f32)) {
 fn get(d: &[u8]) -> (f32, f32) {
     let f = |b: &[u8]| f32::from_ne_bytes([b[0], b[1], b[2], b[3]]);
     (f(&d[..4]), f(&d[4..PAIR]))
+}
+
+/// The reference of samples with (frequency-corrected) phases `phase` and
+/// envelope `env`, stored in `refs` ([`PAIR`] bytes each) by [`put`].
+#[inline(always)]
+fn reference(refs: &mut [u8], phase: &[u32], env: &[f32]) {
+    for ((d, &q), &w) in refs.chunks_exact_mut(PAIR).zip(phase).zip(env) {
+        let (c, s) = cos_sin_turns(q);
+        put(d, (w * c, w * s));
+    }
+}
+
+/// [`input`] of four samples, the same values without a branch (so that
+/// it vectorises): `max` and `min` clamp a finite value as `clamp` does
+/// (and take a NaN to −[`INPUT_LIMIT`]), and a mask then zeroes the
+/// non-finite.
+#[inline(always)]
+#[allow(clippy::manual_clamp)]
+#[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
+fn input4(x: [f32; LANES]) -> [f32; LANES] {
+    let mut out = [0.0f32; LANES];
+    for l in 0..LANES {
+        let v = x[l].max(-INPUT_LIMIT).min(INPUT_LIMIT);
+        let finite = (x[l].to_bits() & 0x7fff_ffff) < 0x7f80_0000;
+        out[l] = f32::from_bits(v.to_bits() & 0u32.wrapping_sub(u32::from(finite)));
+    }
+    out
 }
 
 /// The centre of segment `k` (a whole sample: segments are whole blocks).
@@ -1171,6 +1309,76 @@ impl Correction {
             .wrapping_add(n.wrapping_mul(step))
             .wrapping_add(pairs.wrapping_mul(accel));
         self.step = self.step.wrapping_add((n as i64).wrapping_mul(self.accel));
+    }
+
+    /// Adds the correction's phases to `phase`, sample by sample (four at
+    /// a time, then single samples), and moves past them.
+    #[inline(always)]
+    #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
+    fn apply(&mut self, phase: &mut [u32]) {
+        let n = phase.len();
+        let mut lanes = self.lanes();
+        let mut four = phase.chunks_exact_mut(LANES);
+        for p in &mut four {
+            let k = lanes.next4();
+            for l in 0..LANES {
+                p[l] = p[l].wrapping_add(k[l]);
+            }
+        }
+        let rest = four.into_remainder();
+        self.skip(n - rest.len());
+        for p in rest {
+            *p = p.wrapping_add(self.next());
+        }
+    }
+
+    /// The next [`LANES`] samples' phases as lanes, which then move
+    /// [`LANES`] samples at a time; `self` does not move.
+    #[inline(always)]
+    #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
+    fn lanes(&self) -> CorrectionLanes {
+        let accel = self.accel as u64;
+        let mut c = *self;
+        let (mut phase, mut step) = ([0u64; LANES], [0u64; LANES]);
+        for l in 0..LANES {
+            phase[l] = c.phase;
+            // Four steps from sample l: 4·step(l) + (0 + 1 + 2 + 3)·accel.
+            step[l] = (c.step as u64)
+                .wrapping_mul(LANES as u64)
+                .wrapping_add(accel.wrapping_mul(6));
+            c.next();
+        }
+        CorrectionLanes {
+            phase,
+            step,
+            accel: accel.wrapping_mul((LANES * LANES) as u64),
+        }
+    }
+}
+
+/// [`Correction`] for [`LANES`] consecutive samples at a time: lane l
+/// holds sample n + l's phase and its step to sample n + l + 4, so every
+/// lane gives exactly [`Correction::next`]'s sequence (integers modulo
+/// 2⁶⁴).
+#[derive(Clone, Copy)]
+struct CorrectionLanes {
+    phase: [u64; LANES],
+    step: [u64; LANES],
+    accel: u64,
+}
+
+impl CorrectionLanes {
+    /// The phases of these four samples; moves to the next four.
+    #[inline(always)]
+    #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
+    fn next4(&mut self) -> [u32; LANES] {
+        let mut out = [0u32; LANES];
+        for l in 0..LANES {
+            out[l] = (self.phase[l] >> 32) as u32;
+            self.phase[l] = self.phase[l].wrapping_add(self.step[l]);
+            self.step[l] = self.step[l].wrapping_add(self.accel);
+        }
+        out
     }
 }
 
