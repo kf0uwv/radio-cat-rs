@@ -1493,6 +1493,16 @@ Gate criteria (fixed in advance; every one must pass):
   hygiene (one source path, a target directory per commit, hashes
   checked, alternated rounds, throttle flags before and after).
 
+Outcome (findings, "eighth round"): **not adopted**. Every criterion
+passes but one: of the 3 messages lost on `fresh` (bound 8), one ranked
+4 in pass 3 at cap 50: it sat 29 Hz from a pass-2 decode of rank 35
+that the cap pushes into pass 3, so it was never searched without that
+signal. A76 −8.70% per slot, no false decode, no gain, pass 1
+unchanged. The candidate stays on a local branch (0f0341c); `HOST`
+keeps 50. Whether a knock-on loss of this kind is acceptable is a
+decision for the next round's criteria, not a retune of this one.
+Text items and the `Fit::det` boundary test done (a4fe8e6, 1c1c8a8).
+
 ## Next: gated, result-changing rounds
 
 Each changes results and needs its own acceptance (the run sets, the

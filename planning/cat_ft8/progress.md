@@ -1201,3 +1201,33 @@
 - Release `cat-ft8-decode` built from this repository's path at
   a437134 (default profile): sha256
   9bf5630b4cda44c2f09e829c37e50a46b10cb33e68f942d5d6498c49e4bfa7df.
+
+## Session: 2026-10-30 (O8, later-pass cap 50 → 25, gated)
+
+- a4fe8e6: O7 notes corrected (one-pass cu1 32.5–32.6; x86-64 fat LTO
+  +1.25%; deepest rank at 30 signals 36; 25 halves the loss on the
+  fresh blocks; −8.8% is the main block, 8.7% over three); sources
+  named plainly in the planning files; O8 plan and gate criteria,
+  committed before the results.
+- 1c1c8a8: `fit_conditions_at_their_boundaries` (the determinant at
+  exactly `(0.1·e)·e`, the next `f32` up, energy at segment/8); the
+  `>=`, `0.1·(e·e)` and energy `>` mutants each fail it. Test only.
+- Candidate 0f0341c (`HOST.later_candidates` 25, doc, `max_decodes`
+  150, the adopted-`HOST` multi-pass pin; decodes, texts and residuals
+  of the pinned slots equal to 50's): **not adopted**. On `fresh`: 3
+  lost (bound 8), 0 gained, 0 false; one lost message ranked 4 at cap
+  50 (a knock-on of a rank-35 pass-2 decode moving to pass 3), which
+  fails "each lost ranked beyond 25". Pass 1 identical (34 800 + 34 800
+  records; pass 1 of 38 900); paired gates PASS on every set; ceiling
+  fading 2 / 12 140, crowded and wide 0; `wide` below −16 dB 0 lost;
+  800 WAV decode lines identical (621 profile lines differ in passes
+  2–3 work only). A76 three-pass slot 144.26 → 131.71 ms (−8.70%);
+  `slotcost` 187.0 → 173.9 ms (−7.0%). Branch `gate-cap25` kept,
+  local only.
+- Local CI at 1c1c8a8 (fmt, clippy incl. thumbv8m, workspace tests,
+  profile and no-std tests, release tests with `--include-ignored`
+  (lib 159), bulk, MSRV 1.75, docs, `check.sh --stack`: flash 85 508 /
+  94 208 / 35 536 B, static RAM 212 044 / 241 612 / 0 B, unchanged).
+- Release `cat-ft8-decode` built from this repository's path at
+  1c1c8a8: bit-identical to O7's (sha256
+  9bf5630b4cda44c2f09e829c37e50a46b10cb33e68f942d5d6498c49e4bfa7df).

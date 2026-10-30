@@ -3366,3 +3366,139 @@ table below, filled in before it is interpreted.
   `vcgencmd get_throttled` before and after (0x50000 is this supply's
   baseline). The usual `slotcost` 40-signal crowded figure is reported
   too, not gated.
+
+### Verdict table (filled in before interpretation)
+
+Candidate 0f0341c (on ce09c5d, local branch, not merged): the constant,
+its doc, `max_decodes` 200 → 150 and the moved pins. Records kept
+locally (not committed).
+
+| criterion | value | result |
+|---|---|---|
+| sets run | `fresh` crowded / wide / fading once for the verdict; every set both blocks; 800 WAV; ceiling on `fresh` | done |
+| false decodes | 0 in 38 900 `host` records (every pass), 0 in the ceiling run (every pass, alone), 0 new WAV lines | pass |
+| pass 1 byte-identical | `host,passes=1` and `small`: 34 800 records each, 0 differing; pass 1 of all 38 900 `host` records equal; WAV `host,passes=1` and `small` byte-identical; WAV default decode lines identical | pass |
+| lost on `fresh`, bound 8 | 3 (crowded 0, wide 1, fading 2) | pass |
+| each lost ranked beyond 25 at 50 | 2 of 3: ranks 27 and 30 (pass 3); `fading` fresh slot 597's lost message was a pass-3 decode at **rank 4** | **fail** |
+| gains | 0 (every set, both blocks; WAV; ceiling) | pass (nothing to explain) |
+| 800 WAV differences | 621 `host --profile` summary lines, only passes 2–3 work counters; no decode line | pass (explained below) |
+| ceiling run loss rate | crowded 0 / 13 575, wide 0 / 17 286, fading 2 / 12 140 (1.6 × 10⁻⁴ ≤ 2.5 × 10⁻⁴) | pass |
+| `wide` below −16 dB | 0 lost of 1 869 decoded (`fresh`); 0 of 1 843 (`main`) | pass |
+| paired gates (`compare`) | against cap 50 and against the single pass: every set, both blocks, PASS; sweep 50% points unmoved (−19.122 / −19.078 dB, shift +0.000 [+0.000, +0.000]) | pass |
+| A76 three-pass slot ≥ 7% faster | 144.26 → 131.71 ms per slot (−8.70%), both alternated rounds identical to 0.01 ms; 0x50000 before and after every run | pass |
+
+**Verdict: the cap is not adopted.** One criterion fails as written,
+so 0f0341c stays on its own local branch and `HOST` keeps 50.
+
+### Interpretation
+
+**Lost on the `fresh` block (3), each logged** (rank = candidate index
++ 1 in that pass at cap 50):
+- `fading` slot 490 (40 signals) `C9I XU3HB R+09`, −12.6 dB, 2 547 Hz,
+  fade 0.53 Hz depth 0.63: pass 3, rank 30.
+- `fading` slot 597 (40 signals) `V7K H7PNB CH73`, −10.2 dB, 1 962 Hz,
+  fade 0.93 Hz depth 0.81: pass 3, **rank 4**.
+- `wide` slot 692 (40 signals) `I3ELL KA5AE MP96`, −14.7 dB, 306 Hz:
+  pass 3, rank 27.
+On `main` (not part of the verdict): `fading` slots 415 (pass 3, rank
+50) and 555 (pass 3, rank 29), as O7 counted.
+
+Slot 597 is a knock-on loss, not a ranking one. At cap 50 pass 2
+decoded `CJ2JAY LF2K +05` (1 933 Hz) from rank 35; at 25 pass 2 cannot
+see it and pass 3 recovers it (rank 23), so it is subtracted one pass
+later. `V7K H7PNB` lies 29 Hz above it and at 50 decoded only in pass
+3, after `CJ2JAY` had been removed; at 25 pass 3 searches a residual
+that still holds `CJ2JAY`, and there is no fourth pass. The ceiling run
+shows the same slot (its oracle passes use the later count): it is the
+only slot losing messages there, and it loses both (`CJ2JAY` dropped by
+the oracle's pass 2 and not recovered, `V7K H7PNB` behind it). The
+cap's cost therefore includes messages ranked well inside 25 that sit
+behind a deep pass-2 decode; the "ranked beyond 25" criterion does not
+allow for that, and it is not relaxed after the fact.
+
+Everything else matches O7's measurement: 3 lost of 42 529 on
+`fresh` (expected about 3.3), all in 40-signal `fading`/`wide` slots,
+no gain, no false decode.
+
+**800 WAV slots.** Decode output identical in every slot and mode
+(plain, `--raw`, the decode lines of `--profile`; `host` default,
+`host,passes=1`, `small`). The 621 differing lines are the `host
+--profile` summary of every slot where pass 2 runs (225 with two
+passes, 396 with three); the other 179 run one pass. In each, only
+the work of passes 2 and 3 changes: `pass2/3_candidates_kept` 50 → 25
+(and the slot totals), `candidates_dropped` +25, `not_converged` and
+`bp_rounds` down by the 25 candidates no longer tried, and
+in 11 slots the CRC-failure, all-zero or duplicate counts of a
+candidate ranked 26–50 that is no longer tried (e.g. `s0001`: pass 2 kept 50 → 25,
+`bp_rounds` 1 500 → 750).
+
+**Timing** (Raspberry Pi 5, `pi_push.sh` builds of ce09c5d and 0f0341c,
+SHA-256 checked on the Pi, `paired_bench run host … crowded,wide,fading
+fresh` under `taskset -c 3`, rounds old/new then new/old; ms per slot,
+mean of the records' stage times):
+
+| | crowded | wide | fading | all 2 000 slots |
+|---|---|---|---|---|
+| ce09c5d (50), rounds 1 / 2 | 147.07 / 147.06 | 144.86 / 144.85 | 140.65 / 140.66 | 144.26 / 144.26 |
+| 0f0341c (25), rounds 1 / 2 | 134.56 / 134.56 | 132.23 / 132.22 | 128.18 / 128.17 | 131.71 / 131.71 |
+| saved | 12.5 (8.5%) | 12.6 (8.7%) | 12.5 (8.9%) | 12.55 (8.70%) |
+
+O7 measured the same on its three blocks (12.5–12.6 ms, 8.7–8.8%).
+`slotcost host,passes=1 host 200 5` (the 40-signal crowded slots of
+`main`, two alternated rounds): three passes 187.0 / 187.0 → 173.9 /
+173.9 ms (−7.0%), worst 201.8–201.9 → 188.8; one pass 32.6 both. The
+A76 records equal the x86-64 ones (2 000 of 2 000 for each commit,
+timings removed) and each other across rounds.
+
+**Records.** Every multi-pass `host` record differs (23 984 of 38 900)
+through the same report counts; the 14 916 equal ones run one pass
+(`empty`, and `sweep`/`edges` slots with nothing decoded). `compare`
+moves 7–38 misses per crowded/wide/fading set from "not converged" to
+"peak dropped by the candidate limit" (messages missed either way, now
+never tried; the totals differ only by the logged losses), and counts
+fewer CRC failures and a lower CRC-based expected false-decode rate in
+every multi-pass set.
+
+### Where a three-pass slot's time goes with the cap, at 0f0341c
+
+For choosing the next round (the `i16` residual or vector sine/cosine),
+profiled on the candidate even though it is not adopted: with 50 the
+O6 table stands. The same sampler as in O5 and O6, built from a copy of
+0f0341c (it is not in the repository): 381 543 samples during the
+three-pass side of `slotcost host,passes=1 host 200 5`, every one
+unwound through the interrupted frame; that run's three-pass mean 178.7
+ms against 173.9 unsampled (+2.8%). The O6 classification, rerun on
+O6's samples, gives O6's table exactly. Shares of the slot and ms at
+173.9 (O6 at 187.0 in brackets):
+
+| | share | ms per slot |
+|---|---|---|
+| **subtraction** | **59.6%** | **103.6** (100.4) |
+| fit loop and setup | 30.0% | 52.2 (50.9) |
+| time search: symbol correlations and scores | 11.7% | 20.4 (19.8) |
+| removal | 8.6% | 14.9 (14.4) |
+| generator, fit run | 5.4% | 9.3 (9.2) |
+| time search: its generator runs | 3.8% | 6.7 (6.4) |
+| **belief propagation** | **18.8%** | **32.7** (49.2) |
+| **feed (spectrogram, FFT)** | **17.2%** | **29.9** (29.0) |
+| sync | 2.9% | 5.0 (4.7) |
+| soft bits | 1.1% | 1.9 (2.6) |
+| other | 0.4% | 0.8 (0.7) |
+
+The cap's saving is belief-propagation work (later passes try 25
+candidates instead of 50: 49.2 → 32.7 ms here); the subtraction does
+the same work as with 50 (its 3 ms more here is within the two
+profiles' attribution) and is now three-fifths of the slot. The fit loop (with its reference sine and cosine) and the
+time search's correlations are 72.6 ms of it: the vector sine/cosine
+round addresses the larger share of time; the `i16` residual addresses
+memory (720 000 → 360 000 B) and the removal's and fit's sample reads.
+Inlined leaves were not resolved in this build, so the split of
+`sin_turns` from the fit's own arithmetic (O5: 11.2% and 11.0% of the
+slot) was not re-measured.
+
+**Raspberry Pi 5 test suite at 1c1c8a8:** the release test suite with
+the ignored tests passes (lib 159, then 2 + 0 + 12 + 1 bulk + 7 + 2 +
+5); throttle flags 0x50000 before and after.
+
+**Not measured:** any Cortex-M at run time; off-air audio; slots
+beyond 40 signals.
