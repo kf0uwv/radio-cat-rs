@@ -487,11 +487,32 @@ fn held_and_rerun_references_give_identical_results() {
                         &config,
                         Fixed::default(),
                         hold,
+                        true,
                         &mut scratch,
                     )
                     .unwrap();
                     let h = hash(&a, &r);
                     assert_eq!(*want.get_or_insert(h), h, "{f} {dt} {seg} {skip} {hold}");
+                    // Unreported: the same residual and placement, bit for bit.
+                    let mut b = slot[..cut].to_vec();
+                    let q = run(
+                        &mut b,
+                        &d,
+                        skip,
+                        &config,
+                        Fixed::default(),
+                        hold,
+                        false,
+                        &mut scratch,
+                    )
+                    .unwrap();
+                    let unreported = Subtraction {
+                        energy: r.energy,
+                        residue: r.residue,
+                        residue_noise: r.residue_noise,
+                        ..q
+                    };
+                    assert_eq!(hash(&b, &unreported), h, "{f} {dt} {seg} {skip} {hold}");
                 }
             }
         }
@@ -717,6 +738,10 @@ fn anchored_to_the_unheld_subtraction() {
         let r = sub(&mut a, &d, skip, &config).unwrap();
         let h = hash(&a, &r);
         got.push(h);
+        // The decoder's unreported subtraction leaves the same residual.
+        let mut b = slot[..cut].to_vec();
+        subtract_unreported(&mut b, &d, skip, &config, &mut nan_scratch(SCRATCH_BYTES)).unwrap();
+        assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
         if h != want {
             fails.push((f, dt, seg, drift, skip, cut));
         }

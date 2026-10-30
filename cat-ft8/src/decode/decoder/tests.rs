@@ -20,6 +20,7 @@ use std::vec;
 use std::vec::Vec;
 
 use super::*;
+use crate::decode::subtract;
 use crate::decode::testutil::{
     add_noise, add_signal, amplitude_for, empty_slot, symbols_of, NOISE_RMS,
 };

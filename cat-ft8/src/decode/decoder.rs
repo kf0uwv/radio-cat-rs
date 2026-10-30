@@ -85,7 +85,7 @@ use super::frontend::BIN_HZ;
 use super::frontend::{Band, FrontEnd, Spectrogram};
 use super::snr;
 use super::soft::soft_bits_at;
-use super::subtract::{subtract, SubtractConfig, MIN_SCRATCH_BYTES};
+use super::subtract::{subtract_unreported, SubtractConfig, MIN_SCRATCH_BYTES};
 use super::sync::{self, Candidate, SyncReport, ROW_SECONDS};
 use crate::ldpc::N;
 use crate::message::{unpack, CallHashes, MessageType, Payload};
@@ -731,7 +731,7 @@ impl<'a> Decoder<'a> {
     /// `audio[0]` is slot sample 0; the first `skip` samples are missing
     /// input (neither read nor written); a buffer shorter than a slot is a
     /// slot cut short. A longer one is decoded to the slot's end (as
-    /// [`Decoder::feed`] takes it), but [`subtract`] reads and writes the
+    /// [`Decoder::feed`] takes it), but [`subtract`](super::subtract) reads and writes the
     /// whole buffer wherever a decoded waveform overlaps it. A `skip` at or
     /// beyond the buffer's end feeds no samples. Pass 1 runs [`Decoder::start_slot`],
     /// [`Decoder::skip`]`(skip)`, [`Decoder::feed`]`(&audio[skip..])`,
@@ -902,7 +902,7 @@ impl<'a> Decoder<'a> {
                 // waveform, and the settings were checked in `new`, so
                 // this does not fail; if it did, the audio would be left
                 // as it was and the failure counted.
-                let r = subtract(audio, &list.entries[i], skip, &config, levels);
+                let r = subtract_unreported(audio, &list.entries[i], skip, &config, levels);
                 debug_assert!(r.is_ok(), "subtracting entry {i}: {r:?}");
                 if r.is_ok() {
                     subtracted += 1;

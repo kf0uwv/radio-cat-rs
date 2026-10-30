@@ -285,7 +285,41 @@ pub fn subtract(
     config: &SubtractConfig,
     scratch: &mut [u8],
 ) -> Result<Subtraction, Error> {
-    run(audio, decode, skip, config, Fixed::default(), HELD, scratch)
+    run(
+        audio,
+        decode,
+        skip,
+        config,
+        Fixed::default(),
+        HELD,
+        true,
+        scratch,
+    )
+}
+
+/// [`subtract`] without its report: the same residual, bit for bit, and
+/// the same errors, but none of the energy and residue sums behind
+/// [`Subtraction::energy`], [`Subtraction::residue`] and
+/// [`Subtraction::residue_noise`] (the decoder's further passes use only
+/// the residual).
+pub(crate) fn subtract_unreported(
+    audio: &mut [f32],
+    decode: &Decode,
+    skip: usize,
+    config: &SubtractConfig,
+    scratch: &mut [u8],
+) -> Result<(), Error> {
+    run(
+        audio,
+        decode,
+        skip,
+        config,
+        Fixed::default(),
+        HELD,
+        false,
+        scratch,
+    )
+    .map(|_| ())
 }
 
 /// Estimates to impose instead of measuring them (measurement only).
@@ -310,7 +344,7 @@ pub fn subtract_fixed(
     fixed: Fixed,
     scratch: &mut [u8],
 ) -> Result<Subtraction, Error> {
-    run(audio, decode, skip, config, fixed, HELD, scratch)
+    run(audio, decode, skip, config, fixed, HELD, true, scratch)
 }
 
 /// The usable audio: slot samples `lo..hi`.
@@ -623,6 +657,9 @@ impl Sums {
     }
 }
 
+/// The subtraction; with `report` false, the energy and residue sums of
+/// the report are not taken (they are 0) and nothing else changes.
+#[allow(clippy::too_many_arguments)]
 fn run(
     audio: &mut [f32],
     decode: &Decode,
@@ -630,6 +667,7 @@ fn run(
     config: &SubtractConfig,
     fixed: Fixed,
     hold: usize,
+    report: bool,
     held: &mut [u8],
 ) -> Result<Subtraction, Error> {
     config.validate()?;
@@ -776,7 +814,7 @@ fn run(
                     // The samples before centre k need amplitudes up to k.
                     if fused && first_valid.is_some() && k + 1 < segments {
                         let to = centre(seg, k).min(written);
-                        let r = removal.get_or_insert_with(|| Removal::new(seg, amp[0]));
+                        let r = removal.get_or_insert_with(|| Removal::new(seg, amp[0], report));
                         r.held(&amp, segments, held, ring, audio, start, done, to);
                         done = done.max(to);
                     }
@@ -791,7 +829,7 @@ fn run(
     for k in end.div_ceil(seg)..segments {
         amp[k] = amp[k - 1];
     }
-    let r = removal.get_or_insert_with(|| Removal::new(seg, amp[0]));
+    let r = removal.get_or_insert_with(|| Removal::new(seg, amp[0], report));
     if fused {
         r.held(&amp, segments, held, ring, audio, start, done, written);
     } else {
@@ -825,11 +863,13 @@ fn run(
             },
         );
     }
-    r.finish_segment();
     out.samples = r.changed;
-    out.energy = r.energy;
-    out.residue = r.residue;
-    out.residue_noise = r.residue_noise;
+    if report {
+        r.finish_segment();
+        out.energy = r.energy;
+        out.residue = r.residue;
+        out.residue_noise = r.residue_noise;
+    }
     Ok(out)
 }
 
@@ -867,9 +907,12 @@ fn centre(seg: usize, k: usize) -> usize {
 /// Step 4, fed the usable samples in order with their reference: the
 /// amplitude linear between segment centres, amp[k] + (j − centre k)·slope
 /// (constant before the first centre and after the last), the
-/// subtraction, and the residue's projection per segment.
+/// subtraction, and (when reporting) the energy subtracted and the
+/// residue's projection per segment.
 struct Removal {
     seg: usize,
+    /// Whether the energy and the residue's sums are taken.
+    report: bool,
     /// The interval's left centre once inside one (`None` before the first).
     k: Option<usize>,
     from: usize,
@@ -889,9 +932,10 @@ struct Removal {
 impl Removal {
     /// Before the first centre; `amp0` is the first segment's amplitude
     /// (final).
-    fn new(seg: usize, amp0: (f32, f32)) -> Self {
+    fn new(seg: usize, amp0: (f32, f32), report: bool) -> Self {
         Removal {
             seg,
+            report,
             k: None,
             from: 0,
             base: amp0,
@@ -922,12 +966,13 @@ impl Removal {
     }
 
     /// Moves to sample `j` (the one after the last given): finishes the
-    /// segment it leaves and enters the interval holding it. The
-    /// amplitudes up to the segment after that interval must be final.
+    /// segment it leaves (when reporting) and enters the interval holding
+    /// it. The amplitudes up to the segment after that interval must be
+    /// final.
     #[inline]
     fn enter(&mut self, amp: &[(f32, f32); MAX_SEGMENTS], segments: usize, j: usize) {
         let seg = self.seg;
-        if j >= self.cur_end {
+        if self.report && j >= self.cur_end {
             self.finish_segment();
             self.cur = j / seg;
             self.cur_end = (self.cur + 1) * seg;
@@ -952,10 +997,20 @@ impl Removal {
     }
 
     /// Subtracts the reference of samples `j0 + i`, stored at `refs[i]`
-    /// ([`PAIR`] bytes each), from `xs[i]`; within one segment and one
-    /// interval (after [`Removal::enter`]).
+    /// ([`PAIR`] bytes each), from `xs[i]`; within one interval and, when
+    /// reporting, one segment (after [`Removal::enter`]).
     #[inline(always)]
     fn run(&mut self, j0: usize, xs: &mut [f32], refs: &[u8]) {
+        if self.report {
+            self.run_as::<true>(j0, xs, refs);
+        } else {
+            self.run_as::<false>(j0, xs, refs);
+        }
+    }
+
+    /// [`Removal::run`], with the report's sums taken if `REPORT`.
+    #[inline(always)]
+    fn run_as<const REPORT: bool>(&mut self, j0: usize, xs: &mut [f32], refs: &[u8]) {
         let (from, base, slope) = (self.from, self.base, self.slope);
         let mut energy = self.energy;
         let mut sums = self.sums;
@@ -966,8 +1021,10 @@ impl Removal {
             let (ra, rb) = (base.0 + t * slope.0, base.1 + t * slope.1);
             let est = ra * rc + rb * rs;
             *x = input(*x) - est;
-            energy += est * est;
-            sums.add(*x, rc, rs);
+            if REPORT {
+                energy += est * est;
+                sums.add(*x, rc, rs);
+            }
         }
         self.energy = energy;
         self.sums = sums;
@@ -975,9 +1032,9 @@ impl Removal {
     }
 
     /// Subtracts samples `from..from + refs.len() / PAIR`, whose references
-    /// are stored in `refs`, in runs within one segment and one interval.
-    /// `from` must follow the last sample given; reference sample j is at
-    /// slot sample `start + j`.
+    /// are stored in `refs`, in runs within one interval and, when
+    /// reporting, one segment. `from` must follow the last sample given;
+    /// reference sample j is at slot sample `start + j`.
     #[inline]
     fn refs(
         &mut self,
@@ -992,7 +1049,12 @@ impl Removal {
         let mut j = from;
         while j < to {
             self.enter(amp, segments, j);
-            let stop = to.min(self.cur_end).min(self.until);
+            let stop = if self.report {
+                to.min(self.cur_end)
+            } else {
+                to
+            }
+            .min(self.until);
             let xs = &mut audio[(start + j as i64) as usize..][..stop - j];
             self.run(j, xs, &refs[(j - from) * PAIR..(stop - from) * PAIR]);
             j = stop;
