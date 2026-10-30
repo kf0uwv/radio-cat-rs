@@ -421,36 +421,44 @@ fn any_scratch_size_gives_identical_results() {
     // shorter segments but not the longer ones, odd sizes, to more than
     // needed: bit-identical, and contents left from earlier calls (NaN at
     // first) do not matter. Too little is an error and changes nothing.
+    // Over the starts, skips and cuts of
+    // `held_and_rerun_references_give_identical_results` (a late first
+    // estimate overflows a small ring part-way).
     let slot = noisy_slot();
-    let d = decode_near(1_234.5, 0.31);
-    for seg in [960, T, 2 * T] {
-        let config = SubtractConfig::DEFAULT.with_segment(seg);
-        let mut want = None;
-        for len in [
-            MIN_SCRATCH_BYTES,
-            MIN_SCRATCH_BYTES + 3,
-            3 * 960 * 8,
-            3 * 960 * 8 - 8,
-            23_045,
-            SCRATCH_BYTES - 8,
-            SCRATCH_BYTES,
-            SCRATCH_BYTES + 1_001,
-        ] {
-            let mut scratch = nan_scratch(len);
-            for _ in 0..2 {
-                let mut a = slot.clone();
-                let r = subtract(&mut a, &d, 0, &config, &mut scratch).unwrap();
-                let h = hash(&a, &r);
-                assert_eq!(*want.get_or_insert(h), h, "{seg} {len}");
+    let lens = [
+        MIN_SCRATCH_BYTES,
+        MIN_SCRATCH_BYTES + 3,
+        3 * 960 * 8,
+        3 * 960 * 8 - 8,
+        23_045,
+        SCRATCH_BYTES - 8,
+        SCRATCH_BYTES,
+        SCRATCH_BYTES + 1_001,
+    ];
+    // One buffer per size, kept across the cases.
+    let mut scratch: Vec<Vec<u8>> = lens.iter().map(|&len| nan_scratch(len)).collect();
+    for dt in [0.31f32, -1.2] {
+        let d = decode_near(1_234.5, dt);
+        for (skip, cut) in [(0, SLOT_SAMPLES), (30_000, 90_000)] {
+            for seg in [960, T, 2 * T] {
+                let config = SubtractConfig::DEFAULT.with_segment(seg);
+                let mut want = None;
+                for s in &mut scratch {
+                    let mut a = slot[..cut].to_vec();
+                    let r = subtract(&mut a, &d, skip, &config, s).unwrap();
+                    let h = hash(&a, &r);
+                    let len = s.len();
+                    assert_eq!(*want.get_or_insert(h), h, "{dt} {skip} {seg} {len}");
+                }
+                let mut a = slot[..cut].to_vec();
+                let mut small = nan_scratch(MIN_SCRATCH_BYTES - 1);
+                assert_eq!(
+                    subtract(&mut a, &d, skip, &config, &mut small),
+                    Err(Error::BufferTooSmall)
+                );
+                assert!(a.iter().zip(&slot).all(|(x, y)| x.to_bits() == y.to_bits()));
             }
         }
-        let mut a = slot.clone();
-        let mut small = nan_scratch(MIN_SCRATCH_BYTES - 1);
-        assert_eq!(
-            subtract(&mut a, &d, 0, &config, &mut small),
-            Err(Error::BufferTooSmall)
-        );
-        assert!(a.iter().zip(&slot).all(|(x, y)| x.to_bits() == y.to_bits()));
     }
 }
 

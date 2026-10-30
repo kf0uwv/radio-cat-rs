@@ -1002,6 +1002,50 @@ fn the_spectrogram_is_the_last_pass_or_empty_after_a_stop() {
 }
 
 #[test]
+fn a_narrow_band_level_buffer_gives_the_padded_result() {
+    // 1000–1500 Hz: the level buffer is smaller than one run's reference,
+    // so the subtractions run it twice where it does not fit. Padded to
+    // that size, they run it once. The same decodes, report and residual,
+    // whole and with a skip and a cut.
+    let band = Band::from_hz(1_000, 1_500).unwrap();
+    assert!(band.spectrogram_len() < crate::decode::SUBTRACT_SCRATCH_BYTES);
+    let mut r = crate::decode::testutil::Noise(21);
+    let mut slot = empty_slot();
+    for k in 0..12 {
+        let snr = -14.0 + 18.0 * r.uniform();
+        let freq = (1_010.0 + 440.0 * r.uniform()) as f32;
+        let dt = (-0.3 + r.uniform()) as f32;
+        let text = std::format!("NARROW {k:02}");
+        add_signal(&mut slot, &symbols_of(&text), freq, dt, amplitude_for(snr));
+    }
+    add_noise(&mut slot, NOISE_RMS, 22);
+    for (skip, cut) in [(0, SLOT_SAMPLES), (12_000, 150_000)] {
+        let mut got = Vec::new();
+        for len in [
+            band.spectrogram_len(),
+            crate::decode::SUBTRACT_SCRATCH_BYTES,
+        ] {
+            let mut b = Bufs::new(band);
+            b.levels = vec![0; len];
+            let mut dec = b.decoder(DecodeConfig::HOST.with_passes(2));
+            let mut store = vec![Decode::EMPTY; HOST_DECODES];
+            let mut list = DecodeList::new(&mut store);
+            let mut audio = slot[..cut].to_vec();
+            let report = dec.decode_passes(
+                &mut audio,
+                skip,
+                &mut Box::new(CandidateScratch::new()),
+                &mut list,
+            );
+            assert!(report.subtracted > 0 && report.passes_run == 2, "{skip}");
+            got.push((list.finish_payloads().to_vec(), report, audio));
+        }
+        assert_eq!((&got[0].0, &got[0].1), (&got[1].0, &got[1].1), "{skip}");
+        assert!(same_bits(&got[0].2, &got[1].2), "{skip}");
+    }
+}
+
+#[test]
 fn the_event_callback_can_stop_the_passes() {
     let (slot, _) = crowded_slot(30, 9);
     let host = DecodeConfig::HOST;
