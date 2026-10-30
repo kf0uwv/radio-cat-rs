@@ -620,27 +620,23 @@ fn frequency(d: &StepSums, e: f32, drift: bool) -> (f32, f32) {
     (fm - slope * tm, slope)
 }
 
-/// Least-squares sums of one segment.
+/// The amplitude fit's least-squares sums of one segment.
 #[derive(Clone, Copy, Default)]
-struct Sums {
+struct Fit {
     xc: f32,
     xs: f32,
     cc: f32,
     cs: f32,
     ss: f32,
-    xx: f32,
-    n: usize,
 }
 
-impl Sums {
+impl Fit {
     fn add(&mut self, x: f32, c: f32, s: f32) {
         self.xc += x * c;
         self.xs += x * s;
         self.cc += c * c;
         self.cs += c * s;
         self.ss += s * s;
-        self.xx += x * x;
-        self.n += 1;
     }
 
     /// The Gram determinant, if the segment holds enough of the reference
@@ -658,14 +654,30 @@ impl Sums {
         let b = (self.xs * self.cc - self.xc * self.cs) / det;
         (a.is_finite() && b.is_finite()).then_some((a, b))
     }
+}
+
+/// The report's sums of one segment's residue: the fit's, and the
+/// residue's energy and sample count.
+#[derive(Clone, Copy, Default)]
+struct Sums {
+    fit: Fit,
+    xx: f32,
+    n: usize,
+}
+
+impl Sums {
+    fn add(&mut self, x: f32, c: f32, s: f32) {
+        self.fit.add(x, c, s);
+        self.xx += x * x;
+        self.n += 1;
+    }
 
     /// The energy of `x`'s projection on the reference, and what white
     /// noise of `x`'s mean power would give.
     fn projection(&self, segment: usize) -> Option<(f32, f32)> {
-        let det = self.det(segment)?;
-        let e = (self.xc * self.xc * self.ss - 2.0 * self.xc * self.xs * self.cs
-            + self.xs * self.xs * self.cc)
-            / det;
+        let f = &self.fit;
+        let det = f.det(segment)?;
+        let e = (f.xc * f.xc * f.ss - 2.0 * f.xc * f.xs * f.cs + f.xs * f.xs * f.cc) / det;
         let noise = 2.0 * self.xx / self.n.max(1) as f32;
         (e.is_finite() && noise.is_finite()).then_some((e, noise))
     }
@@ -770,7 +782,7 @@ fn run(
     let mut removal: Option<Removal> = None;
     {
         let mut corr = correction;
-        let mut sums = Sums::default();
+        let mut fit = Fit::default();
         blocks(
             &synth,
             end,
@@ -779,10 +791,14 @@ fn run(
                 let n = phase.len();
                 let (a, b) = usable.range(start, j0, n);
                 let (a, b) = (a - j0, b - j0);
+                // The sums, the correction and the ring size in locals over
+                // the block: kept in registers rather than stored back (or
+                // read again) every sample.
+                let (mut f, mut c, ring) = (fit, corr, ring);
                 if a == b {
-                    corr.skip(n);
+                    c.skip(n);
                 } else {
-                    corr.skip(a);
+                    c.skip(a);
                     if fused && j0 + b - done > hold {
                         fused = false;
                     }
@@ -790,9 +806,9 @@ fn run(
                     if fused {
                         let mut h = (j0 + a) % ring;
                         for ((&p, &w), &x) in phase[a..b].iter().zip(&env[a..b]).zip(xs) {
-                            let q = p.wrapping_add(corr.next());
+                            let q = p.wrapping_add(c.next());
                             let r = (w * cos_turns(q), w * sin_turns(q));
-                            sums.add(input(x), r.0, r.1);
+                            f.add(input(x), r.0, r.1);
                             put(&mut held[h * PAIR..][..PAIR], r);
                             h += 1;
                             if h == ring {
@@ -802,18 +818,19 @@ fn run(
                         written = j0 + b;
                     } else {
                         for ((&p, &w), &x) in phase[a..b].iter().zip(&env[a..b]).zip(xs) {
-                            let q = p.wrapping_add(corr.next());
-                            sums.add(input(x), w * cos_turns(q), w * sin_turns(q));
+                            let q = p.wrapping_add(c.next());
+                            f.add(input(x), w * cos_turns(q), w * sin_turns(q));
                         }
                     }
-                    corr.skip(n - b);
+                    c.skip(n - b);
                 }
+                (fit, corr) = (f, c);
                 let next = j0 + n;
                 if next % seg == 0 || next >= end {
                     // A segment without an estimate takes the previous
                     // one's; those before the first estimate take it.
                     let k = j0 / seg;
-                    match sums.solve(seg.min(WAVEFORM_SAMPLES - k * seg)) {
+                    match fit.solve(seg.min(WAVEFORM_SAMPLES - k * seg)) {
                         Some(ab) => {
                             amp[k] = ab;
                             if first_valid.is_none() {
@@ -824,7 +841,7 @@ fn run(
                         None if k > 0 => amp[k] = amp[k - 1],
                         None => {}
                     }
-                    sums = Sums::default();
+                    fit = Fit::default();
                     // The samples before centre k need amplitudes up to k.
                     if fused && first_valid.is_some() && k + 1 < segments {
                         let to = centre(seg, k).min(written);
