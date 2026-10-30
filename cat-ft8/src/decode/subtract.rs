@@ -87,11 +87,21 @@ use crate::{
 const T: usize = SAMPLES_PER_SYMBOL;
 /// Reference samples generated at a time.
 const BLOCK: usize = 240;
-// Symbol cores ([T/4, 3T/4)) and segments are whole blocks.
-const _: () = assert!(T % BLOCK == 0 && (T / 4) % BLOCK == 0 && WAVEFORM_SAMPLES % BLOCK == 0);
-// The cores are clear of the waveform's ramps (its first and last
-// `RAMP_SAMPLES`), so the envelope is exactly 1.0 there.
-const _: () = assert!(RAMP_SAMPLES <= T / 4);
+/// A symbol's core, the middle half the time search correlates over:
+/// samples `CORE_START..CORE_END` from the symbol's start.
+const CORE_START: usize = T / 4;
+const CORE_END: usize = 3 * T / 4;
+// Symbol cores and segments are whole blocks.
+const _: () = assert!(
+    T % BLOCK == 0
+        && CORE_START % BLOCK == 0
+        && CORE_END % BLOCK == 0
+        && WAVEFORM_SAMPLES % BLOCK == 0
+);
+// Every core is clear of the waveform's ramps (its first and last
+// `RAMP_SAMPLES`: the start of symbol 0 and the end of the last symbol),
+// so the envelope is exactly 1.0 there.
+const _: () = assert!(RAMP_SAMPLES <= CORE_START && CORE_END + RAMP_SAMPLES <= T);
 
 /// Most segments in one waveform (`run` uses `div_ceil` too).
 const MAX_SEGMENTS: usize = WAVEFORM_SAMPLES.div_ceil(SubtractConfig::MIN_SEGMENT);
@@ -404,9 +414,13 @@ fn symbol_correlations(
     synth: &Synth,
     start: i64,
 ) -> [(f32, f32); SYMBOL_COUNT] {
+    // Reference sample j is sample j % T of symbol j / T: the waveform is
+    // whole symbols and the generator starts at its first sample.
+    const _: () = assert!(WAVEFORM_SAMPLES == SYMBOL_COUNT * T);
+    debug_assert_eq!(synth.position(), 0);
     let mut c = [(0.0f32, 0.0f32); SYMBOL_COUNT];
     let end = usable.range(start, 0, WAVEFORM_SAMPLES).1;
-    let core = |j0: usize| (T / 4..3 * T / 4).contains(&(j0 % T));
+    let core = |j0: usize| (CORE_START..CORE_END).contains(&(j0 % T));
     blocks(synth, end, core, |j0, phase, env| {
         // The middles are clear of the ramps: the envelope is 1.0 there.
         debug_assert!(env.iter().all(|&e| e == 1.0));
