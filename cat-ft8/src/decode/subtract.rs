@@ -78,7 +78,7 @@
 use super::decoder::Decode;
 use super::frontend::INPUT_LIMIT;
 use super::math::{atan2_turns, log2_power};
-use crate::waveform::{cos_turns, sin_turns, Placement, Synth};
+use crate::waveform::{cos_turns, sin_turns, Placement, Synth, RAMP_SAMPLES};
 use crate::{
     encode_payload, Error, SAMPLES_PER_SYMBOL, SAMPLE_RATE, SYMBOL_COUNT, WAVEFORM_SAMPLES,
 };
@@ -89,6 +89,9 @@ const T: usize = SAMPLES_PER_SYMBOL;
 const BLOCK: usize = 240;
 // Symbol cores ([T/4, 3T/4)) and segments are whole blocks.
 const _: () = assert!(T % BLOCK == 0 && (T / 4) % BLOCK == 0 && WAVEFORM_SAMPLES % BLOCK == 0);
+// The cores are clear of the waveform's ramps (its first and last
+// `RAMP_SAMPLES`), so the envelope is exactly 1.0 there.
+const _: () = assert!(RAMP_SAMPLES <= T / 4);
 
 /// Most segments in one waveform (`run` uses `div_ceil` too).
 const MAX_SEGMENTS: usize = WAVEFORM_SAMPLES.div_ceil(SubtractConfig::MIN_SEGMENT);
@@ -371,11 +374,13 @@ fn symbol_correlations(
     let end = usable.range(start, 0, WAVEFORM_SAMPLES).1;
     let core = |j0: usize| (T / 4..3 * T / 4).contains(&(j0 % T));
     blocks(synth, end, core, |j0, phase, env| {
+        // The middles are clear of the ramps: the envelope is 1.0 there.
+        debug_assert!(env.iter().all(|&e| e == 1.0));
         let (a, b) = usable.range(start, j0, phase.len());
         let (mut re, mut im) = (0.0f32, 0.0f32);
         for j in a..b {
             let i = j - j0;
-            let w = input(audio[(start + j as i64) as usize]) * env[i];
+            let w = input(audio[(start + j as i64) as usize]);
             re += w * cos_turns(phase[i]);
             im -= w * sin_turns(phase[i]);
         }
