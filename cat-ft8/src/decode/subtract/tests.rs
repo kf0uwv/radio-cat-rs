@@ -807,3 +807,33 @@ fn anchored_to_the_unheld_subtraction() {
     }
     assert!(fails.is_empty(), "{fails:?} {got:x?}");
 }
+
+/// [`Correction::skip`] in closed form gives exactly the state of as many
+/// calls of [`Correction::next`], over random states (any phase, step and
+/// acceleration, wrapping included).
+#[test]
+fn correction_skip_follows_the_sequence() {
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    for k in 0..2_000 {
+        let small = |v: u64| if k % 2 == 0 { v } else { v >> 40 };
+        let c0 = Correction {
+            phase: rnd(),
+            step: small(rnd()) as i64,
+            accel: small(rnd()) as i64,
+        };
+        for n in [0usize, 1, 2, 3, 4, 5, 63, 240, 1_921, 151_680] {
+            let (mut a, mut b) = (c0, c0);
+            a.skip(n);
+            for _ in 0..n {
+                b.next();
+            }
+            assert_eq!((a.phase, a.step), (b.phase, b.step), "skip {n}");
+        }
+    }
+}

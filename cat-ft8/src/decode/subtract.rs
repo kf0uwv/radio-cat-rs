@@ -1159,11 +1159,18 @@ impl Correction {
         p
     }
 
-    /// Moves over `n` samples.
+    /// Moves over `n` samples: the same state as `n` calls of
+    /// [`Correction::next`] (the sums of the steps in closed form, modulo
+    /// 2⁶⁴).
     fn skip(&mut self, n: usize) {
-        for _ in 0..n {
-            self.next();
-        }
+        let n = n as u64;
+        let pairs = n * n.saturating_sub(1) / 2;
+        let (step, accel) = (self.step as u64, self.accel as u64);
+        self.phase = self
+            .phase
+            .wrapping_add(n.wrapping_mul(step))
+            .wrapping_add(pairs.wrapping_mul(accel));
+        self.step = self.step.wrapping_add((n as i64).wrapping_mul(self.accel));
     }
 }
 
