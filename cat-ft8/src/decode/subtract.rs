@@ -412,9 +412,9 @@ fn mul_conj(a: (f32, f32), b: (f32, f32)) -> (f32, f32) {
     (a.0 * b.0 + a.1 * b.1, a.1 * b.0 - a.0 * b.1)
 }
 
-/// `z` turned by `phase` (2³² = one turn).
-fn rotate(z: (f32, f32), phase: u32) -> (f32, f32) {
-    let (c, s) = (cos_turns(phase), sin_turns(phase));
+/// `z` turned by the angle whose cosine and sine are `cs`.
+fn rotate(z: (f32, f32), cs: (f32, f32)) -> (f32, f32) {
+    let (c, s) = cs;
     (z.0 * c - z.1 * s, z.0 * s + z.1 * c)
 }
 
@@ -460,12 +460,23 @@ fn step_sums(c: &[(f32, f32); SYMBOL_COUNT], tones: &[u8; SYMBOL_COUNT]) -> Step
     d
 }
 
-/// One group's sum, aligned for a start error whose phase per tone step
-/// is `phase(m)`.
-fn aligned(g: &[(f32, f32); 15], phase: impl Fn(i32) -> u32) -> (f32, f32) {
+/// Cosine and sine of `phase(m)` for each tone step m = −7..=7 (index
+/// `m + 7`): the same for every group, so taken once per trial.
+fn rotations(phase: impl Fn(i32) -> u32) -> [(f32, f32); 15] {
+    let mut out = [(0.0f32, 0.0f32); 15];
+    for (k, cs) in out.iter_mut().enumerate() {
+        let p = phase(k as i32 - 7);
+        *cs = (cos_turns(p), sin_turns(p));
+    }
+    out
+}
+
+/// One group's sum, aligned by turning each tone step's sum by its
+/// rotation ([`rotations`]).
+fn aligned(g: &[(f32, f32); 15], rot: &[(f32, f32); 15]) -> (f32, f32) {
     let (mut re, mut im) = (0.0f32, 0.0f32);
-    for (k, &z) in g.iter().enumerate() {
-        let r = rotate(z, phase(k as i32 - 7));
+    for (&z, &cs) in g.iter().zip(rot) {
+        let r = rotate(z, cs);
         re += r.0;
         im += r.1;
     }
@@ -474,9 +485,10 @@ fn aligned(g: &[(f32, f32); 15], phase: impl Fn(i32) -> u32) -> (f32, f32) {
 
 /// The alignment score of a start error of `e` samples.
 fn score(d: &StepSums, e: i32) -> f32 {
+    let rot = rotations(|m| step_phase(m, e));
     let mut total = 0.0f32;
     for g in d {
-        let (re, im) = aligned(g, |m| step_phase(m, e));
+        let (re, im) = aligned(g, &rot);
         total += re * re + im * im;
     }
     total
@@ -524,9 +536,10 @@ fn align(d: &StepSums) -> Option<(i32, f32)> {
 /// sum.
 fn frequency(d: &StepSums, e: f32, drift: bool) -> (f32, f32) {
     let hz = |z: (f32, f32)| atan2_turns(z.1, z.0) * HZ_PER_SYMBOL_TURN;
+    let rot = rotations(|m| phase_of_turns(m as f32 * e / T as f32));
     let mut z = [(0.0f32, 0.0f32); GROUPS];
     for (zg, g) in z.iter_mut().zip(d) {
-        *zg = aligned(g, |m| phase_of_turns(m as f32 * e / T as f32));
+        *zg = aligned(g, &rot);
     }
     if !drift {
         let sum = z.iter().fold((0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
