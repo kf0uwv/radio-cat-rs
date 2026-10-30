@@ -1039,7 +1039,8 @@ impl Removal {
         }
     }
 
-    /// [`Removal::run`], with the report's sums taken if `REPORT`.
+    /// [`Removal::run`], with `REPORT` equal to [`Removal::report`]: the
+    /// energy and the residue's sums are taken only if it is true.
     #[inline(always)]
     fn run_as<const REPORT: bool>(&mut self, j0: usize, xs: &mut [f32], refs: &[u8]) {
         let (from, base, slope) = (self.from, self.base, self.slope);

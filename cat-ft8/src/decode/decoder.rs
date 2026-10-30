@@ -731,7 +731,7 @@ impl<'a> Decoder<'a> {
     /// `audio[0]` is slot sample 0; the first `skip` samples are missing
     /// input (neither read nor written); a buffer shorter than a slot is a
     /// slot cut short. A longer one is decoded to the slot's end (as
-    /// [`Decoder::feed`] takes it), but [`subtract`](super::subtract) reads and writes the
+    /// [`Decoder::feed`] takes it), but [`subtract`](super::subtract::subtract) reads and writes the
     /// whole buffer wherever a decoded waveform overlaps it. A `skip` at or
     /// beyond the buffer's end feeds no samples. Pass 1 runs [`Decoder::start_slot`],
     /// [`Decoder::skip`]`(skip)`, [`Decoder::feed`]`(&audio[skip..])`,
