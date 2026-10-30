@@ -1567,6 +1567,59 @@ main/cap1/cap2 1 lost (marginal), 0 gained, 0 false, pass 1 identical.
 Gate fixed on block `accept3` (candidates 44d01ba, fallback ee7c0ce);
 44d01ba passed and is merged (findings, "Acceptance run on `accept3`").
 
+## O10: the spectrogram's transform, and small fixes (2026-10-30)
+
+A bit-identical round on the local branch `o10-fft` from ddfd48d: every
+output equal to ddfd48d's (records, CLI output, encoder), no more
+memory, and the Cortex-M33 static cost of the transform not worse (it
+runs in the small one-pass image too).
+
+**A. The spectrogram's FFT** (`fft::power_bins`, 17.7% of the A76
+three-pass slot at 55bbbff, in every configuration).
+
+1. Measure first: an out-of-tree microbenchmark of one row (load and
+   window, each of the six stages, the real split and powers, the
+   per-bin `log2`) on x86-64 and the A76, and the AArch64 and x86-64
+   code of the stages; cycles per transform.
+2. Change no butterfly's arithmetic or operation order: independent
+   butterflies side by side (adjacent `k` within a block), so a vector
+   unit takes them together; the work buffer as separate real and
+   imaginary arrays (same 15 360 bytes); twiddles laid out or read so
+   lanes need no gather where possible; the real split and powers as
+   plain loops that vectorise; fewer bounds checks. Identity by
+   construction (each lane is one butterfly's own operations) and by
+   tests: the transform against the reference bit for bit at every lane
+   count, the powers against the form as first written bit for bit, the
+   existing pins, the records and the 800 WAV slots.
+3. Cortex-M33: flash, stack (`check.sh --stack`) and instructions per
+   transform (the image run from `_start` in an instruction-set
+   emulator, instructions counted inside `finish_row` and its callees)
+   not worse than ddfd48d's. Where the target has no vector unit the lane
+   count is one (the same results by construction).
+4. Under about 2% of the A76 slot is noise: keep the simpler form.
+
+**B. Small fixes from the O9 delta reviews** (all output-identical):
+`Correction::skip` without the n < 2³² bound (halve the even factor,
+then `wrapping_mul`); the ceiling mode's elapsed seconds to stderr (its
+stdout then compares byte for byte; this removes that figure from
+stdout, nothing else); `math.rs` comment and test notes (re-pin note,
+the S5 coefficient's provenance, wrapping); findings corrections (BP the
+largest single stage; 1f7d398's message reads the mutation backwards;
+long lines).
+
+**C. Plan only:** a proposed gated `i16` residual round (findings,
+"Proposed: `i16` residual, gated"), not run.
+
+Checks: local CI (fmt, clippy on the workspace, all features and the
+thumbv8m library, tests with the ignored ones, MSRV 1.75, docs,
+`check.sh --stack`, thumbv7em, no FMA and no `f64` helper in any
+thumbv8m image); `paired_bench run` records of `main`, `cap1`, `cap2`
+equal to ddfd48d's on x86-64 and the A76; the 800 WAV slots
+byte-identical (but the moved ceiling figure, which the CLI does not
+print); the encoder identical; A76 `slotcost` and a per-stage profile,
+rounds alternated, one source path, a target directory per commit,
+binary hashes compared.
+
 ## Next: gated, result-changing rounds
 
 Each changes results and needs its own acceptance (the run sets, the
