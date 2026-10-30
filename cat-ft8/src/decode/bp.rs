@@ -162,7 +162,8 @@ pub(crate) static DEGREES: [u8; M] = {
 /// The largest check degree: the width of the parity-check table's rows.
 const MAX_DEGREE: usize = 7;
 
-/// Lanes of the vectorised sum-product check update (see `decode_soft`).
+/// Width of one check's working row: the min-sum rule's inputs and the
+/// sum-product products' prefixes.
 const LANES: usize = 8;
 const _: () = assert!(LANES >= MAX_DEGREE);
 
@@ -318,51 +319,99 @@ pub fn decode_soft(
     Err(BpFailure::NotConverged)
 }
 
+/// Checks of degree 6 (the others have degree 7), from the parity-check
+/// table at compile time.
+const LOW_CHECKS: usize = {
+    let mut count = 0;
+    let mut c = 0;
+    while c < M {
+        let mut n = 0;
+        let mut j = 0;
+        while j < MAX_DEGREE {
+            n += (PARITY_CHECKS[c][j] != 0) as usize;
+            j += 1;
+        }
+        assert!(n == 6 || n == 7);
+        count += (n == 6) as usize;
+        c += 1;
+    }
+    count
+};
+/// The edges of the degree-6 checks, which come first in the sum-product
+/// round's layout; then those of the degree-7 checks.
+const LOW_EDGES: usize = 6 * LOW_CHECKS;
+/// Edges of the parity-check graph (522).
+const EDGES: usize = LOW_EDGES + 7 * (M - LOW_CHECKS);
+
 /// One sum-product round: every check's new messages into `msg`, added to
-/// `next` check by check in order. Done in phases over all checks (inputs,
+/// `next` check by check in order. Done in phases over all edges (inputs,
 /// tanh, products, atanh, then the sums), so the tanh and atanh passes are
 /// long plain loops; each value's arithmetic is that of one check at a time.
-/// Not inlined: its 2 656-byte array stays off the min-sum path's frame.
+/// The edges are laid out by check degree (the degree-6 checks in order,
+/// then the degree-7 ones), so the products run over whole checks of a
+/// fixed size. Not inlined: its 2 088-byte array stays off the min-sum
+/// path's frame.
 #[inline(never)]
 fn sum_product_round(total: &[f32; N], next: &mut [f32; N], msg: &mut [[f32; MAX_DEGREE]; M]) {
-    // Unused lanes stay 0.0: tanh and atanh give 0.0 there, discarded.
-    let mut t = [[0.0f32; LANES]; M];
-    for (c, (tc, row)) in t.iter_mut().zip(msg.iter()).enumerate() {
+    let mut t = [0.0f32; EDGES];
+    // Check c's edges start at `at(c)`: the next free place of its degree.
+    let (mut low, mut high) = (0, LOW_EDGES);
+    let mut at = |n: usize| {
+        let place = if n == 6 { &mut low } else { &mut high };
+        let a = *place;
+        *place += n;
+        a
+    };
+    for (c, row) in msg.iter().enumerate() {
         let (v, n) = check(c);
+        let tc = &mut t[at(n)..][..n];
         for j in 0..n {
             tc[j] = total[usize::from(v[j])] - row[j];
         }
     }
-    for tc in t.iter_mut() {
-        for x in tc.iter_mut() {
-            *x = tanh_half(*x);
-        }
+    for x in t.iter_mut() {
+        *x = tanh_half(*x);
     }
-    // Products of all the others, by prefix and suffix, in place.
-    for (c, tc) in t.iter_mut().enumerate() {
-        let n = usize::from(DEGREES[c]);
-        let mut prefix = [1.0f32; LANES + 1];
-        for j in 0..n {
-            prefix[j + 1] = prefix[j] * tc[j];
-        }
-        let mut suffix = 1.0f32;
-        for j in (0..n).rev() {
-            let tj = tc[j];
-            tc[j] = prefix[j] * suffix;
-            suffix *= tj;
-        }
+    let (t6, t7) = t.split_at_mut(LOW_EDGES);
+    for tc in t6.chunks_exact_mut(6) {
+        others_products::<6>(tc);
     }
-    for tc in t.iter_mut() {
-        for x in tc.iter_mut() {
-            *x = twice_atanh(*x);
-        }
+    for tc in t7.chunks_exact_mut(7) {
+        others_products::<7>(tc);
     }
-    for (c, (row, tc)) in msg.iter_mut().zip(t.iter()).enumerate() {
+    for x in t.iter_mut() {
+        *x = twice_atanh(*x);
+    }
+    let (mut low, mut high) = (0, LOW_EDGES);
+    let mut at = |n: usize| {
+        let place = if n == 6 { &mut low } else { &mut high };
+        let a = *place;
+        *place += n;
+        a
+    };
+    for (c, row) in msg.iter_mut().enumerate() {
         let (v, n) = check(c);
-        row[..n].copy_from_slice(&tc[..n]);
+        row[..n].copy_from_slice(&t[at(n)..][..n]);
         for j in 0..n {
             next[usize::from(v[j])] += row[j];
         }
+    }
+}
+
+/// Each value of a check replaced by the product of the others, by prefix
+/// and suffix, in place.
+#[inline(always)]
+fn others_products<const D: usize>(tc: &mut [f32]) {
+    let tc: &mut [f32; D] = tc.try_into().unwrap();
+    let mut prefix = [1.0f32; LANES + 1];
+    for j in 0..D {
+        prefix[j + 1] = prefix[j] * tc[j];
+    }
+    let mut suffix = 1.0f32;
+    for j in (0..D).rev() {
+        let tj = tc[j];
+        tc[j] = prefix[j] * suffix;
+        suffix *= tj;
     }
 }
 
