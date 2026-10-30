@@ -360,6 +360,39 @@ fn deterministic_and_pinned() {
     );
 }
 
+/// The report's projection and noise term, pinned bit for bit on sums
+/// whose cross term matters (random references, not sinusoids: over a
+/// real segment `c·s` sums to almost nothing, so a reordering of the
+/// cross term rounds the same there and no subtraction pin sees it).
+#[test]
+fn projection_pinned() {
+    let mut r = 0x2545_f491_4f6c_dd1du64;
+    let mut uniform = || {
+        r ^= r << 13;
+        r ^= r >> 7;
+        r ^= r << 17;
+        (r >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+    };
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let mut eat = |v: f32| h = (h ^ u64::from(v.to_bits())).wrapping_mul(0x0000_0100_0000_01b3);
+    let mut found = 0;
+    for n in 8..72 {
+        let mut sums = Sums::default();
+        for _ in 0..n {
+            let (c, s) = (uniform(), uniform() + 0.3 * uniform());
+            let x = 0.7 * c - 0.4 * s + 0.2 * uniform();
+            sums.add(x, c, s);
+        }
+        if let Some((e, noise)) = sums.projection(1) {
+            eat(e);
+            eat(noise);
+            found += 1;
+        }
+    }
+    assert_eq!(found, 64);
+    assert_eq!(h, 0xd1c9_6c7e_8eae_3966, "{h:#x}");
+}
+
 #[test]
 fn settings_and_inputs_are_checked() {
     let d = decode_near(1_000.0, 0.0);
