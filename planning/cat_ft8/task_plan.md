@@ -185,7 +185,7 @@ F6. [x] progress.md corrections (table bytes; the T4 ldpc swing).
 F7. [x] (optional) `encode_bench` single-stage mode for instruction
         counts.
 
-## Phase 2: decoder (single pass) — PLAN, revised after review (2026-10-26)
+## Phase 2: decoder (single pass) — PLAN, revised (2026-10-26)
 
 Design decisions are in ADR 0024, "Proposed amendment: single-pass
 decoder" (accepted at D0 with its estimates; measured memory, flash,
@@ -820,7 +820,7 @@ E4. [x] **Continuing past a CRC-failing codeword — measurement only.**
         empty-set run.
     ◆ Checkpoint E4; ◆◆ results to the user.
 
-## Phase 4: subtraction and further passes — APPROVED (2026-10-27, revised after review)
+## Phase 4: subtraction and further passes — APPROVED (2026-10-27, revised)
 
 Status: **S0, S2 (with its fix round) and S3 done; S1 not needed; at
 Checkpoint S3** (2026-10-28). (Before S2: S0 done, results identical, and revised after
@@ -1167,7 +1167,7 @@ S3. [x] **Further passes, with paired acceptance.**
 - Subtracting during pass 1 as each decode arrives (not possible with
   the fixed-order rule as written).
 
-## S3 fix round (2026-10-28, after the S3 checkpoint review)
+## S3 fix round (2026-10-28, after the S3 checkpoint)
 
 Results stay identical: every change is result-neutral, or opt-in with a
 default that keeps today's output. Proof: pass-1 and multi-pass pins
@@ -1216,7 +1216,7 @@ Done 2026-10-28 (00c7cbe, 0d3c912, 3ed1aa0; findings, "S3 fix round").
 `check.sh` keeps allowing `__aeabi_f2lz`: `subtract` and
 `Placement::slot` need the `i64` range.
 
-## O1 fix round (2026-10-29, after the O1 review)
+## O1 fix round (2026-10-29)
 
 Results stay bit-identical to 36cc440 (pins, multi-pass pins, `run`
 records with timings removed, the decode command on the 800 WAV slots);
@@ -1263,7 +1263,7 @@ before and kept only if it wins on one without losing on the other.
    generator's increments without a conversion on x86-64 (d6bab4f).
    Rejected: the envelope-multiply skip with an `f32` offset counter
    (slower on both hosts); step 2's floor on AArch64 (no gain).
-3. Review items from the O1 delta review (b39ce66): per-image static RAM
+3. O1 follow-ups (b39ce66): per-image static RAM
    ceilings in `check.sh` (small and encoder-only 256 KiB, host 512
    KiB); `peak_bytes` documented as leaving out the subtraction scratch
    (key unchanged); `PassesScratch` steered to a `static`; the
@@ -1275,7 +1275,7 @@ before and kept only if it wins on one without losing on the other.
 
 Done 2026-10-29 (findings, "Decode time, optimisation round (O2)").
 
-### O2 fix round (2026-10-29, after the O2 reviews)
+### O2 fix round (2026-10-29)
 
 Results bit-identical to b465b75 on every target, as in O2.
 
@@ -1300,9 +1300,9 @@ Done 2026-10-29 (findings, "O2 fix round").
 
 ### Open items
 
-- **Cortex-M run time of `fill_phase` and `find_candidates`** (asked in
-  the O2 review before calling the round done for microcontrollers).
-  Not attempted: the bench microcontroller was in use for other work.
+- **Cortex-M run time of `fill_phase` and `find_candidates`** (an O2
+  follow-up before calling the round done for microcontrollers).
+  Not attempted: no Cortex-M board was available.
   Steps 1 and 3 of O2 and the chunked encoder change the code shape
   there; only flash and frames are measured.
 
@@ -1355,7 +1355,7 @@ prototype).
 
 ## O3 fix round (2026-10-29)
 
-From the O3 reviews; every step bit-identical to cc68e22 on every target
+From the O3 follow-ups; every step bit-identical to cc68e22 on every target
 (the only visible change: no candidates after a stopped decode).
 
 1. A stopped decode leaves the decoder as after `start_slot`; the level
@@ -1379,11 +1379,11 @@ reference's cosine/sine (12% of the slot).
 
 ## O4: CPU per decoded signal, fourth round (2026-10-30)
 
-Bit-identical to 91ee9fe; the O3 review's ranked targets, in order: a joint
+Bit-identical to 91ee9fe; the ranked O3 targets, in order: a joint
 cosine/sine, an `input()` fast path, the belief-propagation edge layout
 (only in a materially different form from O3's), small items (the
 envelope multiply in the time search's middles, an exact float counter
-in the removal), and the O3 review's nit (one helper lending the level
+in the removal), and an O3 follow-up (one helper lending the level
 buffer). A76 decision rule as in the O3 fix round; re-profile at the end.
 
 Done 2026-10-30 (findings, "CPU per decoded signal, fourth round"):
@@ -1397,8 +1397,8 @@ judged ≤ 2% each.
 ## O5: CPU per decoded signal, fifth round (2026-10-30)
 
 The last bit-identical round (identical to 46fdf4d) before the gated,
-result-changing rounds; from the O4 follow-up list. A76 decision rule as
-before.
+result-changing rounds; from the open items at the end of round O4, listed
+below. A76 decision rule as before.
 
 1. The decoder's subtractions without the report's sums (a
    crate-internal entry; the public `subtract` and its anchors
@@ -1432,7 +1432,10 @@ before (a region of 45% / 16% of the band); the time search repeats in
 
 ## O6: CPU per decoded signal, sixth round (2026-10-30)
 
-From the O5 follow-up list; bit-identical to 3f16549. Done (findings, "sixth
+From the open items at the end of round O5 (1. the fit's sums and
+correction in locals; 2. a sine table padded by its end point; 3. doc
+fixes; 4. out of tree, for the gated rounds: a frequency gate on the
+later passes and a pass-3 trigger); bit-identical to 3f16549. Done (findings, "sixth
 round"): 1d028a1 (fit sums in locals: time unchanged on A76/x86-64,
 kept for the Cortex-M33), padded sine table rejected (A76 +2.7%
 subtraction), 73ebf5d (docs). Gated-round measurements: the later-pass
@@ -1442,12 +1445,53 @@ frequency gate saves nothing as specified; pass-3 trigger k = 2 adds
 
 ## O7: release profile and the later-pass cap (2026-10-30)
 
-From the O6 follow-up list; bit-identical to c472100. Done (findings,
+From the open items at the end of round O6 (the release build profile;
+a doc and a comment fix; a pin for the report's projection; out of
+tree, the later-pass cap); bit-identical to c472100. Done (findings,
 "seventh round"): release profiles measured (none wins by 2% on the A76;
 defaults kept), 5704d32 (doc and comment), a437134 (projection pin),
 notes corrected. Out of tree for the gated round: later-pass decodes'
 ranks by load, the S3 sweep reconciled with O6 (d), fixed caps and the
 proportional rule on three blocks. Recommended: later-pass cap 25.
+
+## O8: later-pass cap 50 → 25, gated (2026-10-30)
+
+The first result-changing round since S3. One code commit:
+`HOST.later_candidates` 50 → 25, its doc (the measured cost: the loss
+sits in 40-signal `fading`/`wide` slots, at the edge of the validated
+40; callers raise it with `with_later_candidates`) and the pins that
+move with it. `SMALL` runs one pass and must stay byte-identical.
+
+1. Gate criteria written in findings.md before the acceptance run
+   (below and findings, "eighth round").
+2. Acceptance on the `fresh` block (crowded, wide, fading; never used
+   for the cap measurements, which used `main`, `cap1` and `cap2`), the
+   paired gates on every set of both blocks, the 800 WAV slots, the
+   ceiling run and the A76 timing. If any criterion fails: no commit;
+   report and re-measure, do not retune.
+3. Text: O7 notes' corrections; the planning files' wording for
+   material not in this repository; a boundary test for `Fit::det` if
+   it changes no result.
+4. After the cap: a fresh A76 profile of the three-pass slot (to choose
+   between the `i16` residual and vector sine/cosine rounds), local CI
+   and the Raspberry Pi 5 release suite.
+
+Gate criteria (fixed in advance; every one must pass):
+- Sets: `crowded`, `wide`, `fading` on the `fresh` block (used once for
+  the verdict), the existing paired gates (`compare` against the cap-50
+  and single-pass records), the 800 WAV slots.
+- False decodes: 0, absolute, everywhere.
+- Pass 1 byte-identical (`host,passes=1` and `small` records and WAV
+  output; pass 1 of every `host` record); only passes 2 and 3 may differ.
+- Lost: each a pass-2/3 decode ranked beyond 25 at cap 50, each logged;
+  at most 8 on the `fresh` block (above 8: stop, re-measure, no retune).
+- Gains and every 800-WAV difference listed and explained.
+- Ceiling run (oracle passes) and the `wide` set's low-SNR messages
+  (below −16 dB): loss rate at most the per-set rate on `main`/`cap1`/
+  `cap2` (crowded 0, wide 1 of 50 996, fading 9 of 35 888).
+- Speed: A76 three-pass slot at least 7% faster than ce09c5d, same
+  hygiene (one source path, a target directory per commit, hashes
+  checked, alternated rounds, throttle flags before and after).
 
 ## Next: gated, result-changing rounds
 

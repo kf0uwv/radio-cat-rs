@@ -18,7 +18,7 @@
 ## Session: 2026-10-25 (fix round)
 
 - Process: the plan for the encoder was written after the code, so the
-  first review of this change was retroactive. The user approved the
+  first check of this change came after the code. The user approved the
   fix-round plan (task_plan.md, "Fix round") on 2026-10-25 before any
   fix-round code was written.
 - Step 1 done: task_plan.md fix-round steps, findings.md created.
@@ -192,7 +192,7 @@
   D0–D11, checkpoints), ADR 0024 "Proposed amendment: single-pass
   decoder", sizing notes in findings.md. No decoder code written; waiting
   for architect and user approval (D0).
-- Both architecture reviews: approve with changes. Plan, ADR amendment
+- Architecture checks of the plan: approved with changes. Plan, ADR amendment
   and findings revised: row geometry and dt range with partial sync, band
   definition, text rendered in `finish` with the caller's call table,
   exact determinism contract, scope rule 3 restated, D7 split with a
@@ -450,11 +450,11 @@
 
 ## Session: 2026-10-27 (D12 fix round)
 
-- Six reviews of the whole decoder consolidated into fix list sections
+- Checks of the whole decoder consolidated into fix list sections
   A (required, results identical), B (simplicity, results identical)
   and C (optimisation passes, later). The user approved A and B followed
   by C on 2026-10-27. D12 plan written into the task plan before code;
-  C waits for re-review.
+  C waits for a re-check.
 - D12 done, one item at a time; after each, every test (golden waveform
   and decode hashes, pinned floors) and the release bulk run were checked
   (bulk counts compared line by line with a baseline taken after A6
@@ -491,7 +491,7 @@
   - B13: `Stage` and `decode_candidate_staged` (same result, test); the
     command's profile adds `refine`, `soft_bits`, `belief_propagation`
     and `snr` seconds.
-- D12 re-reviewed (six approvals). D12a cleanup recorded in the plan;
+- D12 re-checked and approved. D12a cleanup recorded in the plan;
   the coordinator authorised local commits by topic (no push).
 - Note: A6 changed the bulk run's seeds, so its zero decodes from then on
   are a new sample of noise and carriers, not a re-run of the earlier
@@ -549,7 +549,7 @@
   1 only. Tooling kept: `decode_bench stage N feed|sync|bp` (the
   argument order the code takes; commit a0b5961's message gives it
   reversed) for single-stage instruction counts.
-- Pass reviews (QA, and a review for simplicity): both pass with
+- Pass checks (correctness, and simplicity): both pass with
   small changes; close-out C1 recorded in the plan.
 - C1 done (results identical): `exp2_neg` pinned at 19 inputs (edges
   included) plus a pinned hash over a 10 001-point sweep of −126…0; a
@@ -598,7 +598,7 @@
   baseline"); no false decodes anywhere. Checks: tests 115 (108 without
   std), golden hashes and floors unchanged, bulk identical, clippy, fmt,
   docs, thumbv8m, 1.75, link check (flash 83 504 B, `.bss` unchanged).
-- E0 checkpoint reviewed (four reviews; open-source clean). E0a recorded
+- E0 checkpoint checked (open-source boundary clean). E0a recorded
   in the plan: gate defects, traceable baseline, shared helpers, typed
   records; `last_rounds()` kept public as a deliberate addition.
 - E0a done (decoder library untouched): `compare` fails on MISSING sets,
@@ -1183,14 +1183,15 @@
   (the reason, not the codegen outcome).
 - a437134: `projection_pinned` (the report's projection on random sums;
   the cross-term re-association no subtraction pin saw now fails it).
-- O5/O6 notes: no names of unpublished follow-up material; x86-64 20.9;
+- O5/O6 notes: wording of their sources; x86-64 20.9;
   measurement commit 23742aa; ~41% at 25 Hz; sync-search cost backed;
   O6 profile table and Pi suite filled in; `SMALL` and memory notes on
   the cap.
 - Out of tree: rank histogram, S3 reconciliation (its −21 at 20 was the
   two-pass column; three passes lose 3, as O6), caps 20/25/30 and the
   proportional rule on the main block and two new blocks (`cap1`,
-  `cap2`). Cap 25 recommended: −8.8% A76 for 10 of 127 336; no
+  `cap2`). Cap 25 recommended: −8.8% A76 on the main block (8.7% over
+  the three) for 10 of 127 336; no
   proportional setting beats it by 2% at equal loss.
 - Local CI at a437134 (fmt, clippy incl. thumbv8m, tests incl.
   `--include-ignored`, MSRV 1.75, docs, `check.sh --stack`): pass.
