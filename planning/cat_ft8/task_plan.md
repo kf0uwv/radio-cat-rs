@@ -1417,17 +1417,28 @@ before.
 
 Done 2026-10-30 (findings, "CPU per decoded signal, fifth round"):
 f0bb4ab (subtractions without the report: A76 slot −7.0%, x86-64
-−5.3%; a `const` generic form was +4% on x86-64 and rejected; the
-fit's `xx`/`n` were already removed by the compiler), 02ff55e (messages
+−5.8%; a `const` generic form was +4% on x86-64 and rejected; the
+fit's `xx`/`n` were thought removed by the compiler: true only where
+the fit closure is inlined, corrected in O6), 02ff55e (messages
 in the edge layout: time unchanged, static RAM −236 B, round frame
 2 176 → 88 B), 92970ba (tests), 1b47a55 (symbol cores), a5a2034 (docs).
 Slot A76 201.2 → 187.5 ms (−6.8%), x86-64 110.3 → 104.2 (−5.5%).
 M33: 657543e removes 21% of the transcendental evaluations and about
-15% of the round's instructions (static). Measurements: pass 3 is 28%
-of the A76's multi-pass time for 5% of the decodes; 99.8% of pass-2 and
+15% of the round's instructions (static). Measurements: pass 3 is 26%
+of the A76's multi-pass time for 4.7% of the decodes (corrected in O6); 99.8% of pass-2 and
 99.7% of pass-3 decodes lie within 50 Hz of a decode of the pass
 before (a region of 45% / 16% of the band); the time search repeats in
 0.14% of subtractions.
+
+## O6: CPU per decoded signal, sixth round (2026-10-30)
+
+From the O5 reviews; bit-identical to 3f16549. Done (findings, "sixth
+round"): 1d028a1 (fit sums in locals: time unchanged on A76/x86-64,
+kept for the Cortex-M33), padded sine table rejected (A76 +2.7%
+subtraction), 73ebf5d (docs). Gated-round measurements: the later-pass
+cap is the lever (50 → 20: −10.4% A76 for 3 lost of 42 433); the
+frequency gate saves nothing as specified; pass-3 trigger k = 2 adds
+−4.6 ms for 27 lost.
 
 ## Next: gated, result-changing rounds
 

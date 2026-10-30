@@ -1109,9 +1109,10 @@
 - f0bb4ab: the decoder's subtractions skip the report's sums
   (`subtract_unreported`; flag in `Removal`). Subtraction per slot A76
   122.5 → 107.5 ms, x86-64 64.5–65.3 → 58.6–58.8; slot A76 −7.0%,
-  x86-64 −5.3%. Host flash +220 B. Rejected first form: `const REPORT`
-  on `run` (A76 −0.7%, x86-64 +4%: `blocks` out of line). The fit's
-  `xx`/`n` are already dead in the AArch64 loop.
+  x86-64 −5.8% (paired base 109.7–110.9 → 103.7–104.2 ms). Host flash
+  +220 B. Rejected first form: `const REPORT` on `run` (A76 −0.7%, x86-64 +4%: `blocks` out of line). The fit's
+  `xx`/`n` are already dead in the AArch64 loop (only where the fit
+  closure is inlined into `run`; corrected in O6).
 - 02ff55e: BP messages kept in the degree-grouped edge layout, round
   in place. Time unchanged (A76 slot +0.3%, BP 40.9 → 40.7 ms); kept
   for memory: `BpScratch` 3 892 → 3 656 B, `CandidateScratch` 5 100 →
@@ -1126,11 +1127,13 @@
 - Slot, base → 1b47a55, two alternated rounds: A76 201.1–201.2 → 187.5
   ms; x86-64 110.2–110.3 → 103.9–104.5.
 - M33 (static): 657543e cuts tanh/atanh evaluations and `vdiv`s by 21%
-  and the round's instructions by about 15%; 02ff55e another 7%.
+  and the round's instructions by about 15%; 02ff55e a further 8.3%
+  (dynamic estimate, against 657543e).
 - A76 profile at 1b47a55: subtraction 53.7% (fit 51.8 ms, time search
   26.2 with its generator, removal 14.7), BP 26.2%, feed 15.6%.
 - Out of tree: per pass (A76, 2 000 crowded/wide/fading slots) 34.5 /
-  72.5 / 40.7 ms for 15.52 / 4.70 / 1.08 decodes; later-pass decodes
+  72.5 / 37.6 ms for 15.52 / 4.70 / 1.00 decodes per slot (pass 3:
+  40.7 ms and 1.08 per slot where it ran; corrected in O6); later-pass decodes
   within 50 Hz of the previous pass's: 99.8% / 99.7%; time-search
   repeat in 56 of 40 435 subtractions.
 - Identity at each code commit: run records = S3 fix round's (0
@@ -1141,3 +1144,28 @@
 - Release `cat-ft8-decode` built from this repository's path at 1b47a55
   (later commits change no input of the build): sha256
   36ce320895815758c0b978bd563eaefbef4e0eeefaf9d400366b01126c6c3987.
+
+## Session: 2026-10-30 (O6, CPU per decoded signal)
+
+- 1d028a1: the fit's sums (`Fit`, five fields), correction and ring
+  size in locals per block. A76 and x86-64 unchanged (the timed build
+  already inlined them; the review's listing was one codegen unit);
+  kept for the Cortex-M33 image, where `Sums::add` was a call per
+  sample (now inlined; `subtract` frame 4 600 → 4 584 B, host flash
+  +108 B).
+- Rejected: sine table padded by its end point (bit-identical at all
+  2³² phases on both hosts) — A76 subtraction +2.7%, slot +1.3%
+  (NEON pairing of the two lookups).
+- 73ebf5d: `run_as` and `decode_passes` doc fixes; O5 notes corrected
+  (pass 3 is 37.6 ms / 1.00 decodes per slot, 26%; M33 and x86-64 step
+  bases; the `xx`/`n` claim).
+- Identity at 73ebf5d: run records = S3 fix round's (0 differing);
+  800-WAV output = O5's (1b47a55). Local CI including `--ignored`,
+  `check.sh --stack`, MSRV 1.75, docs: pass.
+- Out of tree: the later-pass cap (50) binds in every search (≈5 000
+  sync points); a 50 Hz gate without refill saves nothing and loses 39
+  decodes; pass-3 trigger k = 2 / 3 saves 4.6 / 8.7 ms (A76) for 27 /
+  85 decodes; cap 20 saves 15.0 ms (−10.4%) for 3 of 42 433.
+- Release `cat-ft8-decode` built from this repository's path at
+  73ebf5d: sha256
+  dea2368c4f18fd1bf89eed7ef841dad96ae04fe2bb0894b5eaf82954c0774377.
