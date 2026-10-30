@@ -60,13 +60,15 @@ pub enum CheckRule {
     MinSum,
 }
 
-/// Working storage for one decode (about 4.4 KB). One per decoding thread;
+/// Working storage for one decode (3 656 bytes). One per decoding thread;
 /// every decode re-initialises it.
 #[derive(Debug, Clone)]
 pub struct BpScratch {
     total: [f32; N],
     next: [f32; N],
-    msg: [[f32; MAX_DEGREE]; M],
+    /// The check-to-variable messages, one per edge, laid out by check
+    /// degree ([`check_edges`]).
+    msg: [f32; EDGES],
     hard: [u8; N],
     /// Message-passing rounds run by the last decode, whatever its result.
     rounds: u8,
@@ -78,7 +80,7 @@ impl BpScratch {
         BpScratch {
             total: [0.0; N],
             next: [0.0; N],
-            msg: [[0.0; MAX_DEGREE]; M],
+            msg: [0.0; EDGES],
             hard: [0; N],
             rounds: 0,
         }
@@ -252,9 +254,7 @@ pub fn decode_soft(
     } = scratch;
     *rounds_run = 0;
     *total = *llr;
-    for row in msg.iter_mut() {
-        *row = [0.0; MAX_DEGREE];
-    }
+    *msg = [0.0; EDGES];
     let hard_errors = |hard: &[u8; N]| {
         let n = hard
             .iter()
@@ -277,8 +277,9 @@ pub fn decode_soft(
         if rule == CheckRule::SumProduct {
             sum_product_round(total, next, msg);
         } else {
-            for (c, row) in msg.iter_mut().enumerate() {
-                let (v, n) = check(c);
+            for (v, e) in check_edges() {
+                let n = v.len();
+                let row = &mut msg[e..][..n];
                 let mut q = [0.0f32; LANES];
                 for j in 0..n {
                     q[j] = total[usize::from(v[j])] - row[j];
@@ -337,63 +338,59 @@ const LOW_CHECKS: usize = {
     }
     count
 };
-/// The edges of the degree-6 checks, which come first in the sum-product
-/// round's layout; then those of the degree-7 checks.
+/// The edges of the degree-6 checks, which come first in the messages'
+/// layout ([`check_edges`]); then those of the degree-7 checks.
 const LOW_EDGES: usize = 6 * LOW_CHECKS;
 /// Edges of the parity-check graph (522).
 const EDGES: usize = LOW_EDGES + 7 * (M - LOW_CHECKS);
 
-/// One sum-product round: every check's new messages into `msg`, added to
-/// `next` check by check in order. Done in phases over all edges (inputs,
-/// tanh, products, atanh, then the sums), so the tanh and atanh passes are
-/// long plain loops; each value's arithmetic is that of one check at a time.
-/// The edges are laid out by check degree (the degree-6 checks in order,
-/// then the degree-7 ones), so the products run over whole checks of a
-/// fixed size. Not inlined: its 2 088-byte array stays off the min-sum
-/// path's frame.
-#[inline(never)]
-fn sum_product_round(total: &[f32; N], next: &mut [f32; N], msg: &mut [[f32; MAX_DEGREE]; M]) {
-    let mut t = [0.0f32; EDGES];
-    // Check c's edges start at `at(c)`: the next free place of its degree.
+/// Each check in order: its variables (0-based) and the index of its
+/// first edge in the messages' layout. The edges are laid out by check
+/// degree: the degree-6 checks' edges first, check by check in order, then
+/// the degree-7 checks'. Every place the layout is walked takes it from
+/// here.
+#[inline(always)]
+fn check_edges() -> impl Iterator<Item = (&'static [u8], usize)> {
     let (mut low, mut high) = (0, LOW_EDGES);
-    let mut at = |n: usize| {
-        let place = if n == 6 { &mut low } else { &mut high };
-        let a = *place;
-        *place += n;
-        a
-    };
-    for (c, row) in msg.iter().enumerate() {
+    (0..M).map(move |c| {
         let (v, n) = check(c);
-        let tc = &mut t[at(n)..][..n];
-        for j in 0..n {
-            tc[j] = total[usize::from(v[j])] - row[j];
+        let place = if n == 6 { &mut low } else { &mut high };
+        let e = *place;
+        *place += n;
+        (&v[..n], e)
+    })
+}
+
+/// One sum-product round, in place on the messages: every check's new
+/// messages into `msg`, added to `next` check by check in order. Done in
+/// phases over all edges (inputs, tanh, products, atanh, then the sums), so
+/// the tanh and atanh passes are long plain loops; each value's arithmetic
+/// is that of one check at a time. With the edges laid out by check degree
+/// ([`check_edges`]), the products run over whole checks of a fixed size.
+/// Not inlined, so its frame is measured on its own.
+#[inline(never)]
+fn sum_product_round(total: &[f32; N], next: &mut [f32; N], msg: &mut [f32; EDGES]) {
+    for (v, e) in check_edges() {
+        for (m, &i) in msg[e..][..v.len()].iter_mut().zip(v) {
+            *m = total[usize::from(i)] - *m;
         }
     }
-    for x in t.iter_mut() {
+    for x in msg.iter_mut() {
         *x = tanh_half(*x);
     }
-    let (t6, t7) = t.split_at_mut(LOW_EDGES);
+    let (t6, t7) = msg.split_at_mut(LOW_EDGES);
     for tc in t6.chunks_exact_mut(6) {
         others_products::<6>(tc);
     }
     for tc in t7.chunks_exact_mut(7) {
         others_products::<7>(tc);
     }
-    for x in t.iter_mut() {
+    for x in msg.iter_mut() {
         *x = twice_atanh(*x);
     }
-    let (mut low, mut high) = (0, LOW_EDGES);
-    let mut at = |n: usize| {
-        let place = if n == 6 { &mut low } else { &mut high };
-        let a = *place;
-        *place += n;
-        a
-    };
-    for (c, row) in msg.iter_mut().enumerate() {
-        let (v, n) = check(c);
-        row[..n].copy_from_slice(&t[at(n)..][..n]);
-        for j in 0..n {
-            next[usize::from(v[j])] += row[j];
+    for (v, e) in check_edges() {
+        for (&m, &i) in msg[e..][..v.len()].iter().zip(v) {
+            next[usize::from(i)] += m;
         }
     }
 }

@@ -207,10 +207,22 @@ fn the_check_table_is_the_parity_check_matrix_0_based() {
     }
 }
 
-/// FNV-1a over the bits of the scratch's totals and messages.
+/// Messages in the edge layout as rows by check, in check order (unused
+/// lanes 0.0).
+fn rows_of(msg: &[f32; EDGES]) -> [[f32; MAX_DEGREE]; M] {
+    let mut rows = [[0.0f32; MAX_DEGREE]; M];
+    for (row, (v, e)) in rows.iter_mut().zip(check_edges()) {
+        row[..v.len()].copy_from_slice(&msg[e..][..v.len()]);
+    }
+    rows
+}
+
+/// FNV-1a over the bits of the scratch's totals and messages (as rows by
+/// check, so the hash does not depend on the messages' layout).
 fn state_hash(s: &BpScratch) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
-    let words = s.total.iter().chain(s.msg.iter().flatten());
+    let rows = rows_of(&s.msg);
+    let words = s.total.iter().chain(rows.iter().flatten());
     for x in words {
         for b in x.to_bits().to_le_bytes() {
             h ^= u64::from(b);
