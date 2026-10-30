@@ -973,10 +973,18 @@ fn the_spectrogram_is_the_last_pass_or_empty_after_a_stop() {
             },
         );
         if stop {
+            // As after `start_slot`: no rows and no candidates (the report
+            // still counts pass 1's).
             assert_eq!(report.end, PassesEnd::Stopped);
             assert_eq!(dec.spectrogram().rows_filled(), 0);
+            assert!(dec.candidates().is_empty());
+            assert!(dec
+                .decode_candidate(0, &mut Box::new(CandidateScratch::new()))
+                .is_none());
+            assert!(report.report.candidates_kept > 0);
         } else {
             assert!(report.passes_run > 1);
+            assert!(!dec.candidates().is_empty());
             // The last pass's rows: those of the residual it decoded (what
             // the same passes leave in the audio).
             let rows = dec.spectrogram().rows_filled();

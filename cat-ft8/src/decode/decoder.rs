@@ -749,10 +749,11 @@ impl<'a> Decoder<'a> {
     /// ADR 0024 adds the check program's own frames above them),
     /// only when more than one pass runs.
     ///
-    /// The spectrogram ([`Decoder::spectrogram`]) holds the last pass's
-    /// rows on return, unless the decode stopped
-    /// ([`PassesEnd::Stopped`]) after a subtraction: then it is empty (no
-    /// rows filled), as after [`Decoder::start_slot`].
+    /// The spectrogram ([`Decoder::spectrogram`]) and the candidates
+    /// ([`Decoder::candidates`]) are the last pass's on return, unless the
+    /// decode stopped ([`PassesEnd::Stopped`]) after a subtraction: then
+    /// the decoder is as after [`Decoder::start_slot`] (no rows filled and
+    /// no candidates).
     pub fn decode_passes(
         &mut self,
         audio: &mut [f32],
@@ -878,19 +879,19 @@ impl<'a> Decoder<'a> {
             if out.end != PassesEnd::AllPasses {
                 break;
             }
+            // The subtractions hold their reference in the level buffer, so
+            // the decoder is emptied first, as by `start_slot`: no rows and
+            // no candidates until the next pass's feed and search (a stop
+            // leaves it so).
+            self.start_slot();
+            let levels = self.spec.idle_levels();
             let (mut subtracted, mut failed) = (0, 0);
             for i in begin..len {
                 // A decode's frequency and time are always valid for the
                 // waveform, and the settings were checked in `new`, so
                 // this does not fail; if it did, the audio would be left
                 // as it was and the failure counted.
-                let r = subtract(
-                    audio,
-                    &list.entries[i],
-                    skip,
-                    &self.config.subtract,
-                    self.spec.idle_levels(),
-                );
+                let r = subtract(audio, &list.entries[i], skip, &self.config.subtract, levels);
                 debug_assert!(r.is_ok(), "subtracting entry {i}: {r:?}");
                 if r.is_ok() {
                     subtracted += 1;
