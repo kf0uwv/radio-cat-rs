@@ -1397,7 +1397,7 @@ judged ≤ 2% each.
 ## O5: CPU per decoded signal, fifth round (2026-10-30)
 
 The last bit-identical round (identical to 46fdf4d) before the gated,
-result-changing rounds; from the O4 reviews. A76 decision rule as
+result-changing rounds; from the O4 follow-up list. A76 decision rule as
 before.
 
 1. The decoder's subtractions without the report's sums (a
@@ -1432,13 +1432,22 @@ before (a region of 45% / 16% of the band); the time search repeats in
 
 ## O6: CPU per decoded signal, sixth round (2026-10-30)
 
-From the O5 reviews; bit-identical to 3f16549. Done (findings, "sixth
+From the O5 follow-up list; bit-identical to 3f16549. Done (findings, "sixth
 round"): 1d028a1 (fit sums in locals: time unchanged on A76/x86-64,
 kept for the Cortex-M33), padded sine table rejected (A76 +2.7%
 subtraction), 73ebf5d (docs). Gated-round measurements: the later-pass
 cap is the lever (50 → 20: −10.4% A76 for 3 lost of 42 433); the
 frequency gate saves nothing as specified; pass-3 trigger k = 2 adds
 −4.6 ms for 27 lost.
+
+## O7: release profile and the later-pass cap (2026-10-30)
+
+From the O6 follow-up list; bit-identical to c472100. Done (findings,
+"seventh round"): release profiles measured (none wins by 2% on the A76;
+defaults kept), 5704d32 (doc and comment), a437134 (projection pin),
+notes corrected. Out of tree for the gated round: later-pass decodes'
+ranks by load, the S3 sweep reconciled with O6 (d), fixed caps and the
+proportional rule on three blocks. Recommended: later-pass cap 25.
 
 ## Next: gated, result-changing rounds
 

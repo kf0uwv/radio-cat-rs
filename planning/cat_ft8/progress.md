@@ -1149,7 +1149,7 @@
 
 - 1d028a1: the fit's sums (`Fit`, five fields), correction and ring
   size in locals per block. A76 and x86-64 unchanged (the timed build
-  already inlined them; the review's listing was one codegen unit);
+  already inlined them; an earlier listing was built with one codegen unit);
   kept for the Cortex-M33 image, where `Sums::add` was a call per
   sample (now inlined; `subtract` frame 4 600 → 4 584 B, host flash
   +108 B).
@@ -1169,3 +1169,34 @@
 - Release `cat-ft8-decode` built from this repository's path at
   73ebf5d: sha256
   dea2368c4f18fd1bf89eed7ef841dad96ae04fe2bb0894b5eaf82954c0774377.
+
+## Session: 2026-10-30 (O7, release profile and the later-pass cap)
+
+- Release profile: default, `codegen-units = 1`, fat LTO and both,
+  each bit-identical (run records and 800-WAV output). A76 three-pass
+  slot 187.6 / 187.6 / 185.7 / 187.8 ms, x86-64 104.0 / ~103 / ~105 /
+  ~103: nothing wins by 2%, so the workspace keeps cargo's defaults
+  (fat LTO more than doubles the decoder's rebuild). Embedded image
+  unaffected (its own workspace and profile).
+- 5704d32: `HOST` doc (50 later candidates decode all but 4 of 42 437
+  that 200 do; to re-measure with the count) and the fit-locals comment
+  (the reason, not the codegen outcome).
+- a437134: `projection_pinned` (the report's projection on random sums;
+  the cross-term re-association no subtraction pin saw now fails it).
+- O5/O6 notes: no names of unpublished follow-up material; x86-64 20.9;
+  measurement commit 23742aa; ~41% at 25 Hz; sync-search cost backed;
+  O6 profile table and Pi suite filled in; `SMALL` and memory notes on
+  the cap.
+- Out of tree: rank histogram, S3 reconciliation (its −21 at 20 was the
+  two-pass column; three passes lose 3, as O6), caps 20/25/30 and the
+  proportional rule on the main block and two new blocks (`cap1`,
+  `cap2`). Cap 25 recommended: −8.8% A76 for 10 of 127 336; no
+  proportional setting beats it by 2% at equal loss.
+- Local CI at a437134 (fmt, clippy incl. thumbv8m, tests incl.
+  `--include-ignored`, MSRV 1.75, docs, `check.sh --stack`): pass.
+  Raspberry Pi 5 release suite with the ignored tests at a437134: pass
+  (lib 158; 0x50000 before and after). 800-WAV output of the shipped
+  CLI = O5's.
+- Release `cat-ft8-decode` built from this repository's path at
+  a437134 (default profile): sha256
+  9bf5630b4cda44c2f09e829c37e50a46b10cb33e68f942d5d6498c49e4bfa7df.

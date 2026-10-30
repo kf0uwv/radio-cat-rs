@@ -2717,8 +2717,8 @@ unchanged (A76 31.3 / 4.7, x86-64 15.4 / 3.6). The single pass moved
    SYMBOL_COUNT * T` (compile time) and a generator at its first sample
    (debug assertion). Sizes unchanged.
 5. **Docs** (a5a2034): ADR 0024's flash figures are `check.sh`'s
-   current ones; the O4 notes' wording. The `at(c)` comment the O4
-   review flagged went with step 2's rewrite.
+   current ones; the O4 notes' wording. The `at(c)` comment on the
+   O4 follow-up list went with step 2's rewrite.
 
 **Memory and flash** (`check.sh --stack`, thumbv8m.main-none-eabihf):
 
@@ -2789,7 +2789,7 @@ shared `input` and `sin_turns` by call site), so the fit and removal
 together went 79.1 → 66.5 ms.
 
 With the report's sums gone, the bit-identical work is at its floor as
-far as this round's reviews identified it: the fit loop (six fixed-order
+far as this round's follow-up list identified it: the fit loop (six fixed-order
 chains, interpolated table lookups), the time search's correlations,
 belief propagation's pinned `exp2`/`log2` and the FFT. The rest needs
 result-changing work.
@@ -2822,7 +2822,7 @@ none false):
 | wide 20 | 34.8 / 13.95 / 2.5 | 68.0 / 2.98 / 22.8 | 34.4 / 0.45 / 76.4 |
 | wide 30 | 33.7 / 18.61 / 1.8 | 81.9 / 5.77 / 14.2 | 42.8 / 1.10 / 38.9 |
 | wide 40 | 32.9 / 22.07 / 1.49 | 92.0 / 8.96 / 10.3 | 52.6 / 2.19 / 24.0 |
-| all 2 000 slots | 34.5 (19.8) / 15.52 / 2.2 (1.3) | 72.5 (40.3) / 4.70 / 15.4 (8.6) | 37.6 (21.0) / 1.00 / 37.6 (20.9) |
+| all 2 000 slots | 34.5 (19.8) / 15.52 / 2.2 (1.3) | 72.5 (40.3) / 4.70 / 15.4 (8.6) | 37.6 (20.9) / 1.00 / 37.6 (20.9) |
 
 Pass 3 costs 37.6 ms per slot (over all 2 000 slots: 75.2 s for 1 998
 decodes; 40.7 ms per slot in the 1 846 slots where it ran) for 1.00
@@ -2830,9 +2830,9 @@ decodes per slot (4.7% of the decodes, 26% of the multi-pass time on
 the A76); on lightly loaded slots (10 signals) it finds 0.03–0.09
 decodes per slot in which it ran, at 340–860 ms per decode. (Corrected
 in O6: the all-slots row first gave the per-run figures, 40.7 ms and
-1.08 decodes, as per-slot ones, and "28%". The O5 review's 39.9 ms /
-1.00 / ~27% is the unweighted mean of the set rows, which are per run
-too.)
+1.08 decodes, as per-slot ones, and "28%". An earlier summary's
+39.9 ms / 1.00 / ~27% is the unweighted mean of the set rows, which
+are per run too.)
 
 **(b) Where later passes find their decodes.** For each new decode of
 pass 2 or 3, the frequency distance to the nearest decode of the pass
@@ -2883,7 +2883,7 @@ and static instruction counts only).
 
 ## CPU per decoded signal, sixth round (O6, 2026-10-30)
 
-From the O5 reviews. One code commit changes code (1d028a1), one
+From the O5 follow-up list. One code commit changes code (1d028a1), one
 changes docs (73ebf5d); both identical in results to 3f16549 on every
 target. Hosts, timing hygiene and the decision rule as in O5 (both
 sides built from one source path into their own target directories,
@@ -2903,15 +2903,15 @@ slot; single-pass mean; subtraction and BP means):
 | 2. padded sine table (rejected) | 204.9 / 189.5 (both; step 1 187.0) | 32.3–32.4 | 110.4 / 40.4 | 113.2–113.9 / 105.2–105.6 (step 1 104.5–104.8) | 18.7–18.8 | 60.1–60.4 / 21.2 |
 | 3. docs (73ebf5d) | no code change | | | | | |
 
-1. **The fit's sums and correction in locals** (1d028a1; the O5
-   review's first item). The fit loop updated its sums and the
+1. **The fit's sums and correction in locals** (1d028a1; the first
+   item of the O5 follow-up list). The fit loop updated its sums and the
    frequency correction through the closure's captured references and
    still took the report's `x·x` and sample count. Each block now
    copies the sums (`Fit`: five fields, `xc xs cc cs ss`), the
    correction and the ring size into locals and writes them back; the
    report's `Sums` is `Fit` plus `xx` and `n`, used only by the
    removal. **Time: unchanged on both hosts** (A76 187.0 → 187.0 ms,
-   x86-64 within the rounds' spread). The review's AArch64 listing was
+   x86-64 within the rounds' spread). An earlier AArch64 listing was
    built with one codegen unit, where `blocks` and the fit closure stay
    out of line: there the loop loaded and stored the sums and the
    correction every sample and took `x·x` and the count (fixed: the
@@ -2927,7 +2927,7 @@ slot; single-pass mean; subtraction and BP means):
    (fused) and 92 + 23 → 90 (unfused), static counts; `subtract` frame
    (with caller) 4 600 → 4 584 B; host image flash +108 B (94 100 →
    94 208); static RAM unchanged. No Cortex-M run.
-2. **Padded sine table: rejected** (the O5 review's second item). The
+2. **Padded sine table: rejected** (the second item of the O5 follow-up list). The
    table held a copy of entry 1024 and `sin_turns` lost its end-point
    case; bit-identical at all 2³² phases on x86-64 and the A76
    (exhaustive check, 2.8 s / 7.0 s) and the encoder's output equal.
@@ -2942,10 +2942,10 @@ slot; single-pass mean; subtraction and BP means):
 3. **Docs** (73ebf5d): `Removal::run_as` names the runtime flag
    (`Removal::report`); `decode_passes` links the `subtract` function.
    The O5 notes: (a)'s all-slots pass-3 row (37.6 ms / 1.00 / 37.6:
-   the earlier row and the review's correction were both per-run
+   the earlier row and the earlier correction were both per-run
    figures), the M33 step against its stated base, step 1's x86-64
    figure with its paired base, the fit's `xx`/`n` claim, and "O4
-   follow-up list" for the reviews' items.
+   follow-up list" for the follow-up items.
 
 **Memory and flash** (`check.sh --stack`, thumbv8m.main-none-eabihf) at
 73ebf5d against 3f16549: flash small / host / encoder 85 508 / 94 208
@@ -2953,16 +2953,40 @@ slot; single-pass mean; subtraction and BP means):
 `subtract` frame with caller 4 600 → 4 584 B; time-search closure
 2 800 B and decoder path 2 488 B unchanged. No `f64` helpers.
 
-**Profile and Raspberry Pi test suite at 73ebf5d:** queued on the
-Raspberry Pi 5 when this was written; results to be added (the A76
-code of the subtraction is the same instructions as at b820753, so the
-O5 profile's shares stand).
+**Where a three-pass slot's time goes on the Cortex-A76, at 73ebf5d.**
+The same sampler as in O5: 422 399 samples during the three-pass side
+of `slotcost host,passes=1 host 200 5`, every one unwound through the
+interrupted frame; that run's three-pass mean 192.0 ms against 187.0
+unsampled (+2.7%). Shares of the slot, and ms at 187.0 (O5 at 187.5 in
+brackets):
+
+| | share | ms per slot |
+|---|---|---|
+| **subtraction** | **53.7%** | **100.4** (100.7) |
+| fit loop and setup | 27.2% | 50.9 (51.9) |
+| time search: symbol correlations and scores | 10.6% | 19.8 (19.4) |
+| removal | 7.7% | 14.4 (14.7) |
+| generator, fit run | 4.9% | 9.2 (8.0) |
+| time search: its generator runs | 3.4% | 6.4 (6.8) |
+| **belief propagation** | **26.3%** | **49.2** (49.1) |
+| **feed (spectrogram, FFT)** | **15.5%** | **29.0** (29.2) |
+| sync | 2.5% | 4.7 (4.8) |
+| soft bits | 1.4% | 2.6 (2.8) |
+| other | 0.4% | 0.7 (0.8) |
+
+The shares are O5's within sampling noise, as expected: the A76 code of
+the subtraction is the same instructions as at 1d028a1.
+
+**Raspberry Pi 5 test suite at 73ebf5d:** the release test suite with
+the ignored tests passes (lib 157, then 2 + 0 + 12 + 1 bulk + 7 + 2 +
+5); throttle flags 0x50000 before and after.
 
 ### Measurements for the gated rounds (out of tree, not committed)
 
-A copy of 73ebf5d (lib identical in results) with three settings in the
-decoder: a gate W (a later pass keeps only sync points whose base
-frequency is within W Hz of a decode of the pass before: the union of
+A copy of 23742aa (73ebf5d before an amend that only moved the fused
+loop's `let ring = ring` copy into the block's locals: the same results
+by construction) with three settings in the decoder: a gate W (a
+later pass keeps only sync points whose base frequency is within W Hz of a decode of the pass before: the union of
 those intervals, the same cap filled from inside it, nothing from
 outside), a pass-3 minimum k (pass 3 runs only if pass 2 gave at least
 k decodes) and the later-pass candidate cap L (now 50). A
@@ -3005,10 +3029,13 @@ Per set at W = 50, lost: crowded 1 / 0 / 4, fading 1 / 5 / 9, wide 4 /
 nothing: with no refill the cap is still filled from inside the
 intervals, so the same 50 candidates per pass are refined and decoded;
 it only exchanges candidates far from the last decodes for weaker ones
-near them, and loses decodes. At 25 Hz it removes a third of the later
-passes' decodes (O5 (b): 36% of them lie 25–50 Hz away). The
+near them, and loses decodes. At 25 Hz it removes about 41% of the later
+passes' decodes (4 668 of the 11 400 that passes 2 and 3 found in O5
+(b), where 36% lie 25–50 Hz away). The
 sync-search saving a real gate could add (scoring only the intervals) is
-at most the search's own cost, about 1.6 ms per later pass on the A76.
+at most the search's own cost: 1.56 ms (pass 2) and 1.57 ms (pass 3)
+per 40-signal slot on the A76 (the `pass2_sync` and `pass3_sync`
+means of the O6 slot timings, base and step 1 alike).
 **Not proposed** as specified.
 
 **(c) The pass-3 trigger** (k = 1 is the current behaviour: pass 3
@@ -3050,15 +3077,235 @@ to 40 signals): about 0.26 ms per later-pass candidate not decoded
 (30 fewer in pass 2 and in the 92% of slots running pass 3).
 
 **Proposal for the gated round.** In this order, each with its own
-acceptance (the run sets with the paired gates, the 800 WAV slots, the
-sealed set once):
-1. Later-pass cap 50 → 20 (`HOST.later_candidates`; `SMALL` to be
-   measured the same way): −10% of the A76's three-pass time for
-   0.007% of the decodes here. Re-check against the ceiling run, the
-   `wide` low-SNR messages and the fresh block before adopting; 25 is
-   the conservative choice (−8.7%, 2 lost).
+acceptance (the run sets with the paired gates, the 800 WAV slots, and
+a separate generated block used once for acceptance):
+1. Later-pass cap 50 → 20 (`HOST.later_candidates`): −10% of the A76's
+   three-pass time for 0.007% of the decodes here. `SMALL` runs one
+   pass, so its later-pass count is never used and the cap is moot
+   there. The cap saves CPU only, no memory: the candidate buffer is
+   `candidate_capacity()` = max(100, L) entries, pass 1's 100 either
+   way. Re-check against the ceiling run, the `wide` low-SNR messages
+   and the fresh block before adopting; 25 is the conservative choice
+   (−8.7%, 2 lost). (Superseded by the O7 measurements below.)
 2. Pass-3 trigger k = 2 on top (−4.6 ms more on the A76; 27 lost,
    mostly 10-signal slots), if the scheduler's budget wants it; k ≥ 3
    costs more decodes per ms than the cap.
 3. Drop the frequency gate as proposed; revisit only as a way to skip
    scoring (a sync-stage saving), not candidates.
+
+## CPU per decoded signal, seventh round (O7, 2026-10-30)
+
+From the O6 follow-up list. Two code commits, both identical in results
+to c472100: 5704d32 (two comments) and a437134 (a test). Hosts, timing
+hygiene and the decision rule as in O6.
+
+### Release build profile
+
+The workspace sets no `[profile.release]`: 16 codegen units, thin local
+LTO. Four profiles, each built from this repository's path at c472100
+into its own clean target directory (`CARGO_PROFILE_RELEASE_*` set in the
+environment), timed with `slotcost host,passes=1 host 200 5` in two
+alternated rounds on each host (A76: throttle flags 0x50000 before and
+after every run). Worst / mean ms of the three-pass 40-signal slot, both
+rounds; single-pass mean; sizes of the release `cat-ft8-decode`
+(unstripped) and clean build times (x86-64, 16 cores, crates already
+downloaded):
+
+| profile | A76 three passes | A76 one pass | x86-64 three passes | x86-64 one pass | CLI bytes aarch64 / x86-64 | clean CLI build | CLI rebuild after a `cat-ft8` change |
+|---|---|---|---|---|---|---|---|
+| default | 202.5–202.6 / 187.6 | 32.5 | 112.0–112.8 / 104.0 | 18.6–18.7 | 710 976 / 703 808 | 2.2 s | 1.7 s |
+| `codegen-units = 1` | 202.4 / 187.6 | 32.6 | 111.0–114.1 / 102.8–103.3 | 18.6–18.8 | 695 552 / 687 000 | 2.8 s | 3.0 s |
+| `lto = "fat"` | 200.4 / 185.7 (−1.0%) | 32.4 | 113.1–115.4 / 104.8–105.3 | 18.8–18.9 | 605 400 / 617 864 | 5.3 s | 5.2 s |
+| both | 202.8 / 187.8 | 32.4 | 110.9–112.4 / 103.0–103.2 | 18.6–18.8 | 605 480 / 607 424 | 5.9 s | 5.9 s |
+
+Every profile is bit-identical: `paired_bench run` records equal to the
+S3 fix round's (`host` 38 900, `host,passes=1` and `small` 34 800 each; 0
+differing) and the 800-WAV `cat-ft8-decode` output (plain, `--raw`,
+`--profile` without timings; `host`, `small`, `host,passes=1`) equal to
+O5's, for all four. **No profile wins by 2% on the A76** (fat LTO −1.0%,
+the rest within 0.1%; x86-64 within ±1.2% either way), so none is set:
+the workspace keeps cargo's defaults, which every other crate in it
+also builds with, and fat LTO would more than double the decoder's
+rebuild time for under the noise rule. `target-cpu=cortex-a76` was
+measured bit-identical and no faster with the default profile
+(2026-10-28) and is not rechecked. The embedded image is its own
+workspace with its own profile (`opt-level = "s"`, LTO, one codegen
+unit), so it is unaffected either way (`check.sh --stack` at the final
+commit below). Timings from here on stay on the default profile.
+
+### Text and test
+
+- 5704d32: `DecodeConfig::HOST`'s doc said further passes decode with 50
+  candidates "as many as 200". Measured on the current decoder (three
+  passes, `crowded`, `wide`, `fading`, main block): 42 433 with 50,
+  42 437 with 200 (crowded +1, fading +3); on two fresh blocks +2 and
+  +6. The doc now gives the figure and marks it as one to re-measure
+  when the count changes. The fit's per-block locals comment gives the
+  reason (a closure's captured `&mut` stays in registers only if the
+  closure is inlined) instead of a code-generation outcome.
+- a437134: `projection_pinned`. The report's projection was guarded only
+  by whole-subtraction pins, and a re-association of its cross term
+  (`xc·(xs·cs)`) passed them all: over a real segment `cs` is nearly 0,
+  so the cross term never reaches the result's last bit (checked over
+  96 subtractions, segments 960–2 640, drift on and off: identical
+  bits). The test feeds `Sums` 64 random reference sequences and pins
+  every projection and noise term; it fails with either square term or
+  the cross term re-associated, the noise divisor changed or `x·x`
+  scaled.
+- Notes: the O5 and O6 text no longer refers to unpublished follow-up
+  material by name; the O5 (a) all-slots row's x86-64 pass-3 figure is
+  20.9 ms per slot (per run 22.65 ms × 92.3%); the O6 measurement
+  worktree is named as 23742aa; the 25 Hz gate's loss is ~41% of the
+  later passes' decodes, not a third; the sync-search cost is backed by
+  the slot timings; the O6 profile and Pi suite are filled in.
+
+### Measurements for the gated later-pass cap (out of tree, not committed)
+
+A copy of c472100 (default profile) with the proportional rule in the
+decoder (`L_n = clamp(m · d_{n−1}, floor, 25)`, `d_{n−1}` the previous
+pass's new decodes; with `d = 0` the pass does not run, as now) and a
+`paired_bench` command that decodes every slot of the `crowded`, `wide`
+and `fading` sets (600 + 800 + 600 slots, host configuration, one thread)
+under each setting in turn, slot by slot, timing the whole three-pass
+decode, and counting the transmitted messages lost or gained against
+the first setting (the current cap, 50; run again last as a timing
+control: 0.0–0.1 ms apart on both hosts). Three blocks: `main`, and two
+generated blocks never used before, `cap1` and `cap2` (each slot's
+seed from its set, block name and index, as for every block; 2 000
+slots and about 42 450 decoded messages each). The separate block kept
+for acceptance was not used. Counts are deterministic and equal on both
+hosts; no setting gave a false decode.
+
+**(a) Rank of the later passes' decodes.** For each decode of pass 2
+and pass 3 at the current cap, its candidate's rank in that pass's
+sync-score order (1 = best), by load; cumulative share at each rank,
+all three blocks (6 000 slots):
+
+| pass, signals | decodes | ≤ 10 | ≤ 15 | ≤ 20 | ≤ 25 | ≤ 30 | ≤ 40 | deepest |
+|---|---|---|---|---|---|---|---|---|
+| 2, 10 | 1 843 | 99.95% | 100% | 100% | 100% | 100% | 100% | 11 |
+| 2, 20 | 6 011 | 99.78% | 99.87% | 99.90% | 99.92% | 99.95% | 99.97% | 49 |
+| 2, 30 (wide only) | 3 543 | 98.22% | 99.75% | 99.92% | 99.97% | 99.97% | 100% | 36 |
+| 2, 40 | 17 031 | 84.33% | 98.12% | 99.71% | 99.85% | 99.93% | 99.98% | 50 |
+| 2, all | 28 428 | 90.34% | 98.81% | 99.79% | 99.89% | 99.94% | 99.98% | 50 |
+| 3, 10 | 103 | 100% | 100% | 100% | 100% | 100% | 100% | 3 |
+| 3, 20 | 772 | 99.74% | 99.74% | 99.74% | 100% | 100% | 100% | 25 |
+| 3, 30 (wide only) | 680 | 99.85% | 100% | 100% | 100% | 100% | 100% | 15 |
+| 3, 40 | 4 309 | 99.05% | 99.61% | 99.72% | 99.84% | 99.88% | 99.98% | 50 |
+| 3, all | 5 864 | 99.25% | 99.68% | 99.76% | 99.88% | 99.91% | 99.98% | 50 |
+
+Below 40 signals nearly every later-pass decode comes from the top 10
+candidates; at 40 signals pass 2 needs about 15 to reach 98% and 20 to
+reach 99.7%. The tail is thin but long (a decode at rank 49 or 50 in
+every load from 20 up). A decode ranked beyond the cap in pass 2 is not
+necessarily lost: pass 3 searches the residual again. The 59 pass-2
+decodes ranked beyond 20 here are exactly what a cap of 20 loses with
+two passes; with three, pass 3 recovers all but 21 ((b)).
+
+**(b) The S3 sweep and O6 (d) agree.** The S3 sweep's figures for 20
+later candidates (crowded −3, wide −6, fading −12 against 50) are its
+**two-pass** column ("+1"): with only one later pass nothing recovers
+what its cap drops. Its three-pass column ("+2") at 20 against 50 is
+crowded 13 439 → 13 439, wide 16 999 → 16 999, fading 11 995 → 11 992:
+3 lost, all fading, exactly O6 (d)'s 3 (the S3 sweep's decoder and the
+current one give the same three-pass counts on the main block). The "−6" for fading was against 200, not 50. Re-run on
+the current decoder, decodes lost against the 50 cap (two passes:
+against two passes at 50):
+
+| block | three passes, L = 20 / 25 / 30 | two passes, L = 20 / 25 / 30 | 200 over 50, three passes |
+|---|---|---|---|
+| main | crowded 0 / 0 / 0, wide 0 / 0 / 0, fading 3 / 2 / 1 | crowded 3 / 2 / 1, wide 6 / 2 / 2, fading 12 / 7 / 2 | +4 |
+| cap1 | 1 / 0 / 0, 4 / 1 / 0, 2 / 1 / 1 | 0 / 0 / 0, 10 / 6 / 3, 9 / 4 / 2 | +2 |
+| cap2 | 0 / 0 / 0, 0 / 0 / 0, 11 / 6 / 3 | 0 / 0 / 0, 3 / 2 / 1, 16 / 9 / 5 | +6 |
+| all | 21 / 10 / 5 | 59 / 32 / 16 | +12 |
+
+The two-pass figures reproduce the S3 sweep's exactly on the main block
+(12 713 / 12 710, 16 246 / 16 240, 11 476 / 11 464). The fresh blocks
+lose more than the main block at 20 (7 and 11 against 3), almost all in
+the 40-signal `fading` and `wide` slots (cap2 fading 40: 10 of its 11).
+So the main block understated the loss at 20, and 25 halves it on every
+block.
+
+**(c) The proportional rule** against the fixed caps, three blocks
+(127 336 decoded messages at the current cap; A76 ms per slot saved
+against its 50 runs, which took 144.3 / 144.0 / 144.0 ms per slot; x86-64 76.2 / 76.7 / 76.3; `pM:F` is m = M,
+floor F, maximum 25):
+
+| setting | lost main / fresh 1 / fresh 2 (all) | false | later-pass candidates p2 / p3 per slot | A76 ms saved per slot: main / fresh 1 / fresh 2 | x86-64: main / fresh 1 / fresh 2 |
+|---|---|---|---|---|---|
+| f30 | 1 / 1 / 3 (5) | 0 | 30.0 / 27.4 | 10.1 (7.0%) / 10.0 (7.0%) / 10.0 (7.0%) | 5.0 (6.5%) / 5.0 (6.6%) / 5.0 (6.5%) |
+| f25 | 2 / 2 / 6 (10) | 0 | 25.0 / 22.8 | 12.6 (8.8%) / 12.5 (8.7%) / 12.5 (8.7%) | 6.3 (8.2%) / 6.3 (8.1%) / 6.3 (8.3%) |
+| f20 | 3 / 7 / 11 (21) | 0 | 20.0 / 18.2 | 15.1 (10.5%) / 15.0 (10.4%) / 15.0 (10.4%) | 7.6 (9.9%) / 7.5 (9.8%) / 7.6 (9.9%) |
+| p1:0 | 70 / 73 / 65 (208) | 0 | 15.4 / 4.7 | 20.0 (13.8%) / 19.7 (13.7%) / 19.8 (13.7%) | 9.9 (13.0%) / 10.0 (13.0%) / 9.9 (13.0%) |
+| p1:5 | 59 / 64 / 54 (177) | 0 | 15.4 / 6.0 | 19.6 (13.6%) / 19.4 (13.5%) / 19.4 (13.5%) | 9.8 (12.8%) / 9.8 (12.8%) / 9.7 (12.7%) |
+| p1:10 | 31 / 30 / 29 (90) | 0 | 15.9 / 9.3 | 18.6 (12.9%) / 18.4 (12.8%) / 18.5 (12.8%) | 9.2 (12.1%) / 9.3 (12.2%) / 9.2 (12.1%) |
+| p2:0 | 11 / 13 / 16 (40) | 0 | 22.4 / 9.4 | 16.9 (11.7%) / 16.6 (11.6%) / 16.7 (11.6%) | 8.4 (11.0%) / 8.4 (10.9%) / 8.3 (10.9%) |
+| p2:5 | 9 / 12 / 15 (36) | 0 | 22.4 / 10.0 | 16.8 (11.6%) / 16.5 (11.5%) / 16.6 (11.5%) | 8.3 (10.9%) / 8.3 (10.8%) / 8.3 (10.8%) |
+| p2:10 | 8 / 11 / 15 (34) | 0 | 22.4 / 12.0 | 16.2 (11.2%) / 16.0 (11.1%) / 16.0 (11.1%) | 8.1 (10.6%) / 8.0 (10.4%) / 8.0 (10.5%) |
+| p3:0 | 5 / 6 / 9 (20) | 0 | 24.6 / 12.8 | 15.5 (10.7%) / 15.2 (10.6%) / 15.2 (10.6%) | 7.7 (10.1%) / 7.7 (10.0%) / 7.6 (10.0%) |
+| p3:5 | 5 / 6 / 8 (19) | 0 | 24.6 / 13.1 | 15.4 (10.7%) / 15.1 (10.5%) / 15.2 (10.5%) | 7.6 (10.0%) / 7.6 (10.0%) / 7.6 (9.9%) |
+| p3:10 | 5 / 6 / 8 (19) | 0 | 24.6 / 14.5 | 15.0 (10.4%) / 14.8 (10.3%) / 14.8 (10.3%) | 7.4 (9.8%) / 7.4 (9.7%) / 7.4 (9.7%) |
+| p4:0 | 2 / 5 / 7 (14) | 0 | 25.0 / 14.8 | 14.8 (10.3%) / 14.6 (10.1%) / 14.6 (10.1%) | 7.4 (9.7%) / 7.3 (9.6%) / 7.3 (9.6%) |
+| p4:5 | 2 / 5 / 7 (14) | 0 | 25.0 / 15.0 | 14.8 (10.2%) / 14.6 (10.1%) / 14.6 (10.1%) | 7.3 (9.5%) / 7.3 (9.5%) / 7.2 (9.5%) |
+| p4:10 | 2 / 5 / 7 (14) | 0 | 25.0 / 16.0 | 14.5 (10.0%) / 14.3 (9.9%) / 14.3 (9.9%) | 7.2 (9.5%) / 7.2 (9.4%) / 7.1 (9.4%) |
+
+Per set (lost over the three blocks; ms per slot saved, A76 main block
+and x86-64 mean of the three blocks):
+
+| setting | crowded lost (3 blocks) | wide | fading | A76 saved, main: crowded / wide / fading | x86-64 saved, 3 blocks mean: crowded / wide / fading |
+|---|---|---|---|---|---|
+| f30 | 0 | 0 | 5 | 10.1 / 10.1 / 10.1 | 5.0 / 5.1 / 4.9 |
+| f25 | 0 | 1 | 9 | 12.6 / 12.7 / 12.7 | 6.2 / 6.3 / 6.3 |
+| f20 | 1 | 4 | 16 | 15.1 / 15.2 / 15.2 | 7.6 / 7.6 / 7.5 |
+| p1:0 | 12 | 53 | 143 | 19.6 / 20.0 / 20.3 | 9.8 / 10.0 / 10.0 |
+| p1:5 | 7 | 45 | 125 | 19.3 / 19.7 / 19.9 | 9.6 / 9.9 / 9.8 |
+| p1:10 | 4 | 21 | 65 | 18.4 / 18.6 / 18.8 | 9.1 / 9.3 / 9.3 |
+| p2:0 | 2 | 11 | 27 | 16.6 / 16.9 / 17.2 | 8.2 / 8.4 / 8.4 |
+| p2:5 | 2 | 8 | 26 | 16.4 / 16.8 / 17.1 | 8.1 / 8.3 / 8.3 |
+| p2:10 | 2 | 7 | 25 | 15.9 / 16.3 / 16.4 | 7.9 / 8.1 / 8.0 |
+| p3:0 | 2 | 4 | 14 | 15.2 / 15.4 / 15.7 | 7.6 / 7.8 / 7.7 |
+| p3:5 | 2 | 3 | 14 | 15.2 / 15.4 / 15.6 | 7.6 / 7.7 / 7.6 |
+| p3:10 | 2 | 3 | 14 | 14.8 / 15.0 / 15.2 | 7.4 / 7.4 / 7.4 |
+| p4:0 | 1 | 2 | 11 | 14.8 / 14.7 / 15.1 | 7.4 / 7.3 / 7.4 |
+| p4:5 | 1 | 2 | 11 | 14.7 / 14.7 / 15.0 | 7.3 / 7.2 / 7.3 |
+| p4:10 | 1 | 2 | 11 | 14.4 / 14.4 / 14.7 | 7.2 / 7.1 / 7.2 |
+
+The rule saves time by giving pass 3 fewer candidates (mean 15 instead of
+23 at m = 4) and, for m ≤ 2, pass 2 too; the decodes it loses are the
+later passes' deep candidates on crowded slots, where `d` is large
+anyway, and lightly loaded slots where pass 2 found one or two. No
+setting meets the adoption rule (beat the fixed 25 by more than 2% of
+the slot at equal or lower loss): m = 4 is within 1.5 points of 25 and
+loses 14 against 10; m = 3 loses 19–20; m ≤ 2 loses 34 or more. The
+floor helps only at m = 1–2 and never enough.
+
+**Proposal for the gated round (replaces O6's).**
+1. `HOST.later_candidates` 50 → **25**: A76 three-pass slot −8.8% (12.5–12.6
+   ms per slot on each of the three blocks),
+   x86-64 −8.2%, for 10 of 127 336 decodes (0.008%), all 40-signal
+   (and one 20-signal) `fading`/`wide` slots; no false decode. 20 saves
+   1.7 points more but loses 21 (twice as many, 11 on one fresh block);
+   30 loses 5 for −7.0%. Nothing else changes: `SMALL` runs one pass,
+   so the later-pass count is never used there; no memory changes (the
+   candidate buffer is `candidate_capacity()` = max(100, L) = 100).
+   Acceptance as before (the run sets with the paired gates, the 800 WAV
+   slots, and the separate generated block used once).
+2. No proportional rule and no pass-3 trigger: the rule does not beat
+   the fixed cap at equal loss on any block, and it subsumes the
+   trigger (the trigger at k = 2 cost 27 decodes for 4.6 ms in O6).
+3. No frequency gate (O6 (b)).
+
+**Checks at a437134:** fmt, clippy `-D warnings` (workspace; cat-ft8 all
+targets and features; thumbv8m library), workspace tests, profile and
+no-std tests, the release tests with the ignored ones (lib 158), the
+bulk run, MSRV 1.75, docs, `check.sh --stack` (flash small / host /
+encoder 85 508 / 94 208 / 35 536 B, static RAM 212 044 / 241 612 / 0 B:
+unchanged from O6). Raspberry Pi 5: the release test suite with the
+ignored tests passes (lib 158, then 2 + 0 + 12 + 1 bulk + 7 + 2 + 5);
+throttle flags 0x50000 before and after. The release `cat-ft8-decode`
+at a437134 gives the same 800-WAV output as O5's. Its sha256 is in
+progress.md.
+
+**Not measured:** any Cortex-M at run time; the cap's effect on the
+ceiling run and on the `wide` set's lowest-SNR messages separately
+(left to the gated round's acceptance).
