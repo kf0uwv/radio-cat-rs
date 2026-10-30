@@ -1276,3 +1276,9 @@
   later-pass parameters and profile counters. Encoder output identical.
 - Proposed gate in findings.md (block `accept3`, unused); **acceptance
   not run**; proposed, not yet run.
+- Gate fixed (findings.md, "Gate"), before any `accept3` record:
+  candidates 44d01ba (degree 5/4; release binaries byte-identical to
+  d4e669e's) and ee7c0ce (degree 7/6, fallback) against bafed37, one
+  attempt; classifier pinned by SHA-256 and checked on main/cap1/cap2
+  (the one loss: marginal). `accept3` checked unused on the host and
+  the Pi the same day.

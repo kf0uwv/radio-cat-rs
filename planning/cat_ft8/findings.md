@@ -3643,8 +3643,8 @@ from bafed37 (not merged); measured on x86-64 and the Raspberry Pi 5's
 Cortex-A76 with the hygiene of O5–O8 (every timed binary built from one
 source path into its own target directory per commit, SHA-256 checked on
 the Pi, rounds alternated, one benchmark at a time, `vcgencmd
-get_throttled` 0x50000 before and after every Pi run). **Not adopted:
-the gate below is proposed; not yet run.**
+get_throttled` 0x50000 before and after every Pi run). **Not adopted
+yet: the gate below is fixed before any acceptance record.**
 
 ### Design
 
@@ -3874,74 +3874,120 @@ and (release suite) the A76. The A76's run records of `main`
   in-place application against `Correction::next` (random states,
   wrapping), and of `lane_bounds`, are new; nothing else moved.
 
-### Proposed gate (proposed; not yet run)
+### Gate (fixed before any `accept3` record)
 
-Written before any acceptance record exists. The candidate is the
-branch's code at d4e669e (a5c4a6c, a1119ed, ee7c0ce, d4e669e and the ADR
-note; degree 5/4) against bafed37. One attempt: a fail means no merge, a
-report and re-measurement, not a retune; there is no second block.
+Written and committed before any record of block `accept3` exists. Two
+candidates against the base bafed37, both decoded on `accept3` in one
+attempt, with no retune and no second block:
 
-- **Block `accept3`**, never used: no record, log or dump named
-  `accept3` in the build cache, run directories, scratch directories or
-  this repository's history (`git log --all -S accept3` empty; checked
-  2026-10-30, before this commit), nor in the Raspberry Pi 5's bench
-  and temporary directories (checked the same day; to be checked again
-  immediately before the run). `crowded`, `wide`, `fading` decoded once with `run host` at
-  bafed37 and at d4e669e, and once with `host,passes=1` and `small` at
-  d4e669e; the existing paired gates (`compare` against bafed37 on every
-  set of `main`) and the 800 WAV slots.
-- **False decodes: 0, absolute**, in every pass of every record and in
-  the WAV output.
-- **Pass 1 byte-identical:** `host,passes=1` and `small` records equal to
-  bafed37's (timings removed); in every `host` record the pass-1 decodes
-  and pass-1 report equal; WAV output with `host,passes=1` and `small`
-  byte-identical. Only passes 2 and 3 may differ.
-- **Lost (decoded at bafed37, not at d4e669e) at most 3 on `accept3`.**
-  On `main`, `cap1`, `cap2` the change lost 1 and gained 0 of 127 336
-  (all sets): about 0.33 expected on a block of ~42 400. With Poisson
-  counts, P(≥ 4 | 0.33) ≈ 3.9 × 10⁻⁴; even at three times the observed
-  rate (1.0 expected) it is 1.9%, so 4 or more says the rate was
-  underestimated, not that the block was unlucky. Gains are not bounded
-  but each is classified like a loss.
-- **Every lost and gained message classified by script**, as one of:
-  (m) *marginal*: the side that decoded it took ≥ 20 BP rounds or had ≥
-  20 hard errors, and on the other side the message's outcome is
-  `not_converged` or `crc` (a candidate on it was tried and failed);
-  (r) *ranking*: a pass-2/3 decode on one side whose message is
-  `dropped` or `no_peak` on the other (the later search's points
-  reordered by the residual); (k) *knock-on*: a message decoded in an
-  earlier pass within 50 Hz changed pass, was lost or was gained, the
-  chain ending at (m) or (r). One unexplained message fails the gate.
-  The script is checked first on the `main`/`cap1`/`cap2` records (the
-  one loss must come out (m)); that check is not part of the verdict.
-- **`wide` below −16 dB:** at most 1 lost (0 of 5 518 on the three
-  blocks).
-- **800 WAV slots:** in every run the same messages in the same passes,
-  or each difference classified as above; every differing line listed by
-  kind (here: later-pass decodes' score, frequency, SNR, time, hard
-  errors, rounds, candidate; `--profile` later-pass counters; order).
-- **Speed:** on the A76, the three-pass `slotcost host,passes=1 host 200
-  5` mean at least **15%** below bafed37's (measured −19.2%, both rounds
-  within 0.1 ms), and the mean three-pass decode time per slot of the
-  `accept3` run records (`taskset -c 3`, two alternated rounds) at least
-  12% below bafed37's (on `main` it is −14.7%, below: lighter slots
-  spend less of their time subtracting); same hygiene as above. x86-64 `slotcost` not
-  slower than bafed37.
-- **Identity across targets:** the A76's run records of `accept3` equal
-  to x86-64's for both commits (timings removed); the release test suite
-  on the A76 passes (it holds the polynomial's pinned sweep, the
-  subtraction anchors and the multi-pass golden hashes); thumbv8m and
-  thumbv7em build, `check.sh --stack` passes, no `f64` helper and no
-  fused multiply-add instruction in any thumbv8m image (the static cross
-  check: there is no Cortex-M run).
+- **P = 44d01ba** (primary): the branch at degree 5/4 (a5c4a6c, a1119ed,
+  ee7c0ce, 0c6f3bf, d4e669e, 4e99bc0) plus a library test of the time
+  search's lanes at unaligned starts, a debug assertion on the
+  closed-form skip's bound and comment fixes. Its release
+  `cat-ft8-decode` and `paired_bench` are byte-identical to d4e669e's
+  (SHA-256 equal on x86-64 and AArch64), so d4e669e's measurements above
+  are P's.
+- **ee7c0ce** (fallback): degree 7/6, as it is.
+
+**Block `accept3`, never used.** No record, log or dump named `accept3`
+and no file content `accept3` (records, logs, text) in the build caches,
+the run and scratch directories or this repository (the only commit
+mentioning it, ba03a1a, is planning text), nor in the Raspberry Pi 5's
+bench and temporary directories: checked 2026-10-30 before this commit,
+and checked again on both machines immediately before the run.
+
+**Merge rule.** P merges if every criterion below passes for P. Else
+ee7c0ce merges if every criterion passes for ee7c0ce with the speed
+bounds lowered to 13% (`slotcost`) and 10% (records). Else nothing
+merges. Applied mechanically; no criterion is weighed against another.
+
+**Runs.** `paired_bench run host … crowded,wide,fading accept3`,
+`run host,passes=1 …` and `run small …` (the same sets) for bafed37, P
+and ee7c0ce on x86-64 (all threads; records are deterministic) and
+`run host` on the A76 (`taskset -c 3`, two rounds, order reversed in the
+second); `ceiling host accept3 SET` for SET in `crowded`, `wide`,
+`fading`; the 800 WAV slots; `slotcost host,passes=1 host 200 5` on the
+A76 and x86-64 (bafed37, P, ee7c0ce round-robin, two rounds, order
+reversed); the embedded checks; the encoder comparison. Every timed
+binary built from one source path into its own target directory per
+commit, SHA-256 checked on the Pi, one benchmark at a time, `vcgencmd
+get_throttled` before and after every Pi run (0x50000 is this supply's
+baseline).
+
+Criteria, each for each candidate against bafed37:
+
+- **False decodes: 0**, absolute, in every pass of every record, in the
+  ceiling runs and in the WAV output.
+- **Pass 1 byte-identical:** the `host,passes=1` and `small` records
+  equal to bafed37's (timings removed); in every `host` record the
+  pass-1 decodes and the pass-1 report equal; the WAV output with
+  `host,passes=1` and `small` byte-identical.
+- **Ceiling byte-identical:** `ceiling host accept3 SET` output for
+  `crowded`, `wide`, `fading` equal to bafed37's (the elapsed seconds on
+  its 50%-point line removed). The mode is single-pass by construction
+  (its oracle passes decode the slot rebuilt without the messages found
+  so far, and never call the subtraction), so any difference fails.
+- **Lost at most 3** on `accept3` (all three sets together), reported
+  per set. On `main`, `cap1`, `cap2` degree 5/4 lost 1 of 127 336; the
+  upper 95% bound on that rate gives about 1.58 losses per block of this
+  size, and P(≥ 4 | 1.58) ≈ 7.6%.
+- **`wide` below −16 dB: at most 1 lost.**
+- **Every lost, gained and pass-moved message classified** by the
+  out-of-tree classifier `classify.py`, SHA-256
+  `d1e131a08aff8369e3751e90a186945b9d9e902a52c6256b47149f9f4591898e`
+  (its synthetic tests, `classify_test.py`, SHA-256
+  `8fd7d039e5f876c81bc1e4af4a11d8807a63a462a5e24547598d5670a84a7b18`),
+  as one of:
+  (m) *marginal*: a lost or gained message whose decoding side took ≥ 20
+  BP rounds or had ≥ 20 hard errors, its outcome on the other side
+  `not_converged` or `crc`; a pass-moved message whose earlier-pass
+  decode took ≥ 20 rounds or had ≥ 20 hard errors;
+  (r) *ranking*: a lost or gained pass-2/3 decode whose outcome on the
+  other side is `dropped` or `no_peak`; a message moved between passes
+  2 and 3 (the records hold no per-pass outcome);
+  (k) *knock-on*: another changed message of the slot, transmitted
+  within 50 Hz, in an earlier pass, that itself resolves to (m), (r) or
+  (k) by a chain that does not pass through the message again (the
+  chain ends at (m) or (r)).
+  One unexplained message fails the gate. Every pass move is printed.
+  (r) takes any later-pass loss to `dropped` or `no_peak`, and at
+  bafed37 1 239 of the 34 292 later-pass decodes on `main`/`cap1`/`cap2`
+  meet the (m) threshold, so the classification catches only a
+  mechanism outside these kinds: the loss bounds above carry the
+  verdict. The classifier was checked first on the `main`/`cap1`/`cap2`
+  records (degree 5/4: the one loss comes out (m); degree 7/6: nothing
+  changed; `host,passes=1` and `small`: nothing changed) and on its
+  synthetic tests (a knock-on chain ending at (m); two knock-ons that
+  could only explain each other, unexplained; a chain ending at an
+  unexplained message, unexplained; pass moves); that check is not part
+  of the verdict.
+- **800 WAV slots:** the CLI output has no transmitted messages or
+  outcomes, so it is not classified: in every one of the 800 slots, with
+  `host`, `host,passes=1` and `small` (plain, `--raw`, `--profile`),
+  the same messages decoded in the same passes as bafed37; any message
+  or pass that differs fails. Other differing lines (score, SNR, time,
+  frequency, hard errors, rounds, candidate, order, `--profile`
+  counters) are listed by kind, not judged.
+- **Speed (A76):** the three-pass `slotcost` mean at least **15%** below
+  bafed37's, and the mean three-pass decode time per slot of the
+  `accept3` A76 run records (the records' stage times, both rounds) at
+  least **12%** below; for the fallback 13% and 10%. **x86-64:**
+  `slotcost` three-pass mean not slower than bafed37's.
+- **Identity:** the A76's `accept3` run records equal x86-64's for every
+  commit (timings removed); the release test suite with the ignored
+  tests passes on the A76; thumbv8m.main-none-eabihf and thumbv7em build;
+  `check.sh --stack` passes; no `f64` helper and no fused multiply-add
+  (`vfma*`, `vfms*`, `vfnm*`) in any thumbv8m image.
 - **Encoder byte-identical:** no change under `src/waveform`,
   `src/message`, `lib.rs` or the encode CLI against bafed37; the golden
-  waveform hashes pass; `cat-ft8-encode` output byte-identical to
-  bafed37's over the 45 cases above; the encoder-only image's size
-  unchanged.
-- **If it passes:** the four code commits and the ADR note go onto
-  `feat/cat-ft8` (the measurement branch `o9-d54` does not); then local
-  CI, the Raspberry Pi 5 release suite and a fresh A76 profile.
+  waveform hashes pass; `cat-ft8-encode` output for the 45 cases above
+  byte-identical; the encoder-only image's size unchanged.
+
+**If a candidate merges:** its commits go onto `feat/cat-ft8`, with an
+ADR note recording the Cortex-M33 static regression of the fit (above)
+as known and unmeasured at run time; then local CI, the Raspberry Pi 5
+release suite and a fresh A76 profile. **If neither passes:** nothing
+merges, and the result is recorded.
 
 ### Checks at 4e99bc0
 
@@ -3957,5 +4003,5 @@ before and after.
 
 **Not measured:** any Cortex-M at run time (static counts only); a
 fresh A76 profile of the new subtraction; off-air audio; slots beyond
-40 signals; the `ceiling` mode (its oracle passes subtract with the true
-waveforms, so it was left to the gate's records rather than run here).
+40 signals; the `ceiling` mode (single-pass by construction: it never
+calls the subtraction; left to the gate).
