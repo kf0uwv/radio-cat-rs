@@ -2428,3 +2428,189 @@ throttle flags 0x50000 before and after. The only visible change is the
 empty candidate list after a stopped decode.
 
 **Not measured:** any Cortex-M at run time.
+
+
+## CPU per decoded signal, fourth round (O4, 2026-10-30)
+
+Three code commits, each bit-identical to 91ee9fe on every target:
+872bd59 (the time search's symbol middles skip the envelope), 657543e
+(the sum-product round over the edges, grouped by check degree) and
+66ba24b (one decoder helper lends the level buffer). Hosts and timing
+hygiene as in O3: every timed binary built from this repository's path
+into its own target directory, hashes compared, rounds alternated, one
+benchmark at a time, throttle flags 0x50000 before and after every
+Raspberry Pi run (sticky bits only). Decision rule as in the O3 fix
+round (under about 2% on the Cortex-A76 is noise).
+
+**Slot time per commit** (`slotcost host,passes=1 host 200 5`, all four
+binaries in each of two alternated rounds, both hosts; worst / mean ms of
+the three-pass 40-signal slot; single-pass mean; stage means):
+
+| | Cortex-A76 three passes | single pass | subtraction / BP | x86-64 three passes | single pass | subtraction / BP |
+|---|---|---|---|---|---|---|
+| base (91ee9fe) | 220.2 / 203.3, 220.4 / 203.5 | 32.8–32.9 | 123.2 / 41.4–41.6 | 128.1 / 114.1, 123.6 / 114.4 | 20.9–21.0 | 64.4–64.7 / 25.8 |
+| 1. middles skip the envelope (872bd59) | 219.1 / 202.4, 219.1 / 202.5 | 32.8–33.0 | 122.3–122.4 / 41.4–41.5 | 125.4 / 115.0, 122.5 / 113.6 | 21.0–21.2 | 64.2–65.0 / 25.6–26.0 |
+| 2. BP edges by degree (657543e) | 218.1 / 201.3, 218.5 / 201.3 | 32.3 | 122.4 / 40.3 | 120.4 / 110.3, 120.8 / 110.3 | 18.8–19.0 | 64.8–64.9 / 21.4–21.5 |
+| 3. level-buffer helper (66ba24b) | 218.0 / 201.2, 218.0 / 201.2 | 32.2 | 122.5 / 40.0 | 120.5 / 110.3, 119.1 / 110.3 | 18.9–19.0 | 64.8–64.9 / 21.4–21.5 |
+
+In all, the A76 three-pass slot 203.4 → 201.2 ms (−1.1%), single pass
+32.85 → 32.2 (−2.0%); x86-64 114.3 → 110.3 (−3.5%), single pass 21.0 →
+18.95 (−10%). Feed and sync unchanged (A76 31.3 / 4.7, x86-64 15.4 /
+3.6).
+
+1. **The time search's middles skip the envelope** (872bd59). The symbol
+   correlations read only the middle half of each symbol (blocks
+   starting T/4 … 3T/4 of 1 920 samples), which lies clear of the
+   waveform's 240-sample ramps (`RAMP_SAMPLES <= T / 4`, asserted at
+   compile time; a debug assertion checks every envelope value read
+   there is 1.0), so the multiply by the envelope (exactly 1.0) is
+   dropped. `subcost host seg=3840 20 5`, two alternated rounds: A76
+   3.570–3.583 → 3.540–3.541 ms per call (−0.9%); x86-64 1.833–1.874 →
+   1.841–1.860 (three rounds; unchanged). Slot: A76 −0.4%, x86-64
+   within the rounds' spread. Kept as free (one multiply and one
+   argument fewer; the gain is under the 2% rule).
+2. **Sum-product round over the edges, grouped by check degree**
+   (657543e). The round ran its tanh and atanh over 83 checks × 8 lanes
+   (664 values) for 522 edges. The edges are now laid out by degree: the
+   59 degree-6 checks in order (354 values), then the 24 degree-7 ones
+   (168); each check finds its place from a running offset per degree
+   while the inputs are gathered and the messages scattered in check
+   order, so `msg`, the sums into `next` and their order are unchanged.
+   The tanh and atanh loops run over 522 values and the products over
+   whole checks of a constant size (`others_products::<6>` and `<7>`,
+   unrolled). No new table (`TABLE_BYTES` and the decode command's
+   `static_table_bytes` unchanged). Belief propagation per three-pass
+   slot: A76 41.4–41.6 → 40.3 ms (−3.0%), x86-64 25.8 → 21.4–21.5
+   (−17%); slot A76 −0.5%, x86-64 −3.2%. This is the "materially
+   different design" asked for: O3's 522-edge form (variable-degree
+   products over a flat array) was +2.3% on the A76; with fixed-size
+   checks it is −3.0%. **Under the 2% rule at slot level on the A76
+   (−0.5%), kept for the repeatable stage gain (both rounds 40.29–40.31
+   against 41.39–41.63), the x86-64 gain and the smaller frame;** it is
+   its own commit, so it can be dropped alone.
+3. **One decoder helper lends the level buffer** (66ba24b; the review's
+   nit). `Decoder::idle_levels` empties the candidate list and returns
+   `Spectrogram::idle_levels()`, so `further_passes` no longer resets the
+   spectrogram twice. The stop test (empty candidates after a stopped
+   decode) still passes. No timing effect (A76 201.2–201.3 either side).
+
+**Memory and flash** (`check.sh --stack`, thumbv8m.main-none-eabihf):
+
+| | 91ee9fe | 872bd59 | 657543e | 66ba24b |
+|---|---|---|---|---|
+| flash small / host / encoder | 85 332 / 93 764 / 35 536 B | 85 332 / 93 716 / 35 536 | 85 544 / 93 928 / 35 536 | 85 544 / 93 928 / 35 536 |
+| static RAM small / host / encoder | 212 280 / 241 848 / 0 B | same | same | same |
+| sum-product round frame | 2 744 B | 2 744 | **2 176** | 2 176 |
+| `subtract` frame (with caller) / time-search closure | 4 600 / 2 800 B | same | same | same |
+
+Static headroom unchanged (host 3 912 B). The deepest sum-product
+decoder path is about 568 B shallower (ADR 0024: about 8.7 KB, was 9.3).
+Flash +212 B for the unrolled products. No `f64` helpers in any image.
+
+**Rejected** (results identical in each; numbers per candidate build
+against the same base, alternated):
+
+- **Joint `cos_sin_turns`** (the review's first item): one function sharing the
+  quadrant, mask and mirror, the two signs applied by XOR of the sign
+  bit, the last table interval clamped (`min`) instead of a branch
+  (proved equal to `(cos_turns, sin_turns)` at all 2³² phases on
+  x86-64: 0 mismatches, 1.6 s threaded). `subcost`: A76 3.566–3.567 →
+  4.087–4.088 ms (+14.6%), x86-64 1.840–1.919 → 1.921–1.931. The
+  AArch64 disassembly shows why: at the base, LLVM already shares the
+  decode (one `and`, one `sub`, both mirrors selected from one `tst`);
+  the joint form was SLP-vectorised into two-lane vectors with lane
+  inserts, `zip` and `dup` moves. O3's simpler joint form was +0.8%.
+  Not retried further; no exhaustive Pi run, as nothing was kept.
+- **`input()` fast path** (the review's second item): `abs <= INPUT_LIMIT` returns x,
+  otherwise a `#[cold]`, not-inlined function. The fused fit loop went
+  79 → 70 AArch64 instructions per sample, yet `subcost` A76 3.566–3.567
+  → 3.581–3.583 ms (+0.4%), x86-64 1.840–1.919 → 1.978–1.989; in a
+  slot run (built with step 2's BP change) subtraction 123.4–123.5 →
+  125.1–125.2 ms (+1.3%). The base `input` is already a branch on the
+  bit pattern for non-finite values plus two selects.
+- **Exact `f32` counter in the removal** (a small item of the review; `t = if d > 0.0 { d }
+  else { 0.0 }`, d counted from `j0 − from`, exact below 2²⁴):
+  `subcost` A76 3.570–3.583 → 3.785–3.786 (+5.8%), x86-64 1.833–1.874 →
+  1.904–1.928 (+3%). The integer index and conversion it replaces are
+  cheaper than the float add's loop-carried chain.
+- (Step 2's first build also carried the `input()` change: BP 41.6 →
+  40.3 there too, subtraction +1.3%; the BP change alone is step 2.)
+
+**Not done:** feed row skipping (the review: not now); the BP repeat
+skip, caching the time-search reference and reordering sums (the
+review: don't).
+
+### Where a three-pass slot's time goes on the Cortex-A76, at 66ba24b
+
+The O3 fix round's out-of-tree sampler (not committed), ported onto
+66ba24b, same method: a 487 µs interval timer during the three-pass side
+of `slotcost host,passes=1 host 200 5` (1 000 slot decodes, 450 810
+samples, every one unwound through the interrupted frame; that run's
+three-pass mean 205.9 ms against 201.2 unsampled, +2.3%). Shares of the
+slot, and ms at 201.2 (O3 fix round at 203.4 in brackets):
+
+| | share | ms per slot |
+|---|---|---|
+| **subtraction** | **56.9%** | **114.5** (115.4) |
+| fit loop (reference cos/sin, least-squares sums, holding the reference) | 24.2% | 48.7 (51.8) |
+| removal (amplitude interpolation, subtraction, residue sums) | 15.1% | 30.4 (27.1) |
+| time search: symbol correlations and scores | 9.6% | 19.4 (20.6) |
+| generator, fit run (`fill_phase`, increments) | 4.5% | 9.0 (9.2) |
+| time search: its generator runs | 3.4% | 6.9 (6.7) |
+| frequency estimate, setup | < 0.1% | 0.1 |
+| **belief propagation** | **24.3%** | **48.9** (50.2) |
+| **feed (spectrogram, FFT)** | **14.6%** | **29.4** (29.4) |
+| sync | 2.4% | 4.8 |
+| soft bits | 1.4% | 2.8 |
+| refine, SNR, other | 0.4% | 0.8 |
+
+Leaves (share of the slot): the reference's cosine and sine
+(`sin_turns`) 7.6% in the fit loop and 3.9% in the time search; the fit
+loop's own body 11.3%; the removal's sums (`Sums::add`) 5.6% and its
+loop 4.8%; `input` 2.1 + 2.2 + 1.7% (fit, removal, time search); belief
+propagation's round 7.3% with `exp2_neg` 6.2%, `log2` 5.0%, the products
+1.1%; the FFT stages 5.8% and complex multiplies 3.2%; the generator
+7.9% in all. The fit loop's and removal's split moved between the two
+profiles (inlining attributes the shared `Sums::add` and `input` by call
+site); together 78.9 → 79.1 ms, unchanged.
+
+**Is the bit-identical CPU work near its floor?** For the subtraction,
+probably yes. Its two big loops (fit and removal, 39% of the
+slot) are each one pass over the samples whose arithmetic is fixed by
+the results: six serial accumulators in `Sums::add` (order fixed), the
+interpolated table lookups for cosine and sine (no NEON gather; LLVM
+already shares their quadrant decode), and the input check. This round
+tried every per-sample trim the review listed; each either did nothing
+or lost on the A76 (−9 instructions per sample in the fit loop made it
+slower), so the loop runs at its dependency and port limits, not its
+instruction count. What is left there is the reference generator (7.9%)
+and the time search's correlations (9.6%), neither with an identified
+bit-identical gain. Belief propagation still has headroom only in
+`exp2_neg`/`log2` (11% of the slot), whose arithmetic is pinned bit for
+bit; a hand-vectorised round (NEON intrinsics, same per-lane
+operations) might recover a little but adds unsafe, target-specific
+code for a few percent. The feed's FFT (9%) was optimised in O1. So the
+remaining bit-identical gains are each ≤ 2% of the slot; larger savings
+need result-changing work (the `i16` residual's memory proposal, fewer
+candidates or BP rounds, or a cheaper reference).
+
+
+**Identity.** At 872bd59, 657543e and 66ba24b (each the working tree of
+that commit, built in this repository's path): unit, integration, doc,
+profile and no-std tests, the 24 subtraction anchors and the exhaustive
+`_everywhere` tests (release lib 154 with the ignored); `paired_bench
+run` with timings removed equal to the S3 fix round's records (`host`
+38 900, every set and block; `host,passes=1` and `small` 34 800 each; 0
+differing); the release `cat-ft8-decode`'s output on the 800 WAV slots
+(`host` and `small`, `host,passes=1` and `small`; plain, `--raw` and
+`--profile`, timings removed) byte-identical to b465b75's. At 66ba24b:
+fmt, clippy `-D warnings` (workspace; cat-ft8 all targets and features;
+thumbv8m library), workspace tests, `check.sh` and `--stack`, MSRV
+1.75, docs, the bulk run. Raspberry Pi 5 at 66ba24b: the release test
+suite with the ignored tests (lib 154, then 2 + 12 + 1 bulk + 7 + 2 + 5)
+passes; throttle flags 0x50000 before and after. The release
+`cat-ft8-decode` at 66ba24b: sha256 in progress.md.
+
+**Not measured:** any Cortex-M at run time (flash, frames and static RAM
+only). The BP change also runs on the M33 host image (sum-product);
+its effect there (scalar FPU, no vectors) is untested.

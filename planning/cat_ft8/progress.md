@@ -1070,3 +1070,36 @@
 - Release `cat-ft8-decode` built from this repository's path at b37df17
   (the planning commit changes no input of the build): sha256
   411b9c38eac68c16dceea39e0b5f48eaeba45db6944bf023f39b07d98ea4328c.
+
+
+## Session: 2026-10-30 (O4, CPU per decoded signal)
+
+- 872bd59: the time search's symbol middles skip the envelope (exactly
+  1.0 there; compile-time assert, debug assert). `subcost` A76
+  3.570–3.583 → 3.540–3.541 ms; x86-64 unchanged; slot A76 −0.4%.
+- 657543e: sum-product round over the 522 edges, grouped by degree (59
+  checks of 6, then 24 of 7), fixed-size products; check order of
+  messages and sums kept; no new table. BP per slot A76 41.4–41.6 →
+  40.3 ms, x86-64 25.8 → 21.4–21.5; round frame 2 744 → 2 176 B; flash
+  +212 B. Slot gain on the A76 −0.5% (under the 2% rule; kept for the
+  stage gain, x86-64 −3.2% and the frame; own commit).
+- 66ba24b: `Decoder::idle_levels` (one reset before the subtractions).
+- Slot, base → 66ba24b, two alternated rounds: A76 220.2–220.4 /
+  203.3–203.5 → 218.0 / 201.2 ms (single pass 32.8–32.9 → 32.2); x86-64
+  123.6–128.1 / 114.1–114.4 → 119.1–120.5 / 110.3 (single pass 21.0 →
+  18.9–19.0).
+- Rejected with numbers (findings): joint `cos_sin_turns` (A76 `subcost`
+  +14.6%; proved equal at all 2³² phases on x86-64 first), `input()`
+  fast path (+0.4% `subcost`, +1.3% subtraction in a slot), exact `f32`
+  counter in the removal (+5.8%).
+- A76 profile at 66ba24b (out-of-tree sampler): subtraction 56.9% (fit
+  48.7 ms, removal 30.4, time search 26.3 with its generator), BP 24.3%,
+  feed 14.6%.
+- Identity at each code commit: run records = S3 fix round's (0
+  differing); 800-WAV output = b465b75's. Local CI checks at 66ba24b;
+  `check.sh --stack` per step (static RAM unchanged: 212 280 / 241 848 /
+  0 B). Raspberry Pi 5 release suite with ignored tests passes at
+  66ba24b (0x50000 before and after).
+- Release `cat-ft8-decode` built from this repository's path at 66ba24b
+  (the planning commit changes no input of the build): sha256
+  1f68772b3e24ba15773b0a8bd8714440d18541b928a5726f88fad242787cd1bc.

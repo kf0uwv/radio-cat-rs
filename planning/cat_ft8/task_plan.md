@@ -1377,6 +1377,23 @@ propagation 25%, feed 14%. BP repeats on identical LLRs: 1.4% of rounds,
 not worth a skip. Next CPU targets: the fit and removal loops and the
 reference's cosine/sine (12% of the slot).
 
+## O4: CPU per decoded signal, fourth round (2026-10-30)
+
+Bit-identical to 91ee9fe; the review's ranked targets, in order: a joint
+cosine/sine, an `input()` fast path, the belief-propagation edge layout
+(only in a materially different form from O3's), small items (the
+envelope multiply in the time search's middles, an exact float counter
+in the removal), and the review's nit (one helper lending the level
+buffer). A76 decision rule as in the O3 fix round; re-profile at the end.
+
+Done 2026-10-30 (findings, "CPU per decoded signal, fourth round"):
+872bd59 (middles skip the envelope), 657543e (BP edges grouped by
+degree: BP −3% A76, −17% x86-64; frame −568 B), 66ba24b (helper).
+Slot A76 203.4 → 201.2 ms (−1.1%), x86-64 114.3 → 110.3 (−3.5%).
+Rejected: joint cosine/sine (+14.6% `subcost` on the A76), `input()`
+fast path (+0.4%), float counter (+5.8%). Remaining bit-identical gains
+judged ≤ 2% each.
+
 ## Later (not in this round)
 
 - Contiguous codeword layout and table CRC, as profiled optimisations that
