@@ -197,10 +197,9 @@ pub fn ceiling(spec: &str, block: &str, set: &str) -> Result<(), String> {
     println!("config {spec}: {:?}\n{}", setup.config, provenance());
     let t = Instant::now();
     let p50 = sweep_half_point(block, &setup.single()).ok_or("the sweep has no 50% point")?;
-    println!(
-        "single-pass 50% point (sweep, {block}): {p50:.3} dB ({:.0} s)",
-        t.elapsed().as_secs_f64()
-    );
+    // Elapsed times go to stderr, so stdout compares byte for byte.
+    println!("single-pass 50% point (sweep, {block}): {p50:.3} dB");
+    eprintln!("sweep-{block}: {:.0} s", t.elapsed().as_secs_f64());
     let t = Instant::now();
     let per = par_map(set_size(set).unwrap_or(0), |i| {
         ceiling_slot(set, block, i, &setup)
