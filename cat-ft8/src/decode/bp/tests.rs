@@ -285,3 +285,118 @@ fn the_scratch_records_the_rounds_run() {
         assert_eq!(scratch.rounds(), d.rounds);
     }
 }
+
+#[test]
+fn the_edge_layout_uses_every_edge_once_in_aligned_blocks() {
+    let mut used = [0u8; EDGES];
+    let mut per_variable = [0u8; N];
+    let (mut low, mut high) = (0, LOW_EDGES);
+    for (c, (v, e)) in check_edges().enumerate() {
+        let n = v.len();
+        assert_eq!(v, &check(c).0[..check(c).1], "check {c}");
+        // Each degree's checks are consecutive blocks of their own size,
+        // in check order: degree 6 in [0, LOW_EDGES), 7 in [LOW_EDGES, EDGES).
+        if n == 6 {
+            assert_eq!(e, low, "check {c}");
+            low += 6;
+            assert!(e + 6 <= LOW_EDGES && e % 6 == 0, "check {c} at {e}");
+        } else {
+            assert_eq!(n, 7, "check {c}");
+            assert_eq!(e, high, "check {c}");
+            high += 7;
+            assert!(e >= LOW_EDGES && e + 7 <= EDGES, "check {c} at {e}");
+            assert_eq!((e - LOW_EDGES) % 7, 0, "check {c} at {e}");
+        }
+        for (u, &i) in used[e..e + n].iter_mut().zip(v) {
+            *u += 1;
+            per_variable[usize::from(i)] += 1;
+        }
+    }
+    assert_eq!((low, high), (LOW_EDGES, EDGES));
+    assert_eq!((LOW_EDGES, EDGES), (354, 522));
+    assert!(used.iter().all(|&u| u == 1), "{used:?}");
+    assert!(per_variable.iter().all(|&d| d == 3), "{per_variable:?}");
+}
+
+/// The sum-product round in its first form, check by check over rows of
+/// the parity-check table: the reference the edge-layout round must match
+/// bit for bit.
+fn reference_round(total: &[f32; N], next: &mut [f32; N], rows: &mut [[f32; MAX_DEGREE]; M]) {
+    for (c, row) in rows.iter_mut().enumerate() {
+        let (v, n) = check(c);
+        let mut t = [0.0f32; MAX_DEGREE];
+        for j in 0..n {
+            t[j] = tanh_half(total[usize::from(v[j])] - row[j]);
+        }
+        let mut prefix = [1.0f32; MAX_DEGREE + 1];
+        for j in 0..n {
+            prefix[j + 1] = prefix[j] * t[j];
+        }
+        let mut suffix = 1.0f32;
+        for j in (0..n).rev() {
+            row[j] = twice_atanh(prefix[j] * suffix);
+            suffix *= t[j];
+        }
+        for j in 0..n {
+            next[usize::from(v[j])] += row[j];
+        }
+    }
+}
+
+#[test]
+fn the_sum_product_round_matches_the_check_by_check_form_bit_for_bit() {
+    // splitmix64 words.
+    let mut seed = 0x5eed_u64;
+    let mut word = move || {
+        seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = seed;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    };
+    // Values over a wide range, with ±0, subnormals and values up to ±1e6
+    // mixed in.
+    let mut value = move || {
+        let w = word();
+        let sign = if w & 16 == 0 { 1.0 } else { -1.0 };
+        match w % 16 {
+            0 => 0.0,
+            1 => -0.0,
+            2 => sign * f32::from_bits((w >> 8) as u32 & 0x007f_ffff),
+            3 => ((w >> 8) % 2_000_001) as f32 - 1.0e6,
+            _ => ((w >> 8) % 400_001) as f32 / 10_000.0 - 20.0,
+        }
+    };
+    let bits =
+        |x: &mut dyn Iterator<Item = &f32>| x.map(|v| v.to_bits()).collect::<std::vec::Vec<_>>();
+    for state in 0..20_000 {
+        let mut total = [0.0f32; N];
+        let mut next = [0.0f32; N];
+        let mut msg = [0.0f32; EDGES];
+        total.iter_mut().for_each(|x| *x = value());
+        next.iter_mut().for_each(|x| *x = value());
+        msg.iter_mut().for_each(|x| *x = value());
+        let mut rows = rows_of(&msg);
+        let mut want_next = next;
+        reference_round(&total, &mut want_next, &mut rows);
+        sum_product_round(&total, &mut next, &mut msg);
+        assert_eq!(
+            bits(&mut next.iter()),
+            bits(&mut want_next.iter()),
+            "state {state}: sums"
+        );
+        assert_eq!(
+            bits(&mut rows_of(&msg).iter().flatten()),
+            bits(&mut rows.iter().flatten()),
+            "state {state}: messages"
+        );
+    }
+}
+
+#[test]
+fn the_scratch_holds_one_message_per_edge() {
+    assert_eq!(
+        core::mem::size_of::<BpScratch>(),
+        4 * (2 * N + EDGES) + N + 1 + 1
+    );
+}
