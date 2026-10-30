@@ -791,9 +791,11 @@ fn run(
                 let n = phase.len();
                 let (a, b) = usable.range(start, j0, n);
                 let (a, b) = (a - j0, b - j0);
-                // The sums, the correction and the ring size in locals over
-                // the block: kept in registers rather than stored back (or
-                // read again) every sample.
+                // The sums, the correction and the ring size copied into
+                // locals for the block and written back once: state reached
+                // through the closure's captured `&mut` stays in registers
+                // only if the closure is inlined into its caller, which the
+                // compiler need not do (at `opt-level = "s"` it is not).
                 let (mut f, mut c, ring) = (fit, corr, ring);
                 if a == b {
                     c.skip(n);

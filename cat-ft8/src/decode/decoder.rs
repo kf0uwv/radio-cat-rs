@@ -163,9 +163,12 @@ impl DecodeConfig {
     /// further pass and two-symbol (3 840-sample) subtraction segments.
     ///
     /// 100 candidates decode the same messages as 200 on the measured
-    /// sets for much less belief-propagation work, and in further passes
-    /// 50 as many as 200. Validated up to 40 signals per slot; for busier
-    /// bands raise them with [`DecodeConfig::with_candidates`] and
+    /// sets for much less belief-propagation work; in further passes 50
+    /// decode all but 4 of the 42 437 messages 200 do (the `crowded`,
+    /// `wide` and `fading` sets, three passes; a figure to re-measure
+    /// whenever the further-pass count changes). Validated up to 40
+    /// signals per slot; for busier bands raise them with
+    /// [`DecodeConfig::with_candidates`] and
     /// [`DecodeConfig::with_later_candidates`]. [`Decoder::decode`] runs
     /// the first pass only.
     pub const HOST: DecodeConfig = DecodeConfig {
