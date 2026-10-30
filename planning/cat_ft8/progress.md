@@ -996,3 +996,41 @@
 - Release `cat-ft8-decode` built from this repository's path at 69c5bd6:
   sha256 96339c7a67b12366b6a864a0860978b813b8004f3a89360ff3e4f0d72a3fb9a9.
 - Not done: Cortex-M run time (microcontroller unavailable; open item).
+
+## Session: 2026-10-29 (O3, CPU and memory per decoded signal)
+
+- Profile at cc68e22: three-pass 40-signal slot x86-64 / A76 subtraction
+  65.5 / 126.4 ms, belief propagation 26.1 / 41.5, feed 15.5 / 31.3;
+  `perf` (x86-64) sum-product 25%, fit loop 19%, FFT 11%, removal 11%,
+  increments 11%, correlations 8%, `score` 2.1%. Static RAM small 212 280
+  B (spectrogram 161 920), host 287 928 B (subtraction scratch 46 080).
+- 93fa40d: the time search's 15 rotations once per trial. Subtract per
+  call A76 3.661 → 3.577 ms; slot A76 206.4 → 203.5 mean, x86-64 116.0–117.1
+  → 114.0–114.6.
+- 81db219: the multi-pass subtractions hold their reference in the
+  spectrogram's idle buffer; `subtract` takes `&mut [u8]` (any idle
+  buffer, ≥ 1 920 B, 46 080 B for one run); `PassesScratch` and
+  `SubtractScratch` removed; spectrogram empty after a stop following a
+  subtraction (tested). Host static RAM 287 928 → 241 848 B, every
+  image's ceiling 256 KiB; working memory per stream −46 080 B. Slot A76
+  mean 203.5 → 202.6–202.7; x86-64 114.0–114.6 → 116.6–116.8 (the write
+  loop's codegen; alternatives measured and rejected). CLI max RSS
+  3 860–3 908 → 3 752–3 784 KB.
+- Rejected: belief propagation over the 522 edges (x86-64 BP −14%, A76
+  +2.3%; padded and row-of-7 forms no better on the A76); shared
+  cosine/sine quadrant decode (slower on both); the hold written in ring
+  segments (x86-64 faster, A76 +1.4%) or through a chained iterator
+  (slower on both); the CLI freeing its 16-bit samples early (max RSS
+  −56 KB only).
+- Proposal: `i16` residual (prototype out of tree): `run host` every set
+  PASS, 22 messages gained and 9 lost of the crowded, fading and wide
+  sets, no false decodes; 800 WAV slots 10 696 decodes either way.
+- Identity at 93fa40d and 81db219: run records equal to the S3 fix
+  round's (host 38 900, passes=1 and small 34 800 each, 0 differing);
+  800-WAV output of the release decode command at 81db219 byte-identical
+  to b465b75's.
+- Raspberry Pi 5 at 81db219: release test suite with ignored tests (lib
+  153, then 2 + 12 + 1 bulk + 7 + 2 + 5) passes; 0x50000 before and after.
+- Release `cat-ft8-decode` built from this repository's path at 81db219
+  (the planning commit changes no input of the build): sha256
+  52c04a9e2098cce5034a62129d1d2a4ab9b5686e7de3e597fc3db69373522fc1.

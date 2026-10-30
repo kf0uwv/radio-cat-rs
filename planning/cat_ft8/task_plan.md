@@ -1306,16 +1306,51 @@ Done 2026-10-29 (findings, "O2 fix round").
   Steps 1 and 3 of O2 and the chunked encoder change the code shape
   there; only flash and frames are measured.
 
-### Open API question (decide before the API freeze)
+### Open API question (settled in O3)
 
-`PassesScratch` holds the candidate scratch and the subtraction scratch
-by value, so they always sit together. A target that wants them in
-different memories (the 5 KB candidate scratch in fast RAM, the 46 KB
-subtraction scratch elsewhere), or that already has a `static
-CandidateScratch`, cannot split them. The alternative is a separate
-`&mut SubtractScratch` argument to `decode_passes*` and
-`decode_further_passes*`, with no combined type. Kept as it is for now;
-to be settled before the API is frozen.
+`PassesScratch` held the candidate scratch and the subtraction scratch
+together. Since 81db219 the decoder's subtractions use the spectrogram's
+idle buffer, `decode_passes*` take the `CandidateScratch` alone, and
+`subtract` takes any byte buffer: there is no combined type.
+
+### Proposal for a gated round: `i16` residual
+
+Measured in O3 (findings): the multi-pass residual held as 16-bit samples
+halves the caller's 720 000 B; no measurable decode change on the run
+sets or the 800 WAV slots. Changes results and the residual's type, so
+it needs its own plan and acceptance round.
+
+## O3: CPU and memory per decoded signal (2026-10-29)
+
+Same ground rules as O1 and O2: every committed step bit-identical to
+cc68e22 on every target (tests and pins, the 24 subtraction anchors, the
+exhaustive tests, `run` records with timings removed, the decode
+command's 800-WAV output). Targets now include memory as well as time:
+peak working memory, static RAM per image, stack. Up to five steps, each
+its own commit with before/after numbers on x86-64 and the Cortex-A76;
+rejected attempts recorded with numbers.
+
+1. Profile first: `slotcost`/`subcost` stage times on both hosts, `perf`
+   on x86-64; memory from `check.sh --stack`, `.bss`/`.data` and the
+   profile keys.
+2. Candidate steps (from the profile): belief propagation over the 522
+   edges rather than 83 × 8 padded lanes; the time search's rotations
+   hoisted out of the groups; the subtraction's sine and cosine from one
+   table read per value; the multi-pass subtraction's held reference in
+   buffers idle between passes (no `SubtractScratch` in the decoder).
+3. Changes that would alter results (a narrower residual, fewer
+   spectrogram rebuilds, frequency-domain subtraction) are prototyped out
+   of tree only and written up as proposals for a separate gated round.
+
+Done 2026-10-29 (findings, "CPU and memory per decoded signal (O3)"):
+93fa40d (rotations once per trial) and 81db219 (the subtraction's
+reference in the spectrogram's idle buffer; `subtract` takes any byte
+buffer; `PassesScratch` and `SubtractScratch` removed). Rejected with
+numbers: belief propagation over the 522 edges (x86-64 −14% BP, A76
++2.3%), a shared cosine/sine decode (slower on both), two other forms of
+the hold's write loop. Proposal for a gated round: an `i16` residual
+(720 000 → 360 000 B per stream; no measurable decode change in the
+prototype).
 
 ## Later (not in this round)
 

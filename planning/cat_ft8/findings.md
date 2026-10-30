@@ -2069,3 +2069,194 @@ throttle flags 0x50000 before and after.
 **Not done:** a Cortex-M run time of `fill_phase` and `find_candidates`
 (asked in the O2 review); the microcontroller was not available. Open
 item in task_plan.md. Encoder time on the Cortex-A76 not measured.
+
+## CPU and memory per decoded signal (O3, 2026-10-29)
+
+Two code commits, each bit-identical to cc68e22 on every target:
+93fa40d (the time search's rotations) and 81db219 (the subtraction's
+reference held in idle memory). Outputs kept locally (not committed).
+Hosts as before: the x86-64 desktop, and a Raspberry Pi 5 (Cortex-A76,
+2.4 GHz; generic `aarch64-unknown-linux-gnu` build, one benchmark at a
+time, throttle flags 0x50000 before and after every run: sticky bits
+only). Every timed pair was built from this repository's path into its
+own target directory, binaries compared by hash, and run alternately.
+
+**Where the time and memory went** at cc68e22 (`slotcost host,passes=1
+host 200 5`, 40-signal slots, three passes, ms per slot, x86-64 /
+Cortex-A76): subtraction 65.5 / 126.4 (34.5 calls, 1.89 / 3.66 ms per
+call), belief propagation 26.1 / 41.5, feed 15.5 / 31.3, sync 3.6 / 4.7,
+soft bits 3.2 / 2.4. `perf` (x86-64, three passes): sum-product round
+25%, the subtraction's fit loop (`run`) 19%, the FFT 11%, the removal
+loop 11%, the generator's increments 11%, symbol correlations 8%,
+`fill_phase` 2.4%, the time search's `score` 2.1%. Memory (thumbv8m link
+check, static RAM): small 212 280 B, of which the spectrogram is 161 920
+(76%) and the front end 30 720; host 287 928 B, of which the
+subtraction's `SubtractScratch` 46 080; the multi-pass caller's residual
+720 000 B more. The spectrogram, front end and residual cannot shrink
+without changing results (below); the subtraction scratch could.
+
+`slotcost host,passes=1 host 200 5`, worst / mean ms, three passes, two
+alternated rounds each (both hosts in one session, base and both steps
+in each round):
+
+| | x86-64 | Cortex-A76 | subtraction per slot, x86-64 / A76 |
+|---|---|---|---|
+| base (cc68e22) | 128.0 / 116.0, 127.4 / 117.1 | 223.9 / 206.4, 224.0 / 206.4 | 65.7–66.3 / 126.4 |
+| 1. rotations once per trial (93fa40d) | 124.1 / 114.0, 124.1 / 114.6 | 220.5 / 203.4, 220.6 / 203.5 | 63.5–63.9 / 123.5 |
+| 2. reference in idle memory (81db219) | 127.7 / 116.8, 125.6 / 116.6 | 219.4 / 202.6, 219.6 / 202.7 | 65.7–65.9 / 122.7 |
+
+Belief propagation, feed and sync unchanged by both (x86-64 26.2–26.6,
+15.5–15.6, 3.6; A76 41.3–41.4, 31.3, 4.7). Single pass unchanged (the
+steps touch only the subtraction). `subcost host seg=3840 20 5` per call:
+x86-64 1.906–1.941 → 1.846–1.902 (step 1, four rounds) and the A76 3.661
+→ 3.577 (step 1) → 3.555 (step 2).
+
+1. **Rotations once per trial** (93fa40d). The time search's score of a
+   trial start error turned each of the six groups' 15 tone-step sums
+   by the step's phase, taking the cosine and sine of the same 15 phases
+   six times (and a 64-bit division for each phase). They are now taken
+   once per trial and shared by the groups, and likewise in the
+   frequency estimate; the products and sums are unchanged. `score`'s
+   frame on thumbv8m 72 → 184 B (the 15 rotations), on the time search's
+   path below `subtract`'s own frame.
+2. **The subtraction's reference in idle memory** (81db219). The
+   multi-pass decoder's subtractions held their reference (46 080 B) in a
+   caller-provided `SubtractScratch` inside `PassesScratch`. Between one
+   pass's search and the next pass's feed the spectrogram's level buffer
+   (161 920 B or more for the standard bands) is idle, and the next feed
+   rebuilds every row, so the subtractions now hold the reference there.
+   - API (V0, no version bump): `subtract(audio, decode, skip, config,
+     scratch: &mut [u8])` takes any byte buffer idle during the call: at
+     least `SUBTRACT_MIN_SCRATCH_BYTES` (1 920, one block of the
+     reference), best `SUBTRACT_SCRATCH_BYTES` (46 080) or more; with
+     less, the reference is run a second time where a segment and a half
+     does not fit (the existing rerun path; slower, same result); below
+     the minimum, `BufferTooSmall`. `decode_passes*` and
+     `decode_further_passes*` take the `CandidateScratch` of `decode`;
+     `PassesScratch` and `SubtractScratch` are gone. This settles the
+     open `PassesScratch` question: there is no combined type to split,
+     and a caller can lend `subtract` whatever buffer it has idle.
+   - The reference is stored as native-order bytes and read back bit for
+     bit. A test runs `subtract` with scratch from 1 920 bytes through
+     odd sizes and rings that hold a segment and a half of the shorter
+     segments but not the longer, to more than needed, NaN-filled and
+     reused: identical residuals and estimates; one byte short is
+     `BufferTooSmall` and leaves the audio as it was.
+   - The spectrogram after `decode_passes`: the last pass's rows, as
+     before (tested equal to a fresh spectrogram of the residual that
+     pass decoded), except after a decode stopped by its callback after
+     a subtraction, when it is empty (`rows_filled` 0), as after
+     `start_slot`. Documented on `decode_passes`.
+   - Time: three forms of the hold's write loop were measured, and they
+     disagree between the two hosts. The kept one (a ring index per
+     sample) is the fastest on the A76 (`subcost` 3.555 against 3.577
+     ms per call for step 1; slot mean 202.6–202.7 against 203.4–203.5)
+     but gives back step 1's gain on x86-64 (slot mean 116.6–116.8
+     against 114.0–114.6; subtraction 65.7–65.9 against 63.5–63.9). The
+     alternatives are under "Rejected".
+   - `cat-ft8-decode`'s maximum resident size on a 40-signal WAV, three
+     passes (`/usr/bin/time`, three runs each): 3 860–3 908 → 3 752–3 784
+     KB (its `Box<PassesScratch>` is now a `Box<CandidateScratch>`; the
+     rest of the drop is the allocator's).
+
+**Memory, before → after** (thumbv8m.main-none-eabihf link check, `check.sh
+--stack`; the host image runs a decode and a subtraction):
+
+| | cc68e22 | 81db219 |
+|---|---|---|
+| static RAM, small image | 212 280 B | 212 280 B |
+| static RAM, host image | 287 928 B | **241 848 B** (−46 080) |
+| static RAM, encoder only | 0 | 0 |
+| RAM ceiling (check.sh), link map RAM | 256 KiB small/encoder, 512 KiB host; 512 KiB | 256 KiB every image; 256 KiB |
+| flash, small / host / encoder | 85 332 / 93 656 / 35 536 B | 85 332 / 93 764 / 35 536 B |
+| multi-pass working memory per stream (host config, residual included) | 956 232 B (`peak_bytes`) + 46 080 B subtraction scratch = 1 002 312 B | **956 232 B** (`peak_bytes`, unchanged key, now the whole of it) |
+| `subtract` frame (host image, with its caller) / time-search closure | 4 552 / 2 800 B | 4 600 / 2 800 B |
+| second-run `blocks` frame (host image) | 2 192 B | inlined (no separate frame; the caller grew 48 B) |
+| `SUBTRACT_STACK_BYTES` | 4 536 | 4 536 |
+| sum-product round frame | 2 744 B | 2 744 B |
+| encoder's deepest path (`fill`/`mix` 584 B) | unchanged | unchanged |
+
+The host image's statics fit 256 KiB again, so every image now has the
+same ceiling and the link map is back to 256 KiB. Soft-float helper call
+sites unchanged (`check.sh`: no `f64` helper in any image).
+
+**Rejected** (results identical in each):
+
+- **Belief propagation over the 522 edges** (the sum-product round's
+  tanh and atanh passes over the graph's edges instead of 83 checks × 8
+  lanes, 21% fewer values; the round's array 2 656 → 2 088 B). x86-64:
+  belief propagation 26.1–26.4 → 22.5 ms per three-pass slot (−14%),
+  slot mean 115.9 / 118.9 → 113.4 / 112.1; single pass 12.3–12.8 →
+  10.5–10.7. A76: single pass 19.35 → 19.8 (+2.3%), three passes 41.3 →
+  42.3. Padding the edges to 528 (whole vectors): the same on the A76
+  (19.84). A row of seven per check (581 values): x86-64 11.6–11.7, A76
+  21.4. No layout won on both; not kept. (The min-sum path's time moved
+  6.39 → 6.15 ms on the A76 with the unrelated code change: layout.)
+- **Cosine and sine from one quadrant decode** in the subtraction's loops
+  (`(cos, sin)` share the quadrant and read the quarter wave at x and
+  2³⁰ − x; tested equal at every phase): `subcost` x86-64 1.868–1.869 →
+  1.892, A76 3.650 → 3.680 ms per call. Slower on both.
+- **The hold written in ring segments** (chunks of the ring, no per-sample
+  index): x86-64 `subcost` 1.76–1.84 against 1.82–1.86 for step 1, slot
+  mean 112.7–112.8 (subtraction 61.8–61.9); A76 3.629 against 3.577,
+  slot mean 205.5 against 203.5. Faster on x86-64, slower on the A76.
+  **As a chained iterator** (the ring from the write position, then from
+  its start): x86-64 1.98–2.04, A76 3.66. Slower on both.
+- **The CLI freeing its 16-bit samples** before allocating the decoder's
+  buffers: maximum resident size 3 716 → 3 660 KB on a 40-signal WAV (the
+  WAV read sets the peak); not worth a change.
+
+**Proposal for a separate gated round: an `i16` residual** (result-
+changing; prototyped out of tree, not committed). The residual a
+multi-pass caller keeps is 720 000 B of `f32` per stream, three
+quarters of the host configuration's working memory. Held as 16-bit
+samples (each subtraction's output rounded to the nearest 1/32 768,
+clamped, as an `i16` buffer would store it) it is 360 000 B. Measured
+with the prototype (each subtraction followed by that rounding of the
+buffer), `paired_bench run host` against the S3 fix round's accepted
+records, every set and both blocks (38 900 slots): verdict PASS on every
+set; messages lost / gained (b / c) crowded 0 / 2 (fresh) and 0 / 0
+(main), fading 0 / 3 and 3 / 4, wide 1 / 9 and 5 / 4, sweep, edges and
+empty 0 / 0 (22 gained, 9 lost in all); no false decodes in either. On
+the 800 WAV slots (`host`): 10 696 decodes
+either way. So rounding the residual to 16 bits costs nothing measurable
+here. It would change results (so it needs its own acceptance round),
+the residual's type in `decode_passes` / `decode_further_passes` /
+`subtract` (an `&mut [i16]`, or a choice of either), and the
+subtraction's write (round and clamp, one more operation per sample);
+its speed was not measured (the prototype rounds the whole buffer after
+each subtraction).
+
+**Other memory, not changed:**
+
+- The spectrogram (161 920 / 179 584 B) is the decoder's: every row
+  and bin of it is read by the search. Only fewer rows or bins (coarser
+  time or frequency steps) would shrink it, and that changes results.
+- The front end's window (15 360 B) is redundant in passes 2 and on,
+  whose input is the caller's whole buffer; a whole-slot feed path that
+  reads rows straight from the buffer would let a multi-pass-only caller
+  drop it (bit-identical, an API addition), but pass 1 fed as audio
+  arrives needs it. Not attempted.
+- Fewer spectrogram rebuilds: the rows whose 3 840 samples no
+  subtraction touched are equal to the previous pass's, so a later pass
+  could skip them bit-identically; with 40 signals spread over ±1 s
+  few rows qualify (the slot's first and last few), worth about 10% of
+  feed (a few ms of 206 on the A76). Not attempted.
+
+**Identity.** At 93fa40d and 81db219 (each a clean tree, built in this
+repository's path): unit, integration and doc tests, the 24 subtraction
+anchors and the exhaustive `_everywhere` tests (release); `paired_bench
+run` with timings removed equal to the S3 fix round's records for `host`
+(38 900, every set and block) and its single-pass records for
+`host,passes=1` and `small` (34 800 each): 0 differing at each. The
+rejected belief-propagation commit (later dropped) was equal too. The
+release `cat-ft8-decode` at 81db219 (sha256 in progress.md): its output
+on the 800 WAV slots (`host` and `small`, `host,passes=1` and `small`;
+plain, `--raw` and `--profile` with timings removed) is byte-identical to
+b465b75's, profile memory keys included (`peak_bytes` already left the
+scratch out). Raspberry Pi 5 at 81db219: the release test suite with the
+ignored tests (lib 153, then 2 + 12 + 1 bulk + 7 + 2 + 5) passes;
+throttle flags 0x50000 before and after.
+
+**Not measured:** any Cortex-M at run time (flash, frames and static RAM
+only).
