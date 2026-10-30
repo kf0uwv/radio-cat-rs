@@ -1282,3 +1282,10 @@
   attempt; classifier pinned by SHA-256 and checked on main/cap1/cap2
   (the one loss: marginal). `accept3` checked unused on the host and
   the Pi the same day.
+- Acceptance on `accept3`: **44d01ba passes every criterion** and
+  merges (fallback not needed). 0 lost, 1 gained (k), 1 moved (m), 0
+  false; pass 1 and the ceiling identical; 800 WAV slots the same
+  messages in the same passes; A76 `slotcost` −19.2%, A76 records
+  −14.8%, x86-64 −19.1%; A76 records equal x86-64's; A76 release suite
+  passes. (ee7c0ce would also have passed: nothing changed, −16.9% /
+  −12.9%.)

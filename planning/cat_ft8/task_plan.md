@@ -1565,7 +1565,7 @@ Status (findings, "ninth round"): developed and measured on `o9-vsin`
 A76 three-pass slot 187.0 → 151.1 ms (−19.2%), x86-64 −19.0%; on
 main/cap1/cap2 1 lost (marginal), 0 gained, 0 false, pass 1 identical.
 Gate fixed on block `accept3` (candidates 44d01ba, fallback ee7c0ce);
-not run at the gate's commit.
+44d01ba passed and is merged (findings, "Acceptance run on `accept3`").
 
 ## Next: gated, result-changing rounds
 

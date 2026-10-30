@@ -3638,13 +3638,13 @@ a pass that searches the residual without it).
 
 ## Vector sine and cosine in the subtraction, ninth round (O9, gated, 2026-10-30)
 
-The plan is task_plan.md, "O9". Developed on the local branch `o9-vsin`
-from bafed37 (not merged); measured on x86-64 and the Raspberry Pi 5's
+The plan is task_plan.md, "O9". Developed on the branch `o9-vsin` from
+bafed37; measured on x86-64 and the Raspberry Pi 5's
 Cortex-A76 with the hygiene of O5–O8 (every timed binary built from one
 source path into its own target directory per commit, SHA-256 checked on
 the Pi, rounds alternated, one benchmark at a time, `vcgencmd
-get_throttled` 0x50000 before and after every Pi run). **Not adopted
-yet: the gate below is fixed before any acceptance record.**
+get_throttled` 0x50000 before and after every Pi run). **Adopted: 44d01ba
+(degree 5/4) passed the gate below on `accept3` and is merged.**
 
 ### Design
 
@@ -3988,6 +3988,52 @@ ADR note recording the Cortex-M33 static regression of the fit (above)
 as known and unmeasured at run time; then local CI, the Raspberry Pi 5
 release suite and a fresh A76 profile. **If neither passes:** nothing
 merges, and the result is recorded.
+
+### Acceptance run on `accept3` (2026-10-30)
+
+One attempt, as fixed above. Records, ceilings, WAV and x86-64 timing on
+x86-64; A76 records and `slotcost` on the Raspberry Pi 5 (SHA-256 of
+every binary checked there; `get_throttled` 0x50000 before and after
+every run). Scripts and records out of tree.
+
+| criterion | P = 44d01ba (degree 5/4) | result | ee7c0ce (degree 7/6) | result |
+|---|---|---|---|---|
+| block never used | no file or content named `accept3` on the host or the Pi, before the gate commit and again immediately before the run | pass | (same check) | pass |
+| false decodes | 0 in 2 000 `host`, 2 000 `host,passes=1`, 2 000 `small` records (every pass); 0 in the ceiling runs; no WAV message outside bafed37's | pass | the same | pass |
+| pass 1 byte-identical | `host,passes=1` and `small` records 2 000 / 2 000 equal; pass-1 decodes and report equal in 2 000 / 2 000 `host` records; WAV `host,passes=1` (2 400 runs) and `small` (2 400) byte-identical | pass | the same | pass |
+| ceiling byte-identical | `crowded`, `wide`, `fading` output equal (timing removed) | pass | equal | pass |
+| lost ≤ 3 | 0 (`crowded` 0, `wide` 0, `fading` 0) of 42 325 | pass | 0 of 42 325 | pass |
+| `wide` below −16 dB, lost ≤ 1 | 0 of 1 824 | pass | 0 of 1 824 | pass |
+| every changed message classified | 0 lost, 1 gained (k), 1 moved (m); 0 unexplained | pass | nothing changed | pass |
+| 800 WAV slots, same messages in the same passes | 7 200 of 7 200 runs; 605 lines differ, all in 506 `host` runs (kinds below) | pass | 7 200 of 7 200; 175 lines in 164 `host` runs | pass |
+| A76 `slotcost` three-pass mean (bound 15%; fallback 13%) | 187.0 / 187.1 → 151.1 / 151.0 ms: **−19.2%** | pass | 155.5 / 155.5: −16.9% | pass |
+| A76 `accept3` records, mean per slot (bound 12%; fallback 10%) | 144.15 / 144.16 → 122.88 / 122.87 ms: **−14.8%** | pass | 125.57 / 125.58: −12.9% | pass |
+| x86-64 `slotcost` not slower | 104.8 / 104.8 → 84.6 / 84.9 ms (−19.1%) | pass | 86.6 / 86.6 (−17.4%) | pass |
+| A76 records == x86-64 | 2 000 / 2 000, both rounds (bafed37 too) | pass | 2 000 / 2 000, both rounds | pass |
+| A76 release suite (ignored tests included) | lib 165 (the new lane test included), then 2 + 0 + 12 + 1 bulk + 7 + 2 + 5 | pass | lib 164, then the same | pass |
+| thumbv8m / thumbv7em, `check.sh --stack`, no `f64` helper, no FMA | pass; host image 97 948 B flash; 0 `vfma`/`vfms`/`vfnma`/`vfnms` in the three images (`vmla` 143 in host) | pass | pass; 98 044 B; 0 fused (`vmla` 151) | pass |
+| encoder byte-identical | no source change; 45 / 45 `cat-ft8-encode` outputs identical; encoder-only image 35 536 B | pass | the same | pass |
+
+**Verdict: P passes every criterion and merges** (the merge rule takes P
+first; the fallback is not needed).
+
+**Every changed message** (P; ee7c0ce changed none): `crowded` slot 474
+(40 signals):
+- moved, (m): `NP9I UT7EH R+15`, −8.5 dB, 2 246.5 Hz: bafed37 pass 3
+  rank 2, P pass 2 rank 9, both with 32 hard errors in 30 BP rounds.
+- gained, (k): `X5FS E5K 73`, −10.1 dB, 2 228.3 Hz: `not_converged` at
+  bafed37, P pass 3 rank 2 (1 hard error, 1 round); 18.2 Hz from the
+  moved message above, which P decoded a pass earlier.
+
+**WAV lines that differ** (P, `host` only): later-pass decodes' score
+(255), frequency (6), SNR (3), candidate (9); 3 slots with two decodes
+in the other order; 344 `--profile` summaries in the candidates-found
+and -dropped counters (total and per later pass). ee7c0ce: score (51),
+frequency (3), SNR (3); 118 `--profile` summaries, the same counters.
+
+The x86-64 `accept3` records differ from bafed37's in 1 516 of 2 000
+`host` records at P (528 at ee7c0ce) in later-pass parameters, as on
+`main`.
 
 ### Checks at 4e99bc0
 
