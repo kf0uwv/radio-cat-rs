@@ -1379,11 +1379,11 @@ reference's cosine/sine (12% of the slot).
 
 ## O4: CPU per decoded signal, fourth round (2026-10-30)
 
-Bit-identical to 91ee9fe; the review's ranked targets, in order: a joint
+Bit-identical to 91ee9fe; the O3 review's ranked targets, in order: a joint
 cosine/sine, an `input()` fast path, the belief-propagation edge layout
 (only in a materially different form from O3's), small items (the
 envelope multiply in the time search's middles, an exact float counter
-in the removal), and the review's nit (one helper lending the level
+in the removal), and the O3 review's nit (one helper lending the level
 buffer). A76 decision rule as in the O3 fix round; re-profile at the end.
 
 Done 2026-10-30 (findings, "CPU per decoded signal, fourth round"):

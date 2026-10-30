@@ -2344,8 +2344,8 @@ it is placement). Under the decision rule.
 
 `perf` is not usable on the Pi without system packages (no `perf`
 binary; `perf_event_paranoid` 2 would allow user-space sampling of the
-user's own processes). Instead, an out-of-tree wall-clock sampler (not
-committed) in a copy of `paired_bench`: a 487 µs interval timer signal,
+user's own processes). Instead, a SIGPROF-style wall-clock sampler (not
+included) in a copy of `paired_bench`: a 487 µs interval timer signal,
 the interrupted PC from the signal context and the unwound stack, inlined
 frames resolved from line tables (the decoder's hot functions have the
 same code sizes as in the timed binary; only the decoder's per-candidate
@@ -2481,14 +2481,14 @@ In all, the A76 three-pass slot 203.4 → 201.2 ms (−1.1%), single pass
    unrolled). No new table (`TABLE_BYTES` and the decode command's
    `static_table_bytes` unchanged). Belief propagation per three-pass
    slot: A76 41.4–41.6 → 40.3 ms (−3.0%), x86-64 25.8 → 21.4–21.5
-   (−17%); slot A76 −0.5%, x86-64 −3.2%. This is the "materially
+   (−17%); slot A76 −0.5%, x86-64 −3.5%. This is the "materially
    different design" asked for: O3's 522-edge form (variable-degree
    products over a flat array) was +2.3% on the A76; with fixed-size
    checks it is −3.0%. **Under the 2% rule at slot level on the A76
    (−0.5%), kept for the repeatable stage gain (both rounds 40.29–40.31
    against 41.39–41.63), the x86-64 gain and the smaller frame;** it is
    its own commit, so it can be dropped alone.
-3. **One decoder helper lends the level buffer** (66ba24b; the review's
+3. **One decoder helper lends the level buffer** (66ba24b; the O3 review's
    nit). `Decoder::idle_levels` empties the candidate list and returns
    `Spectrogram::idle_levels()`, so `further_passes` no longer resets the
    spectrogram twice. The stop test (empty candidates after a stopped
@@ -2510,7 +2510,7 @@ Flash +212 B for the unrolled products. No `f64` helpers in any image.
 **Rejected** (results identical in each; numbers per candidate build
 against the same base, alternated):
 
-- **Joint `cos_sin_turns`** (the review's first item): one function sharing the
+- **Joint `cos_sin_turns`** (the O3 review's first item): one function sharing the
   quadrant, mask and mirror, the two signs applied by XOR of the sign
   bit, the last table interval clamped (`min`) instead of a branch
   (proved equal to `(cos_turns, sin_turns)` at all 2³² phases on
@@ -2521,14 +2521,14 @@ against the same base, alternated):
   the joint form was SLP-vectorised into two-lane vectors with lane
   inserts, `zip` and `dup` moves. O3's simpler joint form was +0.8%.
   Not retried further; no exhaustive Pi run, as nothing was kept.
-- **`input()` fast path** (the review's second item): `abs <= INPUT_LIMIT` returns x,
+- **`input()` fast path** (the O3 review's second item): `abs <= INPUT_LIMIT` returns x,
   otherwise a `#[cold]`, not-inlined function. The fused fit loop went
   79 → 70 AArch64 instructions per sample, yet `subcost` A76 3.566–3.567
   → 3.581–3.583 ms (+0.4%), x86-64 1.840–1.919 → 1.978–1.989; in a
   slot run (built with step 2's BP change) subtraction 123.4–123.5 →
   125.1–125.2 ms (+1.3%). The base `input` is already a branch on the
   bit pattern for non-finite values plus two selects.
-- **Exact `f32` counter in the removal** (a small item of the review; `t = if d > 0.0 { d }
+- **Exact `f32` counter in the removal** (a small item of the O3 review; `t = if d > 0.0 { d }
   else { 0.0 }`, d counted from `j0 − from`, exact below 2²⁴):
   `subcost` A76 3.570–3.583 → 3.785–3.786 (+5.8%), x86-64 1.833–1.874 →
   1.904–1.928 (+3%). The integer index and conversion it replaces are
@@ -2536,13 +2536,13 @@ against the same base, alternated):
 - (Step 2's first build also carried the `input()` change: BP 41.6 →
   40.3 there too, subtraction +1.3%; the BP change alone is step 2.)
 
-**Not done:** feed row skipping (the review: not now); the BP repeat
+**Not done:** feed row skipping (the O3 review: not now); the BP repeat
 skip, caching the time-search reference and reordering sums (the
-review: don't).
+O3 review: don't).
 
 ### Where a three-pass slot's time goes on the Cortex-A76, at 66ba24b
 
-The O3 fix round's out-of-tree sampler (not committed), ported onto
+The O3 fix round's sampler (a SIGPROF-style sampler, not included), ported onto
 66ba24b, same method: a 487 µs interval timer during the three-pass side
 of `slotcost host,passes=1 host 200 5` (1 000 slot decodes, 450 810
 samples, every one unwound through the interrupted frame; that run's
@@ -2580,7 +2580,7 @@ slot) are each one pass over the samples whose arithmetic is fixed by
 the results: six serial accumulators in `Sums::add` (order fixed), the
 interpolated table lookups for cosine and sine (no NEON gather; LLVM
 already shares their quadrant decode), and the input check. This round
-tried every per-sample trim the review listed; each either did nothing
+tried every per-sample trim the O3 review listed; each either did nothing
 or lost on the A76 (−9 instructions per sample in the fit loop made it
 slower), so the loop runs at its dependency and port limits, not its
 instruction count. What is left there is the reference generator (7.9%)
