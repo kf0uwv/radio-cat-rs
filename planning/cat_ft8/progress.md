@@ -1103,3 +1103,41 @@
 - Release `cat-ft8-decode` built from this repository's path at 66ba24b
   (the planning commit changes no input of the build): sha256
   1f68772b3e24ba15773b0a8bd8714440d18541b928a5726f88fad242787cd1bc.
+
+## Session: 2026-10-30 (O5, CPU per decoded signal, last bit-identical round)
+
+- f0bb4ab: the decoder's subtractions skip the report's sums
+  (`subtract_unreported`; flag in `Removal`). Subtraction per slot A76
+  122.5 → 107.5 ms, x86-64 64.5–65.3 → 58.6–58.8; slot A76 −7.0%,
+  x86-64 −5.3%. Host flash +220 B. Rejected first form: `const REPORT`
+  on `run` (A76 −0.7%, x86-64 +4%: `blocks` out of line). The fit's
+  `xx`/`n` are already dead in the AArch64 loop.
+- 02ff55e: BP messages kept in the degree-grouped edge layout, round
+  in place. Time unchanged (A76 slot +0.3%, BP 40.9 → 40.7 ms); kept
+  for memory: `BpScratch` 3 892 → 3 656 B, `CandidateScratch` 5 100 →
+  4 864 B, static RAM −236 B (host headroom 3 912 → 4 148 B), round
+  frame 2 176 → 88 B. Pins unchanged; `--profile` memory keys −236.
+- 92970ba: edge-layout test and the first-form round compared bit for
+  bit over 20 000 random states; two layout mutants caught by both.
+- 1b47a55: `CORE_START`/`CORE_END`, ramp assert at both ends,
+  waveform-length assert and generator-start debug assert.
+- a5a2034: ADR 0024 flash figures (85 508 / 94 100 / 35 536 B); O4
+  wording.
+- Slot, base → 1b47a55, two alternated rounds: A76 201.1–201.2 → 187.5
+  ms; x86-64 110.2–110.3 → 103.9–104.5.
+- M33 (static): 657543e cuts tanh/atanh evaluations and `vdiv`s by 21%
+  and the round's instructions by about 15%; 02ff55e another 7%.
+- A76 profile at 1b47a55: subtraction 53.7% (fit 51.8 ms, time search
+  26.2 with its generator, removal 14.7), BP 26.2%, feed 15.6%.
+- Out of tree: per pass (A76, 2 000 crowded/wide/fading slots) 34.5 /
+  72.5 / 40.7 ms for 15.52 / 4.70 / 1.08 decodes; later-pass decodes
+  within 50 Hz of the previous pass's: 99.8% / 99.7%; time-search
+  repeat in 56 of 40 435 subtractions.
+- Identity at each code commit: run records = S3 fix round's (0
+  differing); 800-WAV output = b465b75's (from 02ff55e except the two
+  memory keys, −236). Local CI checks at 1b47a55; `check.sh --stack`
+  per step. Raspberry Pi 5 release suite with ignored tests passes at
+  1b47a55 (lib 157; 0x50000 before and after).
+- Release `cat-ft8-decode` built from this repository's path at 1b47a55
+  (later commits change no input of the build): sha256
+  36ce320895815758c0b978bd563eaefbef4e0eeefaf9d400366b01126c6c3987.

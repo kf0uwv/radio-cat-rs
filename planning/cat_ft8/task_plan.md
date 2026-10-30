@@ -1394,6 +1394,49 @@ Rejected: joint cosine/sine (+14.6% `subcost` on the A76), `input()`
 fast path (+0.4%), float counter (+5.8%). Remaining bit-identical gains
 judged ≤ 2% each.
 
+## O5: CPU per decoded signal, fifth round (2026-10-30)
+
+The last bit-identical round (identical to 46fdf4d) before the gated,
+result-changing rounds; from the O4 reviews. A76 decision rule as
+before.
+
+1. The decoder's subtractions without the report's sums (a
+   crate-internal entry; the public `subtract` and its anchors
+   unchanged); check whether the fit's `xx`/`n` are dead.
+2. Belief-propagation messages kept in the degree-grouped edge layout,
+   the round in place (no copy, clearing or scatter; one cursor).
+3. Tests: a structural edge-map test and a bit-for-bit comparison with
+   the round's first form over random states.
+4. The time search's symbol cores named and asserted against the
+   ramps; the waveform-length and generator-start assumptions stated.
+5. Docs (ADR 0024 flash figures, the O4 notes' wording).
+6. Cortex-M33 evidence for 657543e (static instruction counts).
+7. Out of tree, for the gated rounds: cost and decodes per pass,
+   distance of later-pass decodes from the previous pass's, and how
+   often the time search repeats.
+
+Done 2026-10-30 (findings, "CPU per decoded signal, fifth round"):
+f0bb4ab (subtractions without the report: A76 slot −7.0%, x86-64
+−5.3%; a `const` generic form was +4% on x86-64 and rejected; the
+fit's `xx`/`n` were already removed by the compiler), 02ff55e (messages
+in the edge layout: time unchanged, static RAM −236 B, round frame
+2 176 → 88 B), 92970ba (tests), 1b47a55 (symbol cores), a5a2034 (docs).
+Slot A76 201.2 → 187.5 ms (−6.8%), x86-64 110.3 → 104.2 (−5.5%).
+M33: 657543e removes 21% of the transcendental evaluations and about
+15% of the round's instructions (static). Measurements: pass 3 is 28%
+of the A76's multi-pass time for 5% of the decodes; 99.8% of pass-2 and
+99.7% of pass-3 decodes lie within 50 Hz of a decode of the pass
+before (a region of 45% / 16% of the band); the time search repeats in
+0.14% of subtractions.
+
+## Next: gated, result-changing rounds
+
+Each changes results and needs its own acceptance (the run sets, the
+800 WAV slots, a low-level set for anything that narrows the samples):
+later passes searched near the previous pass's decodes (b above); a
+pass-3 trigger or cap (a above); lane-split fixed-order accumulators in
+the fit and removal; the `i16` residual; a phase-rotator reference.
+
 ## Later (not in this round)
 
 - Contiguous codeword layout and table CRC, as profiled optimisations that
