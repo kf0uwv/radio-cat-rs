@@ -393,6 +393,32 @@ fn projection_pinned() {
     assert_eq!(h, 0xd1c9_6c7e_8eae_3966, "{h:#x}");
 }
 
+/// The fit's two conditions at their boundaries, in `f32` exactly as
+/// `Fit::det` rounds them: a determinant equal to `0.1·e·e` (taken as
+/// `(0.1·e)·e`, which here is one step above `0.1·(e·e)`) is refused and
+/// the next `f32` up is accepted; an energy of exactly an eighth of the
+/// segment is enough.
+#[test]
+fn fit_conditions_at_their_boundaries() {
+    let fit = |cc: f32, ss: f32| Fit {
+        cc,
+        ss,
+        ..Fit::default()
+    };
+    let at = f32::from_bits(0x3e02_10a8); // 0.127 016 66
+    let above = f32::from_bits(0x3e02_10a9);
+    let e = at + 1.0;
+    // With ss = 1 and cs = 0 the determinant is cc.
+    assert_eq!(at, 0.1 * e * e);
+    assert!(0.1 * (e * e) < 0.1 * e * e);
+    assert!(e >= 8.0 * 0.125);
+    assert_eq!(fit(at, 1.0).det(8), None);
+    assert_eq!(fit(above, 1.0).det(8), Some(above));
+    // Energy: cc + ss = 1 = 8 / 8 exactly, well conditioned.
+    assert_eq!(fit(0.5, 0.5).det(8), Some(0.25));
+    assert_eq!(fit(0.5, 0.5).det(9), None);
+}
+
 #[test]
 fn settings_and_inputs_are_checked() {
     let d = decode_near(1_000.0, 0.0);
