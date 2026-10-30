@@ -1503,6 +1503,15 @@ keeps 50. Whether a knock-on loss of this kind is acceptable is a
 decision for the next round's criteria, not a retune of this one.
 Text items and the `Fit::det` boundary test done (a4fe8e6, 1c1c8a8).
 
+## O8b: re-gate of the later-pass cap on a new block (2026-10-30)
+
+0f0341c unchanged, tested once on the unused block `accept2` (crowded,
+wide, fading; ceiling mode) against ce09c5d, under a criterion that
+names the knock-on loss (findings, "re-gate on a new block"; fixed
+before any run). Pass: 0f0341c joins the branch with the doc naming
+knock-on losses, then identity, local CI and the Raspberry Pi 5 suite.
+Fail: the cap is dropped; no third block.
+
 ## Next: gated, result-changing rounds
 
 Each changes results and needs its own acceptance (the run sets, the

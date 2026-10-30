@@ -3502,3 +3502,64 @@ the ignored tests passes (lib 159, then 2 + 0 + 12 + 1 bulk + 7 + 2 +
 
 **Not measured:** any Cortex-M at run time; off-air audio; slots
 beyond 40 signals.
+
+## Later-pass cap 50 → 25, re-gate on a new block (O8b, 2026-10-30)
+
+The eighth round's verdict stands as recorded: under its criterion
+("each lost message ranked beyond 25 at cap 50") the `fresh` block
+fails. The mechanism found there (a message ranked well inside 25 lost
+behind a pass-2 neighbour that the cap pushes into pass 3) is inherent
+to any later-pass cap below 50; O7's 10 losses on `main`/`cap1`/`cap2`
+were counted per message, so they already include such losses and the
+cost estimate is unchanged. The criterion is revised to name that
+mechanism and the candidate is tested once more, on a block never
+used, with no change to 0f0341c.
+
+### Gate criteria, fixed before any run on the new block
+
+- **Block `accept2`.** Never used: no record, log or ceiling dump named
+  `accept2` exists (checked before this commit: the build cache and run
+  directories, the repository including its history (`git log --all
+  -S accept2` empty), the scratch directories and the Raspberry Pi 5's
+  home and temporary directories — no file and no file content). Sets
+  `crowded`, `wide`, `fading` decoded with `run host` at ce09c5d (cap
+  50) and at 0f0341c (cap 25), plus the `ceiling` mode on the three
+  sets (cap 25 and `host,later=50`, one binary). One attempt: a fail
+  drops the cap; there is no third block.
+- **False decodes:** 0 in every pass of every record and in the ceiling
+  run.
+- **Pass 1 byte-identical** in every record (pass-1 decodes and the
+  pass-1 report).
+- **Lost:** at most 8 on `accept2`, and at most 13 pooled with
+  `fresh`'s 3 (at O7's rate the pooled mean is about 6.6; 14 or more
+  has a probability of about 1%).
+- **Every loss explained by script**, as one of:
+  (a) a pass-2/3 decode at cap 50 whose candidate ranked beyond 25 in
+  that pass; or
+  (b) a knock-on: a message M decoded at cap 50 in an earlier pass than
+  the lost message L, from rank beyond 25; at cap 25 M decoded in a
+  later pass or not at all; |f_M − f_L| ≤ 50 Hz (transmitted
+  frequencies); and L's outcome at cap 25 is not `dropped`. M may
+  itself be such a knock-on, the chain ending at a message of the
+  first kind.
+  One unexplained loss fails the gate.
+- **Gains** explained by the same rules with the roles of lost and
+  gained swapped (the gained message's earlier-pass neighbour M
+  displaced by the cap as above, within 50 Hz, the gained message not
+  `dropped` at cap 50); otherwise the gate fails.
+- **Ceiling run and `wide` below −16 dB:** per-set loss rate at most
+  the O7 three-block rates (crowded 0 of 40 452, wide 1 of 50 996,
+  fading 9 of 35 888).
+- **Speed and the 800 WAV slots** carry over from the eighth round only
+  if 0f0341c's tree is unchanged (its tree hash checked).
+- **Classifier check first:** on the `fresh` records the classifier
+  must give 2 of kind (a) and 1 of kind (b) (a check of the script, not
+  part of the verdict). Done before this commit: `wide` slot 692 (pass
+  3, rank 27) and `fading` slot 490 (pass 3, rank 30) are (a);
+  `fading` slot 597 `V7K H7PNB` (pass 3, rank 4; `not_converged` at
+  25) is (b) behind `CJ2JAY LF2K` (−28.2 Hz; at 50 pass 2 rank 35, at
+  25 pass 3 rank 23); no gain.
+- **If it passes:** 0f0341c joins the branch; `HOST`'s doc names the
+  loss as being in 40-signal `fading`/`wide` slots, knock-on losses
+  behind a deep pass-2 neighbour included, and says
+  `with_later_candidates` restores the old behaviour.
