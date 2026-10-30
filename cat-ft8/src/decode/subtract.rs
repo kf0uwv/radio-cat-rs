@@ -1351,12 +1351,16 @@ impl Correction {
         p
     }
 
-    /// Moves over `n < 2³²` samples: the same state as `n` calls of
+    /// Moves over `n` samples: the same state as `n` calls of
     /// [`Correction::next`] (the steps' sums in closed form, modulo 2⁶⁴).
     fn skip(&mut self, n: usize) {
         let n = n as u64;
-        debug_assert!(n < 1 << 32, "n·(n − 1) must not overflow");
-        let pairs = n * n.saturating_sub(1) / 2;
+        // n·(n − 1) / 2 modulo 2⁶⁴ for any n: the even factor halved first.
+        let pairs = if n % 2 == 0 {
+            (n / 2).wrapping_mul(n.saturating_sub(1))
+        } else {
+            n.wrapping_mul(n / 2)
+        };
         let (step, accel) = (self.step as u64, self.accel as u64);
         self.phase = self
             .phase

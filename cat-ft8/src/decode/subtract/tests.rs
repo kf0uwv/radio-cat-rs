@@ -810,6 +810,41 @@ fn anchored_to_the_unheld_subtraction() {
     assert!(fails.is_empty(), "{fails:?} {got:x?}");
 }
 
+/// [`Correction::skip`] holds for counts of any size, against the closed
+/// form in 128-bit arithmetic: n·step and n·(n − 1)/2·accel modulo 2⁶⁴.
+#[test]
+#[cfg(target_pointer_width = "64")]
+fn correction_skip_holds_for_any_count() {
+    let c0 = Correction {
+        phase: 0x0123_4567_89ab_cdef,
+        step: -0x0f1e_2d3c_4b5a_6978,
+        accel: 0x7766_5544_3322_1101,
+    };
+    for n in [
+        0u64,
+        1,
+        2,
+        151_680,
+        (1 << 32) - 1,
+        1 << 32,
+        (1 << 32) + 1,
+        (1 << 40) + 3,
+        1 << 63,
+        (1 << 63) + 1,
+        u64::MAX - 1,
+        u64::MAX,
+    ] {
+        let mut a = c0;
+        a.skip(n as usize);
+        let wide = |x: i64| u128::from(x as u64);
+        let pairs = (u128::from(n) * u128::from(n.saturating_sub(1)) / 2) as u64;
+        let phase = (u128::from(c0.phase) + u128::from(n) * wide(c0.step)) as u64;
+        let phase = phase.wrapping_add(pairs.wrapping_mul(c0.accel as u64));
+        let step = (wide(c0.step) + u128::from(n) * wide(c0.accel)) as u64 as i64;
+        assert_eq!((a.phase, a.step, a.accel), (phase, step, c0.accel), "{n}");
+    }
+}
+
 /// The frequency correction taken in closed form ([`Correction::skip`]),
 /// four lanes at a time ([`Correction::lanes`]) and added in place
 /// ([`Correction::apply`]) gives exactly the sample-by-sample sequence of
