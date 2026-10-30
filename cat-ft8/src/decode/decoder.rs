@@ -585,6 +585,15 @@ impl<'a> Decoder<'a> {
         self.sync = SyncReport::default();
     }
 
+    /// The level buffer as working storage (see
+    /// [`Spectrogram::idle_levels`]), the decoder emptied as by
+    /// [`Decoder::start_slot`]: no rows and no candidates until the next
+    /// feed and search.
+    fn idle_levels(&mut self) -> &mut [u8] {
+        self.sync = SyncReport::default();
+        self.spec.idle_levels()
+    }
+
     /// Feeds 12 kHz samples (full scale ±1.0); see [`Spectrogram::feed`].
     ///
     /// Feeding after [`Decoder::find_candidates`] leaves the candidate list
@@ -884,18 +893,16 @@ impl<'a> Decoder<'a> {
                 break;
             }
             // The subtractions hold their reference in the level buffer, so
-            // the decoder is emptied first, as by `start_slot`: no rows and
-            // no candidates until the next pass's feed and search (a stop
-            // leaves it so).
-            self.start_slot();
-            let levels = self.spec.idle_levels();
+            // the decoder is emptied first (a stop leaves it so).
+            let config = self.config.subtract;
+            let levels = self.idle_levels();
             let (mut subtracted, mut failed) = (0, 0);
             for i in begin..len {
                 // A decode's frequency and time are always valid for the
                 // waveform, and the settings were checked in `new`, so
                 // this does not fail; if it did, the audio would be left
                 // as it was and the failure counted.
-                let r = subtract(audio, &list.entries[i], skip, &self.config.subtract, levels);
+                let r = subtract(audio, &list.entries[i], skip, &config, levels);
                 debug_assert!(r.is_ok(), "subtracting entry {i}: {r:?}");
                 if r.is_ok() {
                     subtracted += 1;
