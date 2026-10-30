@@ -20,11 +20,12 @@
 //! the signal actually sits in the audio, and subtracts the scaled
 //! reference in place. It reads only the audio, the decode and its
 //! arguments: no spectrogram and no decoder state. It allocates nothing:
-//! the reference held between steps 3 and 4 is in a byte buffer the caller
-//! lends ([`SUBTRACT_SCRATCH_BYTES`](SCRATCH_BYTES), 46 080 bytes, for one
-//! run of the reference; any buffer that is idle at the time will do, such
-//! as the decoder's spectrogram between passes), and the rest of its
-//! working storage is on the stack and bounded
+//! the reference held between steps 3 and 4 (and, before them, a block of
+//! the time search's products) is in a byte buffer the caller lends
+//! ([`SUBTRACT_SCRATCH_BYTES`](SCRATCH_BYTES), 46 080 bytes, for one run of
+//! the reference; any buffer that is idle at the time will do, such as the
+//! decoder's spectrogram between passes), and the rest of its working
+//! storage is on the stack and bounded
 //! ([`SUBTRACT_STACK_BYTES`](STACK_BYTES)).
 //!
 //! 1. **Fine time.** For each symbol the audio is correlated with the
@@ -73,7 +74,12 @@
 //! All arithmetic is `f32` `+ − × ÷`, comparisons, integer phase and the
 //! crate's polynomial helpers, in a fixed order, so the result is
 //! deterministic (bit for bit on every platform the crate's promise
-//! covers).
+//! covers). The reference's cosine and sine, sample by sample, are
+//! polynomials on the integer phase (not the waveform's sine table), and
+//! the sums over samples (the time search's correlations, the fit's
+//! least squares) are taken in four lanes keyed by the sample's index and
+//! added in a fixed order, so that the loops vectorise and the order is
+//! the same on every target.
 
 use super::decoder::Decode;
 use super::frontend::INPUT_LIMIT;
@@ -134,7 +140,8 @@ pub const STACK_BYTES: usize =
 pub const SCRATCH_BYTES: usize = HELD * PAIR;
 
 /// The least working storage [`subtract`] takes: one block of the
-/// reference (240 samples). With less than
+/// reference (240 samples), or of the time search's products. With less
+/// than
 /// [`SUBTRACT_SCRATCH_BYTES`](SCRATCH_BYTES) it runs the reference a second
 /// time where a segment and a half does not fit (slower; the same result).
 pub const MIN_SCRATCH_BYTES: usize = BLOCK * PAIR;
@@ -407,12 +414,15 @@ fn blocks(
 }
 
 /// Per symbol, the audio times the conjugate unit reference starting at
-/// `start`, summed over the symbol's middle half.
+/// `start`, summed over the symbol's middle half. `work` (at least a
+/// block's [`PAIR`]s) holds a block's products between the loop that takes
+/// them and the sums.
 fn symbol_correlations(
     audio: &[f32],
     usable: Usable,
     synth: &Synth,
     start: i64,
+    work: &mut [u8],
 ) -> [(f32, f32); SYMBOL_COUNT] {
     // Reference sample j is sample j % T of symbol j / T: the waveform is
     // whole symbols and the generator starts at its first sample.
@@ -425,16 +435,24 @@ fn symbol_correlations(
         // The middles are clear of the ramps: the envelope is 1.0 there.
         debug_assert!(env.iter().all(|&e| e == 1.0));
         let (a, b) = usable.range(start, j0, phase.len());
-        let (mut re, mut im) = (0.0f32, 0.0f32);
-        for j in a..b {
-            let i = j - j0;
-            let w = input(audio[(start + j as i64) as usize]);
-            re += w * cos_turns(phase[i]);
-            im -= w * sin_turns(phase[i]);
+        if a == b {
+            return;
         }
+        let (a, b) = (a - j0, b - j0);
+        let xs = &audio[(start + (j0 + a) as i64) as usize..][..b - a];
+        // The products sample by sample (a loop that vectorises), then
+        // their sums by lane.
+        let products = &mut work[..(b - a) * PAIR];
+        for ((d, &q), &x) in products.chunks_exact_mut(PAIR).zip(&phase[a..b]).zip(xs) {
+            let w = input(x);
+            let (c, s) = cos_sin_turns(q);
+            put(d, (w * c, w * s));
+        }
+        let (re, im) = lane_sums(a, products);
         let k = j0 / T;
+        // The conjugate's sine part: the sum's sign turned.
         c[k].0 += re;
-        c[k].1 += im;
+        c[k].1 -= im;
     });
     c
 }
@@ -476,6 +494,37 @@ fn add_lane(acc: &mut [f32; LANES], i: usize, v: f32) {
             *x += v;
         }
     }
+}
+
+/// The sums of the pairs stored in `pairs` ([`PAIR`] bytes each, as by
+/// [`put`]), which are samples `i0..` of a block that starts at a multiple
+/// of [`LANES`]: sample i in lane i % `LANES`, each lane in sample order,
+/// the lanes then added in a fixed order ([`sum_lanes`]).
+#[inline(always)]
+#[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
+fn lane_sums(i0: usize, pairs: &[u8]) -> (f32, f32) {
+    let i1 = i0 + pairs.len() / PAIR;
+    let (m0, m1) = lane_bounds(i0, i1);
+    let (mut re, mut im) = ([0.0f32; LANES], [0.0f32; LANES]);
+    let one = |re: &mut [f32; LANES], im: &mut [f32; LANES], i: usize| {
+        let (c, s) = get(&pairs[(i - i0) * PAIR..]);
+        add_lane(re, i, c);
+        add_lane(im, i, s);
+    };
+    for i in i0..m0 {
+        one(&mut re, &mut im, i);
+    }
+    for r in pairs[(m0 - i0) * PAIR..(m1 - i0) * PAIR].chunks_exact(LANES * PAIR) {
+        for l in 0..LANES {
+            let (c, s) = get(&r[l * PAIR..]);
+            re[l] += c;
+            im[l] += s;
+        }
+    }
+    for i in m1..i1 {
+        one(&mut re, &mut im, i);
+    }
+    (sum_lanes(re), sum_lanes(im))
 }
 
 /// The lanes' sum, in a fixed order.
@@ -836,14 +885,19 @@ fn run(
     // estimate is used as it is; a larger one is measured again at the
     // moved start.
     let mut start = fixed.start.unwrap_or(nominal);
-    let sums_at = |at: i64| step_sums(&symbol_correlations(audio, usable, &synth, at), &tones);
+    let sums_at = |at: i64, work: &mut [u8]| {
+        step_sums(
+            &symbol_correlations(audio, usable, &synth, at, work),
+            &tones,
+        )
+    };
     // The sums of the last step, taken at `taken`; the estimate `e` found
     // in sums taken at `at`.
     let mut d: StepSums = [[(0.0, 0.0); 15]; GROUPS];
     let mut taken = start;
     let mut timing: Option<(i64, f32)> = None;
     for _ in 0..TIMING_PASSES {
-        d = sums_at(start);
+        d = sums_at(start, held);
         taken = start;
         let Some((e, frac)) = align(&d) else {
             break;
@@ -863,7 +917,7 @@ fn run(
     if taken != at {
         // A repeated step found nothing at the moved start (rare): the
         // frequency is measured from the sums the estimate came from.
-        d = sums_at(at);
+        d = sums_at(at, held);
     }
     out.start = start;
     out.dt = (at as f32 + e) * (1.0 / SAMPLE_RATE as f32) - crate::NOMINAL_START_S;
