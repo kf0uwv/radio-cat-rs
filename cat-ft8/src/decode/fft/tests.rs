@@ -244,7 +244,7 @@ fn complex_fft_matches_an_f64_dft() {
     for (p, slot) in buf.iter_mut().enumerate() {
         *slot = input[usize::from(DIGIT_REV[p])];
     }
-    fft(&mut buf);
+    fft_complex::<LANES>(&mut buf);
     let want = dft_f64(
         &input
             .iter()
@@ -421,15 +421,161 @@ fn transform_equals_the_reference_bit_for_bit() {
     full[1].re = -65_536.0;
     inputs.push(full);
     for x in inputs {
-        let (mut a, mut b) = (x, x);
-        fft(&mut a);
+        let mut b = x;
         fft_reference(&mut b);
-        for (i, (p, q)) in a.iter().zip(&b).enumerate() {
-            for (u, v) in [(p.re, q.re), (p.im, q.im)] {
-                assert!(
-                    u.to_bits() == v.to_bits() || (u == 0.0 && v == 0.0),
-                    "bin {i}: {u:e} {v:e}"
-                );
+        // Every lane count gives the reference's bits: one butterfly at a
+        // time (as on a Cortex-M), two, and four (as on x86-64 and AArch64).
+        for lanes in [1, 2, 4] {
+            let mut a = x;
+            match lanes {
+                1 => fft_complex::<1>(&mut a),
+                2 => fft_complex::<2>(&mut a),
+                _ => fft_complex::<4>(&mut a),
+            }
+            for (i, (p, q)) in a.iter().zip(&b).enumerate() {
+                for (u, v) in [(p.re, q.re), (p.im, q.im)] {
+                    assert!(
+                        u.to_bits() == v.to_bits() || (u == 0.0 && v == 0.0),
+                        "{lanes} lanes, bin {i}: {u:e} {v:e}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The transform, `L` butterflies at a time, on an array of complex values.
+fn fft_complex<const L: usize>(buf: &mut [Complex; N]) {
+    let mut re = [0.0f32; N];
+    let mut im = [0.0f32; N];
+    for (c, (r, i)) in buf.iter().zip(re.iter_mut().zip(im.iter_mut())) {
+        (*r, *i) = (c.re, c.im);
+    }
+    fft::<L>(&mut re, &mut im);
+    for (c, (&r, &i)) in buf.iter_mut().zip(re.iter().zip(im.iter())) {
+        *c = Complex { re: r, im: i };
+    }
+}
+
+/// The real-split twiddle W₃₈₄₀ᵏ for k in 0..1 920 as first written: the
+/// table to 960, −i times it above.
+fn split_twiddle_reference(k: usize) -> Complex {
+    if k <= 960 {
+        Complex::from_pair(SPLIT_TWIDDLES[k])
+    } else {
+        let w = SPLIT_TWIDDLES[k - 960];
+        Complex {
+            re: w[1],
+            im: -w[0],
+        }
+    }
+}
+
+/// The power of every bin as first written: the window and digit
+/// reversal on complex values, the reference transform, then for each bin
+/// E + W·O from Z[k] and conj(Z[N − k]) with `Complex` arithmetic.
+fn power_reference(samples: &[f32; WINDOW]) -> Vec<f32> {
+    let mut z = [Complex::ZERO; N];
+    for (p, slot) in z.iter_mut().enumerate() {
+        let n = usize::from(DIGIT_REV[p]);
+        *slot = Complex {
+            re: samples[2 * n] * hann(2 * n),
+            im: samples[2 * n + 1] * hann(2 * n + 1),
+        };
+    }
+    fft_reference(&mut z);
+    (0..BINS)
+        .map(|k| {
+            let a = z[k];
+            let c = z[(N - k) % N];
+            let b = Complex {
+                re: c.re,
+                im: -c.im,
+            };
+            let e = Complex {
+                re: 0.5 * (a.re + b.re),
+                im: 0.5 * (a.im + b.im),
+            };
+            let o = Complex {
+                re: 0.5 * (a.im - b.im),
+                im: -0.5 * (a.re - b.re),
+            };
+            let x = e.add(split_twiddle_reference(k).mul(o));
+            (x.re * x.re + x.im * x.im) * POWER_SCALE
+        })
+        .collect()
+}
+
+#[test]
+fn powers_equal_the_reference_bit_for_bit() {
+    // Windows of noise at several scales up to the input limit, silence,
+    // a constant, full-scale tones on and between bins, and subnormals;
+    // every bin, and ranges that start and end at bin 0, at 960 / 961
+    // (where the split twiddle turns) and across chunk boundaries.
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let mut windows: Vec<[f32; WINDOW]> = Vec::new();
+    for scale in [1e-30f32, 1e-6, 0.03, 1.0, 65_536.0] {
+        for _ in 0..6 {
+            let mut x = [0.0f32; WINDOW];
+            for v in x.iter_mut() {
+                *v = scale * noise(&mut seed);
+            }
+            windows.push(x);
+        }
+    }
+    windows.push([0.0; WINDOW]);
+    windows.push([-0.75; WINDOW]);
+    for cycles in [0.0f64, 32.0, 480.0, 960.5, 1_919.0, 1_919.75] {
+        let mut x = [0.0f32; WINDOW];
+        for (n, v) in x.iter_mut().enumerate() {
+            let a = 2.0 * core::f64::consts::PI * cycles * n as f64 / WINDOW as f64;
+            *v = (65_536.0 * libm::cos(a)) as f32;
+        }
+        windows.push(x);
+    }
+    let mut tiny = [0.0f32; WINDOW];
+    for v in tiny.iter_mut() {
+        *v = 1e-39 * noise(&mut seed);
+    }
+    windows.push(tiny);
+    let ranges = [
+        (0, BINS),
+        (0, 1),
+        (1, 959),
+        (900, 120),
+        (960, 1),
+        (961, 959),
+        (959, 3),
+        (32, 960),
+        (64, 864),
+        (1_919, 1),
+        (897, 65),
+    ];
+    let mut buf = FftBuffer::new();
+    for x in &windows {
+        let want = power_reference(x);
+        for &(first, count) in &ranges {
+            let mut got = std::vec![f32::NAN; count];
+            power_spectrum(x, &mut buf, first, &mut got);
+            for (i, (g, w)) in got.iter().zip(&want[first..first + count]).enumerate() {
+                assert_eq!(g.to_bits(), w.to_bits(), "bin {}: {g:e} {w:e}", first + i);
+            }
+            // Both forms of the per-bin loop, whichever this target uses.
+            for lanes in [1, 4] {
+                got.fill(f32::NAN);
+                if lanes == 1 {
+                    bin_powers::<1>(&buf.re, &buf.im, first, &mut got);
+                } else {
+                    bin_powers::<4>(&buf.re, &buf.im, first, &mut got);
+                }
+                for (i, (g, w)) in got.iter().zip(&want[first..first + count]).enumerate() {
+                    assert_eq!(
+                        g.to_bits(),
+                        w.to_bits(),
+                        "{lanes}: bin {}: {g:e} {w:e}",
+                        first + i
+                    );
+                }
             }
         }
     }

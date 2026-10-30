@@ -17,10 +17,14 @@
 //! transform (Cooley and Tukey, 1965; Singleton, 1969) plus the standard
 //! real-split step. Own code; `f32` `+ − ×` only, in a fixed order.
 //!
-//! - **Complex transform.** Decimation in time, in place. The input is
-//!   loaded in digit-reversed order (a compile-time table), then six
-//!   stages of radix 4, 4, 4, 2, 3, 5 (innermost first) run butterflies
-//!   whose twiddles come from one static table of e^(−2πit/1920).
+//! - **Complex transform.** Decimation in time, in place, on separate
+//!   real and imaginary arrays. The input is loaded in digit-reversed
+//!   order (a compile-time table), then six stages of radix 4, 4, 4, 2, 3,
+//!   5 (innermost first) run butterflies whose twiddles come from one
+//!   static table of e^(−2πit/1920). Independent butterflies run side by
+//!   side ([`LANES`] at a time) so that vector units take them together;
+//!   each keeps its own operations in the same order, so the result does
+//!   not depend on the lane count or the target.
 //! - **Real split.** The 3 840 real samples are packed as 1 920 complex
 //!   values `z[n] = x[2n] + i·x[2n+1]`; bin k of the real transform is
 //!   `X[k] = E[k] + W₃₈₄₀ᵏ·O[k]`, with E and O from `Z[k]` and `Z[1920 − k]`.
@@ -80,13 +84,15 @@ static DIGIT_REV: [u16; N] = {
     table
 };
 
-/// A complex value.
+/// A complex value (the reference transform in the tests).
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub(crate) struct Complex {
     pub(crate) re: f32,
     pub(crate) im: f32,
 }
 
+#[cfg(test)]
 impl Complex {
     const ZERO: Complex = Complex { re: 0.0, im: 0.0 };
 
@@ -112,18 +118,21 @@ impl Complex {
     }
 }
 
-/// Working storage for one transform: 1 920 complex values (15 360
-/// bytes), caller-owned so it can live in a `static`.
+/// Working storage for one transform: 1 920 complex values as separate
+/// real and imaginary parts (15 360 bytes), caller-owned so it can live
+/// in a `static`.
 #[derive(Debug, Clone)]
 pub(crate) struct FftBuffer {
-    work: [Complex; N],
+    re: [f32; N],
+    im: [f32; N],
 }
 
 impl FftBuffer {
     /// A zeroed buffer (usable in a `static` initialiser).
     pub(crate) const fn new() -> Self {
         FftBuffer {
-            work: [Complex::ZERO; N],
+            re: [0.0; N],
+            im: [0.0; N],
         }
     }
 }
@@ -140,16 +149,27 @@ fn hann(n: usize) -> f32 {
     HANN_HALF[n.min(WINDOW - n)]
 }
 
-/// In-place 1 920-point complex DFT of `buf`, whose input is already in
-/// digit-reversed order. Output in natural order.
-fn fft(buf: &mut [Complex; N]) {
-    // One call per entry of `STAGES` (checked at compile time below).
-    stage::<4>(buf, 1);
-    stage::<4>(buf, 4);
-    stage::<4>(buf, 16);
-    stage::<2>(buf, 64);
-    stage::<3>(buf, 128);
-    stage::<5>(buf, 384);
+/// Butterflies computed side by side: four where the target has 128-bit
+/// vectors of `f32`, else one (a Cortex-M then runs the plain loops). The
+/// result is the same for any value: lanes are independent butterflies.
+const LANES: usize = if cfg!(any(target_feature = "sse2", target_feature = "neon")) {
+    4
+} else {
+    1
+};
+
+/// In-place 1 920-point complex DFT of (`re`, `im`), whose input is
+/// already in digit-reversed order. Output in natural order. `L`
+/// butterflies at a time ([`LANES`] outside the tests).
+fn fft<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
+    // One call per entry of `STAGES` (checked at compile time below). The
+    // first stage (`l` = 1) has one butterfly per block: one lane.
+    stage::<4, 1>(re, im, 1);
+    stage::<4, L>(re, im, 4);
+    stage::<4, L>(re, im, 16);
+    stage::<2, L>(re, im, 64);
+    stage::<3, L>(re, im, 128);
+    stage::<5, L>(re, im, 384);
 }
 
 const _: () = {
@@ -159,15 +179,31 @@ const _: () = {
         assert!(STAGES[i] == calls[i]);
         i += 1;
     }
+    // Every stage after the first has a multiple of LANES butterflies per
+    // block (LANES divides 4, the least `l` there), and the last stage's
+    // twiddle lanes do not wrap (see `stage`): N is a multiple of 4·m, so
+    // of LANES·m, for every m < 5.
+    assert!(LANES == 1 || LANES == 2 || LANES == 4);
+    let mut m = 1;
+    while m < 5 {
+        assert!(N % (4 * m) == 0);
+        m += 1;
+    }
 };
 
-/// One radix-`R` stage over sub-transforms of length `l`: for each
-/// `k < l` and each block of `l · R` values,
+/// One radix-`R` stage over sub-transforms of length `l` (a multiple of
+/// `L`): for each `k < l` and each block of `l · R` values,
 /// out[q] = Σ_m a[m] · W_span^(m · (k + q·l)), summed in the order of `m`.
 /// The `m = 0` twiddle is exactly 1 (`TWIDDLES[0]` = [1.0, −0.0]), so that
 /// product is the value itself and is not computed. (Its sign of zero may
 /// differ from the product's, which no later `+ − ×` or the power can
-/// tell.) The twiddles depend only on `k`, so they are read once per `k`.
+/// tell.) The `L` butterflies of adjacent `k` run side by side.
+///
+/// The twiddles depend only on `k`. With several blocks they are read once
+/// per group of `k` and reused. The last stage has one block, so each is
+/// read where it is used: lane j of (m, q) is `TWIDDLES[f + j·m]`, where
+/// f = m·(k + q·l) mod N is a multiple of `L`·m (k and l are multiples of
+/// `L`, and N of `L`·m), so f + (`L` − 1)·m < N and the lanes do not wrap.
 ///
 /// **Precondition: finite input.** Skipping the product equals computing it
 /// only for finite values: with an infinite component the product's
@@ -179,28 +215,82 @@ const _: () = {
 ///
 /// [`INPUT_LIMIT`]: super::frontend::INPUT_LIMIT
 #[inline(always)]
-fn stage<const R: usize>(buf: &mut [Complex; N], l: usize) {
+fn stage<const R: usize, const L: usize>(re: &mut [f32; N], im: &mut [f32; N], l: usize) {
     let span = l * R;
     let step = N / span; // W_span^x = W_N^(x · step)
-    for k in 0..l {
-        let mut w = [[Complex::ZERO; R]; R];
-        for (m, wm) in w.iter_mut().enumerate().skip(1) {
-            for (q, wmq) in wm.iter_mut().enumerate() {
-                *wmq = Complex::from_pair(TWIDDLES[(m * (k + q * l) * step) % N]);
+    let mut k0 = 0;
+    if span == N {
+        while k0 < l {
+            butterflies::<R, L>(re, im, k0, l, |m, q| {
+                let f = (m * (k0 + q * l)) % N;
+                let t = &TWIDDLES[f..f + (L - 1) * m + 1];
+                (
+                    core::array::from_fn(|j| t[j * m][0]),
+                    core::array::from_fn(|j| t[j * m][1]),
+                )
+            });
+            k0 += L;
+        }
+    } else {
+        while k0 < l {
+            // Row m = 0 is filled too, though unused: with every entry
+            // written the array needs no zeroing first.
+            let mut w = [[([0.0f32; L], [0.0f32; L]); R]; R];
+            for (m, wm) in w.iter_mut().enumerate() {
+                for (q, wmq) in wm.iter_mut().enumerate() {
+                    for j in 0..L {
+                        let t = TWIDDLES[(m * (k0 + j + q * l) * step) % N];
+                        wmq.0[j] = t[0];
+                        wmq.1[j] = t[1];
+                    }
+                }
+            }
+            let mut base = k0;
+            while base < N {
+                butterflies::<R, L>(re, im, base, l, |m, q| w[m][q]);
+                base += span;
+            }
+            k0 += L;
+        }
+    }
+}
+
+/// `L` radix-`R` butterflies side by side, at `k` = `base` + j of a block
+/// (inputs at `base + m · l`), with the twiddles of (m, q) from `w`, called
+/// for m = 1.. within q = 0.. in order.
+#[inline(always)]
+fn butterflies<const R: usize, const L: usize>(
+    re: &mut [f32; N],
+    im: &mut [f32; N],
+    base: usize,
+    l: usize,
+    mut w: impl FnMut(usize, usize) -> ([f32; L], [f32; L]),
+) {
+    let len = (R - 1) * l + L;
+    let (r, i) = (&mut re[base..base + len], &mut im[base..base + len]);
+    let mut ar = [[0.0f32; L]; R];
+    let mut ai = [[0.0f32; L]; R];
+    for m in 0..R {
+        for j in 0..L {
+            ar[m][j] = r[m * l + j];
+            ai[m][j] = i[m * l + j];
+        }
+    }
+    for q in 0..R {
+        let mut sr = ar[0];
+        let mut si = ai[0];
+        for m in 1..R {
+            let (wr, wi) = w(m, q);
+            for j in 0..L {
+                let pr = ar[m][j] * wr[j] - ai[m][j] * wi[j];
+                let pi = ar[m][j] * wi[j] + ai[m][j] * wr[j];
+                sr[j] += pr;
+                si[j] += pi;
             }
         }
-        for block in buf.chunks_exact_mut(span) {
-            let mut a = [Complex::ZERO; R];
-            for (m, am) in a.iter_mut().enumerate() {
-                *am = block[k + m * l];
-            }
-            for q in 0..R {
-                let mut acc = a[0];
-                for m in 1..R {
-                    acc = acc.add(a[m].mul(w[m][q]));
-                }
-                block[k + q * l] = acc;
-            }
+        for j in 0..L {
+            r[q * l + j] = sr[j];
+            i[q * l + j] = si[j];
         }
     }
 }
@@ -236,53 +326,52 @@ pub(crate) fn fft_reference(buf: &mut [Complex; N]) {
     }
 }
 
-/// The real-split twiddle W₃₈₄₀ᵏ for k in 0..1 920. The table holds
-/// k ≤ 960; above that W₃₈₄₀ᵏ = −i · W₃₈₄₀^(k−960), which is exact.
-#[inline]
-fn split_twiddle(k: usize) -> Complex {
-    if k <= 960 {
-        Complex::from_pair(SPLIT_TWIDDLES[k])
-    } else {
-        let w = SPLIT_TWIDDLES[k - 960];
-        Complex {
-            re: w[1],
-            im: -w[0],
-        }
-    }
-}
-
-/// The windowed spectrum of `samples`: bin `k` of the real transform
-/// (k = 0..1 920, 3.125 Hz apart) as a complex value, for every bin.
+/// The windowed spectrum of `samples`: the complex transform of the
+/// packed samples (Z[k], k = 0..1 920) in `buf`.
 fn spectrum(samples: &[f32; WINDOW], buf: &mut FftBuffer) {
-    for (p, slot) in buf.work.iter_mut().enumerate() {
-        let n = usize::from(DIGIT_REV[p]);
-        *slot = Complex {
-            re: samples[2 * n] * hann(2 * n),
-            im: samples[2 * n + 1] * hann(2 * n + 1),
-        };
+    for (p, &n) in DIGIT_REV.iter().enumerate() {
+        let n = usize::from(n);
+        buf.re[p] = samples[2 * n] * hann(2 * n);
+        buf.im[p] = samples[2 * n + 1] * hann(2 * n + 1);
     }
-    fft(&mut buf.work);
+    fft::<LANES>(&mut buf.re, &mut buf.im);
 }
 
-/// Real-transform bin `k` (0..1 920) from the complex transform `z`.
-#[inline]
-fn real_bin(z: &[Complex; N], k: usize) -> Complex {
-    let a = z[k];
-    let c = z[(N - k) % N];
-    let b = Complex {
-        re: c.re,
-        im: -c.im,
-    }; // conj(Z[N − k])
-       // E = (a + b) / 2; O = (a − b) / (2i) = −i · (a − b) / 2
-    let e = Complex {
-        re: 0.5 * (a.re + b.re),
-        im: 0.5 * (a.im + b.im),
-    };
-    let o = Complex {
-        re: 0.5 * (a.im - b.im),
-        im: -0.5 * (a.re - b.re),
-    };
-    e.add(split_twiddle(k).mul(o))
+/// Normalised power of real-transform bin k from a = Z[k], c = Z[N − k]
+/// and the real-split twiddle w = W₃₈₄₀ᵏ: |E + w·O|² / 960², with
+/// E = (a + b) / 2, O = (a − b) / (2i) = −i · (a − b) / 2, b = conj(c).
+#[inline(always)]
+fn bin_power(ar: f32, ai: f32, cr: f32, ci: f32, wr: f32, wi: f32) -> f32 {
+    let (br, bi) = (cr, -ci);
+    let (er, ei) = (0.5 * (ar + br), 0.5 * (ai + bi));
+    let (or, oi) = (0.5 * (ai - bi), -0.5 * (ar - br));
+    let xr = er + (wr * or - wi * oi);
+    let xi = ei + (wr * oi + wi * or);
+    (xr * xr + xi * xi) * POWER_SCALE
+}
+
+/// Powers of bins `k .. k + out.len()` (1 ≤ k, k + out.len() ≤ N) into
+/// `out`, the real-split twiddle of bin k + j being `tw[j]`, or, if
+/// `ROTATE`, −i · `tw[j]` (exact: W₃₈₄₀ᵏ = −i · W₃₈₄₀^(k−960)). A plain
+/// loop over bins, so it vectorises.
+#[inline(always)]
+fn powers<const ROTATE: bool>(
+    re: &[f32; N],
+    im: &[f32; N],
+    k: usize,
+    out: &mut [f32],
+    tw: &[[f32; 2]],
+) {
+    let n = out.len();
+    let (ar, ai) = (&re[k..k + n], &im[k..k + n]);
+    let tw = &tw[..n];
+    // Z[N − k − j] for j = 0..n, in reverse order.
+    let (cr, ci) = (&re[N + 1 - k - n..N + 1 - k], &im[N + 1 - k - n..N + 1 - k]);
+    let c = cr.iter().rev().zip(ci.iter().rev());
+    for ((((slot, &ar), &ai), (&cr, &ci)), w) in out.iter_mut().zip(ar).zip(ai).zip(c).zip(tw) {
+        let (wr, wi) = if ROTATE { (w[1], -w[0]) } else { (w[0], w[1]) };
+        *slot = bin_power(ar, ai, cr, ci, wr, wi);
+    }
 }
 
 /// Normalised power of bins `first_bin .. first_bin + out.len()` of the
@@ -328,12 +417,58 @@ pub(crate) fn power_bins<F: FnMut(usize, &[f32])>(
     let mut i = 0;
     while i < count {
         let n = (count - i).min(POWER_CHUNK);
-        for (j, slot) in p[..n].iter_mut().enumerate() {
-            let x = real_bin(&buf.work, first_bin + i + j);
-            *slot = (x.re * x.re + x.im * x.im) * POWER_SCALE;
-        }
+        bin_powers::<LANES>(&buf.re, &buf.im, first_bin + i, &mut p[..n]);
         f(i, &p[..n]);
         i += n;
+    }
+}
+
+/// Powers of real-transform bins `k0 .. k0 + out.len()` into `out`. With
+/// one lane, bin by bin (the least code, for a Cortex-M); else bin 0 (which
+/// pairs with itself), the bins to 960 and those above as separate plain
+/// loops, which vectorise. The same values either way.
+fn bin_powers<const L: usize>(re: &[f32; N], im: &[f32; N], k0: usize, out: &mut [f32]) {
+    let n = out.len();
+    if L == 1 {
+        for (j, slot) in out.iter_mut().enumerate() {
+            let k = k0 + j;
+            let c = (N - k) % N;
+            let (wr, wi) = if k <= 960 {
+                let w = SPLIT_TWIDDLES[k];
+                (w[0], w[1])
+            } else {
+                let w = SPLIT_TWIDDLES[k - 960];
+                (w[1], -w[0])
+            };
+            *slot = bin_power(re[k], im[k], re[c], im[c], wr, wi);
+        }
+        return;
+    }
+    let zero = usize::from(k0 == 0);
+    if zero == 1 {
+        let w = SPLIT_TWIDDLES[0];
+        out[0] = bin_power(re[0], im[0], re[0], im[0], w[0], w[1]);
+    }
+    let k1 = k0 + zero;
+    let low = (k0 + n).min(961).saturating_sub(k1);
+    if low > 0 {
+        powers::<false>(
+            re,
+            im,
+            k1,
+            &mut out[zero..zero + low],
+            &SPLIT_TWIDDLES[k1..],
+        );
+    }
+    let k2 = k1 + low;
+    if zero + low < n {
+        powers::<true>(
+            re,
+            im,
+            k2,
+            &mut out[zero + low..],
+            &SPLIT_TWIDDLES[k2 - 960..],
+        );
     }
 }
 
