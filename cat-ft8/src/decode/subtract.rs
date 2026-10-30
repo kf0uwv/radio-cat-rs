@@ -857,8 +857,8 @@ fn run(
     held: &mut [u8],
 ) -> Result<Subtraction, Error> {
     config.validate()?;
-    // The held reference's ring, in pairs.
-    // A multiple of LANES (see the fit's loop).
+    // The held reference's ring, in pairs, rounded down to a multiple of
+    // LANES for speed only (no lane wraps); results do not depend on it.
     let ring = (held.len() / PAIR).min(HELD) / LANES * LANES;
     if ring < BLOCK {
         return Err(Error::BufferTooSmall);
@@ -1351,11 +1351,11 @@ impl Correction {
         p
     }
 
-    /// Moves over `n` samples: the same state as `n` calls of
-    /// [`Correction::next`] (the sums of the steps in closed form, modulo
-    /// 2⁶⁴).
+    /// Moves over `n < 2³²` samples: the same state as `n` calls of
+    /// [`Correction::next`] (the steps' sums in closed form, modulo 2⁶⁴).
     fn skip(&mut self, n: usize) {
         let n = n as u64;
+        debug_assert!(n < 1 << 32, "n·(n − 1) must not overflow");
         let pairs = n * n.saturating_sub(1) / 2;
         let (step, accel) = (self.step as u64, self.accel as u64);
         self.phase = self

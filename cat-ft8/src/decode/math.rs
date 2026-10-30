@@ -211,16 +211,16 @@ pub(crate) fn atan2_turns(y: f32, x: f32) -> f32 {
 /// vector operation, which is the form the compiler maps onto registers.
 pub(crate) const LANES: usize = 4;
 
-// Minimax polynomials (absolute error, on |t| ≤ 1/8 turn) for
-// sin(2πt) = t·(S1 + S3·t² + S5·t⁴) and cos(2πt) = C0 + C2·t² + C4·t⁴,
-// rounded to `f32`. Evaluated in `f32` as written below (Horner, no fused
-// multiply-add), the error at every `u32` phase is below 1.1 × 10⁻⁵ (the
-// cosine's; the sine's is 6.6 × 10⁻⁷), against the quarter-wave table's
-// 3.5 × 10⁻⁷. The degree is the least whose error does not show in the
-// subtraction: clean signals leave −100 dB of their energy (the table and
-// degrees 7 and 6, −103 dB), against −53 dB from a start between samples;
-// degrees 7 and 6 (error 1.6 × 10⁻⁷) cost 2.8% more of an A76 three-pass
-// slot.
+// sin(2πt) = t·(S1 + S3·t² + S5·t⁴) and cos(2πt) = C0 + C2·t² + C4·t⁴:
+// fitted for this crate (Remez exchange for minimax absolute error on
+// |t| ≤ 1/8 turn, each coefficient then rounded to `f32`); reproducible
+// with any minimax fitter. Evaluated in `f32` as written below (Horner, no
+// fused multiply-add), the error at every `u32` phase is below 1.1 × 10⁻⁵
+// (the cosine's; the sine's is 6.6 × 10⁻⁷), against the quarter-wave
+// table's 3.5 × 10⁻⁷. The degree is the least whose error does not show in
+// the subtraction: clean signals leave −100 dB of their energy (the table
+// and degrees 7 and 6, −103 dB), against −53 dB from a start between
+// samples; degrees 7 and 6 (error 1.6 × 10⁻⁷) cost 2.8% more of an A76 three-pass slot.
 const S1: f32 = 6.283_154_5;
 const S3: f32 = -41.325_558;
 const S5: f32 = 79.528_26;

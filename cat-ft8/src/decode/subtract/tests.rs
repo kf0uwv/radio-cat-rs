@@ -872,3 +872,57 @@ fn lane_bounds_split_at_multiples_of_the_lanes() {
         }
     }
 }
+
+/// The time search's correlations where the usable audio starts and ends
+/// inside a symbol's middle half, at every offset modulo [`LANES`] (and at
+/// starts that are not multiples of it): each block's products summed in
+/// the documented order, sample i of the block in lane i % `LANES`, each
+/// lane in sample order, the lanes added by [`sum_lanes`]. Bit for bit.
+#[test]
+fn time_search_lanes_follow_the_sample_index_at_any_start() {
+    let audio = noisy_slot();
+    let tones = encode_payload(&decode_near(1_234.5, 0.31).payload);
+    let synth = Synth::new(&tones, 1_234.5, 1.0).unwrap();
+    let mut work = std::vec![0u8; SCRATCH_BYTES];
+    let core = |j0: usize| (CORE_START..CORE_END).contains(&(j0 % T));
+    let mut checked = 0;
+    for start in [-1_001i64, 4_001, 4_002, 4_003, 4_004] {
+        for r in 0..LANES as i64 {
+            let lo_off = (T + CORE_START + 37) as i64 + r;
+            let hi_off = (50 * T + CORE_START + 101) as i64 + 3 * r;
+            let usable = Usable {
+                lo: (start + lo_off).max(0),
+                hi: start + hi_off,
+            };
+            let got = symbol_correlations(&audio, usable, &synth, start, &mut work);
+            let mut want = [(0.0f32, 0.0f32); SYMBOL_COUNT];
+            let end = usable.range(start, 0, WAVEFORM_SAMPLES).1;
+            blocks(&synth, end, core, |j0, phase, _| {
+                let (mut re, mut im) = ([0.0f32; LANES], [0.0f32; LANES]);
+                let mut any = false;
+                for (i, &q) in phase.iter().enumerate() {
+                    let s = start + (j0 + i) as i64;
+                    if s < usable.lo || s >= usable.hi {
+                        continue;
+                    }
+                    let w = input(audio[s as usize]);
+                    let (c, sn) = cos_sin_turns(q);
+                    re[i % LANES] += w * c;
+                    im[i % LANES] += w * sn;
+                    any = true;
+                }
+                if any {
+                    want[j0 / T].0 += sum_lanes(re);
+                    want[j0 / T].1 -= sum_lanes(im);
+                }
+            });
+            let bits = |v: &[(f32, f32)]| -> Vec<(u32, u32)> {
+                v.iter().map(|&(a, b)| (a.to_bits(), b.to_bits())).collect()
+            };
+            assert_eq!(bits(&got), bits(&want), "start {start} r {r}");
+            assert!(got.iter().any(|&(a, _)| a != 0.0), "start {start} r {r}");
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 20);
+}
