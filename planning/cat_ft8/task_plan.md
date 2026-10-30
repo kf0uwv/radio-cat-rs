@@ -1560,6 +1560,12 @@ general-to-vector register moves in half-vectorised loops).
    acceptance; **the acceptance run is not made** until the criteria
    are reviewed.
 
+Status (findings, "ninth round"): developed and measured on `o9-vsin`
+(a5c4a6c, a1119ed, ee7c0ce, d4e669e; ADR note 0c6f3bf). Degree 5/4.
+A76 three-pass slot 187.0 → 151.1 ms (−19.2%), x86-64 −19.0%; on
+main/cap1/cap2 1 lost (marginal), 0 gained, 0 false, pass 1 identical.
+Gate proposed on block `accept3`; not run.
+
 ## Next: gated, result-changing rounds
 
 Each changes results and needs its own acceptance (the run sets, the

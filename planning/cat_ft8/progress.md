@@ -1244,3 +1244,35 @@
   explained; 0 false; 0 gained; pass 1 identical; `wide` < −16 dB 0
   of 1 814). The cap is dropped; 0f0341c stays on `gate-cap25`.
 - O7's 10 losses reclassified: all ranking losses (a), no knock-on.
+
+## Session: 2026-10-30 (O9, vector sine and cosine in the subtraction; branch `o9-vsin`)
+
+- 853961f: O9 plan (task_plan.md), committed before the code.
+- a5c4a6c: `Correction::skip` in closed form; identical results (all
+  pins hold). A76 −0.5%, x86-64 +2% (placement; kept, steps 2–3 use it).
+- a1119ed: the fit's and the removal's reference by polynomial
+  (`cos_sin_turns`, degree 7/6 then), split into vectorising loops
+  (correction in four `u64` lanes in place, reference map, fit sums in
+  four lanes keyed by j % 4, fixed order); ring a multiple of 4 pairs.
+  Pins re-pinned. A76 slot −12.4%.
+- ee7c0ce: the time search's correlations the same way (products in the
+  scratch, lane sums). Pins re-pinned. A76 −4.6% more.
+- 0c6f3bf: ADR 0024 note (degree text updated in d4e669e).
+- d4e669e: degree 5/4 (error 1.0e-5; −100 dB left of a clean signal
+  against the table's −103; 2.8% faster on the A76 than 7/6). Pins
+  re-pinned. Release binaries byte-identical to the measurement branch
+  `o9-d54` (ec72aa0), whose measurements are therefore d4e669e's.
+- Slot (A76, `slotcost`, two alternated rounds): 187.0 → 151.1 ms
+  (−19.2%), subtraction 107.5 → 72.1; x86-64 104.8–105.0 → 85.0
+  (−19.0%). Host flash +3 740 B, `subtract` frame +272 B; small and
+  encoder images unchanged; no FMA, no `f64` helper.
+- M33 (static): fit ≈ 127 instructions per sample against 110 (lane
+  loops not unrolled at `opt-level = "s"`); time search equal; one path
+  kept (a Cortex-M table under `cfg` would break cross-target identity).
+- Effect (main, cap1, cap2; 127 336 messages): degree 7/6 0 lost 0
+  gained; degree 5/4 1 lost (marginal: 29 BP rounds at bafed37) 0
+  gained; 0 false; pass 1 identical; `compare` PASS everywhere. 800 WAV:
+  same messages in the same passes in every run; 605 lines differ in
+  later-pass parameters and profile counters. Encoder output identical.
+- Proposed gate in findings.md (block `accept3`, unused); **acceptance
+  not run**, pending review.

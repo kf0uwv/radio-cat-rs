@@ -3635,3 +3635,326 @@ What is kept: the measurement that 25 further-pass candidates take
 later attempt at the same saving, the knock-on mechanism (a cap that
 moves a deep pass-2 decode into pass 3 leaves its neighbours without
 a pass that searches the residual without it).
+
+## Vector sine and cosine in the subtraction, ninth round (O9, gated, 2026-10-30)
+
+The plan is task_plan.md, "O9". Developed on the local branch `o9-vsin`
+from bafed37 (not merged); measured on x86-64 and the Raspberry Pi 5's
+Cortex-A76 with the hygiene of O5–O8 (every timed binary built from one
+source path into its own target directory per commit, SHA-256 checked on
+the Pi, rounds alternated, one benchmark at a time, `vcgencmd
+get_throttled` 0x50000 before and after every Pi run). **Not adopted:
+the gate below is proposed for review; the acceptance run has not been
+made.**
+
+### Design
+
+1. **Sine and cosine by polynomial** (`decode::math::cos_sin_turns`). The
+   `u32` phase is reduced in integer arithmetic: `u = phase + 2²⁹`, the
+   quarter `k = u >> 30`, the remainder `r = (u & (2³⁰ − 1)) − 2²⁹` in
+   [−2²⁹, 2²⁹) (exact), converted once to `f32` and scaled exactly to
+   turns (|t| ≤ ⅛). An odd sine `t·(S1 + S3·t² + S5·t⁴)` and an even
+   cosine `C0 + C2·t² + C4·t⁴` (minimax for absolute error on |t| ≤ ⅛,
+   coefficients rounded to `f32`, Horner, no FMA) are both taken; `k`
+   swaps them by a mask and sets the signs by XOR of bit 31. No branch
+   and no table, so a loop over samples maps onto 4-lane vectors. The
+   encoder (`sin_turns`, `cos_turns`, `Synth`) keeps the quarter-wave
+   table; the time search's 15 rotations per trial (not per sample) keep
+   it too.
+2. **Loops split so that each one vectorises, nothing scalar inside.** A
+   first form computed four samples per iteration with the sums in the
+   same loop (SLP vectorisation of `[f32; 4]` lanes): the AArch64 code
+   filled with lane shuffles and general-to-vector moves (the
+   time-search loop 91 instructions per 4 samples with 21 GPR↔SIMD
+   transfers; the fit loop 113–174 with 16–28; `input`'s clamp done
+   lane by lane with branches), the O6 padded-table failure again. The
+   kept form, per block of 240 samples:
+   - the frequency correction added to the generator's phases in place,
+     four lanes of the exact quadratic phase at a time (`u64` lanes
+     stepping by 4·step + 6·accel, then 16·accel: the same integers as
+     `Correction::next`, tested), and `Correction::skip` in closed form;
+   - a map loop: the reference `w·cos`, `w·sin` (fit, removal's second
+     run) or the products `input(x)·cos`, `input(x)·sin` (time search),
+     stored as pairs in the held ring or the scratch (the time search's
+     block of products goes through the subtraction's scratch, idle at
+     that point: no stack growth). On AArch64 (degree 7/6): 40
+     instructions per 4 samples for the reference, 59 for the products
+     (the input clamp included), `scvtf`/`fmul`/`fadd`/`bsl`/`st2`, no
+     general-to-vector move but constants; x86-64 likewise (`cvtdq2ps`);
+   - the sums from the stored pairs in four lanes: the fit's five
+     (`Fit4`, 27 instructions per 4 samples on AArch64) and the time
+     search's two (9 per 4 samples).
+3. **Fixed-order sums.** Waveform sample j goes to lane j % 4 (blocks
+   start at multiples of 240), each lane in sample order (single samples
+   before and after the whole lanes of a block go to their lane by
+   index), and the lanes are added `(l0 + l1) + (l2 + l3)` at the end of
+   the segment (fit) or block (time search). The order is set by the
+   sample index alone, so it is the same on every target, for every
+   scratch size (the held ring is now a multiple of 4 pairs, so 4 samples
+   from a multiple of 4 never wrap) and whether the reference is held or
+   rerun (the existing tests of both pass). Sine sums are taken positive
+   and their sign turned once (exact: negation commutes with rounding).
+   Portable Rust only: no `unsafe`, no `std::arch`, `f32`, MSRV 1.75
+   (`next_multiple_of`), `no_std`.
+
+### Degree
+
+Largest absolute error against `libm` in `f64`, over **every** `u32`
+phase (exhaustive test, ignored by default; f32 evaluation as compiled),
+and what the subtraction leaves of a clean signal (400 single signals of
+four messages, 200–2 800 Hz, −0.5…+1.0 s, amplitude 0.1, no noise;
+residual energy over the signal's, power mean / median / worst; with the
+decoder's estimates, and with start and frequency imposed):
+
+| reference | error (all phases) | left, estimated | left, start and frequency imposed | A76 three-pass slot | x86-64 |
+|---|---|---|---|---|---|
+| quarter-wave table (bafed37) | 3.5 × 10⁻⁷ | −103.00 / −104.73 / −94.60 dB | −103.01 / −105.48 / −94.66 dB | 187.0 ms | 104.8–105.0 |
+| degree 7 / 6 (ee7c0ce) | 1.58 × 10⁻⁷ | −103.05 / −104.79 / −94.61 | −103.06 / −105.55 / −94.66 | 155.5 | 87.4–87.6 |
+| **degree 5 / 4 (d4e669e)** | **1.01 × 10⁻⁵** (sine 6.5 × 10⁻⁷) | −100.04 / −100.84 / −94.03 | −100.05 / −101.12 / −94.07 | **151.1** | **85.0** |
+| degree 3 / 2 (not built) | 1.9 × 10⁻³ (grid) | — | — | — | — |
+
+Degree 5/4 is chosen: its error leaves −100 dB of a signal, 47 dB below
+the −53 dB a start between samples leaves (S2) and far below the noise of
+any slot, and it is 2.8% faster on the A76 than 7/6 (4.4 ms per slot,
+both rounds), above the 2% rule. Degree 3/2 (error ~2 × 10⁻³, about
+−57 dB) would approach the timing residue and was not pursued. The
+cosine's constant is the minimax one (0.999 990 05), so at the quarter
+turns only the zero part is exact (tested). Effect of the two degrees on
+decodes: below.
+
+### Slot time per step
+
+`slotcost host,passes=1 host 200 5` (the 200 40-signal crowded slots of
+`main`, three passes against one), five binaries round-robin in two
+rounds, the order reversed in the second; worst / mean ms of the
+three-pass slot, both rounds; subtraction and BP means:
+
+| step | A76 three passes | A76 subtraction | x86-64 three passes | x86-64 subtraction |
+|---|---|---|---|---|
+| base (bafed37) | 201.8–201.9 / 187.0 | 107.5 | 114.4–114.6 / 104.8–105.0 | 59.3–59.5 |
+| 1. correction skip in closed form (a5c4a6c; identical results) | 200.8–200.9 / 186.1 (−0.5%) | 106.7 | 116.9–117.3 / 107.0–107.1 (+2.0%) | 62.1–62.2 |
+| 2. fit and removal by polynomial, fit sums in lanes (a1119ed) | 174.8 / 163.0 (−12.4%) | 84.0 | 97.3–99.7 / 91.0–91.4 (−14.8%) | 46.2 |
+| 3. time search by polynomial, in lanes (ee7c0ce) | 165.8–165.9 / 155.5 (−4.6%) | 76.3 | 93.5–94.3 / 87.4–87.6 (−4.1%) | 42.0–42.1 |
+| 4. degree 5/4 (d4e669e) | 160.8–160.9 / 151.1 (−2.8%) | 72.1 | 91.3–92.0 / 85.0 (−2.8%) | 40.1 |
+| **base → d4e669e** | **−19.2%** (mean), worst −20.3% | **−33%** | **−19.0%** | **−32%** |
+
+BP, feed and sync are unchanged within 0.5 ms; the single pass is
+unchanged (A76 32.3–32.5 ms, x86-64 18.6–19.0). Step 1 alone is −0.5% on
+the A76 and +2% on x86-64 (subtraction +2.7 ms there, reproducible in two
+rounds of an earlier, interrupted pairwise run as well): the closed form itself costs
+nothing per sample, so this is code placement in `run`; it is kept
+because steps 2–3 need a closed-form skip after the four-lane phases.
+d4e669e's release binaries are byte-identical to the measurement build
+of degree 5/4 (ec72aa0, the same code with the coefficients inline):
+SHA-256 equal on both targets, so its measurements are d4e669e's.
+
+**Every slot of `crowded`, `wide`, `fading` (`main`, 2 000 slots, the
+measure of O8's gate):** `run host` on the A76 pinned to one core
+(`taskset -c 3`), bafed37 and d4e669e, rounds old/new then new/old; mean
+three-pass decode time per slot from the records' stage times: bafed37
+144.51 / 144.51 ms, d4e669e 123.20 / 123.21 ms: **−14.7%** (21.3 ms per
+slot). The A76 records equal the x86-64 records of the same commit
+(2 000 of 2 000, timings removed) and each other across rounds.
+
+### Sizes (`check.sh --stack`, thumbv8m.main-none-eabihf)
+
+| | bafed37 | ee7c0ce | d4e669e |
+|---|---|---|---|
+| flash small / host / encoder | 85 508 / 94 208 / 35 536 B | 85 508 / 98 044 / 35 536 | 85 508 / **97 948** / 35 536 |
+| static RAM small / host / encoder | 212 044 / 241 612 / 0 B | same | same |
+| `subtract` frame (with caller) / run closure | 4 584 / 2 800 B | 4 856 / 2 872 | 4 856 / 2 872 |
+| decoder path frame | 2 488 B | 2 488 | 2 488 |
+
+Host image +3 740 B of flash (the split loops), +272 B of stack in the
+subtraction; the small and encoder-only images unchanged (the small
+configuration runs one pass and does not link the subtraction). No
+`f64` helper in any image; **no fused multiply-add** (`vfma`, `vfms`,
+`vfnma`, `vfnms`) in any thumbv8m image at either commit (the M33 code
+uses `vmla`, which rounds the product and the sum separately). thumbv7em
+builds.
+
+### Cortex-M33 instruction counts (static, host image, `opt-level = "s"`)
+
+Per sample, from the loop bodies (no Cortex-M run, no cycles):
+
+| | bafed37 (table) | d4e669e |
+|---|---|---|
+| fit, reference held (fused) | 110 (one loop) | ≈ 127: correction ≈ 24, reference map 45, sums ≈ 58 |
+| fit, not held | 90 | ≈ 127 (the same three loops) |
+| removal's second run (reference only) | 77 | ≈ 69 (correction ≈ 24, map 45) |
+| time search | 79 | ≈ 78: products 55, lane sums ≈ 23 |
+
+**On the M33 the fit is about 15% (fused) to 40% (not held) more
+instructions per sample than the table; the time search is the same and
+the second run 10% fewer.** The polynomial is not the cost (45
+instructions per sample for sine, cosine and the envelope product
+together): at `opt-level = "s"` the four-lane loops are not
+unrolled, so the lanes' sums and the correction's `u64` lanes go through
+memory every sample. A table path under `cfg` for Cortex-M would give
+different residuals there and break the cross-target identity, so there
+is one path; the subtraction runs only in the host configuration, which
+is not the Cortex-M image's. If an M33 host image ever matters, the
+lane loops are the place to look (cycles unmeasured).
+
+### Effect on decodes (out of tree; main, cap1, cap2 only)
+
+`paired_bench run` on x86-64 (all threads; records are deterministic):
+`host` on `crowded`, `wide`, `fading` of `main`, `cap1` and `cap2`
+(6 000 slots, 127 336 transmitted messages decoded by bafed37), `host`
+on `sweep`, `edges`, `empty` of `main`, and `host,passes=1` and `small`
+on `sweep`, `crowded`, `edges`, `empty` of `main`. Compared per message
+with bafed37 (an out-of-tree script; lost = decoded by bafed37 only):
+
+| | lost | gained | false | pass 1 | decodes moving pass | records differing (timings removed) |
+|---|---|---|---|---|---|---|
+| degree 7/6 (ee7c0ce) | 0 | 0 | 0 | identical | 0 | 1 724 of 24 600 `host` |
+| **degree 5/4 (d4e669e)** | **1** | **0** | **0** | **identical** | 0 | 4 890 of 24 600 `host` |
+
+Per set (both commits): `crowded` 40 452, `wide` 50 996, `fading`
+35 888 decoded over the three blocks, by pass 103 036 / 28 428 / 5 864
+(d4e669e: 5 863 in pass 3); `sweep` 8 764, `edges` 1 228, `empty` 0,
+unchanged; `wide` below −16 dB: 1 788 / 1 887 / 1 843 decoded per block,
+none lost or gained. `host,passes=1` and `small`: 19 200 records each,
+all equal to bafed37's. What differs in the `host` records (ee7c0ce):
+later passes' sync point counts (1 448 pass reports), the reported SNR,
+time, frequency and score of later-pass decodes (730 / 421 / 394 / 203),
+BP rounds of 4 decodes, one candidate index; the slot reports' counts.
+
+**The one loss** (degree 5/4): `fading` `cap2` slot 464 (40 signals)
+`CQ K4TWQ JQ39`, −12.0 dB, 1 552.5 Hz, fade 0.09 Hz depth 0.61: at
+bafed37 a pass-3 decode from the candidate ranked 4 with 26 hard errors
+in 29 belief-propagation rounds (the limit is 30); at d4e669e the same
+message's outcome is `not_converged` (a candidate on it tried, BP did not
+converge). A marginal decode at the edge of the round limit, tipped by a
+residual that differs in its last bits; nothing ranked differently.
+Expected under no systematic effect: losses and gains of this kind
+equally likely; here 1 and 0.
+
+`paired_bench compare` of these records against bafed37's (degree 5/4):
+PASS on every set of every block; `sweep`'s 50% point unmoved
+(−19.122 dB both, shift +0.000 [+0.000, +0.000]); CRC failures and the
+CRC-based expected false-decode rate unchanged in every set. The loss
+classifier of the gate below, run on these records: the one loss is
+kind (m), nothing unexplained (degree 7/6: nothing to classify).
+
+**800 WAV slots** (`cat-ft8-decode`, plain, `--raw` and `--profile`
+without timings): `host,passes=1` and `small` output byte-identical to
+bafed37's. With `host` (three passes): in every one of the 4 800 runs
+the same messages decoded in the same passes; 605 lines differ: 344
+`--profile` summaries (later-pass counters) and 261 decode lines of
+later-pass decodes in their score (255), frequency (12), SNR (9), time
+(6), hard errors and rounds (6), candidate (3); 6 lines are two decodes
+of one slot in the other order. (ee7c0ce: 175 lines, the same kinds.)
+
+**Encoder:** `src/waveform`, `src/message`, `lib.rs` and the encode CLI
+are untouched (empty diff from bafed37); `cat-ft8-encode` output for 45
+cases (5 messages × 3 frequencies × 3 time offsets) byte-identical; the
+golden waveform hashes pass; the encoder-only image is the same size.
+
+**Identity across targets:** the polynomial's coefficients and a sweep
+hash of its outputs are pinned (`cos_sin_turns_pinned`); the subtraction
+anchors and the multi-pass golden hashes re-pinned, checked on x86-64
+and (release suite) the A76. The A76's run records of `main`
+(`crowded`, `wide`, `fading`) equal x86-64's for bafed37 and d4e669e.
+
+### Pins re-pinned (each change explained)
+
+- `math::tests::cos_sin_turns_pinned`: new (coefficient bits, sweep
+  hash 0xc2ee_b714_7593_8caf).
+- `subtract::tests::deterministic_and_pinned` and
+  `anchored_to_the_unheld_subtraction` (3 + 24 hashes): the residual's
+  bits change with the reference's last bits and the sums' order; the
+  held and rerun paths still give the same hashes (both tests check);
+  re-pinned at a1119ed, ee7c0ce and d4e669e. The anchors' doc says so.
+- `tests/decode.rs` `MULTI_GOLDEN` (4 hashes): decodes per slot
+  unchanged (`MULTI_COUNTS` as before), residual bits changed; re-pinned
+  at the same three commits.
+- The tests of the closed-form skip, the four-lane correction and
+  in-place application against `Correction::next` (random states,
+  wrapping), and of `lane_bounds`, are new; nothing else moved.
+
+### Proposed gate (for review; not run)
+
+Written before any acceptance record exists. The candidate is the
+branch's code at d4e669e (a5c4a6c, a1119ed, ee7c0ce, d4e669e and the ADR
+note; degree 5/4) against bafed37. One attempt: a fail means no merge, a
+report and re-measurement, not a retune; there is no second block.
+
+- **Block `accept3`**, never used: no record, log or dump named
+  `accept3` in the build cache, run directories, scratch directories or
+  this repository's history (`git log --all -S accept3` empty; checked
+  2026-10-30, before this commit), nor in the Raspberry Pi 5's bench
+  and temporary directories (checked the same day; to be checked again
+  immediately before the run). `crowded`, `wide`, `fading` decoded once with `run host` at
+  bafed37 and at d4e669e, and once with `host,passes=1` and `small` at
+  d4e669e; the existing paired gates (`compare` against bafed37 on every
+  set of `main`) and the 800 WAV slots.
+- **False decodes: 0, absolute**, in every pass of every record and in
+  the WAV output.
+- **Pass 1 byte-identical:** `host,passes=1` and `small` records equal to
+  bafed37's (timings removed); in every `host` record the pass-1 decodes
+  and pass-1 report equal; WAV output with `host,passes=1` and `small`
+  byte-identical. Only passes 2 and 3 may differ.
+- **Lost (decoded at bafed37, not at d4e669e) at most 3 on `accept3`.**
+  On `main`, `cap1`, `cap2` the change lost 1 and gained 0 of 127 336
+  (all sets): about 0.33 expected on a block of ~42 400. With Poisson
+  counts, P(≥ 4 | 0.33) ≈ 3.9 × 10⁻⁴; even at three times the observed
+  rate (1.0 expected) it is 1.9%, so 4 or more says the rate was
+  underestimated, not that the block was unlucky. Gains are not bounded
+  but each is classified like a loss.
+- **Every lost and gained message classified by script**, as one of:
+  (m) *marginal*: the side that decoded it took ≥ 20 BP rounds or had ≥
+  20 hard errors, and on the other side the message's outcome is
+  `not_converged` or `crc` (a candidate on it was tried and failed);
+  (r) *ranking*: a pass-2/3 decode on one side whose message is
+  `dropped` or `no_peak` on the other (the later search's points
+  reordered by the residual); (k) *knock-on*: a message decoded in an
+  earlier pass within 50 Hz changed pass, was lost or was gained, the
+  chain ending at (m) or (r). One unexplained message fails the gate.
+  The script is checked first on the `main`/`cap1`/`cap2` records (the
+  one loss must come out (m)); that check is not part of the verdict.
+- **`wide` below −16 dB:** at most 1 lost (0 of 5 518 on the three
+  blocks).
+- **800 WAV slots:** in every run the same messages in the same passes,
+  or each difference classified as above; every differing line listed by
+  kind (here: later-pass decodes' score, frequency, SNR, time, hard
+  errors, rounds, candidate; `--profile` later-pass counters; order).
+- **Speed:** on the A76, the three-pass `slotcost host,passes=1 host 200
+  5` mean at least **15%** below bafed37's (measured −19.2%, both rounds
+  within 0.1 ms), and the mean three-pass decode time per slot of the
+  `accept3` run records (`taskset -c 3`, two alternated rounds) at least
+  12% below bafed37's (on `main` it is −14.7%, below: lighter slots
+  spend less of their time subtracting); same hygiene as above. x86-64 `slotcost` not
+  slower than bafed37.
+- **Identity across targets:** the A76's run records of `accept3` equal
+  to x86-64's for both commits (timings removed); the release test suite
+  on the A76 passes (it holds the polynomial's pinned sweep, the
+  subtraction anchors and the multi-pass golden hashes); thumbv8m and
+  thumbv7em build, `check.sh --stack` passes, no `f64` helper and no
+  fused multiply-add instruction in any thumbv8m image (the static cross
+  check: there is no Cortex-M run).
+- **Encoder byte-identical:** no change under `src/waveform`,
+  `src/message`, `lib.rs` or the encode CLI against bafed37; the golden
+  waveform hashes pass; `cat-ft8-encode` output byte-identical to
+  bafed37's over the 45 cases above; the encoder-only image's size
+  unchanged.
+- **If it passes:** the four code commits and the ADR note go onto
+  `feat/cat-ft8` (the measurement branch `o9-d54` does not); then local
+  CI, the Raspberry Pi 5 release suite and a fresh A76 profile.
+
+### Checks at 4e99bc0
+
+Local CI (fmt, clippy `-D warnings` on the workspace, cat-ft8 all targets
+and features and the thumbv8m library, workspace tests, profile and
+no-std tests, release tests with the ignored ones (lib 164, the
+exhaustive sine/cosine test included), the bulk run, MSRV 1.75, docs,
+`check.sh --stack`) passes; thumbv7em builds. 4e99bc0 fixes the no-std
+test build (the exhaustive test printed through `std`); test only.
+Raspberry Pi 5: the release test suite with the ignored tests passes
+(lib 164, then 2 + 0 + 12 + 1 bulk + 7 + 2 + 5); throttle flags 0x50000
+before and after.
+
+**Not measured:** any Cortex-M at run time (static counts only); a
+fresh A76 profile of the new subtraction; off-air audio; slots beyond
+40 signals; the `ceiling` mode (its oracle passes subtract with the true
+waveforms, so it was left to the gate's records rather than run here).
