@@ -20,9 +20,11 @@
 //! the signal actually sits in the audio, and subtracts the scaled
 //! reference in place. It reads only the audio, the decode and its
 //! arguments: no spectrogram and no decoder state. It allocates nothing:
-//! the reference held between steps 3 and 4 is in the caller's
-//! [`SubtractScratch`] (46 080 bytes, usable as a `static`), and the rest of
-//! its working storage is on the stack and bounded (`SUBTRACT_STACK_BYTES`).
+//! the reference held between steps 3 and 4 is in a byte buffer the caller
+//! lends ([`SCRATCH_BYTES`], 46 080 bytes, for one run of the reference;
+//! any buffer that is idle at the time will do, such as the decoder's
+//! spectrogram between passes), and the rest of its working storage is on
+//! the stack and bounded (`SUBTRACT_STACK_BYTES`).
 //!
 //! 1. **Fine time.** For each symbol the audio is correlated with the
 //!    unit reference over the symbol's middle half, giving one complex
@@ -107,42 +109,19 @@ const MIDDLE: f32 = WAVEFORM_SAMPLES as f32 / 2.0;
 /// amplitudes and one block of reference phase and envelope. (The
 /// compiler's frame adds scalars, temporaries and call overhead; the
 /// embedded link check reports it.) The held reference is not on the
-/// stack: it is the caller's [`SubtractScratch`].
+/// stack: it is in the caller's scratch ([`SCRATCH_BYTES`]).
 pub const STACK_BYTES: usize = SYMBOL_COUNT * 8 + GROUPS * 15 * 8 + MAX_SEGMENTS * 8 + BLOCK * 8;
 
-/// Working storage for [`subtract`]: the reference held between the
-/// amplitude fit and the subtraction (46 080 bytes; with segments longer
-/// than two symbols, one block of a second run of the reference). The
-/// caller decides where it lives (a `static`, a task's memory, a `Box`);
-/// its contents between calls do not matter, and it is not cleared per
-/// call (each call writes every sample it reads first). One per thread
-/// that subtracts.
-#[derive(Clone)]
-pub struct SubtractScratch {
-    held: [(f32, f32); HELD],
-}
+/// Bytes of working storage with which [`subtract`] runs the reference
+/// once: a segment and a half of it held between the amplitude fit and the
+/// subtraction (5 760 samples' cosine and sine parts as `f32`).
+pub const SCRATCH_BYTES: usize = HELD * PAIR;
 
-impl SubtractScratch {
-    /// Zeroed storage (usable in a `static` initialiser).
-    pub const fn new() -> Self {
-        SubtractScratch {
-            held: [(0.0, 0.0); HELD],
-        }
-    }
-}
-
-impl Default for SubtractScratch {
-    fn default() -> Self {
-        SubtractScratch::new()
-    }
-}
-
-/// Working storage only: its contents are not printed.
-impl core::fmt::Debug for SubtractScratch {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SubtractScratch").finish_non_exhaustive()
-    }
-}
+/// The least working storage [`subtract`] takes: one block of the
+/// reference (240 samples). With less than [`SCRATCH_BYTES`] it runs the
+/// reference a second time where a segment and a half does not fit
+/// (slower; the same result).
+pub const MIN_SCRATCH_BYTES: usize = BLOCK * PAIR;
 
 /// Settings of [`subtract`]. Start from [`SubtractConfig::DEFAULT`] and
 /// change fields with the `with_*` setters (the type is non-exhaustive).
@@ -270,9 +249,13 @@ fn ratio_db(a: f32, b: f32) -> Option<f32> {
 }
 
 /// Subtracts the signal of `decode` from `audio` in place and returns the
-/// estimates. `scratch` is working storage (its contents do not matter);
-/// the stack needed beyond it is bounded by [`STACK_BYTES`] plus the
-/// frames (`SUBTRACT_STACK_BYTES` in [`crate::decode`]).
+/// estimates. `scratch` is working storage: any byte buffer of at least
+/// [`MIN_SCRATCH_BYTES`], best [`SCRATCH_BYTES`] or more (the bytes beyond
+/// it are not used). Its size and contents do not change the result, it
+/// is not cleared, and each call writes every byte it reads first, so it
+/// can be any buffer idle during the call. The stack needed beyond it is
+/// bounded by [`STACK_BYTES`] plus the frames (`SUBTRACT_STACK_BYTES` in
+/// [`crate::decode`]).
 ///
 /// `audio[0]` is slot sample 0 (the nominal start is sample 6 000); the
 /// first `skip` samples are missing input and are neither read nor
@@ -283,14 +266,15 @@ fn ratio_db(a: f32, b: f32) -> Option<f32> {
 /// Errors: [`Error::InvalidConfig`] for a segment length out of range,
 /// [`Error::NonFinite`] for a non-finite time offset, and
 /// [`Error::FrequencyOutOfRange`] for a frequency the waveform cannot
-/// have. A decode whose waveform does not overlap the usable audio
-/// changes nothing (`samples` is 0).
+/// have; [`Error::BufferTooSmall`] for `scratch` below
+/// [`MIN_SCRATCH_BYTES`]. A decode whose waveform does not overlap the
+/// usable audio changes nothing (`samples` is 0).
 pub fn subtract(
     audio: &mut [f32],
     decode: &Decode,
     skip: usize,
     config: &SubtractConfig,
-    scratch: &mut SubtractScratch,
+    scratch: &mut [u8],
 ) -> Result<Subtraction, Error> {
     run(audio, decode, skip, config, Fixed::default(), HELD, scratch)
 }
@@ -315,7 +299,7 @@ pub fn subtract_fixed(
     skip: usize,
     config: &SubtractConfig,
     fixed: Fixed,
-    scratch: &mut SubtractScratch,
+    scratch: &mut [u8],
 ) -> Result<Subtraction, Error> {
     run(audio, decode, skip, config, fixed, HELD, scratch)
 }
@@ -635,9 +619,14 @@ fn run(
     config: &SubtractConfig,
     fixed: Fixed,
     hold: usize,
-    scratch: &mut SubtractScratch,
+    held: &mut [u8],
 ) -> Result<Subtraction, Error> {
     config.validate()?;
+    // The held reference's ring, in pairs.
+    let ring = (held.len() / PAIR).min(HELD);
+    if ring < BLOCK {
+        return Err(Error::BufferTooSmall);
+    }
     let tones = encode_payload(&decode.payload);
     let synth = Synth::new(&tones, decode.freq_hz, 1.0)?;
     let nominal = Placement::slot(decode.freq_hz, decode.dt)?.start;
@@ -705,16 +694,15 @@ fn run(
     let mut amp = [(0.0f32, 0.0f32); MAX_SEGMENTS];
     let mut first_valid: Option<usize> = None;
     // Fused: the fit's reference samples are held (up to `hold` of them,
-    // at most `HELD`) until the amplitudes they need are known, then
+    // at most `ring`) until the amplitudes they need are known, then
     // subtracted (`done` is the first sample not yet subtracted, `written`
     // the end of those held). Otherwise, or if the held samples would
     // overflow (a late first estimate), the rest is subtracted with a
     // second run of the reference. Both give the same result. Only
     // samples written in this call are read back, so `held` is not
     // cleared.
-    let hold = hold.min(HELD);
+    let hold = hold.min(ring);
     let mut fused = hold > 0 && seg <= FUSED_SEGMENT;
-    let held = &mut scratch.held;
     let (mut done, mut written) = (lo, lo);
     let mut removal: Option<Removal> = None;
     {
@@ -737,14 +725,14 @@ fn run(
                     }
                     let xs = &audio[(start + (j0 + a) as i64) as usize..][..b - a];
                     if fused {
-                        let mut h = (j0 + a) % HELD;
+                        let mut h = (j0 + a) % ring;
                         for ((&p, &w), &x) in phase[a..b].iter().zip(&env[a..b]).zip(xs) {
                             let q = p.wrapping_add(corr.next());
                             let r = (w * cos_turns(q), w * sin_turns(q));
                             sums.add(input(x), r.0, r.1);
-                            held[h] = r;
+                            put(&mut held[h * PAIR..][..PAIR], r);
                             h += 1;
-                            if h == HELD {
+                            if h == ring {
                                 h = 0;
                             }
                         }
@@ -778,7 +766,7 @@ fn run(
                     if fused && first_valid.is_some() && k + 1 < segments {
                         let to = centre(seg, k).min(written);
                         let r = removal.get_or_insert_with(|| Removal::new(seg, amp[0]));
-                        r.held(&amp, segments, held, audio, start, done, to);
+                        r.held(&amp, segments, held, ring, audio, start, done, to);
                         done = done.max(to);
                     }
                 }
@@ -794,7 +782,7 @@ fn run(
     }
     let r = removal.get_or_insert_with(|| Removal::new(seg, amp[0]));
     if fused {
-        r.held(&amp, segments, held, audio, start, done, written);
+        r.held(&amp, segments, held, ring, audio, start, done, written);
     } else {
         // The samples from `done` on, from a second run of the reference,
         // a block at a time through the start of `held` (nothing held is
@@ -812,10 +800,13 @@ fn run(
                 // The correction in a local over the block: kept in
                 // registers rather than stored back every sample.
                 let mut c = corr;
-                let refs = &mut held[..b - a];
-                for (r, (&p, &w)) in refs.iter_mut().zip(phase[a..b].iter().zip(&env[a..b])) {
+                let refs = &mut held[..(b - a) * PAIR];
+                for (r, (&p, &w)) in refs
+                    .chunks_exact_mut(PAIR)
+                    .zip(phase[a..b].iter().zip(&env[a..b]))
+                {
                     let q = p.wrapping_add(c.next());
-                    *r = (w * cos_turns(q), w * sin_turns(q));
+                    put(r, (w * cos_turns(q), w * sin_turns(q)));
                 }
                 corr = c;
                 r.refs(&amp, segments, refs, audio, start, j0 + a);
@@ -838,6 +829,24 @@ const FUSED_SEGMENT: usize = 2 * T;
 /// and a half of the longest fused segment (from one segment's centre to
 /// the next segment's end).
 const HELD: usize = FUSED_SEGMENT * 3 / 2;
+/// Bytes per held reference sample: its cosine and sine parts as `f32`, in
+/// native byte order.
+const PAIR: usize = 8;
+
+/// Stores a reference sample in `d` ([`PAIR`] bytes).
+#[inline(always)]
+fn put(d: &mut [u8], r: (f32, f32)) {
+    d[..4].copy_from_slice(&r.0.to_ne_bytes());
+    d[4..PAIR].copy_from_slice(&r.1.to_ne_bytes());
+}
+
+/// The reference sample stored in `d` ([`PAIR`] bytes) by [`put`], bit for
+/// bit.
+#[inline(always)]
+fn get(d: &[u8]) -> (f32, f32) {
+    let f = |b: &[u8]| f32::from_ne_bytes([b[0], b[1], b[2], b[3]]);
+    (f(&d[..4]), f(&d[4..PAIR]))
+}
 
 /// The centre of segment `k` (a whole sample: segments are whole blocks).
 fn centre(seg: usize, k: usize) -> usize {
@@ -931,14 +940,16 @@ impl Removal {
         }
     }
 
-    /// Subtracts the reference `refs[i]` of samples `j0 + i` from `xs[i]`;
-    /// within one segment and one interval (after [`Removal::enter`]).
+    /// Subtracts the reference of samples `j0 + i`, stored at `refs[i]`
+    /// ([`PAIR`] bytes each), from `xs[i]`; within one segment and one
+    /// interval (after [`Removal::enter`]).
     #[inline(always)]
-    fn run(&mut self, j0: usize, xs: &mut [f32], refs: &[(f32, f32)]) {
+    fn run(&mut self, j0: usize, xs: &mut [f32], refs: &[u8]) {
         let (from, base, slope) = (self.from, self.base, self.slope);
         let mut energy = self.energy;
         let mut sums = self.sums;
-        for (i, (x, &(rc, rs))) in xs.iter_mut().zip(refs).enumerate() {
+        for (i, (x, r)) in xs.iter_mut().zip(refs.chunks_exact(PAIR)).enumerate() {
+            let (rc, rs) = get(r);
             let j = j0 + i;
             let t = if j > from { (j - from) as f32 } else { 0.0 };
             let (ra, rb) = (base.0 + t * slope.0, base.1 + t * slope.1);
@@ -952,38 +963,40 @@ impl Removal {
         self.changed += xs.len();
     }
 
-    /// Subtracts samples `from..from + refs.len()`, whose references are
-    /// `refs`, in runs within one segment and one interval. `from` must
-    /// follow the last sample given; reference sample j is at slot sample
-    /// `start + j`.
+    /// Subtracts samples `from..from + refs.len() / PAIR`, whose references
+    /// are stored in `refs`, in runs within one segment and one interval.
+    /// `from` must follow the last sample given; reference sample j is at
+    /// slot sample `start + j`.
     #[inline]
     fn refs(
         &mut self,
         amp: &[(f32, f32); MAX_SEGMENTS],
         segments: usize,
-        refs: &[(f32, f32)],
+        refs: &[u8],
         audio: &mut [f32],
         start: i64,
         from: usize,
     ) {
-        let to = from + refs.len();
+        let to = from + refs.len() / PAIR;
         let mut j = from;
         while j < to {
             self.enter(amp, segments, j);
             let stop = to.min(self.cur_end).min(self.until);
             let xs = &mut audio[(start + j as i64) as usize..][..stop - j];
-            self.run(j, xs, &refs[j - from..stop - from]);
+            self.run(j, xs, &refs[(j - from) * PAIR..(stop - from) * PAIR]);
             j = stop;
         }
     }
 
-    /// Subtracts samples `from..to`, whose reference is held at `j % HELD`.
+    /// Subtracts samples `from..to`, whose reference is held at pair
+    /// `j % ring` of `held`.
     #[allow(clippy::too_many_arguments)]
     fn held(
         &mut self,
         amp: &[(f32, f32); MAX_SEGMENTS],
         segments: usize,
-        held: &[(f32, f32); HELD],
+        held: &[u8],
+        ring: usize,
         audio: &mut [f32],
         start: i64,
         from: usize,
@@ -992,9 +1005,16 @@ impl Removal {
         let mut j = from;
         while j < to {
             // Up to the end of the ring buffer at a time.
-            let h = j % HELD;
-            let stop = to.min(j + (HELD - h));
-            self.refs(amp, segments, &held[h..][..stop - j], audio, start, j);
+            let h = j % ring;
+            let stop = to.min(j + (ring - h));
+            self.refs(
+                amp,
+                segments,
+                &held[h * PAIR..(h + stop - j) * PAIR],
+                audio,
+                start,
+                j,
+            );
             j = stop;
         }
     }

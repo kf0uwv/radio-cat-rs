@@ -677,7 +677,7 @@ fn passes_into(
     let report = dec.decode_passes_staged(
         &mut residual,
         skip,
-        &mut Box::new(PassesScratch::new()),
+        &mut Box::new(CandidateScratch::new()),
         &mut list,
         |e| {
             if let PassEvent::Done(r) = e {
@@ -942,6 +942,58 @@ fn the_subtraction_cap_runs_a_prefix_of_the_passes() {
 }
 
 #[test]
+fn the_spectrogram_is_the_last_pass_or_empty_after_a_stop() {
+    // The subtractions use the spectrogram's buffer: on return it holds the
+    // last pass's rows, or none if the decode stopped after a subtraction.
+    let (slot, _) = crowded_slot(30, 9);
+    for stop in [false, true] {
+        let mut b = Bufs::new(Band::DEFAULT);
+        let mut dec = b.decoder(DecodeConfig::HOST);
+        let mut store = vec![Decode::EMPTY; HOST_DECODES];
+        let mut list = DecodeList::new(&mut store);
+        let mut audio = slot.clone();
+        let report = dec.decode_passes_staged(
+            &mut audio,
+            0,
+            &mut Box::new(CandidateScratch::new()),
+            &mut list,
+            |e| {
+                let sub = matches!(
+                    e,
+                    PassEvent::Step {
+                        step: PassStep::Subtract,
+                        ..
+                    }
+                );
+                if stop && sub {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            },
+        );
+        if stop {
+            assert_eq!(report.end, PassesEnd::Stopped);
+            assert_eq!(dec.spectrogram().rows_filled(), 0);
+        } else {
+            assert!(report.passes_run > 1);
+            // The last pass's rows: those of the residual it decoded (what
+            // the same passes leave in the audio).
+            let rows = dec.spectrogram().rows_filled();
+            assert_eq!(rows, crate::decode::ROWS);
+            let mut b2 = Bufs::new(Band::DEFAULT);
+            let mut fresh = b2.decoder(DecodeConfig::HOST);
+            let (_, _, before_last, _) =
+                passes(&slot, 0, DecodeConfig::HOST.with_passes(report.passes_run));
+            fresh.feed(&before_last);
+            for r in 0..rows {
+                assert_eq!(dec.spectrogram().row(r), fresh.spectrogram().row(r), "{r}");
+            }
+        }
+    }
+}
+
+#[test]
 fn the_event_callback_can_stop_the_passes() {
     let (slot, _) = crowded_slot(30, 9);
     let host = DecodeConfig::HOST;
@@ -988,7 +1040,7 @@ fn the_event_callback_can_stop_the_passes() {
         &all[0],
         0,
         &host.subtract,
-        &mut Box::new(SubtractScratch::new()),
+        &mut vec![0u8; crate::decode::SUBTRACT_SCRATCH_BYTES],
     )
     .unwrap();
     assert!(same_bits(&residual, &want));
@@ -1017,13 +1069,13 @@ fn further_passes_after_a_pass_fed_as_i16_blocks_match_decode_passes() {
         let mut dec = b.decoder(DecodeConfig::HOST);
         let mut store = [Decode::EMPTY; HOST_DECODES];
         let mut list = DecodeList::new(&mut store);
-        let mut scratch = Box::new(PassesScratch::new());
+        let mut scratch = Box::new(CandidateScratch::new());
         // Pass 1 as the audio arrives: the missing start, then blocks.
         dec.skip(skip);
         for block in pcm[skip..].chunks(1_000) {
             dec.feed_i16(block);
         }
-        dec.decode(&mut scratch.candidate, &mut list);
+        dec.decode(&mut scratch, &mut list);
         // The residual buffer: slot sample 0 on, the skipped part unread.
         let mut residual = audio.clone();
         let report = dec.decode_further_passes(&mut residual, skip, &mut scratch, &mut list);
@@ -1073,7 +1125,7 @@ fn staged_passes_report_their_steps_in_order() {
     let report = dec.decode_passes_staged(
         &mut audio,
         0,
-        &mut Box::new(PassesScratch::new()),
+        &mut Box::new(CandidateScratch::new()),
         &mut list,
         |e| {
             if let PassEvent::Step { pass, step } = e {

@@ -129,9 +129,9 @@
 //! are totals over every pass, the input counters those of the slot's
 //! audio; stage times are summed over passes too). With more than one
 //! pass configured it also has `subtract_seconds` (in `total`),
-//! `residual_bytes` (in `peak_bytes`; the subtraction's working storage,
-//! `decode::SubtractScratch`, about 46 KB, is not in `peak_bytes`, so with
-//! more than one pass the peak is that much higher), `passes`, `passes_run`,
+//! `residual_bytes` (in `peak_bytes`; the subtraction's working storage is
+//! the spectrogram's buffer, idle between passes, so it adds nothing),
+//! `passes`, `passes_run`,
 //! `passes_end` (why no further pass ran: `"all_passes"`,
 //! `"nothing_new"`, `"list_full"`, `"subtraction_cap"` or `"stopped"`),
 //! and per pass N `passN_feed_seconds`,

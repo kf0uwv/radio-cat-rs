@@ -280,6 +280,16 @@ impl<'a> Spectrogram<'a> {
         self.top = 0;
     }
 
+    /// The level buffer as working storage for something else (the
+    /// subtractions between passes): the spectrogram is emptied first, as
+    /// by [`Spectrogram::start_slot`], so no row is read from it until it
+    /// is fed again. Every byte of the buffer, at least
+    /// [`Band::spectrogram_len`].
+    pub(crate) fn idle_levels(&mut self) -> &mut [u8] {
+        self.start_slot();
+        &mut *self.levels
+    }
+
     /// Feeds 12 kHz samples (full scale ±1.0). Returns how many were
     /// taken: all of them, unless the slot's 180 000 samples are reached.
     pub fn feed(&mut self, samples: &[f32]) -> usize {

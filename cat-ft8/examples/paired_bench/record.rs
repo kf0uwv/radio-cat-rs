@@ -25,7 +25,7 @@ use std::time::Instant;
 
 use cat_ft8::decode::{
     sync, BpFailure, Candidate, CandidateScratch, Decode, DecodeList, Decoder, FrontEnd, PassEvent,
-    PassStep, PassesScratch, Spectrogram, Stage, BIN_HZ, CANDIDATES,
+    PassStep, Spectrogram, Stage, BIN_HZ, CANDIDATES,
 };
 use serde_json::Value;
 
@@ -618,7 +618,7 @@ pub fn decode_passes_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &
     .unwrap();
     let mut store = vec![Decode::EMPTY; setup.decodes];
     let mut list = DecodeList::new(&mut store);
-    let mut scratch = Box::new(PassesScratch::new());
+    let mut scratch = Box::new(CandidateScratch::new());
     let mut audio = vec![0.0f32; skip];
     audio.extend_from_slice(samples);
     let mut seconds: BTreeMap<String, f64> = BTreeMap::new();
@@ -668,7 +668,7 @@ pub fn decode_passes_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &
     // The last pass's failures, found again (deterministic, not timed).
     let mut failed: Vec<(usize, BpFailure)> = Vec::new();
     for i in 0..dec.candidates().len() {
-        if let Some(Err(f)) = dec.decode_candidate(i, &mut scratch.candidate) {
+        if let Some(Err(f)) = dec.decode_candidate(i, &mut scratch) {
             failed.push((i, f));
         }
     }

@@ -52,8 +52,8 @@ fn sub(
     config: &SubtractConfig,
 ) -> Result<Subtraction, Error> {
     std::thread_local! {
-        static SCRATCH: core::cell::RefCell<std::boxed::Box<SubtractScratch>> =
-            core::cell::RefCell::new(std::boxed::Box::new(SubtractScratch::new()));
+        static SCRATCH: core::cell::RefCell<Vec<u8>> =
+            core::cell::RefCell::new(std::vec![0; SCRATCH_BYTES]);
     }
     SCRATCH.with(|s| subtract(audio, decode, skip, config, &mut s.borrow_mut()))
 }
@@ -396,8 +396,9 @@ fn settings_and_inputs_are_checked() {
 #[test]
 fn stack_storage_is_bounded() {
     const _: () = assert!(MAX_SEGMENTS == 158 && STACK_BYTES < 5 * 1024);
-    assert_eq!(core::mem::size_of::<SubtractScratch>(), HELD * 8);
-    assert_eq!(HELD * 8, 46_080);
+    assert_eq!(SCRATCH_BYTES, HELD * 8);
+    assert_eq!(SCRATCH_BYTES, 46_080);
+    assert_eq!(MIN_SCRATCH_BYTES, 1_920);
     // Every segment count `run` can use fits.
     for seg in
         (SubtractConfig::MIN_SEGMENT..=WAVEFORM_SAMPLES).step_by(SubtractConfig::SEGMENT_STEP)
@@ -405,6 +406,52 @@ fn stack_storage_is_bounded() {
         assert!(WAVEFORM_SAMPLES.div_ceil(seg) <= MAX_SEGMENTS, "{seg}");
     }
     assert_eq!(STACK_BYTES, 4_536);
+}
+
+/// Scratch of `len` bytes holding NaN `f32` patterns.
+fn nan_scratch(len: usize) -> Vec<u8> {
+    let nan = f32::NAN.to_ne_bytes();
+    (0..len).map(|i| nan[i % 4]).collect()
+}
+
+#[test]
+fn any_scratch_size_gives_identical_results() {
+    // From the least scratch (one block: every segment from a second run of
+    // the reference), through rings that hold a segment and a half of the
+    // shorter segments but not the longer ones, odd sizes, to more than
+    // needed: bit-identical, and contents left from earlier calls (NaN at
+    // first) do not matter. Too little is an error and changes nothing.
+    let slot = noisy_slot();
+    let d = decode_near(1_234.5, 0.31);
+    for seg in [960, T, 2 * T] {
+        let config = SubtractConfig::DEFAULT.with_segment(seg);
+        let mut want = None;
+        for len in [
+            MIN_SCRATCH_BYTES,
+            MIN_SCRATCH_BYTES + 3,
+            3 * 960 * 8,
+            3 * 960 * 8 - 8,
+            23_045,
+            SCRATCH_BYTES - 8,
+            SCRATCH_BYTES,
+            SCRATCH_BYTES + 1_001,
+        ] {
+            let mut scratch = nan_scratch(len);
+            for _ in 0..2 {
+                let mut a = slot.clone();
+                let r = subtract(&mut a, &d, 0, &config, &mut scratch).unwrap();
+                let h = hash(&a, &r);
+                assert_eq!(*want.get_or_insert(h), h, "{seg} {len}");
+            }
+        }
+        let mut a = slot.clone();
+        let mut small = nan_scratch(MIN_SCRATCH_BYTES - 1);
+        assert_eq!(
+            subtract(&mut a, &d, 0, &config, &mut small),
+            Err(Error::BufferTooSmall)
+        );
+        assert!(a.iter().zip(&slot).all(|(x, y)| x.to_bits() == y.to_bits()));
+    }
 }
 
 #[test]
@@ -416,8 +463,7 @@ fn held_and_rerun_references_give_identical_results() {
     // second run. The scratch starts as NaN and keeps every earlier call's
     // contents: they must not matter.
     let slot = noisy_slot();
-    let mut scratch = std::boxed::Box::new(SubtractScratch::new());
-    scratch.held.fill((f32::NAN, f32::NAN));
+    let mut scratch = nan_scratch(SCRATCH_BYTES);
     for (f, dt) in [(1_234.5f32, 0.31f32), (1_234.5, -1.2)] {
         let d = decode_near(f, dt);
         for seg in [960, T, 2 * T, 2 * T + SubtractConfig::SEGMENT_STEP] {

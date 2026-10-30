@@ -735,7 +735,7 @@ fn multi_pass_golden_hashes() {
 #[test]
 fn passes_by_hand_on_threads_match_decode_passes() {
     use cat_ft8::decode::{
-        subtract, CandidateResult, CandidateScratch, Decode, DecodeList, SubtractScratch,
+        subtract, CandidateResult, CandidateScratch, Decode, DecodeList, SUBTRACT_SCRATCH_BYTES,
     };
     let (crowd, _) = crowded_slot(30, 22);
     for skip in [0, 12_000] {
@@ -749,7 +749,7 @@ fn passes_by_hand_on_threads_match_decode_passes() {
                 let mut store = vec![Decode::EMPTY; capacity];
                 let mut list = DecodeList::new(&mut store);
                 let mut audio = slot.clone();
-                let mut sub_scratch = Box::new(SubtractScratch::new());
+                let mut sub_scratch = vec![0u8; SUBTRACT_SCRATCH_BYTES];
                 let mut first_report = None;
                 let mut search = [0usize; 3];
                 let mut begin = 0;

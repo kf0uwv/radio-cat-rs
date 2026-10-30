@@ -35,8 +35,8 @@ use std::time::Instant;
 
 use cat_ft8::decode::{
     Band, Candidate, CandidateScratch, Decode, DecodeConfig, DecodeList, Decoder, FrontEnd,
-    PassEvent, PassReport, PassStep, PassesReport, PassesScratch, Stage, CANDIDATES, HOST_DECODES,
-    SMALL_DECODES, TABLE_BYTES,
+    PassEvent, PassReport, PassStep, PassesReport, Stage, CANDIDATES, HOST_DECODES, SMALL_DECODES,
+    TABLE_BYTES,
 };
 use cat_ft8::message::CallTable;
 use cat_ft8::{wav, SAMPLE_RATE, SLOT_SAMPLES};
@@ -266,9 +266,8 @@ impl Times {
 }
 
 /// The `--profile` line: per-pass keys follow the others when more than one
-/// pass is configured. `peak_bytes` leaves out the subtraction's working
-/// storage (`SubtractScratch`, in `PassesScratch`); the key is kept as it
-/// was so the output does not change.
+/// pass is configured. The subtractions between passes take their working
+/// storage from the spectrogram's buffer, so `peak_bytes` covers them.
 fn profile_line(
     setup: &Setup,
     seconds: &[(String, f64)],
@@ -408,7 +407,7 @@ fn run(a: &Args) -> Result<(), String> {
         a.setup.config,
     )
     .map_err(|e| e.to_string())?;
-    let mut scratch = Box::new(PassesScratch::new());
+    let mut scratch = Box::new(CandidateScratch::new());
     let mut entries = vec![Decode::EMPTY; a.setup.decodes];
     let mut list = DecodeList::new(&mut entries);
 

@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use cat_ft8::decode::{
-    subtract, subtract_fixed, Decode, Fixed, SubtractConfig, SubtractScratch, Subtraction,
+    subtract, subtract_fixed, Decode, Fixed, SubtractConfig, Subtraction, SUBTRACT_SCRATCH_BYTES,
 };
 use cat_ft8::message::Payload;
 use cat_ft8::{encode_payload, SAMPLE_RATE, SLOT_SAMPLES, WAVEFORM_SAMPLES};
@@ -324,7 +324,7 @@ fn trial(
     };
     let dec = to_decode(rec);
     let true_start = start.round() as i64;
-    let scratch = std::cell::RefCell::new(Box::new(SubtractScratch::new()));
+    let scratch = std::cell::RefCell::new(vec![0u8; SUBTRACT_SCRATCH_BYTES]);
     let run = |input: &[f32], cfg: &SubtractConfig, fixed: Fixed| -> (Vec<f32>, Subtraction) {
         let mut res = input.to_vec();
         let s =
@@ -921,7 +921,7 @@ pub fn subtract_cost(spec: &str, sub: &str, slots: usize, runs: usize) -> Result
     });
     let mut per_call: Vec<f64> = Vec::new();
     let mut calls = 0usize;
-    let mut scratch = Box::new(SubtractScratch::new());
+    let mut scratch = vec![0u8; SUBTRACT_SCRATCH_BYTES];
     for (audio, decodes) in &picked {
         let mut times = Vec::new();
         for _ in 0..runs.max(5) {

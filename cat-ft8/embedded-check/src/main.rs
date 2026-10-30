@@ -164,7 +164,7 @@ fn decode_a_slot(table: &mut CallTable<16>, sink: &mut f32, rows: &mut usize) {
     let mut list = DecodeList::new(decodes);
     let Ok(mut dec) = Decoder::new(
         front,
-        levels,
+        &mut levels[..],
         sync_scratch,
         cands,
         setup::BAND,
@@ -191,8 +191,10 @@ fn decode_a_slot(table: &mut CallTable<16>, sink: &mut f32, rows: &mut usize) {
         *sink += d.snr_db + d.freq_hz;
         *rows += text.map_or(0, str::len);
     });
+    // The spectrogram is idle once the slot is decoded: its buffer is the
+    // subtraction's working storage, as the decoder's own passes use it.
     #[cfg(feature = "host")]
-    subtract_one(list.finish_payloads(), sink);
+    subtract_one(list.finish_payloads(), &mut levels[..], sink);
 }
 
 /// A residual buffer for `subtract` in `.bss`: a slot cut short (the core
@@ -200,25 +202,15 @@ fn decode_a_slot(table: &mut CallTable<16>, sink: &mut f32, rows: &mut usize) {
 #[cfg(feature = "host")]
 static mut RESIDUAL: [f32; 2_048] = [0.0; 2_048];
 
-/// `subtract`'s working storage in `.bss`, as on a real target.
-#[cfg(feature = "host")]
-static mut SUBTRACT_SCRATCH: cat_ft8::decode::SubtractScratch =
-    cat_ft8::decode::SubtractScratch::new();
-
 /// `decode::subtract` for the first decode. Not inlined, and the buffer is
 /// a static, so `check.sh --stack` reports subtraction's own frame.
 #[cfg(feature = "host")]
 #[inline(never)]
-fn subtract_one(decodes: &[Decode], sink: &mut f32) {
+fn subtract_one(decodes: &[Decode], scratch: &mut [u8], sink: &mut f32) {
     use cat_ft8::decode::{subtract, SubtractConfig};
-    // SAFETY: called once from `_start`, which is not re-entered, so these
-    // are the only references to the statics.
-    let (audio, scratch) = unsafe {
-        (
-            &mut *addr_of_mut!(RESIDUAL),
-            &mut *addr_of_mut!(SUBTRACT_SCRATCH),
-        )
-    };
+    // SAFETY: called once from `_start`, which is not re-entered, so this
+    // is the only reference to the static.
+    let audio = unsafe { &mut *addr_of_mut!(RESIDUAL) };
     audio[100] = black_box(0.5);
     if let Some(d) = decodes.first() {
         if let Ok(s) = subtract(audio, d, black_box(16), &SubtractConfig::DEFAULT, scratch) {
