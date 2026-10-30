@@ -673,10 +673,10 @@ fn multi_pass_slots() -> Vec<(Vec<f32>, usize, Vec<Payload>)> {
 /// took its sine and cosine from a polynomial and its sums in lanes: the
 /// decodes per slot are unchanged, the residuals' bits are not).
 const MULTI_GOLDEN: [u64; 4] = [
-    0xf52a_44aa_0d04_f283,
-    0x46e1_098e_2886_a6e9,
-    0x904c_4711_84f6_34bb,
-    0x286a_6902_d8b6_d8e8,
+    0x7c9c_2cef_84e7_2d5a,
+    0x16b5_e025_7e1b_7785,
+    0x8bbe_a246_b9e1_1ee6,
+    0x55df_f103_42bd_60f5,
 ];
 const MULTI_COUNTS: [[usize; 6]; 4] = [
     [8, 0, 8, 26, 26, 26],

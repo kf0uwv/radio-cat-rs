@@ -352,9 +352,9 @@ fn deterministic_and_pinned() {
     assert_eq!(
         pins,
         [
-            0x8b1c_30fd_2bd2_536f,
-            0xfd3e_7789_e0b4_740f,
-            0x32d9_5289_ead4_e958
+            0xaee5_ced2_9b40_3427,
+            0x8b52_1897_b57e_67fa,
+            0xbaca_d495_bda7_b030
         ],
         "{pins:x?}"
     );
@@ -599,7 +599,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0x3dbb_ef8e_114d_8bcbu64,
+            0x40ab_3e06_7e05_d26cu64,
         ),
         (
             1_234.5,
@@ -608,7 +608,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0x12cf_0d5f_9961_ed6c,
+            0x914e_c5f6_5a31_b48a,
         ),
         (
             1_234.5,
@@ -617,7 +617,7 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             0,
             SLOT_SAMPLES,
-            0xf9cd_8dc2_7ae8_5d19,
+            0x24e2_26be_9142_a923,
         ),
         (
             1_234.5,
@@ -626,7 +626,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0x32d9_5289_ead4_e958,
+            0xbaca_d495_bda7_b030,
         ),
         (
             1_234.5,
@@ -635,7 +635,7 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             0,
             SLOT_SAMPLES,
-            0x3044_d400_12e3_af8d,
+            0x9853_3688_6bf8_8fdf,
         ),
         (
             1_234.5,
@@ -644,7 +644,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0x6f5e_63f0_e722_955a,
+            0xc7c3_fdda_3711_c2d0,
         ),
         (
             1_234.5,
@@ -653,7 +653,7 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             0,
             SLOT_SAMPLES,
-            0x1c77_73db_33b8_9631,
+            0x194f_3fd4_1b23_ce1e,
         ),
         (
             1_234.5,
@@ -662,7 +662,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             30_000,
             SLOT_SAMPLES,
-            0xda71_90d5_bb9b_dbff,
+            0x2319_1ca8_211f_ae52,
         ),
         (
             1_234.5,
@@ -671,9 +671,9 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             30_000,
             90_000,
-            0x13eb_cb00_0018_71de,
+            0x9b16_06fb_d527_82d8,
         ),
-        (1_234.5, 0.31, 1920, true, 0, 90_000, 0x6c74_467e_0226_33ba),
+        (1_234.5, 0.31, 1920, true, 0, 90_000, 0xab80_fe0e_7743_f0d9),
         (
             1_234.5,
             0.31,
@@ -681,7 +681,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             30_000,
             90_000,
-            0x9914_9e5b_ecef_a179,
+            0x2e8d_8b3e_44ba_842e,
         ),
         (
             1_234.5,
@@ -690,7 +690,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             30_000,
             90_000,
-            0x3762_a19f_5c17_9d9f,
+            0x7820_14d8_c944_8a14,
         ),
         (
             1_234.5,
@@ -699,7 +699,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0xfe6e_b02a_6ce0_ecc8,
+            0xbe40_6b0d_9d99_d9f2,
         ),
         (
             1_234.5,
@@ -708,7 +708,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0xd1fd_929d_a34d_fe03,
+            0x7817_167e_4738_3fd4,
         ),
         (
             1_234.5,
@@ -717,7 +717,7 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             0,
             SLOT_SAMPLES,
-            0x8a43_3ae6_b6cb_8db3,
+            0xbee8_cb75_7d65_2814,
         ),
         (
             1_234.5,
@@ -726,7 +726,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0x80f0_7111_e22d_36ca,
+            0x1cf9_6201_a08c_6a15,
         ),
         (
             1_234.5,
@@ -735,7 +735,7 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             0,
             SLOT_SAMPLES,
-            0x892f_09db_1ab0_69c6,
+            0xe7c6_efb6_17d1_98ee,
         ),
         (
             1_234.5,
@@ -744,7 +744,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             0,
             SLOT_SAMPLES,
-            0x6e97_a22d_f350_827d,
+            0x7477_f100_ac5e_2c9c,
         ),
         (
             1_234.5,
@@ -753,7 +753,7 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             0,
             SLOT_SAMPLES,
-            0x9ab9_d22c_f4e3_e4a5,
+            0x2f20_7bac_85ce_bf76,
         ),
         (
             1_234.5,
@@ -762,7 +762,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             30_000,
             SLOT_SAMPLES,
-            0xe054_7fac_e692_4835,
+            0x00bc_1d92_fd50_e164,
         ),
         (
             1_234.5,
@@ -771,9 +771,9 @@ fn anchored_to_the_unheld_subtraction() {
             false,
             30_000,
             90_000,
-            0x60fb_0813_a302_15e8,
+            0x5ceb_e21a_4d68_f799,
         ),
-        (1_234.5, -1.2, 1920, true, 0, 90_000, 0x7be1_b8b8_52a4_a9bc),
+        (1_234.5, -1.2, 1920, true, 0, 90_000, 0xc80e_9649_19bd_84f9),
         (
             1_234.5,
             -1.2,
@@ -781,7 +781,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             30_000,
             90_000,
-            0xc0a2_c6a4_459c_4454,
+            0x2c9b_7bf1_db3c_e48c,
         ),
         (
             1_234.5,
@@ -790,7 +790,7 @@ fn anchored_to_the_unheld_subtraction() {
             true,
             30_000,
             90_000,
-            0xfe7a_5702_27f1_70b5,
+            0x3e70_3a97_6bf1_a1da,
         ),
     ] {
         let d = decode_near(f, dt);

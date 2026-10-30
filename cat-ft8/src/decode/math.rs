@@ -212,19 +212,21 @@ pub(crate) fn atan2_turns(y: f32, x: f32) -> f32 {
 pub(crate) const LANES: usize = 4;
 
 // Minimax polynomials (absolute error, on |t| ≤ 1/8 turn) for
-// sin(2πt) = t·(S1 + S3·t² + S5·t⁴ + S7·t⁶) and
-// cos(2πt) = C0 + C2·t² + C4·t⁴ + C6·t⁶, rounded to `f32`. Evaluated in
-// `f32` as written below (Horner, no fused multiply-add), the error at
-// every `u32` phase is below 1.6 × 10⁻⁷ for both (tested), against the
-// quarter-wave table's 3.5 × 10⁻⁷.
-const S1: f32 = 6.283_188;
-const S3: f32 = -41.342_97;
-const S5: f32 = 81.760_89;
-const S7: f32 = -81.570_6;
-const C0: f32 = 1.0;
-const C2: f32 = -19.739_225;
-const C4: f32 = 64.933_14;
-const C6: f32 = -84.070_56;
+// sin(2πt) = t·(S1 + S3·t² + S5·t⁴) and cos(2πt) = C0 + C2·t² + C4·t⁴,
+// rounded to `f32`. Evaluated in `f32` as written below (Horner, no fused
+// multiply-add), the error at every `u32` phase is below 1.1 × 10⁻⁵ (the
+// cosine's; the sine's is 6.6 × 10⁻⁷), against the quarter-wave table's
+// 3.5 × 10⁻⁷. The degree is the least whose error does not show in the
+// subtraction: clean signals leave −100 dB of their energy (the table and
+// degrees 7 and 6, −103 dB), against −53 dB from a start between samples;
+// degrees 7 and 6 (error 1.6 × 10⁻⁷) cost 2.8% more of an A76 three-pass
+// slot.
+const S1: f32 = 6.283_154_5;
+const S3: f32 = -41.325_558;
+const S5: f32 = 79.528_26;
+const C0: f32 = 0.999_990_05;
+const C2: f32 = -19.727_69;
+const C4: f32 = 62.962_955;
 
 /// `(cos, sin)` of `2π · phase / 2³²`, by polynomial: the phase is reduced
 /// in integer arithmetic to the nearest quarter turn k and a remainder of
@@ -241,8 +243,8 @@ pub(crate) fn cos_sin_turns(phase: u32) -> (f32, f32) {
     let r = (u & 0x3fff_ffff) as i32 - (1 << 29);
     let t = r as f32 * (1.0 / 4_294_967_296.0);
     let z = t * t;
-    let s = t * (S1 + z * (S3 + z * (S5 + z * S7)));
-    let c = C0 + z * (C2 + z * (C4 + z * C6));
+    let s = t * (S1 + z * (S3 + z * S5));
+    let c = C0 + z * (C2 + z * C4);
     // Quarter k: (cos, sin) = (c, s), (−s, c), (−c, −s), (s, −c).
     let swap = 0u32.wrapping_sub(k & 1);
     let (sb, cb) = (s.to_bits(), c.to_bits());
@@ -354,7 +356,7 @@ mod tests {
 
     /// `cos_sin_turns` against `libm` in `f64` at every `stride`-th phase
     /// (and at both ends of each quarter's reduced range): largest error
-    /// of either part, and the cosine and sine at the quarter turns exact.
+    /// of either part, and the zero part at the quarter turns exact.
     fn cos_sin_turns_accurate(stride: usize) -> f64 {
         let mut worst = 0.0f64;
         let mut check = |p: u32| {
@@ -373,14 +375,14 @@ mod tests {
                 check((k << 30).wrapping_sub(d));
             }
         }
-        assert!(worst < 1.6e-7, "worst {worst:e}");
-        let quarter = [(0u32, (1.0, 0.0)), (1 << 30, (0.0, 1.0))];
-        for (p, cs) in quarter
+        assert!(worst < 1.1e-5, "worst {worst:e}");
+        // At the quarter turns the remainder is 0: the sine part exactly 0,
+        // the cosine part ±C0.
+        for (k, (c, s)) in [(C0, 0.0), (0.0, C0), (-C0, 0.0), (0.0, -C0)]
             .into_iter()
-            .chain([(2 << 30, (-1.0, 0.0)), (3 << 30, (0.0, -1.0))])
+            .enumerate()
         {
-            let (c, s) = cos_sin_turns(p);
-            assert_eq!((c, s), cs, "{p:#x}");
+            assert_eq!(cos_sin_turns((k as u32) << 30), (c, s), "quarter {k}");
         }
         worst
     }
@@ -402,18 +404,16 @@ mod tests {
     fn cos_sin_turns_pinned() {
         // The coefficients' bits, and a hash of the outputs over a sweep
         // of phases: any change in the arithmetic (even one ulp) fails.
-        let bits = [S1, S3, S5, S7, C0, C2, C4, C6].map(f32::to_bits);
+        let bits = [S1, S3, S5, C0, C2, C4].map(f32::to_bits);
         assert_eq!(
             bits,
             [
-                0x40c9_0fe0,
-                0xc225_5f34,
-                0x42a3_8593,
-                0xc2a3_2426,
-                0x3f80_0000,
-                0xc19d_e9ef,
-                0x4281_ddc5,
-                0xc2a8_2420
+                0x40c9_0f9a,
+                0xc225_4d5f,
+                0x429f_0e78,
+                0x3f7f_ff59,
+                0xc19d_d24f,
+                0x427b_da11
             ]
         );
         let mut h = 0xcbf2_9ce4_8422_2325u64;
@@ -429,7 +429,7 @@ mod tests {
                 h = h.wrapping_mul(0x0000_0100_0000_01b3);
             }
         }
-        assert_eq!(h, 0x7124_a1fb_8d62_d4eb, "sweep hash {h:#018x}");
+        assert_eq!(h, 0xc2ee_b714_7593_8caf, "sweep hash {h:#018x}");
     }
 
     #[test]
