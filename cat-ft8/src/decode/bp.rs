@@ -185,9 +185,10 @@ fn check(c: usize) -> (&'static [u8; MAX_DEGREE], usize) {
 /// point is not IEEE, so these loops stay scalar there.
 const VECTOR: bool = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
 
-/// tanh(x / 2) for any finite x.
+/// tanh(x / 2) for any finite x, in the form for targets where the loops
+/// vectorise (`V`) or not; the decoder uses [`VECTOR`]'s, the tests both.
 #[inline]
-fn tanh_half(x: f32) -> f32 {
+fn tanh_half<const V: bool>(x: f32) -> f32 {
     let negative = x < 0.0;
     // |x|. Where the round's loops vectorise, by clearing the sign bit:
     // with the select `if negative { -x } else { x }` the compiler moved
@@ -198,7 +199,7 @@ fn tanh_half(x: f32) -> f32 {
     // the masked form on the Cortex-M33. The results are the same: the
     // forms differ only for −0.0 and NaN, whose e is 1.0 and 0.0 either
     // way.
-    let a = if VECTOR {
+    let a = if V {
         f32::from_bits(x.to_bits() & 0x7fff_ffff)
     } else if negative {
         -x
@@ -320,9 +321,9 @@ pub fn decode_soft(
         *rounds_run = round;
         *next = *llr;
         if rule == CheckRule::SumProduct {
-            sum_product_round(total, next, msg);
+            sum_product_round::<VECTOR, PASS_LANES>(total, next, msg);
         } else {
-            min_sum_round(total, next, msg);
+            min_sum_round::<VECTOR>(total, next, msg);
         }
         core::mem::swap(&mut total, &mut next);
     }
@@ -375,15 +376,22 @@ fn check_edges() -> impl Iterator<Item = (&'static [u8], usize)> {
 /// the tanh and atanh passes are long plain loops; each value's arithmetic
 /// is that of one check at a time. With the edges laid out by check degree
 /// ([`check_edges`]), the products run over whole checks of a fixed size.
-/// Not inlined, so its frame is measured on its own.
+/// `V` picks the form of `tanh_half` and `W` the values the tanh and atanh
+/// passes take together; the decoder uses [`VECTOR`] and [`PASS_LANES`],
+/// the tests both targets' forms. Not inlined, so its frame is measured on
+/// its own.
 #[inline(never)]
-fn sum_product_round(total: &[f32; N], next: &mut [f32; N], msg: &mut [f32; EDGES]) {
+fn sum_product_round<const V: bool, const W: usize>(
+    total: &[f32; N],
+    next: &mut [f32; N],
+    msg: &mut [f32; EDGES],
+) {
     for (v, e) in check_edges() {
         for (m, &i) in msg[e..][..v.len()].iter_mut().zip(v) {
             *m = total[usize::from(i)] - *m;
         }
     }
-    each_value::<PASS_LANES>(msg, tanh_half);
+    each_value::<W>(msg, tanh_half::<V>);
     let (t6, t7) = msg.split_at_mut(LOW_EDGES);
     for tc in t6.chunks_exact_mut(6) {
         others_products::<6>(tc);
@@ -391,7 +399,7 @@ fn sum_product_round(total: &[f32; N], next: &mut [f32; N], msg: &mut [f32; EDGE
     for tc in t7.chunks_exact_mut(7) {
         others_products::<7>(tc);
     }
-    each_value::<PASS_LANES>(msg, twice_atanh);
+    each_value::<W>(msg, twice_atanh);
     for (v, e) in check_edges() {
         for (&m, &i) in msg[e..][..v.len()].iter().zip(v) {
             next[usize::from(i)] += m;
@@ -406,7 +414,10 @@ fn sum_product_round(total: &[f32; N], next: &mut [f32; N], msg: &mut [f32; EDGE
 /// each value's chain (`exp2_neg` or `log2`, and the divisions) is a long
 /// dependent sequence and the Cortex-A76 overlapped few of them; several
 /// side by side keep its vector pipes busy. The count was chosen by
-/// measurement on the Cortex-A76.
+/// measurement on the Cortex-A76. The gain depends on the compiler fully
+/// unrolling the block (it did not unroll 32 values), so a toolchain
+/// change can lose it with every test passing: re-measure the round after
+/// one.
 const PASS_LANES: usize = if VECTOR { 24 } else { 1 };
 
 /// `f` applied to every value, `W` values at a time, then the rest.
@@ -426,17 +437,19 @@ fn each_value<const W: usize>(values: &mut [f32; EDGES], f: impl Fn(f32) -> f32)
 
 /// One normalised min-sum round, in place on the messages: check by check
 /// in order, the inputs (totals less the check's own messages) replace its
-/// messages, then its new messages, which are added to `next`. Not
-/// inlined, so its frame is measured on its own.
+/// messages, then its new messages, which are added to `next`. `V` picks
+/// the form for targets where the loops vectorise or not (the decoder uses
+/// [`VECTOR`], the tests both). Not inlined, so its frame is measured on
+/// its own.
 #[inline(never)]
-fn min_sum_round(total: &[f32; N], next: &mut [f32; N], msg: &mut [f32; EDGES]) {
+fn min_sum_round<const V: bool>(total: &[f32; N], next: &mut [f32; N], msg: &mut [f32; EDGES]) {
     for (v, e) in check_edges() {
         let row = &mut msg[e..][..v.len()];
         // Where the loops vectorise, the check's size as a constant (the
         // slices cut to 6 or 7 once this is inlined), so the compiler
         // drops the vector forms of these short loops, which no check
         // reaches; elsewhere one form for both sizes.
-        match (VECTOR, v.len()) {
+        match (V, v.len()) {
             (true, 6) => min_sum_check(total, next, &v[..6], &mut row[..6]),
             (true, _) => min_sum_check(total, next, &v[..7], &mut row[..7]),
             (false, _) => min_sum_check(total, next, v, row),

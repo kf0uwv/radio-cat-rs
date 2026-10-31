@@ -235,7 +235,9 @@ fn a_used_scratch_gives_the_same_result() {
 fn tanh_and_atanh_helpers() {
     for x in [-30.0f32, -5.0, -0.5, 0.0, 0.3, 2.0, 9.0, 40.0] {
         let exact = libm::tanh(f64::from(x) / 2.0);
-        assert!((f64::from(tanh_half(x)) - exact).abs() < 2e-6, "{x}");
+        for t in [tanh_half::<true>(x), tanh_half::<false>(x)] {
+            assert!((f64::from(t) - exact).abs() < 2e-6, "{x}");
+        }
     }
     for p in [-0.999f32, -0.5, 0.0, 0.25, 0.9, 0.999_99] {
         let exact = 2.0 * libm::atanh(f64::from(p));
@@ -262,7 +264,7 @@ fn tanh_half_first_form(x: f32) -> f32 {
 }
 
 /// Every 2⁻ᵏ step of the bit patterns plus the special values, or (with
-/// `step` 1) all 2³² of them.
+/// `step` 1) all 2³² of them; both targets' forms.
 fn tanh_half_matches_its_first_form(step: usize) {
     let specials = [
         0.0f32,
@@ -286,12 +288,13 @@ fn tanh_half_matches_its_first_form(step: usize) {
     ];
     let patterns = (0..=u32::MAX).step_by(step).map(f32::from_bits);
     for x in specials.into_iter().chain(patterns) {
-        assert_eq!(
-            tanh_half(x).to_bits(),
-            tanh_half_first_form(x).to_bits(),
-            "{x:e} ({:#010x})",
-            x.to_bits()
-        );
+        let want = tanh_half_first_form(x).to_bits();
+        for (form, got) in [
+            ("vector", tanh_half::<true>(x)),
+            ("scalar", tanh_half::<false>(x)),
+        ] {
+            assert_eq!(got.to_bits(), want, "{form}: {x:e} ({:#010x})", x.to_bits());
+        }
     }
 }
 
@@ -300,7 +303,7 @@ fn tanh_half_is_its_first_form_bit_for_bit() {
     tanh_half_matches_its_first_form(4_099);
 }
 
-/// All 2³² inputs (about a minute in release).
+/// All 2³² inputs, both forms (about two minutes in release).
 #[test]
 #[ignore]
 fn tanh_half_is_its_first_form_bit_for_bit_everywhere() {
@@ -462,7 +465,7 @@ fn reference_round(total: &[f32; N], next: &mut [f32; N], rows: &mut [[f32; MAX_
         let (v, n) = check(c);
         let mut t = [0.0f32; MAX_DEGREE];
         for j in 0..n {
-            t[j] = tanh_half(total[usize::from(v[j])] - row[j]);
+            t[j] = tanh_half_first_form(total[usize::from(v[j])] - row[j]);
         }
         let mut prefix = [1.0f32; MAX_DEGREE + 1];
         for j in 0..n {
@@ -494,17 +497,26 @@ fn the_sum_product_round_matches_the_check_by_check_form_bit_for_bit() {
         let mut rows = rows_of(&msg);
         let mut want_next = next;
         reference_round(&total, &mut want_next, &mut rows);
-        sum_product_round(&total, &mut next, &mut msg);
-        assert_eq!(
-            bits(&mut next.iter()),
-            bits(&mut want_next.iter()),
-            "state {state}: sums"
-        );
-        assert_eq!(
-            bits(&mut rows_of(&msg).iter().flatten()),
-            bits(&mut rows.iter().flatten()),
-            "state {state}: messages"
-        );
+        // Both targets' forms: the decoder's, and the other one.
+        let forms: [(&str, fn(&[f32; N], &mut [f32; N], &mut [f32; EDGES])); 3] = [
+            ("decoder", sum_product_round::<VECTOR, PASS_LANES>),
+            ("vector", sum_product_round::<true, 24>),
+            ("scalar", sum_product_round::<false, 1>),
+        ];
+        for (form, round) in forms {
+            let (mut next, mut msg) = (next, msg);
+            round(&total, &mut next, &mut msg);
+            assert_eq!(
+                bits(&mut next.iter()),
+                bits(&mut want_next.iter()),
+                "state {state}, {form}: sums"
+            );
+            assert_eq!(
+                bits(&mut rows_of(&msg).iter().flatten()),
+                bits(&mut rows.iter().flatten()),
+                "state {state}, {form}: messages"
+            );
+        }
     }
 }
 
@@ -560,17 +572,24 @@ fn the_min_sum_round_matches_its_first_form_bit_for_bit() {
         }
         let (mut want_next, mut want_msg) = (next, msg);
         reference_min_sum_round(&total, &mut want_next, &mut want_msg);
-        min_sum_round(&total, &mut next, &mut msg);
-        assert_eq!(
-            next.map(f32::to_bits),
-            want_next.map(f32::to_bits),
-            "state {state}: sums"
-        );
-        assert_eq!(
-            msg.map(f32::to_bits),
-            want_msg.map(f32::to_bits),
-            "state {state}: messages"
-        );
+        let forms: [(&str, fn(&[f32; N], &mut [f32; N], &mut [f32; EDGES])); 2] = [
+            ("vector", min_sum_round::<true>),
+            ("scalar", min_sum_round::<false>),
+        ];
+        for (form, round) in forms {
+            let (mut next, mut msg) = (next, msg);
+            round(&total, &mut next, &mut msg);
+            assert_eq!(
+                next.map(f32::to_bits),
+                want_next.map(f32::to_bits),
+                "state {state}, {form}: sums"
+            );
+            assert_eq!(
+                msg.map(f32::to_bits),
+                want_msg.map(f32::to_bits),
+                "state {state}, {form}: messages"
+            );
+        }
     }
 }
 
@@ -597,7 +616,11 @@ fn each_value_gives_the_same_bits_at_any_lane_count() {
     for _ in 0..200 {
         let mut xs = [0.0f32; EDGES];
         xs.iter_mut().for_each(|x| *x = value());
-        for f in [tanh_half as fn(f32) -> f32, twice_atanh] {
+        for f in [
+            tanh_half::<true> as fn(f32) -> f32,
+            tanh_half::<false>,
+            twice_atanh,
+        ] {
             let want = xs.map(|x| f(x).to_bits());
             for got in [
                 lanes::<1>(&xs, f),
