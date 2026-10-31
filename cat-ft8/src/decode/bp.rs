@@ -179,9 +179,11 @@ fn check(c: usize) -> (&'static [u8; MAX_DEGREE], usize) {
     (&CHECKS[c], usize::from(DEGREES[c]))
 }
 
-/// Whether the target has a vector unit the round's loops use (SSE2 on
-/// x86-64, NEON on AArch64; not the Cortex-M33).
-const VECTOR: bool = cfg!(any(target_feature = "sse2", target_feature = "neon"));
+/// Whether the compiler vectorises the round's loops: on x86-64 and
+/// AArch64, which always have SSE2 or NEON (the targets measured). Not on
+/// the Cortex-M33, and not on 32-bit ARM with NEON, whose vector floating
+/// point is not IEEE, so these loops stay scalar there.
+const VECTOR: bool = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
 
 /// tanh(x / 2) for any finite x.
 #[inline]
