@@ -211,6 +211,14 @@ pub(crate) fn atan2_turns(y: f32, x: f32) -> f32 {
 /// vector operation, which is the form the compiler maps onto registers.
 pub(crate) const LANES: usize = 4;
 
+/// Whether the compiler vectorises the decoder's lane loops: on x86-64 and
+/// AArch64, which always have SSE2 or NEON (the targets measured). Not on
+/// the Cortex-M33, and not on 32-bit ARM with NEON, whose vector floating
+/// point is not IEEE, so these loops stay scalar there. Where a loop's form
+/// depends on it, the form is a const parameter, so that the tests run both
+/// on any host.
+pub(crate) const VECTOR: bool = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
 // sin(2πt) = t·(S1 + S3·t² + S5·t⁴) and cos(2πt) = C0 + C2·t² + C4·t⁴:
 // fitted for this crate by linear programming (minimax absolute error on
 // 4 001 evenly spaced points of 0 ≤ t ≤ 1/8 turn, in `f64`), each

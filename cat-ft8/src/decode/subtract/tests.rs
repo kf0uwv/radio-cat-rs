@@ -18,7 +18,9 @@ use std::vec::Vec;
 
 use super::*;
 use crate::decode::frontend::INPUT_LIMIT;
-use crate::decode::testutil::{add_noise, add_signal, amplitude_for, empty_slot, symbols_of};
+use crate::decode::testutil::{
+    add_noise, add_signal, amplitude_for, empty_slot, symbols_of, Noise,
+};
 use crate::message::NoHashes;
 use crate::{pack, Error, SLOT_SAMPLES};
 
@@ -960,4 +962,126 @@ fn time_search_lanes_follow_the_sample_index_at_any_start() {
         }
     }
     assert_eq!(checked, 20);
+}
+
+/// Random 32-bit words, from the tests' generator.
+fn words(n: &mut Noise) -> u32 {
+    (n.uniform() * 4_294_967_296.0) as u32
+}
+
+/// Phases for the reference tests: random, and the quarter turns and the
+/// polynomial's interval ends (±2²⁹ around them) with their neighbours.
+fn test_phases(n: &mut Noise, len: usize) -> Vec<u32> {
+    let mut edges = Vec::new();
+    for k in 0..4u32 {
+        for d in [0u32, 1, 2, (1 << 29) - 1, 1 << 29, (1 << 29) + 1] {
+            edges.push((k << 30).wrapping_add(d));
+            edges.push((k << 30).wrapping_sub(d));
+        }
+    }
+    edges.push(u32::MAX);
+    (0..len)
+        .map(|i| {
+            if i % 3 == 0 {
+                edges[(words(n) as usize) % edges.len()]
+            } else {
+                words(n)
+            }
+        })
+        .collect()
+}
+
+/// Weights for the reference tests: random audio and envelope values, and
+/// the values the front end treats specially (non-finite, beyond the
+/// limit, zeros, subnormal).
+fn test_weights(n: &mut Noise, len: usize) -> Vec<f32> {
+    let edges = [
+        0.0,
+        -0.0,
+        1.0,
+        -1.0,
+        f32::NAN,
+        -f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::MAX,
+        f32::MIN,
+        INPUT_LIMIT,
+        -INPUT_LIMIT,
+        INPUT_LIMIT * 1.5,
+        -INPUT_LIMIT * 3.0,
+        f32::MIN_POSITIVE,
+        f32::from_bits(1),
+        -f32::from_bits(0x7f_ffff),
+    ];
+    (0..len)
+        .map(|i| {
+            if i % 4 == 1 {
+                edges[(words(n) as usize) % edges.len()]
+            } else {
+                (n.gauss() * 0.3) as f32
+            }
+        })
+        .collect()
+}
+
+/// [`scaled_cos_sin`] as first written: the plain loop, one sample at a
+/// time.
+fn scaled_cos_sin_first<X: Copy>(
+    out: &mut [u8],
+    phase: &[u32],
+    xs: &[X],
+    weight: impl Fn(X) -> f32,
+) {
+    for ((d, &q), &x) in out.chunks_exact_mut(PAIR).zip(phase).zip(xs) {
+        let w = weight(x);
+        let (c, s) = cos_sin_turns(q);
+        put(d, (w * c, w * s));
+    }
+}
+
+/// [`scaled_cos_sin`] at `W` samples at a time against its first form,
+/// byte for byte over the whole buffer (so nothing past the shortest input
+/// is written), for both weights the decoder uses.
+fn scaled_cos_sin_matches<const W: usize>(seed: u64) -> usize {
+    let mut n = Noise(seed);
+    let mut checked = 0;
+    let lens = (0..=3 * W + 5).chain([BLOCK, BLOCK + 1, 4 * BLOCK - 3]);
+    for len in lens {
+        let phase = test_phases(&mut n, len + 2);
+        let xs = test_weights(&mut n, len + 2);
+        // Equal lengths, and each input the shortest by one or two.
+        let shapes = [
+            (len, len, len),
+            (len, len + 1, len + 2),
+            (len + 2, len, len + 1),
+            (len + 1, len + 2, len),
+        ];
+        for (no, np, nx) in shapes {
+            for clamp in [false, true] {
+                let weigh = |x: f32| if clamp { input(x) } else { x };
+                let mut got = std::vec![0xa5u8; (no + 1) * PAIR];
+                let mut want = got.clone();
+                scaled_cos_sin::<W, f32>(&mut got[..no * PAIR], &phase[..np], &xs[..nx], weigh);
+                scaled_cos_sin_first(&mut want[..no * PAIR], &phase[..np], &xs[..nx], weigh);
+                assert_eq!(got, want, "W {W} lengths {no} {np} {nx} clamp {clamp}");
+                checked += 1;
+            }
+        }
+    }
+    checked
+}
+
+/// The reference and the time search's products, several samples at a
+/// time (the hosts' form) and one at a time (where nothing vectorises),
+/// against the plain loop bit for bit: random and edge phases and weights,
+/// every length up to three blocks of `W` and beyond, unequal inputs.
+#[test]
+fn scaled_cos_sin_is_its_first_form_bit_for_bit() {
+    let mut checked = scaled_cos_sin_matches::<1>(1);
+    checked += scaled_cos_sin_matches::<4>(2);
+    checked += scaled_cos_sin_matches::<8>(3);
+    checked += scaled_cos_sin_matches::<CHAINS>(4);
+    checked += scaled_cos_sin_matches::<24>(5);
+    assert!(checked > 1_000, "{checked}");
 }

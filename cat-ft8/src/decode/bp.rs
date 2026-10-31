@@ -31,7 +31,7 @@
 //! value), so a carrier or other narrow-band interference could otherwise
 //! "decode" as it.
 
-use super::math::{exp2_neg, log2_power, LOG2_E};
+use super::math::{exp2_neg, log2_power, LOG2_E, VECTOR};
 use crate::crc;
 use crate::ldpc::{Codeword, N};
 use crate::ldpc_tables::PARITY_CHECKS;
@@ -178,12 +178,6 @@ const _: () = assert!(LANES >= MAX_DEGREE);
 fn check(c: usize) -> (&'static [u8; MAX_DEGREE], usize) {
     (&CHECKS[c], usize::from(DEGREES[c]))
 }
-
-/// Whether the compiler vectorises the round's loops: on x86-64 and
-/// AArch64, which always have SSE2 or NEON (the targets measured). Not on
-/// the Cortex-M33, and not on 32-bit ARM with NEON, whose vector floating
-/// point is not IEEE, so these loops stay scalar there.
-const VECTOR: bool = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
 
 /// tanh(x / 2) for any finite x, in the form for targets where the loops
 /// vectorise (`V`) or not; the decoder uses [`VECTOR`]'s, the tests both.

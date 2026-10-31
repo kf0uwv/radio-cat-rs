@@ -83,7 +83,7 @@
 
 use super::decoder::Decode;
 use super::frontend::INPUT_LIMIT;
-use super::math::{atan2_turns, cos_sin_turns, log2_power, LANES};
+use super::math::{atan2_turns, cos_sin_turns, log2_power, LANES, VECTOR};
 use crate::waveform::{cos_turns, sin_turns, Placement, Synth, RAMP_SAMPLES};
 use crate::{
     encode_payload, Error, SAMPLES_PER_SYMBOL, SAMPLE_RATE, SYMBOL_COUNT, WAVEFORM_SAMPLES,
@@ -443,11 +443,7 @@ fn symbol_correlations(
         // The products sample by sample (a loop that vectorises), then
         // their sums by lane.
         let products = &mut work[..(b - a) * PAIR];
-        for ((d, &q), &x) in products.chunks_exact_mut(PAIR).zip(&phase[a..b]).zip(xs) {
-            let w = input(x);
-            let (c, s) = cos_sin_turns(q);
-            put(d, (w * c, w * s));
-        }
+        scaled_cos_sin::<CHAINS, f32>(products, &phase[a..b], xs, input);
         let (re, im) = lane_sums(a, products);
         let k = j0 / T;
         // The conjugate's sine part: the sum's sign turned.
@@ -1101,7 +1097,58 @@ fn get(d: &[u8]) -> (f32, f32) {
 /// envelope `env`, stored in `refs` ([`PAIR`] bytes each) by [`put`].
 #[inline(always)]
 fn reference(refs: &mut [u8], phase: &[u32], env: &[f32]) {
-    for ((d, &q), &w) in refs.chunks_exact_mut(PAIR).zip(phase).zip(env) {
+    scaled_cos_sin::<CHAINS, f32>(refs, phase, env, |w| w);
+}
+
+/// Samples [`scaled_cos_sin`] takes together: several whole vectors where
+/// the target has a vector unit, one sample elsewhere (the form there is
+/// the plain loop). Each sample's operations are the same at any count;
+/// only the order of independent samples' instructions changes. With one
+/// vector at a time, each sample's chain (the polynomial, the quadrant's
+/// selects) is a dependent sequence that the Cortex-A76 overlapped little;
+/// several side by side keep its vector pipes busy. The count was chosen
+/// by measurement on the Cortex-A76, and its gain depends on the compiler
+/// unrolling the block (a toolchain change can lose it with every test
+/// passing).
+const CHAINS: usize = if VECTOR { 16 } else { 1 };
+
+/// For each sample, `weight(x)` times the cosine and sine of its phase
+/// (`cos_sin_turns`), stored in `out` ([`PAIR`] bytes each) by [`put`]:
+/// `W` samples at a time, then the rest one by one, over the shortest of
+/// the three. With `W` 1 this is the plain loop.
+#[inline(always)]
+fn scaled_cos_sin<const W: usize, X: Copy>(
+    out: &mut [u8],
+    phase: &[u32],
+    xs: &[X],
+    weight: impl Fn(X) -> f32,
+) {
+    let n = (out.len() / PAIR).min(phase.len()).min(xs.len());
+    let whole = if W > 1 { n - n % W } else { 0 };
+    if W > 1 {
+        let blocks = out[..whole * PAIR]
+            .chunks_exact_mut(W * PAIR)
+            .zip(phase[..whole].chunks_exact(W))
+            .zip(xs[..whole].chunks_exact(W));
+        for ((d, q), x) in blocks {
+            let (q, x): (&[u32; W], &[X; W]) = (q.try_into().unwrap(), x.try_into().unwrap());
+            let mut v = [(0.0f32, 0.0f32); W];
+            for ((v, &q), &x) in v.iter_mut().zip(q).zip(x) {
+                let w = weight(x);
+                let (c, s) = cos_sin_turns(q);
+                *v = (w * c, w * s);
+            }
+            for (d, &v) in d.chunks_exact_mut(PAIR).zip(&v) {
+                put(d, v);
+            }
+        }
+    }
+    let rest = out[whole * PAIR..]
+        .chunks_exact_mut(PAIR)
+        .zip(&phase[whole..])
+        .zip(&xs[whole..]);
+    for ((d, &q), &x) in rest {
+        let w = weight(x);
         let (c, s) = cos_sin_turns(q);
         put(d, (w * c, w * s));
     }
