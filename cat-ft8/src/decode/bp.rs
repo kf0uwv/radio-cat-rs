@@ -175,16 +175,30 @@ fn check(c: usize) -> (&'static [u8; MAX_DEGREE], usize) {
     (&CHECKS[c], usize::from(DEGREES[c]))
 }
 
+/// Whether the target has a vector unit the round's loops use (SSE2 on
+/// x86-64, NEON on AArch64; not the Cortex-M33).
+const VECTOR: bool = cfg!(any(target_feature = "sse2", target_feature = "neon"));
+
 /// tanh(x / 2) for any finite x.
 #[inline]
 fn tanh_half(x: f32) -> f32 {
     let negative = x < 0.0;
-    // |x| by clearing the sign bit, not `if negative { -x } else { x }`:
-    // the compiler moved that select past `exp2_neg` and the division,
-    // evaluating the whole chain for both x and −x and choosing at the end
-    // (two divisions per value). The results are the same: the forms
-    // differ only for −0.0 and NaN, whose e is 1.0 and 0.0 either way.
-    let a = f32::from_bits(x.to_bits() & 0x7fff_ffff);
+    // |x|. Where the round's loops vectorise, by clearing the sign bit:
+    // with the select `if negative { -x } else { x }` the compiler moved
+    // the select past `exp2_neg` and the division, evaluating the whole
+    // chain for both x and −x in every lane and choosing at the end (two
+    // divisions per value). Elsewhere by the select, which becomes a
+    // branch to one of the two chains: fewer instructions per value than
+    // the masked form on the Cortex-M33. The results are the same: the
+    // forms differ only for −0.0 and NaN, whose e is 1.0 and 0.0 either
+    // way.
+    let a = if VECTOR {
+        f32::from_bits(x.to_bits() & 0x7fff_ffff)
+    } else if negative {
+        -x
+    } else {
+        x
+    };
     let e = exp2_neg(-a * LOG2_E); // e^(−|x|)
     let t = (1.0 - e) / (1.0 + e);
     if negative {
