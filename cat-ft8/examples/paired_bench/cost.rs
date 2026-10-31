@@ -77,7 +77,9 @@ pub fn cost(spec_a: &str, spec_b: &str, slots: usize, runs: usize) -> Result<(),
 /// the largest and the mean of those medians, the slot that is largest,
 /// and per step (summed over passes, and per pass) the mean of the
 /// per-slot medians. The deterministic work per pass is printed beside it:
-/// candidates through belief propagation, rounds and subtractions.
+/// candidates through belief propagation, rounds, subtractions and new
+/// decodes (list entries the pass added); then each pass's cost (its
+/// steps' means summed), new decodes and cost per new decode.
 pub fn slot_cost(spec_a: &str, spec_b: &str, slots: usize, runs: usize) -> Result<(), String> {
     use crate::record::decode_input;
     let setups = [parse_config(spec_a)?, parse_config(spec_b)?];
@@ -114,12 +116,16 @@ pub fn slot_cost(spec_a: &str, spec_b: &str, slots: usize, runs: usize) -> Resul
                                 *w.entry(format!("pass{} subtractions", p.pass)).or_default() +=
                                     p.subtracted;
                                 *w.entry(format!("pass{} slots", p.pass)).or_default() += 1;
+                                *w.entry(format!("pass{} new decodes", p.pass)).or_default() +=
+                                    p.decoded - p.truncated;
                             }
                         }
                         None => {
                             *w.entry("pass1 candidates".into()).or_default() += d.counts.kept;
                             *w.entry("pass1 BP rounds".into()).or_default() += d.bp_rounds;
                             *w.entry("pass1 slots".into()).or_default() += 1;
+                            *w.entry("pass1 new decodes".into()).or_default() +=
+                                d.counts.decoded - d.counts.truncated;
                         }
                     }
                 }
@@ -156,6 +162,7 @@ pub fn slot_cost(spec_a: &str, spec_b: &str, slots: usize, runs: usize) -> Resul
             .flat_map(|runs| runs.iter().flat_map(|m| m.keys().cloned()))
             .collect();
         let mut line = String::from("    mean of per-slot medians:");
+        let mut means: BTreeMap<&str, f64> = BTreeMap::new();
         for key in keys.iter().filter(|k| *k != "total") {
             let m: f64 = (0..slots)
                 .map(|k| {
@@ -169,11 +176,41 @@ pub fn slot_cost(spec_a: &str, spec_b: &str, slots: usize, runs: usize) -> Resul
                 .sum::<f64>()
                 / slots as f64;
             line.push_str(&format!(" {key} {:.2};", m * 1e3));
+            means.insert(key, m);
         }
         println!("{line}");
         let mut line = String::from("    work per slot (mean):");
         for (k, v) in &work[which] {
             line.push_str(&format!(" {k} {:.1};", *v as f64 / slots as f64));
+        }
+        println!("{line}");
+        // Each pass's cost: its own steps (`passN_*`) where several passes
+        // ran, every step where one did.
+        let mut line = String::from("    per pass (mean):");
+        let passes = work[which].keys().filter(|k| k.ends_with(" slots")).count();
+        for p in 1..=passes {
+            let prefix = format!("pass{p}_");
+            let ms = 1e3
+                * means
+                    .iter()
+                    .filter(|(k, _)| {
+                        if passes > 1 {
+                            k.starts_with(&prefix)
+                        } else {
+                            !k.starts_with("pass")
+                        }
+                    })
+                    .map(|(_, m)| m)
+                    .sum::<f64>();
+            let new = work[which]
+                .get(&format!("pass{p} new decodes"))
+                .copied()
+                .unwrap_or(0) as f64
+                / slots as f64;
+            line.push_str(&format!(
+                " pass{p} {ms:.2} ms, {new:.1} new decodes, {:.2} ms per new decode;",
+                ms / new
+            ));
         }
         println!("{line}");
     }

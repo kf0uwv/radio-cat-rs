@@ -107,7 +107,8 @@
 //! decoded by A and B interleaved, one thread, RUNS times (at least 5);
 //! per slot the median of its runs' total; it prints the largest and the
 //! mean of those medians, each step's mean (summed over passes and per
-//! pass), and the work per pass (candidates, rounds, subtractions).
+//! pass), the work per pass (candidates, rounds, subtractions, new
+//! decodes), and each pass's cost, new decodes and cost per new decode.
 //!
 //! **Misses by cause.** `run` also saves, per transmitted message, its
 //! outcome: decoded (its payload is in the output) or, judged by position,
