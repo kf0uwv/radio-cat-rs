@@ -1702,6 +1702,19 @@ pass, rounds alternated, one source path, a target directory per
 commit, binary hashes compared, the live throttle bits sampled once a
 second (any live bit voids the run). No acceptance block is used.
 
+Status (findings, "Belief propagation, twelfth round"): a04fc5a,
+6fd70e8 (`tanh_half` computed once; the select kept where nothing
+vectorises), 3120384 (24 values at a time in the tanh and atanh
+passes), 7a5898d (min-sum in place), d1a9334 (totals swapped by
+reference), 26bb83a (stopping test per check), d2667f1 (one exit),
+636350d (the min-sum check's size as a type on the hosts). Stop rule
+not met: the A76 round was 2.4× its floor (now 1.7×). A76 three-pass
+slot 142.75 → 126.25 ms (−11.6%), one pass 29.6 → 21.7 (−26.7%), BP
+−41.7%; the small configuration 16.1 → 15.5 ms; x86-64 three passes
+−5.0%, one pass −11.4%; Cortex-M33 one-pass slot −9.6% (small image, min-sum) and −2.8%
+(host image); flash −124 / −172 B, decoder frame −8 B. Every record,
+WAV output and encoder output identical.
+
 ## Next: gated, result-changing rounds
 
 Each changes results and needs its own acceptance (the run sets, the

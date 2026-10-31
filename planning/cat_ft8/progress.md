@@ -1335,3 +1335,34 @@
     151.1 → 142.8 ms; 7f89879 142.0.
   - Records, WAV output and encoder identical; local CI and the Pi suite
     pass.
+
+## Session: 2026-10-30 (O12, belief propagation; branch `o12-bp`)
+
+- ecfabf2: O12 plan with the stop rule, committed before any number.
+- Measured first: A76 round 36.7 cycles and 58.1 instructions per edge,
+  backend-bound (no cache or branch misses); the tanh loop computed its
+  `exp2_neg` and division twice (for x and −x); floor 15.4 cycles per
+  edge (2.4×), so the stop rule did not apply. M33: the small image runs
+  min-sum (31% of its one-pass slot), the host image sum-product (46%).
+- a04fc5a + 6fd70e8: |x| by the sign bit where the loops vectorise, the
+  select elsewhere (M33 code unchanged). A76 BP −11.5%.
+- 3120384: tanh and atanh 24 values at a time (one on the M33). A76
+  slot 138.7 → 126.6 ms.
+- 7a5898d, d1a9334, 26bb83a: min-sum in place, totals swapped by
+  reference, stopping test per check. M33 small slot −6.8%, −1.1%,
+  −2.0%.
+- d2667f1: one exit in `decode_soft`; flash and frame below 593b7c1's.
+- 636350d: the min-sum check's size as a type where the loops
+  vectorise (7a5898d had made the small configuration's BP on the A76
+  +29%); M33 code unchanged. A76 small slot 18.0 → 15.5 ms (593b7c1
+  16.1).
+- Result: A76 142.75 → 126.25 ms (−11.6%), one pass −26.7%; x86-64
+  −5%; M33 small slot −9.6% (seven WAV slots −8.1%), host −2.8%.
+- Rejected with numbers: inputs and sums by degree (A76 −1.8%, M33
+  +0.45%, flash +156 B), min-sum by degree, bounded min-sum loops,
+  branch-free minima, fused min-sum loops (M33 −2.6%, x86-64 min-sum
+  +31%), 8/16/32 lanes, the min-sum check by degree on the M33 too.
+- Identity: records (73 800 on x86-64 at every commit, the A76's equal
+  to x86-64's), 800 WAV slots × 3 configurations × 3 modes, 45 encoder
+  outputs, the emulated small image's output on seven slots. Local CI
+  and the embedded checks pass.

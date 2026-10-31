@@ -4458,3 +4458,335 @@ base B (the merged head before it), one attempt, no retune:
 
 **Merge rule.** C merges if every criterion passes; else nothing merges
 and the result is recorded. Applied mechanically.
+
+## Belief propagation, twelfth round (O12, bit-identical, 2026-10-30)
+
+A bit-identical round on the local branch `o12-bp` from 593b7c1; the
+plan and its stop rule (ecfabf2) were committed before any measurement.
+Every output is equal to 593b7c1's; flash, static RAM and the decoder's
+stack are no larger; the Cortex-M33 runs fewer instructions in both
+images.
+
+### Measured first (593b7c1)
+
+**Counters.** An out-of-tree microbenchmark (not committed): 256 noisy
+codewords (eight messages, σ 0.55–1.01, scaled to the host's mean
+|LLR| 4; 175 converge; 3 105 sum-product rounds), user-space hardware
+counters (`perf_event_open`; no privileges needed on either host)
+around `decode_soft` as the decoder calls it, the round alone (30
+rounds per vector with the per-round copy and swap), the stopping test
+alone, and `decode_soft` with min-sum. Per edge of a round (522 edges):
+
+| | cycles | instructions | IPC | backend-stall cycles | L1D read misses | branch misses |
+|---|---|---|---|---|---|---|
+| A76, round | 36.7 | 58.1 | 1.58 | 20.5 | 0.0004 | 0.02 |
+| A76, `decode_soft` sum-product | 37.6 | 60.2 | 1.60 | 20.8 | 0.001 | 0.02 |
+| A76, `decode_soft` min-sum | 19.6 | 46.3 | 2.36 | 2.1 | 0.001 | 0.34 |
+| x86-64 (Zen 2), round | 19.8 | 45.4 | 2.28 | — | 0.002 | 0.01 |
+
+The slot agrees: the A76 one-pass slot's 19.18 ms of BP over 2 297
+rounds is 20 040 cycles per round, 38.4 per edge. No cache or branch
+problem: the A76 round is backend-bound.
+
+**Where.** Shares of the round; A76 from a sampled PC histogram (a
+high-resolution timer signal, 104 000 samples, mapped onto the AArch64
+code), x86-64 from `perf record`:
+
+| | tanh pass | atanh pass | inputs (gather) | sums (scatter) | products |
+|---|---|---|---|---|---|
+| A76 | 43.1% | 32.0% | 8.8% | 10.3% | 4.6% |
+| x86-64 | 47.2% | 27.9% | 8.9% | 10.7% | 3.9% |
+
+The tanh loop (four values an iteration) was 70 AArch64 instructions
+with two divisions, and 96 x86-64 instructions with two `divps`: it
+computed `exp2_neg` and the division for x and for −x and chose with a
+mask at the end. The compiler had moved the magnitude's select
+(`if negative { -x } else { x }`) past the whole chain. On the
+Cortex-M33 the same duplication became a branch to one of two chains,
+so only one runs there (O5's "tanh … two `vdiv`" counted both chains'
+code, not their execution).
+
+**A76 throughput, measured** (independent operations in a loop):
+`fdiv v.4s` one per 6.0 cycles (latency 8.0); `fmul v.4s` two per
+cycle.
+
+**Floor (step 1 of the plan).** Per round, from the AArch64 loops and
+their trip counts, each resource's work over its A76 throughput:
+vector and FP operations ≈ 16 100 (two pipes: 8 050 cycles); 520
+four-lane divisions (3 120 cycles on the divider); ≈ 3 500 loads (two
+a cycle: 1 750); ≈ 1 400 stores (1 400); 30 300 instructions (four a
+cycle: 7 580). The largest gives **15.4 cycles per edge** for 593b7c1's
+code (12.7 without the duplicated chain, issue-bound). Measured 36.7,
+**2.4× the floor**, so the stop rule's first condition did not hold.
+The round was latency-bound: each value's chain (polynomial,
+conversions, division) is about 70 cycles end to end, and with 41–70
+instructions an iteration only one or two iterations' vector operations
+fitted in the A76's schedulers.
+
+**Cortex-M33** (instruction-set emulator, the `check.sh` images,
+`opt-level = "s"`): the host image's sum-product round 79 485
+instructions (2 825 rounds, 46% of its 488 168 028-instruction one-pass
+slot). The small image runs min-sum (`DecodeConfig::SMALL`), not
+sum-product: with `decode_soft` out of line (a measurement build) it is
+106.0 M of the slot's 346.2 M (31%), about 47 700 instructions a round;
+the stopping test 3 314 a call, 3 050 of them deciding all 174 bits
+although most rounds fail at one of the first checks. The shipping
+small image's slot is 348 830 353 instructions. So the M33's one-pass BP
+share is 31% (small) and 46% (host image), not the A76's 65%.
+
+### Changes
+
+1. **a04fc5a, `tanh_half` once per value**: |x| by clearing the sign
+   bit. The forms differ only for −0.0 and NaN, where e is 1.0 and 0.0
+   either way. Tests: against the first form bit for bit over every
+   4 099th bit pattern and the special values, and (ignored) all 2³²
+   (also run on the A76). A mutant that changes the sign test only at
+   −0.0 fails only the new test. A76 tanh loop 70 → 41 instructions,
+   one division; round 36.7 → 31.8 cycles per edge. **Cortex-M33
+   +2.0%** (79 485 → 81 104 a round): there the mask costs a few
+   instructions more than the branch.
+2. **6fd70e8, the select where nothing vectorises**: `VECTOR` (SSE2,
+   NEON) picks the mask, otherwise the select. The M33 round's code is
+   again instruction for instruction 593b7c1's, flash equal.
+3. **3120384, 24 values at a time in the tanh and atanh passes**
+   (`each_value::<PASS_LANES>`; one where `VECTOR` is false, so the M33
+   code is unchanged: 79 486 a round). Six independent chains side by
+   side. A76 microbenchmark, cycles per edge (tanh × atanh lanes):
+   4 × 4 31.8; 8 28.1; 16 24.3; the 12–24 grid 21.8–24.9 (24 × 24 the
+   best); 32 lanes 33.3 (the compiler did not unroll them). In the slot:
+   24 lanes 126.6 / 21.7 ms, 16 lanes 129.3 / 23.0, 8 lanes 132.5 / 24.6
+   (three passes / one; both rounds equal). x86-64 within noise. Test:
+   1, 4, 8, 16, 24 and `PASS_LANES` lanes against the plain map bit for
+   bit, for both functions.
+4. **7a5898d, the min-sum round in place** (`min_sum_round`): no zeroed
+   eight-value row per check (a `memclr` call each on the M33) and no
+   bounds check on its index. Test: against the first form over 20 000
+   random states, a quarter of them with repeated magnitudes in every
+   check; a mutant that drops the second-smallest update fails it and
+   the pin. M33 small slot −6.8%.
+5. **d1a9334, the totals' references swap**, not the arrays (174 values
+   each way a round; 1 384 M33 instructions a round). M33 −1.1% small,
+   −1.0% host.
+6. **26bb83a, the stopping test decides each check's bits as it tests
+   it** (`checks_hold`, `hard_bit`; `hard_decisions` only when every
+   check holds, before the CRC and the counts). M33 stopping test 3 314
+   → 421 instructions a call; −2.0% small, −1.9% host. Test: against
+   the first form over 20 000 states (random, and a codeword with up to
+   four bits flipped or erased to ±0); a mutant that ignores the index
+   in the tie rule fails it.
+7. **d2667f1, one exit in `decode_soft`**: 4–6 had added flash (small
+   +104 B, host +128 B) and 8 B to the host decoder frame. One loop that
+   tests round 0 first removes the duplicated success path: flash below
+   593b7c1's, the decoder frame −8 B; M33 +0.1% against 26bb83a.
+8. **636350d, the min-sum check's size as a type where the loops
+   vectorise.** 4's loops take the check's length at run time, and on
+   the hosts the compiler gave each a vector form with run-time checks
+   that no check reaches: the small configuration's BP on the A76 went
+   from 19.5 to 25.5 cycles per edge. One body, `min_sum_check`, takes
+   any `AsRef<[u8]>` and `AsMut<[f32]>`: with `VECTOR` it is called with
+   the size-6 or size-7 arrays, elsewhere with the slices (one instance,
+   as before). The M33 code is the same instructions with registers
+   renamed: same counts, same flash. A76 `slotcost small small 200 5`:
+   18.0 → 15.5 ms (593b7c1: 16.1), BP 8.10 → 5.54; the host
+   configuration's three-pass slot +0.4% (BP unchanged).
+
+The host-image figures in the messages of d1a9334 and 26bb83a
+(487 679 021 and 478 671 277) were measured on a work branch that still
+had a04fc5a's masked form on the M33. On `o12-bp` the host slot is
+488 121 501 → 483 101 689 → 474 093 945: the same −1.0% and −1.9%.
+
+**Decision rule.** 1–3 carry the A76 (BP −41%, three-pass slot −11%).
+4 is kept for the M33 one-pass slot (−6.8%). 5 and 6 are the plan's
+"per-round copies and the stopping test's bookkeeping" item, −3.1% of
+the M33 one-pass slot together (−1.1% and −2.0% alone); neither moves
+the A76 three-pass slot by more than 0.5% (d1a9334 −0.2%, 26bb83a
++0.4%). 7 restores the memory bound. 8 removes a regression of the
+small configuration on hosts that 4 introduced (below).
+
+### Slot time per commit
+
+`slotcost host,passes=1 host 200 5` on the Cortex-A76, every binary in
+two rounds (the order reversed in the second), one source path, a
+target directory per commit, the binary's SHA-256 printed before each
+run, the benchmark on core 3 and on core 0 the live throttle bits, ARM
+clock and temperature sampled once a second (`get_throttled` bits 0–3;
+0x50000 is the sticky baseline). Means of the two rounds (ms):
+
+| | three passes | one pass | BP, three passes | BP, one pass |
+|---|---|---|---|---|
+| 593b7c1 | 142.75 | 29.6 | 40.92 | 19.18 |
+| a04fc5a, 6fd70e8 (same AArch64 code) | 138.7 | 27.4 | 36.22 | 16.99 |
+| 3120384 | 126.6 | 21.7 | 24.00 | 11.26 |
+| 7a5898d | 125.8 | 21.7 | 23.88 | 11.20 |
+| d1a9334 | 125.55 | 21.6 | 23.69 | 11.12 |
+| 26bb83a | 126.05 | 21.7 | 23.91 | 11.22 |
+| d2667f1 | 125.75 | 21.7 | 23.84 | 11.20 |
+| **636350d** | **126.25** | **21.7** | **23.87** | **11.21** |
+| **593b7c1 → 636350d** | **−11.6%** | **−26.7%** | **−41.7%** | **−41.6%** |
+
+(636350d against d2667f1 in a separate pair of rounds: 126.3 / 126.2
+against 125.8 / 125.8.) Every timed A76 run of this round is valid
+(this table, the lane and candidate runs, the small configuration's):
+no sample with a live bit among 4 682 samples over 34 runs; the clock
+2 400 MHz in every sample but two (1 700 and 1 500 MHz in the first
+second of a run); peak 56.0 °C. The two rounds of a binary differ by at
+most 0.1 ms. BP is now 19.0% of the
+three-pass slot (32.7% before) and 52% of the one-pass slot (65%).
+
+x86-64 (Threadripper 3970X, `taskset -c 5`, the same alternation; a
+first attempt overlapped with CI builds and is void):
+
+| | three passes | one pass | BP, three passes |
+|---|---|---|---|
+| 593b7c1 | 82.4 | 17.95 | 21.3 |
+| a04fc5a | 78.5 | 16.15 | 17.5 |
+| 3120384 | 78.7 | 16.2 | 17.6 |
+| d2667f1 | 78.3 | 16.05 | 17.35 |
+| 636350d (a separate pair with d2667f1: 78.95 / 16.2 there) | 78.3 | 15.9 | 17.17 |
+| 593b7c1 → 636350d | −5.0% | −11.4% | −19.4% |
+
+### Cortex-M33 (emulated instructions)
+
+`check.sh` images (thumbv8m.main-none-eabihf, `opt-level = "s"`), the
+check program's synthesized slot from `_start`, callees included:
+
+| | small slot (min-sum) | min-sum round | host slot (sum-product) | sum-product round | stopping test, small / host |
+|---|---|---|---|---|---|
+| 593b7c1 | 348 830 353 | ≈ 47 700 (inline) | 488 168 028 | 79 485 | 3 314 / 3 279 |
+| a04fc5a | 348 830 353 | | 492 742 535 | 81 104 | |
+| 6fd70e8 | 348 830 353 | | 488 168 028 | 79 485 | |
+| 3120384 | 348 830 353 | | 488 170 853 | 79 486 | |
+| 7a5898d | 325 105 605 | 35 451 | 488 121 501 | 79 486 | |
+| d1a9334 | 321 510 408 | 34 988 | 483 101 689 | 78 938 | 3 313 / 3 278 |
+| 26bb83a | 315 156 347 | 34 988 | 474 093 945 | 78 938 | 421 / 330 |
+| d2667f1, **636350d** | **315 473 850** | **34 988** | **474 456 751** | **78 938** | inlined |
+| 593b7c1 → 636350d | **−9.6%** | **−27%** | **−2.8%** | −0.7% | |
+
+On the seven WAV slots of O10b (the small image reading the slot's
+samples, decoding in the emulator): 2 270 754 510 → 2 085 794 491
+instructions in all (−8.1%; per slot −6.8% to −10.0%).
+
+**Sizes** (`check.sh --stack`): flash small 85 720 → 85 596 B, host
+98 200 → 98 028, encoder 35 536 (unchanged); static RAM unchanged
+(212 044 / 241 612 / 0); the decoder path's frame 2 488 → 2 480 B in
+both images; the sum-product round's frame 88 B (unchanged), the new
+`min_sum_round` 48 B (inline before); `accept` and the stopping test
+are inlined. The deepest BP path is 8 B shallower. No fused
+multiply-add (0 `vfma`/`vfms`/`vfnma`/`vfnms` with
+`--mattr=+fp-armv8d16sp`; `vmla` 75 / 151 / 13 as before) and no `f64`
+helper in any image; thumbv7em builds.
+
+### Rejected (numbers)
+
+- **The mask in `tanh_half` on every target** (a04fc5a alone): M33
+  +2.0% a round; replaced by 6fd70e8.
+- **32 lanes** in the passes: not unrolled by the compiler, 33.3 cycles
+  per edge (24: 21.8). **8 or 16 lanes**: slot 132.5 / 129.3 ms
+  against 126.6.
+- **Inputs and sums by check degree in the sum-product round**
+  (`gather::<6/7>`, `scatter::<6/7>`, on 26bb83a): A76 126.05 → 123.5
+  ms (−2.0%; −1.8% against d2667f1), one pass 21.7 → 20.6, BP 23.9 →
+  21.7; x86-64 −1.1%. But the M33 round 78 938 → 79 296 (+0.45%) and
+  flash +156 B (above 593b7c1's), so it fails the M33 and memory
+  bounds; a `VECTOR`-only form would be a second code path for under
+  2%. Not kept.
+- **The min-sum check by degree on every target**
+  (`min_sum_check::<6/7>`, also on the M33): M33 small slot +0.55%,
+  flash +264 B (above 593b7c1's); A76 min-sum 17.2 cycles per edge,
+  x86-64 16.6. Kept only where `VECTOR` is set (636350d).
+- **The min-sum loops bounded by seven** (`.take(MAX_DEGREE)`): M33
+  +3.0%, x86-64 min-sum +12%.
+- **Branch-free tracking of the two smallest magnitudes** (selects on
+  the same comparisons): M33 round 34 988 → 37 076 (+6%).
+- **The min-sum check in two fused loops** (inputs with the minimum
+  search; outputs with the sums, every operation in the same order;
+  on d2667f1): M33 small slot −2.6% (315 473 850 → 307 258 736), flash
+  −60 B; but x86-64 min-sum 20.9 → 27.5 cycles per edge. Under the 3%
+  M33 bar alone, so the current form is kept; a candidate for a later
+  round that weighs the small configuration on hosts.
+
+### The round after the changes (A76 counters)
+
+The same microbenchmark with the A76's operation-class counters
+(`LD_SPEC`, `ST_SPEC`, `ASE_SPEC` + `VFP_SPEC`, `INST_SPEC`) per edge of
+the round, and each class over its throughput (the divider from the
+code: four-lane divisions per edge × 6 cycles):
+
+| | cycles | vector/FP ÷ 2 | loads ÷ 2 | stores | instructions ÷ 4 | divider | floor | measured ÷ floor |
+|---|---|---|---|---|---|---|---|---|
+| 593b7c1 | 36.9 | 15.2 | 3.7 | 2.9 | 14.7 | 6.0 | 15.2 | 2.44 |
+| 3120384 | 21.7 | 11.7 | 3.9 | 3.1 | 12.5 | 4.5 | 12.5 | 1.74 |
+| d2667f1 | 21.7 | 11.7 | 3.9 | 3.1 | 12.5 | 4.5 | 12.5 | 1.73 |
+
+(The counted floor for 593b7c1, 15.2, agrees with the estimate from the
+code, 15.4.) The round is now 1.7× an issue-bound floor, so the stop
+rule's first condition still does not hold, but what is left lies in
+the inputs and sums (the rejected by-degree form took 9% of the round
+and failed the M33 and memory bounds) and in the per-value chains'
+latency. The second condition held for every other candidate tried
+(above). The next bit-identical gain in BP is small; the larger levers
+are result-changing (fewer candidates or rounds) or the fit.
+
+### The small configuration on hosts
+
+`DecodeConfig::SMALL` (min-sum) is the M33's configuration; hosts run
+it only when asked (`--config small`, the `small` records). On the A76
+(`slotcost small small 200 5`, rounds alternated, live bits sampled):
+
+| | slot mean | BP | min-sum, microbenchmark (cycles per edge) |
+|---|---|---|---|
+| 593b7c1 | 16.1 ms | 6.29 | 19.5 |
+| d2667f1 | 18.0 | 8.10 | 25.5 |
+| 636350d | **15.5** | **5.54** | **17.6** |
+
+x86-64: min-sum 20.3, 21.2 and 16.5 cycles per edge; `slotcost small
+small 200 5` 13.55, 13.45 and 12.45 ms (BP 6.45, 6.40, 5.34).
+
+### Identity
+
+- **Records:** `paired_bench run` of `crowded`, `wide`, `fading` on
+  `main`, `cap1`, `cap2` and `sweep`, `edges`, `empty` on `main`, each
+  with `host`, `host,passes=1` and `small` (73 800 records), timings
+  removed: equal to 593b7c1's at every code commit on x86-64 (a04fc5a,
+  6fd70e8, 3120384, 7a5898d, d1a9334, 26bb83a, d2667f1, 636350d). On
+  the A76, the records of 26bb83a, d2667f1 and 636350d equal x86-64's of
+  593b7c1 (73 800 of 73 800 each).
+- **800 WAV slots** × `host`, `small`, `host,passes=1` × plain, `--raw`,
+  `--profile` (7 200 runs, timings removed): byte-identical to
+  593b7c1's at every code commit. (636350d's x86-64 and AArch64
+  binaries are byte-identical to those of 205d9e5, a work commit with
+  the same tree, on which its timing and identity runs were made.)
+- **Encoder:** the 45 `cat-ft8-encode` outputs and their stdout
+  identical (d2667f1); no change outside `decode/bp.rs` and its tests.
+- **The small image in the emulator** (seven slots of O10b: s0000,
+  s0086, s0174, s0180, s0407, s0446, s0748; 0, 23, 30, 10, 30, 30 and 10
+  decodes): report counts, every decode's fields and text, and the
+  `LEVELS` and `DECODES_LIST` statics byte-identical to 593b7c1's at
+  26bb83a, d2667f1 and 636350d.
+- **Tests:** every new reference test compares with the form as first
+  written bit for bit; the pinned state hash is unchanged; each new
+  test has a mutant that fails it (above).
+
+### Checks at 636350d
+
+- Local CI passes: fmt; clippy `-D warnings` on the workspace, cat-ft8
+  with all targets and features, and the thumbv8m library; workspace,
+  profile, no-std and release tests with the ignored ones (the 2³²
+  `tanh_half` test among them); the bulk run; MSRV 1.75; docs, with and
+  without `std`; `check.sh --stack`. thumbv7em builds. No fused
+  multiply-add and no `f64` helper in any thumbv8m image.
+- Raspberry Pi 5: the release test suite with the ignored tests passes
+  (lib 172, then 2 + 0 + 12 + 1 bulk + 7 + 2 + 5), so the 2³²
+  `tanh_half` test and the other bit-for-bit tests pass on AArch64 too.
+
+### Not measured
+
+- Cortex-M33 cycles: only emulated instruction counts (no hardware
+  run, no wait states, no branch penalties).
+- The lane count on other AArch64 or x86-64 cores: 24 was chosen on the
+  A76 (on x86-64 1–24 lanes are within noise); a core with fewer
+  vector registers may spill more.
+- The 24-lane form's speed depends on the compiler laying out the six
+  chains side by side; a different rustc may choose otherwise (the
+  results cannot change, only the speed). 32 lanes already were not
+  unrolled.
