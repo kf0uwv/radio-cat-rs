@@ -1886,6 +1886,89 @@ Every record, decode and residual is identical. The one changed output
 is `static_table_bytes` in `--profile` (+1 566, the BP tables), and
 flash is +1 444 B (small) and +600 B (host) net.
 
+## O13b: review follow-ups (2026-10-31)
+
+On `o13-sub` after 41f7368. Decodes, records, residuals and encoder
+output equal to 67e2458's; the one output that may change is
+`static_table_bytes` in `--profile` (the tables, below). These rules are
+fixed before any new measurement.
+
+1. **Belief propagation's graph stored once.** `check_edges()` takes
+   each check's variables from `EDGE_VARS` (they are the same bytes, in
+   the same order, as the padded check list's first `DEGREES[c]`), and
+   the stopping test walks `check_edges()`: the same checks in the same
+   order, so it stops at the same first failing check. The padded check
+   list moves to the tests, which keep it as an independent derivation
+   from `PARITY_CHECKS`. `TABLE_BYTES`, its doc, the table accounting
+   test and ADR 0024's table row follow. A non-regression check, not a
+   bar:
+   - A76: its belief-propagation stage, in the three-pass and the
+     one-pass slot, is compared with the median over this round's
+     builds whose belief-propagation functions are byte-identical to
+     the parent's (the standing rule below). It is a regression if
+     either is above that median by more than A (the larger of 1.0 ms
+     and the largest untouched stage's move against the same builds).
+   - Cortex-M33 (emulated): the one-pass slot of the small and the host
+     image not up by more than 0.1%; flash not larger in either image;
+     no larger stack frame; static RAM unchanged.
+   - A regression in either is recorded and the change not kept in
+     that form.
+2. **`scaled_cos_sin` without its type parameter**: the weights are
+   always `f32`. The `if W > 1` guards stay (without them the thumbv8m
+   library grows). Check: the AArch64 `paired_bench` and both M33
+   images' functions identical instruction for instruction (names
+   aside); no timing.
+3. **Tests**: the removal at and before the centre with base −0.0, a
+   positive slope, −0.0 audio and positive references, where the clamp's
+   +0.0 is observable (mutant: the clamp returning −0.0).
+4. **The removal's index bound as a release `assert!`**, once per run,
+   outside the loop. Kept if it costs nothing measurable: the AArch64
+   removal loops the same length (28 and 168 instructions), the A76
+   subtract stage not above its same-code median by more than A, and
+   the M33 subtraction's instructions (the multi-pass image on s0086)
+   up by at most 0.1%. Otherwise a comment names the callers that
+   guarantee the bound, and the `debug_assert!` stays.
+5. **`paired_bench slotcost` prints each pass's new decodes** (list
+   entries added) and its cost per new decode (the pass's summed stage
+   means ÷ its new decodes per slot). Output of the bench tool only.
+6. **Alignment trial for measurement builds.** The four O13 builds whose
+   belief-propagation code is byte-identical (a003d6e, d486205,
+   d116122, 94ae1b8; BP 23.83–24.64 ms in O13), each built as now and
+   with `-C llvm-args=-align-loops=64 -C llvm-args=-align-all-functions=6`
+   (64-byte loops and functions), all eight timed in one session (two
+   alternated rounds). The measure is the spread (largest less
+   smallest) over the four builds of each stage whose functions are
+   byte-identical in all four. Adopted for measurement builds only if
+   the aligned builds' largest such spread is at most half the plain
+   builds' and the plain spread is at least 0.4 ms (otherwise the trial
+   cannot show a gain); released builds unchanged either way.
+7. **Findings corrections (O13)**: candidate 4's gain against the
+   median of the same-code builds; the round described as "decodes,
+   records, residuals and encoder identical; one profile metadata field
+   changes"; the circular non-regression clause and its replacement;
+   the second-pair rule's leniency (it ignores the allowance); that
+   candidate 4 was entered again under a rule changed in advance.
+
+Checks: as in O13 (local CI with MSRV 1.75 and `check.sh --stack`,
+thumbv7em, no FMA and no `f64` helper; the 73 800 records on x86-64 and
+the A76; the 800 WAV slots × configurations × modes identical except
+`static_table_bytes`; the encoder; the emulated small and host images'
+decodes and the multi-pass image's residuals; the Pi release suite).
+Timing: rounds alternated, one source path, a target directory per
+commit, binary hashes, the live throttle bits sampled once a second on
+another core (any live bit voids a run).
+
+### Standing rule for timed gates (from O13b)
+
+The changed stage's baseline is the median over every build in the
+round whose changed-stage functions are byte-identical (compared
+function by function in the disassembly, addresses and names aside),
+not the parent's measurement alone. A sequential gate otherwise hands
+each candidate its parent's placement: a stage that one commit's
+layout slowed becomes a free gain for the next commit that changes it.
+The allowance for untouched stages (the larger of 1.0 ms and the
+largest untouched move) stays.
+
 ## Next: gated, result-changing rounds
 
 Each changes results and needs its own acceptance (the run sets, the
