@@ -5608,3 +5608,274 @@ builds use the 64-byte alignment above.
 - Cortex-M33 cycles (emulated instructions only, as before).
 - Whether 64-byte alignment narrows the spread on x86-64 or for the
   subtraction's own functions (they differ between the trial's builds).
+
+## OSD sizing (measurement only, 2026-10-31)
+
+On `osd-size` from 511bf32; the questions, definitions, threshold rule
+and decision metric were committed first (b8ff866) and are in the plan
+("OSD sizing round"). The decoder is unchanged: the default release
+`cat-ft8-decode` and `cat-ft8-encode` are byte-identical to 511bf32's
+(sha256 d111410d… and f87cc8d…, built from one source path at 4657bfe).
+Commits: 5ec0eed and 4657bfe (a `profile`-only accessor for a
+candidate's soft bits and belief propagation's last totals, placed at
+the ends of their files: in the middle it moved the default build's
+panic line numbers, and the binary changed), af23f41, 3f48a52, 48dd456
+and 2cbb245 (the bench). To reproduce, check out 2cbb245: `paired_bench
+osd CONFIG OUTDIR SETS BLOCKS`, `osdcost`, `osdplaus`, `osdcheck` and
+`osddump`; the Cortex-M33 image is the embedded-check program with an
+OSD run on 16 dumped inputs added before the decode, built out of tree.
+The OSD is written from Fossorier and Lin (1995); no other
+implementation was read.
+
+### Method
+
+- **OSD** (`examples/paired_bench/osd.rs`, `no_std`, no heap, `f32`
+  additions only): reliability order (|value|, ties to the lower
+  index), Gauss–Jordan elimination of the generator over GF(2) for the
+  most reliable basis, the order-0 codeword re-encoded from the hard
+  decisions there, then every one- and two-bit flip of the basis. A
+  flip set's discrepancy D is computed from the order-0 codeword's
+  (signed weights; for pairs, the rows' shared positions summed with
+  four nibble-table accumulators). The CRC-14 has a zero start and no
+  final XOR, so its syndrome is linear and form B tests each list
+  codeword with a 14-bit XOR. The bit vectors use the target's word
+  (64 bits on hosts, 32 on the M33); every sum keeps one order, so
+  results are the same on every target.
+- **Self-check** (`osdcheck`, 3 000 seeded noisy codewords): every chosen
+  word is a codeword; the incremental D matches the direct sum; when
+  the basis holds at most i errors, order i returns the truth or a
+  codeword of smaller D, and form B never misses a listed truth. Passes.
+- **Runs** (x86-64, all threads; results do not depend on the thread
+  count): `host` and `small` on `crowded`, `wide`, `fading` × `main`,
+  `cap1`, `cap2`; `sweep`, `edges`, `empty` on `main`; `empty` on
+  `bulk01`…`bulk20` (E4's blocks). 70 600 slots per configuration, of
+  which 48 300 empty. Run twice (4657bfe, then 2cbb245 for the
+  non-zero metrics): every set's result hash is equal.
+- **Identity across targets**: `osdcost`'s result hashes on the A76
+  equal x86-64's (all five modes, 32 481 candidates); the M33 image's
+  picks and D bits equal x86-64's on all 16 inputs (both orders, both
+  forms, small and host images).
+
+### Deviations from the fixed rules (decided after seeing data)
+
+1. **The false-decode estimate as fixed is unusable.** It counts the
+   least-D codeword whatever it is, and on empty slots 1.3% of failed
+   candidates have the all-zero codeword at D = 0 (inputs that are zero
+   or near it; belief propagation's all-zero rejections). Form A always
+   rejects that codeword, but the estimate counts it at 2⁻¹⁴ × π, so no
+   threshold, not even D = 0, meets the current rate: **T\* is "none"
+   for every input, order, form and metric as fixed.** The estimate
+   used below counts only codewords with a non-zero message part
+   (`best_nz`, `list_nz`, added in 2cbb245; every other output is
+   unchanged).
+2. **Candidate subsets in the verdict.** The plan reports by rank (≤ 10,
+   ≤ 25, all) and asks which candidates would beat pass 3, but the
+   verdict rule names only the input, order, form and metric. Both are
+   given: the verdict with all failed candidates (the rule as fixed),
+   and with each pass's 10 best-scoring candidates. For a subset, T\* is
+   recomputed from the empty slots' candidates of that subset (fewer
+   candidates per slot allow a looser threshold).
+3. **The replace test** takes the list after pass 2 from `paired_bench
+   run host,passes=2` on the same blocks.
+4. On the 200 `slotcost` slots, the subset's failed candidates per pass
+   are not recorded by slot; their cost is bounded by 10 per pass.
+
+### The factor model holds
+
+On the 48 300 empty slots (host; small alike): form A's least-D codeword
+passes the CRC at 5.0–6.5 × 10⁻⁵ of candidates (2⁻¹⁴ = 6.1 × 10⁻⁵), and
+0.33–0.46 of those are plausible (π = 0.367 from 1 000 000 random
+payloads); form B finds a CRC-passing codeword in 0.0056 (OSD-1) and
+0.225 (OSD-2) of candidates, against 1 − (1 − 2⁻¹⁴)^L = 0.0056 and
+0.226, and 0.375–0.395 of those are plausible.
+
+**The current rate** (CRC failures per empty slot × 2⁻¹⁴): host 0.0148
+→ 9.0 × 10⁻⁷ per slot; small 0.0083 → 5.1 × 10⁻⁷.
+
+### 1. The pool
+
+Host; "missed" is not decoded after all three passes; reach is the
+number of missed messages whose best failed candidate has at most i
+errors in the most reliable basis (OSD-i lists the truth).
+
+| set, pass | failed / slot | on a missed message / slot | missed messages | dH to truth (ch) q1/med/q3 | reach OSD-0/1/2/3 (ch) | (bp) | ≤ −17 dB messages, reach (ch) |
+|---|---|---|---|---|---|---|---|
+| crowded/wide/fading × 3 blocks, p1 | 84.5 | 1.65 | 9 918 | 30/42/64 | 317/767/1 339/1 965 | 514/1 084/1 613/2 100 | 3 822: 39/194/403/660 |
+| same, p2 | 45.2 | 2.34 | 14 060 | 28/36/50 | 510/1 271/2 351/3 483 | 922/1 945/2 915/3 794 | 6 315: 87/353/800/1 297 |
+| same, p3 (5 474 slots) | 48.9 | 2.73 | 14 965 | 27/34/45 | 583/1 473/2 707/4 031 | 1 059/2 263/3 401/4 420 | 6 819: 98/387/900/1 431 |
+| `slotcost` slots, p1 | 75.9 | 1.48 | 295 | 38/60/74 | 12/29/42/51 | 15/30/41/50 | — |
+| same, p2 | 39.5 | 2.02 | 404 | 32/52/69 | 25/51/67/92 | 31/51/69/92 | — |
+| same, p3 | 46.9 | 2.29 | 459 | 30/41/60 | 36/72/96/137 | 38/71/100/130 | — |
+| sweep, p1 | 99.4 | 0.41 | 6 167 | 26/33/40 | 125/430/949/1 501 | 380/869/1 347/1 802 | all |
+| edges, p1 | 99.1 | 0.06 | 72 | 18/20/24 | 12/26/43/64 | 27/49/61/65 | all |
+| empty × 21 blocks, p1 | 100.0 (zero 1.57) | — | — | — | — | — | — |
+
+Small (one pass): crowded/wide/fading 59.5 failed per slot, 36 945
+missed messages, reach (ch) 2 352/3 785/5 315/6 847; `slotcost` slots
+2 400 missed, reach 207/311/404/491; sweep 6 217, reach
+136/463/1 001/1 563. Nearly every failure is "not converged" (CRC
+0.008–0.018 and all-zero 0.007–0.05 per slot outside the empty set).
+
+- Most missed messages are far from the hard decisions (median 34–42
+  bits on crowded slots, 33 on the sweep) and outside OSD-2's reach:
+  OSD-2 could list the truth for 13% (pass 1) to 18% (pass 3) of the
+  host's missed crowded messages, and 15% of the sweep's.
+- Belief propagation's last totals put more messages in reach than the
+  channel's soft bits (about 1.5× at OSD-0/1), but they also put noise
+  closer (below).
+
+### 2. Recovery, and 3. false decodes
+
+Distinct messages per slot that OSD recovers and the decoder does not
+decode after all passes ("new"), pooled crowded/wide/fading × 3 blocks
+(6 000 slots), form A, by threshold on the accepted codeword's Hamming
+distance dH; in brackets the ≤ −17 dB part; then the estimated added
+false-decode rate per slot (empty slots, non-zero estimate):
+
+| candidates, OSD | dH ≤ 18 | ≤ 20 | ≤ 22 | ≤ 24 | ≤ 26 | ≤ 30 | no threshold |
+|---|---|---|---|---|---|---|---|
+| host, all, OSD-1 (ch) | 0.019 (0.008) 3.7e-9 | 0.041 (0.014) 6.2e-8 | **0.070 (0.025) 6.4e-7** | 0.109 (0.038) 5.0e-6 | 0.145 2.6e-5 | 0.200 3.2e-4 | 0.235 (0.068) 2.2e-3 |
+| host, all, OSD-2 (ch) | 0.040 4.4e-8 | **0.084 (0.035) 6.0e-7** | 0.139 5.7e-6 | 0.207 3.5e-5 | 0.266 1.4e-4 | 0.347 9.1e-4 | 0.384 (0.135) 2.2e-3 |
+| host, top 10, OSD-1 (ch) | 0.019 0 | 0.039 5.6e-9 | 0.067 6.5e-8 | **0.104 (0.036) 5.1e-7** | 0.139 2.6e-6 | 0.191 3.2e-5 | 0.225 (0.064) 2.2e-4 |
+| host, top 10, OSD-2 (ch) | 0.039 3.2e-9 | 0.080 5.8e-8 | **0.133 (0.055) 5.5e-7** | 0.197 3.5e-6 | 0.255 1.4e-5 | 0.333 9.0e-5 | 0.369 (0.129) 2.2e-4 |
+| small, top 25, OSD-1 (ch) | 0.018 9.3e-10 | 0.037 1.8e-8 | 0.064 1.7e-7 | 0.101 1.2e-6 | 0.145 6.5e-6 | 0.232 8.0e-5 | 0.382 (0.018) 5.5e-4 |
+
+Bold: T\*, the largest threshold whose estimate is at most the current
+rate (host 9.0 × 10⁻⁷). Other choices at T\*, host, all candidates: the
+scale-free Dn = D / Σ|value| recovers far less (ch OSD-1, Dn ≤ 0.0225:
+0.002 per slot), and belief propagation's totals less again (bp OSD-1,
+Dn ≤ 0.0075: 0.024; dH ≤ 6: 0.015): noise candidates' best codewords
+sit as close to the hard decisions as true ones, and the totals pull
+both closer. Form B (the best CRC-passing codeword of the list) needs
+dH ≤ 9 (ch) and recovers nothing there. Channel soft bits, form A and dH
+come out ahead throughout. Wrong codewords from on-message candidates at T\*: none.
+
+- **Recoveries come almost entirely from each pass's 10 best-scoring
+  candidates** (0.225 of 0.235 per slot without a threshold), so running
+  OSD on those alone keeps the gain while running a tenth of the
+  candidates, and with ten candidates per empty slot instead of 100 the
+  matched threshold loosens from dH ≤ 22 to ≤ 24.
+- At the matched rate OSD keeps 22–46% of what it could recover with
+  no threshold: the acceptance test, not the reach, limits it.
+
+**Counted false decodes:** none, at every T\* above, in 70 600 slots
+per configuration (empty and off-message candidates of every block,
+and wrong codewords of on-message ones): the 95% upper bound is
+3 / 70 600 = 4.2 × 10⁻⁵ per slot, 47 times the current rate, so the
+count cannot confirm the target; it is consistent with the estimate,
+which expects 0.02–0.06 false decodes in these slots at T\*. The
+estimate's own count is solid: at host top-10 OSD-1 dH ≤ 24, 1 103 of
+483 000 empty-slot candidates have their best non-zero codeword within
+24 bits (q = 2.3 × 10⁻³), giving 10 × q × 2⁻¹⁴ × π = 5.1 × 10⁻⁷ per
+slot. In a three-pass crowded slot the top-10 subset runs on about
+14.5 failed candidates (0.7 + 5.7 + 8.1), not 10, so the rate there is
+about 7.4 × 10⁻⁷.
+
+### 4. Cost
+
+| | A76 µs / candidate | M33 instructions / candidate |
+|---|---|---|
+| preparation (sort, elimination, tables) | 30.6 | 350 692 (324 k–368 k) |
+| OSD-1 form A (preparation included) | 31.0 | 352 327 |
+| OSD-1 form B | 33.0 | 374 500 |
+| OSD-2 form A | 124.9 | 2 091 143 |
+| OSD-2 form B | 129.2 | 2 133 801 |
+
+- **A76:** 48dd456, 64-byte-aligned measurement build (sha
+  03b1e304…), `osdcost host 200 5` on the 32 481 failed candidates of
+  the `slotcost` slots' three passes, one thread on core 3; two runs, 222
+  throttle samples, no live bit, one sample below 2.39 GHz, peak
+  52.7 °C; the runs agree within 1.4%. The 4657bfe build (the same
+  arithmetic, an earlier pair-sum form) gave 30.6 / 30.6 / 32.9 / 118.3 /
+  123.3 µs. x86-64 (Threadripper 3970X): 19.0 / 19.2 / 20.5 / 81.0 /
+  84.1 µs.
+- **Cortex-M33** (emulated, the embedded-check small and host images'
+  build settings, `opt-level = "s"`): elimination dominates the
+  preparation; OSD-2's 4 095 pairs cost about 425 instructions each.
+  Neither was tuned for the M33 beyond 32-bit words (the 6-word XOR
+  loop is not unrolled at this optimisation level).
+- **Flash:** the OSD's functions 2.7 KB (preparation 1 428 B, search
+  996 B, initialisation 318 B) plus the core library's unstable sort
+  for the reliability order, 3.6 KB (a small insertion sort would do);
+  the image grows by 6.8 KB with both orders (6.7 KB with OSD-1 only),
+  test inputs excluded. The generator rows (2 184 B) were built in RAM
+  at start; as a table they are 2 184 B of flash.
+- **RAM:** the OSD's scratch is 9 200 B (rows 2 184, their message parts
+  1 456, the nibble tables 3 072, weights, order and per-row sums
+  2 385, the rest small), plus the generator rows 2 184 B. With the
+  test harness's 640 B of results, the small image's static RAM goes
+  from 212 044 to 224 072 B (ceiling 245 760); the host image's to
+  253 640 B, over the ceiling: there it would have to share storage
+  (the candidate's belief-propagation scratch, 3.6 KB, is idle once
+  belief propagation fails).
+- **Stack:** the largest frames are the search (368 B) and the
+  preparation (232 B) plus the sort's (quicksort 104 B, recursive;
+  depth not analysed); no FMA and no `f64` helper in any image.
+
+### 5. The decision metric
+
+**All failed candidates (the rule as fixed): neither.** On the
+`slotcost` slots, at T\*: ch OSD-1 A dH ≤ 22 adds 0.090 new decodes per
+slot (p1 0.035, p2 0.035, p3 0.020) for 5.0 ms: 67, 35 and 73 ms per new
+decode in passes 1, 2 and 3, against pass 3's 11.09. OSD-2 (dH ≤ 20):
+0.050 per slot for 20.3 ms (197–632 ms each). Pooled over 6 000 slots:
+OSD-1 77 ms, OSD-2 260 ms per new decode. **Replace pass 3: no** — at
+most 0.11 decodes per slot are recovered in passes 1–2 that pass 2's
+list lacks, against pass 3's 3.0.
+
+**Each pass's 10 best-scoring candidates: supplement, at a small gain.**
+
+| host, top 10, ch, form A | pass 1 | pass 2 | pass 3 | all passes |
+|---|---|---|---|---|
+| OSD-1 dH ≤ 24, pooled: failed cand. / slot | 0.7 | 5.7 | 8.1 | 14.5 |
+| ms / slot (A76) | 0.02 | 0.18 | 0.25 | 0.45 |
+| new decodes / slot | 0.009 | 0.053 | 0.042 | **0.104** (≤ −17 dB 0.036) |
+| ms / new decode | 2.5 | 3.3 | 5.9 | **4.3** |
+| OSD-1 dH ≤ 24, `slotcost` slots: new / slot | 0.000 | 0.045 | 0.085 | **0.13**, ≤ 0.93 ms → **≤ 7.2 ms each** |
+| OSD-2 dH ≤ 22, pooled: ms / slot | 0.09 | 0.71 | 1.01 | 1.81 |
+| new / slot (ms each) | 0.008 (10.7) | 0.068 (10.5) | 0.057 (17.6) | 0.133 (13.6) |
+
+- OSD-1 on the top 10 costs under half a millisecond a slot and adds
+  about 0.1 decodes per slot (0.13 on the 40-signal slots), at 4–7 ms
+  per new decode: below pass 3's 11.09 ms, so it would supplement the
+  passes, not replace any. The gain is about 0.5% of a crowded slot's
+  decodes, a third of it at or below −17 dB; on the sweep it is 0.015
+  per slot (2.6% more of the sweep's decodes) for 0.47 ms.
+- OSD-2 over OSD-1 on the same candidates adds 0.029 per slot for
+  1.36 ms (47 ms each): not worth it.
+- Top 25 instead of top 10: OSD-1 0.086 per slot for 1.62 ms (19 ms
+  each). More candidates cost more and, through the false-decode
+  budget, force a stricter threshold.
+
+**Small (one pass).** All failed candidates, ch OSD-1 A dH ≤ 22: +0.081
+decodes per slot (pooled) for 1.85 ms on the A76 (23 ms each) and 21 M
+emulated M33 instructions. Top 25, dH ≤ 23: +0.079 per slot for 0.31 ms
+(4.0 ms each, against the small configuration's mean 0.64 ms per
+decode) and 3.6 M instructions per slot (45 M per new decode, about
+0.22 decodes per 10⁷ instructions); top 10, dH ≤ 23: +0.017 for 0.02 ms.
+On the sweep the gain is 0.013 per slot (top 25). OSD-2 on small: 92 ms
+per new decode (all), 16 ms (top 25).
+
+**Recommendation: open the gated round, for OSD-1 only, on each pass's
+10 best-scoring failed candidates, channel soft bits, accepting the
+best codeword when its CRC passes, it is plausible and it is within a
+Hamming distance threshold.** It is cheap and beats the third pass's
+cost per signal, but the gain is small (about 0.1 decodes per slot) and
+rests on a threshold chosen on these blocks with a corrected estimate,
+so it must be confirmed on a block never used. Do not pursue OSD-2, the
+belief-propagation totals, Dn, or form B.
+
+### What this cannot say
+
+- The knock-on effect of subtracting OSD's decodes before the next pass
+  (more decodes later, or damage when one is wrong): not simulated.
+- The threshold and subset were chosen on these blocks; the gain on a
+  new block may be lower.
+- The false-decode rate rests on the factor estimate; counting confirms
+  only that it is below 4.2 × 10⁻⁵ per slot.
+- M33 cycles, and an M33-tuned OSD (an unrolled elimination and a small
+  sort could plausibly halve the preparation): not measured. The sort's
+  recursion depth on the M33 stack is not analysed.
+- The `slotcost` subset cost is a bound (10 per pass), not a count.
+- A76 cost of the 2cbb245 bench (only measurement-mode code changed after
+  48dd456; the timed form's source is the same).

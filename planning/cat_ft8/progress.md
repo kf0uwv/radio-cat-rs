@@ -1392,3 +1392,16 @@
   (latency-bound), removal 16.9, time search 18.2, fit 6.7, generator
   8.7, correction 7.4. Three ranked candidates and a stop rule recorded;
   none implemented.
+
+## Session: 2026-10-31 (OSD sizing; branch `osd-size`, measurement only)
+
+- b8ff866: the round's questions, definitions and decision metric fixed
+  before any number.
+- 5ec0eed, 4657bfe: `profile`-only accessors (the default binaries
+  byte-identical to 511bf32's after moving them to the files' ends).
+- af23f41, 3f48a52, 48dd456, 2cbb245: `paired_bench osd`, `osdcost`,
+  `osdplaus`, `osdcheck`, `osddump` and the measurement-grade OSD.
+- Measured: pool, recovery, false decodes, cost (A76, M33), on
+  main/cap1/cap2 and E4's empty blocks. All failed candidates: neither
+  replace nor supplement. Each pass's top 10, OSD-1: supplement, 4.3 ms
+  per new decode, 0.104 per slot. Gated round drafted, not run.
