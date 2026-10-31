@@ -219,8 +219,13 @@ pub struct Noise {
     pub n: u64,
     /// The least-D codeword's metrics (CRC ignored).
     pub best: Hists,
+    /// The same, counting only a non-zero least-D codeword (form A rejects
+    /// the zero one).
+    pub best_nz: Hists,
     /// Every list codeword's metrics.
     pub list: Hists,
+    /// Every list codeword with a non-zero message part.
+    pub list_nz: Hists,
     /// Accepted (non-zero, CRC, plausible) and not transmitted: false.
     pub false_a: Hists,
     pub false_b: Hists,
@@ -239,7 +244,9 @@ impl Noise {
         Noise {
             n: 0,
             best: Hists::new(),
+            best_nz: Hists::new(),
             list: Hists::new(),
+            list_nz: Hists::new(),
             false_a: Hists::new(),
             false_b: Hists::new(),
             other_a: 0,
@@ -252,6 +259,8 @@ impl Noise {
     fn merge(&mut self, o: &Noise) {
         self.n += o.n;
         self.best.merge(&o.best);
+        self.best_nz.merge(&o.best_nz);
+        self.list_nz.merge(&o.list_nz);
         self.list.merge(&o.list);
         self.false_a.merge(&o.false_a);
         self.false_b.merge(&o.false_b);
@@ -263,6 +272,7 @@ impl Noise {
     }
     fn json(&self) -> Value {
         json!({"n": self.n, "best": self.best.json(), "list": self.list.json(),
+            "best_nz": self.best_nz.json(), "list_nz": self.list_nz.json(),
             "false_a": self.false_a.json(), "false_b": self.false_b.json(),
             "other_a": self.other_a, "other_b": self.other_b, "crc_a": self.crc_a,
             "found_b": self.found_b, "plaus_b": self.plaus_b})
@@ -425,13 +435,18 @@ fn one_slot(agg: &mut Agg, cfg: &str, set: &str, block: &str, index: usize, setu
             }
             for order in 1..=2u8 {
                 let mut list = Hists::new();
+                let mut list_nz = Hists::new();
                 let total = f64::from(osd.total_w);
                 let found = if msg.is_none() {
-                    osd.search(order, true, |d, h| {
-                        list.add(f64::from(d) / total, h.max(0) as u32)
+                    osd.search(order, true, |d, h, nz| {
+                        let (dn, h) = (f64::from(d) / total, h.max(0) as u32);
+                        list.add(dn, h);
+                        if nz {
+                            list_nz.add(dn, h);
+                        }
                     })
                 } else {
-                    osd.search(order, true, |_, _| {})
+                    osd.search_fast(order, true)
                 };
                 let own = msg.map(|i| &truth[i]);
                 let ca = osd.codeword(&found.a);
@@ -470,7 +485,11 @@ fn one_slot(agg: &mut Agg, cfg: &str, set: &str, block: &str, index: usize, setu
                     let nz = &mut agg.noise[noise_index(k, r, input, usize::from(order) - 1)];
                     nz.n += 1;
                     nz.best.add(dna, ha);
+                    if message_part(&ca) != 0 {
+                        nz.best_nz.add(dna, ha);
+                    }
                     nz.list.merge(&list);
+                    nz.list_nz.merge(&list_nz);
                     match cla {
                         'F' => nz.false_a.add(dna, ha),
                         'O' => nz.other_a += 1,
@@ -719,7 +738,7 @@ pub fn osd_dump(cfg: &str, file: &Path) -> Result<(), String> {
         osd.prepare(v, gen);
         let mut s = format!("{i}");
         for order in 1..=2 {
-            let f = osd.search(order, true, |_, _| {});
+            let f = osd.search_fast(order, true);
             let _ = write!(
                 s,
                 " o{order} A {} {} {:08x} B {:?}",
@@ -764,7 +783,7 @@ pub fn osd_check(trials: usize) -> Result<(), String> {
         let e = distance_in(osd.hard(), &truth, &piv);
         for order in 0..=2u8 {
             let mut bad = None;
-            let f = osd.search(order, true, |d, h| {
+            let f = osd.search(order, true, |d, h, _| {
                 if d < -1e-3 || h < 0 {
                     bad = Some((d, h));
                 }

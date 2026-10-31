@@ -344,17 +344,17 @@ impl Osd {
     }
 
     /// The list of order `order` (0, 1 or 2) after [`Osd::prepare`].
-    /// `each(d, h)` sees every list codeword's D and Hamming distance from
-    /// the hard decisions (measurement only; [`Osd::search_fast`] is the
+    /// `each(d, h, nz)` sees every list codeword's D, Hamming distance from
+    /// the hard decisions and whether its message part is non-zero (measurement only; [`Osd::search_fast`] is the
     /// timed form). With `form_b`, also the least-D codeword passing the CRC.
-    pub fn search(&self, order: u8, form_b: bool, each: impl FnMut(f32, i32)) -> Found {
+    pub fn search(&self, order: u8, form_b: bool, each: impl FnMut(f32, i32, bool)) -> Found {
         self.search_impl::<true>(order, form_b, each)
     }
 
     /// [`Osd::search`] without the per-codeword measurement (the timed
     /// form): the same result.
     pub fn search_fast(&self, order: u8, form_b: bool) -> Found {
-        self.search_impl::<false>(order, form_b, |_, _| {})
+        self.search_impl::<false>(order, form_b, |_, _, _| {})
     }
 
     #[allow(clippy::needless_range_loop)]
@@ -362,7 +362,7 @@ impl Osd {
         &self,
         order: u8,
         form_b: bool,
-        mut each: impl FnMut(f32, i32),
+        mut each: impl FnMut(f32, i32, bool),
     ) -> Found {
         let none = K as u8;
         let mut a = Pick {
@@ -387,14 +387,18 @@ impl Osd {
                 *b = Some(p);
             }
         };
-        each(self.big_d0, self.h0);
+        if H {
+            each(self.big_d0, self.h0, self.m0 != 0);
+        }
         if form_b {
             try_b(syn0, self.m0, a, &mut b);
         }
         if order >= 1 {
             for j in 0..K {
                 let d = self.big_d0 + self.row_s[j];
-                each(d, self.h0 + self.row_h[j]);
+                if H {
+                    each(d, self.h0 + self.row_h[j], self.m0 != self.msg[j]);
+                }
                 let p = Pick {
                     j: j as u8,
                     k: none,
@@ -417,7 +421,8 @@ impl Osd {
                     let (sh, x) = self.shared(j, k);
                     let d = (base + self.row_s[k]) - (sh + sh);
                     if H {
-                        each(d, hb + self.row_h[k] - 2 * hamming_form(&x, &self.d0));
+                        let h = hb + self.row_h[k] - 2 * hamming_form(&x, &self.d0);
+                        each(d, h, self.m0 ^ self.msg[j] != self.msg[k]);
                     }
                     let p = Pick {
                         j: j as u8,
