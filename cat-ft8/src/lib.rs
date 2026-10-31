@@ -240,7 +240,6 @@ mod tests {
         "SPLIT_TWIDDLES",
         "HANN_HALF",
         "DIGIT_REV",
-        "CHECKS",
         "DEGREES",
         "VAR_EDGES",
         "EDGE_VARS",
@@ -248,8 +247,8 @@ mod tests {
     ];
     const NOT_COUNTED: &[&str] = &[
         "GENERATOR", // compile-time input to GENERATOR_ROWS only
-        // Compile-time input to the decoder's CHECKS; linked only if
-        // Codeword::satisfies_parity_checks is used.
+        // Compile-time input to the decoder's DEGREES and VAR_EDGES;
+        // linked only if Codeword::satisfies_parity_checks is used.
         "PARITY_CHECKS",
         "COSTAS_POSITIONS", // frame-layout constants, folded into code
         "DATA_BLOCKS",
@@ -329,7 +328,6 @@ mod tests {
     #[test]
     fn decode_table_bytes_matches_the_tables() {
         let parts = crate::decode::fft::table_bytes_of_statics()
-            + size_of_val(&crate::decode::bp::CHECKS)
             + size_of_val(&crate::decode::bp::DEGREES)
             + size_of_val(&crate::decode::bp::VAR_EDGES)
             + size_of_val(&crate::decode::bp::EDGE_VARS)

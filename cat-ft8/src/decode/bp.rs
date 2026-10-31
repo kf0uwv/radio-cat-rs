@@ -129,27 +129,6 @@ pub enum BpFailure {
     AllZero,
 }
 
-/// The parity checks with 0-based variable indices (unused entries 0),
-/// derived at compile time from the 1-based, 0-padded `PARITY_CHECKS`,
-/// in the same order.
-pub(crate) static CHECKS: [[u8; MAX_DEGREE]; M] = {
-    let mut out = [[0u8; 7]; M];
-    let mut c = 0;
-    while c < M {
-        let mut n = 0;
-        let mut j = 0;
-        while j < MAX_DEGREE {
-            if PARITY_CHECKS[c][j] != 0 {
-                out[c][n] = PARITY_CHECKS[c][j] - 1;
-                n += 1;
-            }
-            j += 1;
-        }
-        c += 1;
-    }
-    out
-};
-
 /// The number of variables in each check (6 or 7).
 pub(crate) static DEGREES: [u8; M] = {
     let mut out = [0u8; M];
@@ -172,12 +151,6 @@ const MAX_DEGREE: usize = 7;
 /// one more entry).
 const LANES: usize = 8;
 const _: () = assert!(LANES >= MAX_DEGREE);
-
-/// Variable indices (0-based) and count of check `c`.
-#[inline]
-fn check(c: usize) -> (&'static [u8; MAX_DEGREE], usize) {
-    (&CHECKS[c], usize::from(DEGREES[c]))
-}
 
 /// tanh(x / 2) for any finite x, in the form for targets where the loops
 /// vectorise (`V`) or not; the decoder uses [`VECTOR`]'s, the tests both.
@@ -235,9 +208,8 @@ fn hard_bit(x: f32, i: usize) -> u8 {
 /// Each check decides its own bits as it is tested, so a round that fails
 /// stops at its first failing check without deciding the other bits.
 fn checks_hold(values: &[f32; N]) -> bool {
-    (0..M).all(|c| {
-        let (v, n) = check(c);
-        v[..n].iter().fold(0u8, |acc, &i| {
+    check_edges().all(|(v, _)| {
+        v.iter().fold(0u8, |acc, &i| {
             let i = usize::from(i);
             acc ^ hard_bit(values[i], i)
         }) == 0
@@ -346,20 +318,21 @@ const LOW_EDGES: usize = 6 * LOW_CHECKS;
 /// Edges of the parity-check graph (522).
 const EDGES: usize = LOW_EDGES + 7 * (M - LOW_CHECKS);
 
-/// Each check in order: its variables (0-based) and the index of its
-/// first edge in the messages' layout. The edges are laid out by check
-/// degree: the degree-6 checks' edges first, check by check in order, then
-/// the degree-7 checks'. Every place the layout is walked takes it from
-/// here.
+/// Each check in order: its variables (0-based, in `PARITY_CHECKS`
+/// order) and the index of its first edge in the messages' layout. The
+/// edges are laid out by check degree: the degree-6 checks' edges first,
+/// check by check in order, then the degree-7 checks'. A check's
+/// variables are its edges' entries of [`EDGE_VARS`], so the graph is
+/// stored once. Every place the layout is walked takes it from here.
 #[inline(always)]
 fn check_edges() -> impl Iterator<Item = (&'static [u8], usize)> {
     let (mut low, mut high) = (0, LOW_EDGES);
     (0..M).map(move |c| {
-        let (v, n) = check(c);
+        let n = usize::from(DEGREES[c]);
         let place = if n == 6 { &mut low } else { &mut high };
         let e = *place;
         *place += n;
-        (&v[..n], e)
+        (&EDGE_VARS[e..][..n], e)
     })
 }
 

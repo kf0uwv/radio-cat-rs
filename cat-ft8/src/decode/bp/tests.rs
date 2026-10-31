@@ -21,6 +21,33 @@ use crate::{crc, ldpc};
 
 const RULES: [CheckRule; 2] = [CheckRule::SumProduct, CheckRule::MinSum];
 
+/// The parity checks with 0-based variable indices (unused entries 0),
+/// derived at compile time from the 1-based, 0-padded `PARITY_CHECKS`,
+/// in the same order: the tests' own form of the graph, independent of
+/// the edge layout the decoder walks.
+static CHECKS: [[u8; MAX_DEGREE]; M] = {
+    let mut out = [[0u8; 7]; M];
+    let mut c = 0;
+    while c < M {
+        let mut n = 0;
+        let mut j = 0;
+        while j < MAX_DEGREE {
+            if PARITY_CHECKS[c][j] != 0 {
+                out[c][n] = PARITY_CHECKS[c][j] - 1;
+                n += 1;
+            }
+            j += 1;
+        }
+        c += 1;
+    }
+    out
+};
+
+/// Variable indices (0-based) and count of check `c`.
+fn check(c: usize) -> (&'static [u8; MAX_DEGREE], usize) {
+    (&CHECKS[c], usize::from(DEGREES[c]))
+}
+
 fn codeword(message: &str) -> (Payload, Codeword) {
     let p = pack(message, &mut NoHashes).unwrap();
     (p, ldpc::encode(crc::append_crc(&p)))

@@ -70,10 +70,9 @@ pub use sync::{Candidate, SyncReport};
 
 /// Bytes of the decoder's static tables (FFT twiddles, real-split
 /// twiddles, half Hann window, digit-reversal table, belief
-/// propagation's check list, degrees and variable edges, and the level-to-power table),
-/// in flash.
+/// propagation's check degrees, each variable's edges and each edge's
+/// variable, and the level-to-power table), in flash.
 pub const TABLE_BYTES: usize = fft::TABLE_BYTES
-    + core::mem::size_of::<[[u8; 7]; 83]>()
     + core::mem::size_of::<[u8; 83]>()
     + core::mem::size_of::<[[u16; 3]; 174]>()
     + core::mem::size_of::<[u8; 522]>()
