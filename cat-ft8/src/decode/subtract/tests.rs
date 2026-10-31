@@ -1195,6 +1195,53 @@ fn removal_ramp_is_its_first_form_bit_for_bit() {
     assert_eq!(checked, froms.len() * 11 * 9 * 2);
 }
 
+/// At and before the interval's centre the ramp index is +0.0, which is
+/// observable only through a zero's sign: with base −0.0, a positive
+/// slope and positive references, the estimate there is +0.0, and −0.0
+/// audio less it stays −0.0 (a ramp of −0.0 would give an estimate of
+/// −0.0 and audio of +0.0). Runs at every lane offset that end at,
+/// before and past the centre, reporting and not, against the first
+/// form and the expected bits.
+#[test]
+fn removal_ramp_is_plus_zero_at_and_before_the_centre() {
+    let from = 1_921usize;
+    let mut checked = 0;
+    for j0 in from - 9..=from {
+        for len in [1usize, 4, 5, 9, 17] {
+            let xs = std::vec![-0.0f32; len];
+            let refs: Vec<u8> = (0..2 * len)
+                .map(|k| 0.25 + k as f32 / 64.0)
+                .flat_map(|x| x.to_ne_bytes())
+                .collect();
+            for report in [false, true] {
+                let mut a = Removal::new(T, (0.0, 0.0), report);
+                (a.from, a.base, a.slope) = (from, (-0.0, -0.0), (1e-3, 2e-3));
+                let mut b = Removal::new(T, (0.0, 0.0), report);
+                (b.from, b.base, b.slope) = (a.from, a.base, a.slope);
+                let (mut got, mut want) = (xs.clone(), xs.clone());
+                if report {
+                    a.run_as::<true>(j0, &mut got, &refs);
+                    run_as_first::<true>(&mut b, j0, &mut want, &refs);
+                } else {
+                    a.run_as::<false>(j0, &mut got, &refs);
+                    run_as_first::<false>(&mut b, j0, &mut want, &refs);
+                }
+                // Samples j0..=from are at or before the centre.
+                for (j, x) in (j0..).zip(&got).take_while(|&(j, _)| j <= from) {
+                    assert_eq!(x.to_bits(), (-0.0f32).to_bits(), "j {j} report {report}");
+                }
+                assert_eq!(
+                    removal_bits(&a, &got),
+                    removal_bits(&b, &want),
+                    "j0 {j0} len {len}"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 10 * 5 * 2);
+}
+
 /// The fit's lane sums bit for bit.
 fn fit4_bits(f: &Fit4) -> Vec<u32> {
     [f.xc, f.xs, f.cc, f.cs, f.ss]
