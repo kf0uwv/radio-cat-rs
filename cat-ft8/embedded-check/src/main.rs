@@ -55,11 +55,11 @@ mod setup {
     pub const BAND: Band = Band::SMALL;
     #[cfg(not(feature = "osd"))]
     pub const CONFIG: DecodeConfig = DecodeConfig::SMALL;
-    /// With ordered-statistics decoding on (its settings do not change
-    /// the image's size).
+    /// With ordered-statistics decoding on, at the calibrated setting (the
+    /// settings do not change the image's size).
     #[cfg(feature = "osd")]
     pub const CONFIG: DecodeConfig =
-        DecodeConfig::SMALL.with_osd(Some(cat_ft8::decode::OsdConfig::new(25, 23)));
+        DecodeConfig::SMALL.with_osd(Some(cat_ft8::decode::OsdConfig::new(25, 21)));
     pub const DECODES: usize = SMALL_DECODES;
 }
 #[cfg(all(feature = "host", not(feature = "encoder-only")))]
@@ -69,11 +69,11 @@ mod setup {
     pub const BAND: Band = Band::DEFAULT;
     #[cfg(not(feature = "osd"))]
     pub const CONFIG: DecodeConfig = DecodeConfig::HOST;
-    /// With ordered-statistics decoding on (its settings do not change
-    /// the image's size).
+    /// With ordered-statistics decoding on, at the calibrated setting (the
+    /// settings do not change the image's size).
     #[cfg(feature = "osd")]
     pub const CONFIG: DecodeConfig =
-        DecodeConfig::HOST.with_osd(Some(cat_ft8::decode::OsdConfig::new(10, 24)));
+        DecodeConfig::HOST.with_osd(Some(cat_ft8::decode::OsdConfig::new(10, 21)));
     pub const DECODES: usize = HOST_DECODES;
 }
 

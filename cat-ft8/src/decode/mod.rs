@@ -83,4 +83,4 @@ pub const TABLE_BYTES: usize = fft::TABLE_BYTES
     + core::mem::size_of::<[[u16; 3]; 174]>()
     + core::mem::size_of::<[u8; 522]>()
     + core::mem::size_of::<[f32; 256]>()
-    + 91 * 24;
+    + osd::ROWS_BYTES;

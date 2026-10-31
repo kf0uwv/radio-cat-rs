@@ -80,8 +80,13 @@ pub(crate) static OSD_ROWS: [Bits; K] = {
     rows
 };
 
-/// OSD-1's working storage (3 576 bytes; the decoder holds it in the
-/// candidate's belief-propagation storage).
+/// [`OSD_ROWS`]' bytes: 2 184 on every target (174 bits take three 64-bit
+/// or six 32-bit words).
+pub(crate) const ROWS_BYTES: usize = core::mem::size_of::<[Bits; K]>();
+const _: () = assert!(ROWS_BYTES == 91 * 24);
+
+/// OSD-1's working storage (3 575 bytes, 3 576 with alignment; the
+/// decoder holds it in the candidate's belief-propagation storage).
 #[derive(Clone)]
 pub struct OsdScratch {
     /// The reduced generator.
@@ -96,10 +101,11 @@ pub struct OsdScratch {
     pivot: [u8; K],
     /// The radix sort's digit counts.
     count: [u8; 256],
-    /// Belief propagation's rounds for the candidate, kept for
-    /// `CandidateScratch::last_rounds`.
-    pub(crate) bp_rounds: u8,
 }
+
+// The radix sort's counts and offsets, and the positions in `order`, are
+// `u8`: at most N, which must stay below 256.
+const _: () = assert!(N < 256);
 
 impl OsdScratch {
     /// Zeroed storage (usable in a `static` initialiser).
@@ -111,7 +117,6 @@ impl OsdScratch {
             spare: [0; N],
             pivot: [0; K],
             count: [0; 256],
-            bp_rounds: 0,
         }
     }
 }
@@ -236,7 +241,8 @@ fn reliability_order(
     }
     let key = |i: u8| !(values[usize::from(i)].to_bits() & 0x7fff_ffff);
     // An even number of passes, so the result ends in `order`. Counts and
-    // offsets are at most N = 174, so `u8` holds them.
+    // offsets are at most N = 174, so `u8` holds them (asserted at
+    // `OsdScratch`).
     let (mut src, mut dst) = (order, spare);
     for shift in [0, 8, 16, 24] {
         *count = [0; 256];

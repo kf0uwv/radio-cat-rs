@@ -373,9 +373,14 @@ pub struct Decode {
     pub score: i32,
     /// The candidate's index in the sync list.
     pub candidate: u16,
-    /// Codeword bits that differ from the channel's hard decisions.
+    /// Codeword bits that differ from the channel's hard decisions. The
+    /// two decoders differ only at a soft bit of exactly 0, which has no
+    /// hard decision: belief propagation never counts it, while an
+    /// ordered-statistics decode ([`OsdConfig`]) decides it 0 and counts
+    /// a codeword 1 there (its distance as accepted).
     pub hard_errors: u8,
-    /// Message-passing rounds used.
+    /// Message-passing rounds used (for an ordered-statistics decode,
+    /// those of the belief propagation that failed before it).
     pub rounds: u8,
 }
 
@@ -484,7 +489,18 @@ pub struct CandidateScratch {
 #[derive(Clone)]
 enum Work {
     Bp(BpScratch),
-    Osd(OsdScratch),
+    Osd(OsdWork),
+}
+
+/// OSD-1's storage, and belief propagation's round count for the
+/// candidate (its own storage is gone). One field of `Work::Osd`, so that
+/// the variant is filled in place: with two fields the compiler assembles
+/// the whole value on the stack and copies it (3.6 KB more stack on a
+/// Cortex-M33).
+#[derive(Clone)]
+struct OsdWork {
+    bp_rounds: u8,
+    osd: OsdScratch,
 }
 
 impl Work {
@@ -503,14 +519,13 @@ impl Work {
     /// count it keeps).
     fn osd(&mut self) -> &mut OsdScratch {
         if let Work::Bp(b) = self {
-            let rounds = b.rounds();
-            *self = Work::Osd(OsdScratch::new());
-            if let Work::Osd(o) = self {
-                o.bp_rounds = rounds;
-            }
+            *self = Work::Osd(OsdWork {
+                bp_rounds: b.rounds(),
+                osd: OsdScratch::new(),
+            });
         }
         match self {
-            Work::Osd(o) => o,
+            Work::Osd(o) => &mut o.osd,
             Work::Bp(_) => unreachable!(),
         }
     }
@@ -792,7 +807,8 @@ impl<'a> Decoder<'a> {
         done(Stage::BeliefPropagation);
         if let (Err(failure), Some(cfg)) = (decoded, self.config.osd) {
             if index < usize::from(cfg.candidates) {
-                decoded = osd_decode(llr, work.osd(), cfg).ok_or(failure);
+                let rounds = work.bp_rounds();
+                decoded = osd_decode(llr, work.osd(), rounds, cfg).ok_or(failure);
                 done(Stage::Osd);
             }
         }
@@ -1156,7 +1172,12 @@ impl<'a> Decoder<'a> {
 /// acceptance tests ([`OsdConfig`]). Kept out of line: a rare path, whose
 /// frame then never adds to the candidate decode's.
 #[inline(never)]
-fn osd_decode(llr: &[f32; N], scratch: &mut OsdScratch, cfg: OsdConfig) -> Option<BpDecode> {
+fn osd_decode(
+    llr: &[f32; N],
+    scratch: &mut OsdScratch,
+    bp_rounds: u8,
+    cfg: OsdConfig,
+) -> Option<BpDecode> {
     let best = osd::order1(llr, scratch);
     if best.distance > u32::from(cfg.max_distance) || best.a91 == 0 || !crate::crc::check(best.a91)
     {
@@ -1166,7 +1187,7 @@ fn osd_decode(llr: &[f32; N], scratch: &mut OsdScratch, cfg: OsdConfig) -> Optio
     unpack(&payload, &mut NoHashes).ok()?;
     Some(BpDecode {
         payload,
-        rounds: scratch.bp_rounds,
+        rounds: bp_rounds,
         hard_errors: best.distance as u8,
     })
 }

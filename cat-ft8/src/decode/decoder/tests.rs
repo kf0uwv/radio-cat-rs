@@ -1272,3 +1272,74 @@ fn osd_recovers_what_belief_propagation_missed() {
     let (tight, _, _, _) = run(base.with_osd(Some(OsdConfig::new(10, least - 1))));
     assert!(tight.is_empty());
 }
+
+/// With the option on, a candidate decoded after one OSD-1 ran on (its
+/// storage then OSD-1's) gives what it gives with fresh storage: belief
+/// propagation's storage is re-initialised whatever ran before.
+#[test]
+fn a_candidate_after_osd_decodes_as_with_fresh_storage() {
+    let s = busy_slot(7);
+    let config = DecodeConfig::HOST.with_osd(Some(OsdConfig::new(CANDIDATES as u16, 21)));
+    let mut b = Bufs::new(Band::DEFAULT);
+    let mut dec = b.decoder(config);
+    dec.feed(&s);
+    let kept = dec.find_candidates().kept;
+    // The first candidate OSD-1 runs on.
+    let mut used = Box::new(CandidateScratch::new());
+    let osd_ran = (0..kept)
+        .find(|&i| {
+            let mut ran = false;
+            dec.decode_candidate_staged(i, &mut used, |st| ran |= st == Stage::Osd);
+            ran
+        })
+        .expect("some candidate fails belief propagation");
+    let mut decoded = 0;
+    for j in 0..kept {
+        let mut fresh = Box::new(CandidateScratch::new());
+        let mut osd = false;
+        let want = dec.decode_candidate_staged(j, &mut fresh, |st| osd |= st == Stage::Osd);
+        dec.decode_candidate(osd_ran, &mut used);
+        let got = dec.decode_candidate(j, &mut used);
+        assert_eq!(got, want, "candidate {j}");
+        assert_eq!(used.last_rounds(), fresh.last_rounds(), "candidate {j}");
+        decoded += usize::from(!osd && matches!(want, Some(Ok(_))));
+    }
+    // Belief propagation's own decodes are among them.
+    assert!(decoded >= 1);
+}
+
+/// An OSD-1 decode after belief propagation ran its rounds and failed
+/// carries those rounds (a −18 dB signal one round of belief propagation
+/// does not decode).
+#[test]
+fn an_osd_decode_carries_belief_propagations_rounds() {
+    let mut s = empty_slot();
+    add_signal(
+        &mut s,
+        &symbols_of("CQ K1ABC FN42"),
+        1_234.5,
+        0.1,
+        amplitude_for(-18.0),
+    );
+    add_noise(&mut s, NOISE_RMS, 31);
+    let max_rounds = 1;
+    let config = DecodeConfig::HOST
+        .with_max_rounds(max_rounds)
+        .with_osd(Some(OsdConfig::new(10, 40)));
+    let mut b = Bufs::new(Band::DEFAULT);
+    let mut dec = b.decoder(config);
+    dec.feed(&s);
+    let kept = dec.find_candidates().kept;
+    let mut scratch = Box::new(CandidateScratch::new());
+    let mut osd_decodes = 0;
+    for i in 0..kept {
+        let mut ran = false;
+        let r = dec.decode_candidate_staged(i, &mut scratch, |st| ran |= st == Stage::Osd);
+        if let (true, Some(Ok(d))) = (ran, r) {
+            assert_eq!(d.rounds, max_rounds, "candidate {i}");
+            assert_eq!(scratch.last_rounds(), max_rounds);
+            osd_decodes += 1;
+        }
+    }
+    assert!(osd_decodes >= 1);
+}
