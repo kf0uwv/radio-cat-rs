@@ -4530,8 +4530,8 @@ slot). The small image runs min-sum (`DecodeConfig::SMALL`), not
 sum-product: with `decode_soft` out of line (a measurement build) it is
 106.0 M of the slot's 346.2 M (31%), about 47 700 instructions a round;
 the stopping test 3 314 a call, 3 050 of them deciding all 174 bits
-although most rounds fail at one of the first checks. The shipping
-small image's slot is 348 830 353 instructions. So the M33's one-pass BP
+although most rounds fail at one of the first checks. The default
+small embedded image's slot is 348 830 353 instructions. So the M33's one-pass BP
 share is 31% (small) and 46% (host image), not the A76's 65%.
 
 ### Changes
@@ -5164,7 +5164,7 @@ instructions a sample on the M33 (1.8 cycles on the A76).
 - How the stage shares vary with slot content. The profile is the
   `crowded` `main` block (24.1 and 10.4 subtractions in passes 2 and 3).
 - M33 cycles: emulated instructions only, of an out-of-line build. The
-  shipping image inlines the stages into one function (1.42 G against
+  default embedded image inlines the stages into one function (1.42 G against
   1.36 G instructions for the slot's subtractions).
 
 ## The subtraction, thirteenth round (O13, bit-identical, 2026-10-31)
@@ -5174,10 +5174,11 @@ were committed before any new measurement. Four candidates, each judged
 against the branch head before it by the stages it changes; all four
 pass. The A76 three-pass slot is 125.84 → 107.29 ms (−14.7%) and the
 subtraction 72.09 → 56.58 ms (−21.5%) in the per-candidate pairs.
-Records, decodes and residuals are equal to 67e2458's on every target
-measured. One output changes: `static_table_bytes` in
-`cat-ft8-decode --profile` (36 260 → 37 826), the fourth candidate's
-tables. The three subtraction commits alone (e3f5444) change no output.
+Decodes, records, residuals and encoder identical; one profile metadata
+field changes: `static_table_bytes` in `cat-ft8-decode --profile`
+(36 260 → 37 826), the fourth candidate's tables. "Bit-identical" in
+this round means that, with this one qualification. The three
+subtraction commits alone (e3f5444) change no output.
 
 ### Changes
 
@@ -5284,11 +5285,37 @@ pair was run. Two results are near its edge:
   moved +0.82 ms. `sum_product_round` is the same AArch64 code
   instruction for instruction at both commits, 0x610 bytes apart, so
   that move is placement.
-- **Candidate 4 passes by 0.12 ms** (B + A = 3.22). It was measured
-  against 94ae1b8, whose BP was the inflated 24.64 ms (23.82 at
-  d116122). Against d116122's BP the gain would be 2.51 ms, inside the
-  band. The rule was applied as fixed, but this result is the weakest of
-  the four.
+- **Candidate 4: G 3.34 ms against an inflated parent, about 2.5 ms
+  against the same-code median** (corrected after review). Its parent
+  94ae1b8 measured BP at 24.64 ms, but BP's code is byte-identical at
+  a003d6e, d486205, d116122 and 94ae1b8 (23.91, 23.84, 23.83, 24.64).
+  Against the median of those builds (23.87) G is 2.56 ms (about 2.3%
+  of the slot): above B (2.22), below B + A (3.22), so with a clean
+  baseline it would have been inconclusive. A second build pair would
+  then have decided on the mean G against B; to reverse the result it
+  would have needed G₂ < 2 × 2.222 − 3.335 = 1.11 ms. Every other
+  estimate is about 2.5 ms or more (O12b by stage −2.64 ms; this
+  round's whole-round BP 23.91 → 21.30; x86-64 BP −10.6%; M33 −1.6%
+  small, −2.9% host, which placement cannot touch), so it was not run
+  and the candidate is kept on the corrected number.
+- **How the rule was applied, and its weak points** (from review):
+  - The measure-first proposal's non-regression clause (untouched stages
+    may move by at most the allowance) was circular: A is defined from
+    the largest untouched move, so it could never fail. a003d6e
+    replaced it with "untouched net above 1.0 ms is inconclusive",
+    which is one-sided (a favourable net is ignored) and only sends a
+    candidate to a second pair.
+  - The second-pair rule decides on the mean G against B and ignores
+    the allowance: lenient.
+  - Sequential gating hands each candidate its parent's placement: the
+    +0.82 ms that 94ae1b8's untouched BP absorbed came back as part of
+    candidate 4's G. The standing rule from O13b (task plan) baselines
+    the changed stage at the median of the round's same-code builds.
+  - Candidate 4 was rejected in O12b under a whole-slot bar and entered
+    again here under the changed-stage rule. That re-entry was recorded
+    in advance (the measure-first step: "the candidate can be gated
+    again if the rule changes"), so it is legitimate, but it was a rule
+    change that rescued it.
 
 ### Cortex-M33 (emulated instructions) and sizes
 
@@ -5439,5 +5466,145 @@ agree within 0.1 ms.
   - the blocked products loop: 195;
   - `Fit4::add_all`'s loop: 27;
   - the removal's loops: 28 (not reporting) and 168 (reporting).
-- A second build pair for candidates 3 and 4, which pass by 0.20 and
-  0.12 ms; the rule did not call for one.
+- A second build pair for candidates 3 and 4; the rule did not call
+  for one, and neither reviewer found it could change the decision
+  (candidate 3's gain is backed by its instruction counts: AArch64
+  47 → 27 per four samples, M33 subtraction −5.9%).
+
+## Review follow-ups (O13b, bit-identical, 2026-10-31)
+
+On `o13-sub` after 41f7368; the rules (9c183f1) were committed before
+any new measurement. Five commits: 38e2648, c4c141f, c520517, 3daa258,
+f8f2a7b. Decodes, records, residuals and encoder identical to 57cbc67's;
+one profile metadata field changes: `static_table_bytes` in
+`cat-ft8-decode --profile` (37 826 → 37 245), the padded check list
+leaving the tables. Every non-regression check passes, and every change
+is kept.
+
+### Changes
+
+1. **38e2648: `scaled_cos_sin` without its type parameter.** All 84
+   cat_ft8 functions of the AArch64 `paired_bench` are identical
+   instruction for instruction (addresses and names aside), as are both
+   M33 images' (83 small, 95 host) and the x86-64 decoder's 744.
+2. **c4c141f: the removal at and before the centre** with base −0.0,
+   where the clamp's +0.0 is observable. Tests only.
+3. **c520517: the removal's index bound as a release `assert!`**, once
+   per run. Only `Removal::refs` changes (683 → 657 AArch64
+   instructions). Its loops keep their lengths (28 and 168). A76
+   subtract 56.62 ms against the same-code median 56.58 (+0.04). M33
+   subtraction on s0086, multi-pass image: 36 377 474 → 36 377 957
+   instructions per call (+0.0013%). Kept.
+4. **3daa258: belief propagation's graph stored once.** Only
+   `decode_soft`, `min_sum_round` and `sum_product_round` change, the
+   last in how one constant's address is loaded (`adrp` + `ldr` instead
+   of `nop` + `adr`), at the same length. A76 BP 21.05 ms against the
+   same-code median 21.30 (−0.25), one-pass 9.89 against 10.00 (−0.11).
+   M33 one-pass slot: small 310 353 198 → 310 413 261 instructions
+   (+0.019%), host 460 860 102 → 461 036 544 (+0.038%), both under the
+   0.1% bound; `min_sum_round` 33 129 → 33 104 a call. Flash smaller,
+   static RAM and the largest stack frames unchanged (below). Kept.
+5. **f8f2a7b: `paired_bench slotcost` prints each pass's new decodes
+   and cost per new decode.** Bench output only; every cat_ft8 function
+   identical to 3daa258's.
+
+### Timing (A76, against the same-code medians)
+
+Ten runs (two alternated rounds of each of five builds), 1 480 throttle
+samples, no live bit, one sample below 2.39 GHz, peak 55.4 °C; each
+binary's two rounds agree within 0.04 ms (c520517: 0.23). The changed
+stage's baseline is the median of the round's builds whose functions
+for it are byte-identical (BP: 41f7368, 38e2648, c520517 at 21.30 ms,
+spread 21.07–21.30; subtract: 41f7368, 38e2648 at 56.58 ms). A is
+1.0 ms throughout.
+
+| commit | changed stage | ms | vs median | untouched net | three-pass slot |
+|---|---|---|---|---|---|
+| 41f7368 (base) | — | — | — | — | 107.28 |
+| 38e2648 | none | — | — | — | 107.28 |
+| c520517 | subtract | 56.62 | +0.04 | −0.06 | 107.25 |
+| 3daa258 | BP | 21.05 | −0.25 | +0.39 | 107.43 |
+| 3daa258 | subtract (unchanged code) | 56.99 | +0.41 | — | |
+| f8f2a7b | BP | 21.34 | +0.04 | +0.10 | 107.44 |
+
+- No regression. The slot moves by at most 0.16 ms, inside placement
+  noise.
+- **Cost per pass** at f8f2a7b (`slotcost`, crowded `main`): pass 1
+  20.30 ms for 24.1 new decodes (0.84 ms each), pass 2 54.33 ms for 10.4
+  (5.20 ms each), pass 3 32.82 ms for 3.0 (11.09 ms each). The third
+  pass costs about 13 times the first per signal it adds. This is the
+  bar any later-pass or OSD proposal has to beat.
+- The small embedded configuration on the A76: 15.2 ms (41f7368) and
+  15.3 ms (f8f2a7b) a slot, one pass (24.0 decodes, 0.64 ms each).
+
+### Sizes (Cortex-M33 images)
+
+| image | flash before | flash after | static RAM |
+|---|---|---|---|
+| small | 87 040 B | 86 468 B | 212 044 B (unchanged) |
+| host | 98 628 B | 98 128 B | 241 612 B (unchanged) |
+
+`.rodata` −580 B; `.text` +8 B (small), +80 B (host). The ceiling is
+245 760 B. The largest stack frames are unchanged.
+
+### Alignment trial (measurement builds only)
+
+The four O13 builds whose non-subtraction functions are byte-identical
+(a003d6e, d486205, d116122, 94ae1b8), each built plain and with
+`-C llvm-args=-align-loops=64 -C llvm-args=-align-all-functions=6`.
+The aligned builds were checked to put the hot functions at offset 0
+mod 64, and to keep every non-subtraction function identical across
+the four. All eight were timed in one session (16 runs, 2 576 samples,
+no live bit, peak 56.0 °C).
+
+| stage (byte-identical) | plain, four builds | spread | aligned | spread |
+|---|---|---|---|---|
+| BP, three-pass | 23.90 23.84 23.82 24.65 | 0.82 | 24.85 24.86 24.91 24.91 | 0.06 |
+| feed, three-pass | 22.44 22.16 22.01 22.00 | 0.44 | 22.48 22.06 22.06 22.07 | 0.41 |
+| BP, one-pass | 11.22 11.19 11.18 11.58 | 0.40 | 11.70 11.67 11.69 11.70 | 0.03 |
+| sync, three-pass | | 0.03 | | 0.00 |
+
+- The largest spread is 0.82 ms plain and 0.41 ms aligned. The rule
+  (aligned at most half the plain, plain at least 0.4 ms) is met:
+  **adopted for measurement builds only.** Released builds are
+  unchanged.
+- **Aligned and plain numbers are not comparable.** Alignment moves
+  absolute times (BP about +1.0 ms, the slot about +1 ms), so a gate
+  measures every build of a round the same way, and a result is never
+  set against a number from the other kind of build.
+- The feed's spread barely changes (0.44 → 0.41, mostly a003d6e), so
+  alignment does not remove all layout effects. The allowance A stays.
+
+### Standing rule for timed gates
+
+The changed stage's baseline is the median over every build in the
+round whose changed-stage functions are byte-identical (compared
+function by function in the disassembly, addresses and names aside),
+not the parent's measurement alone. The allowance for untouched stages
+(the larger of 1.0 ms and the largest untouched move) stays. Measurement
+builds use the 64-byte alignment above.
+
+### Identity and checks at f8f2a7b
+
+- **Records:** 73 800 (host, one-pass and small × 24 600) equal on
+  x86-64 and on the A76, against x86-64 593b7c1's.
+- **800 WAV slots** × 3 configurations × 3 modes (7 200 runs, 78 648
+  decode lines): identical to 57cbc67's and 593b7c1's except
+  `static_table_bytes` on the 2 400 profile lines.
+- **Emulated M33:** the seven slots' decodes, small and host images,
+  identical to 627d356's; the multi-pass image's residuals on s0086 and
+  s0407 identical to 67e2458's.
+- **Encoder:** 45 of 45 cases identical.
+- **Local CI passes:** fmt; clippy (workspace, cat-ft8 all targets and
+  features, thumbv8m); workspace, profile, no-std and release tests with
+  the ignored ones; the bulk run; MSRV 1.75; docs with and without
+  `std`; `check.sh --stack`. thumbv7em builds; no FMA and no `f64`
+  helper in any thumbv8m image.
+- **Raspberry Pi 5:** the release suite with the ignored tests passes
+  (lib 179, then 2 + 0 + 12 + 1 bulk + 7 + 2 + 5).
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instructions only, as before).
+- Whether 64-byte alignment narrows the spread on x86-64 or for the
+  subtraction's own functions (they differ between the trial's builds).

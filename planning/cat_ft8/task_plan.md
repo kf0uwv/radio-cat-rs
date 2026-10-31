@@ -1878,7 +1878,9 @@ Status (findings, "The subtraction, thirteenth round"): all four kept.
   −3.34 ms).
 - e3f5444: test fix.
 
-Candidates 3 and 4 pass by 0.20 and 0.12 ms. A76 three-pass slot 125.81
+Candidate 3 passes by 0.20 ms; candidate 4's G is 3.34 ms against its
+parent, about 2.5 ms against the same-code median (corrected in O13b;
+kept). A76 three-pass slot 125.81
 → 107.28 ms (−14.7%), one pass 21.70 → 20.30, the subtraction 72.07 →
 56.59 (−21.5%), 1.81× its floor (from 2.01×). Cortex-M33: the
 subtraction −7.3%; the one-pass slots −1.6% (small) and −2.9% (host).
@@ -1968,6 +1970,111 @@ each candidate its parent's placement: a stage that one commit's
 layout slowed becomes a free gain for the next commit that changes it.
 The allowance for untouched stages (the larger of 1.0 ms and the
 largest untouched move) stays.
+
+### O13b result
+
+Every check passes and every change is kept (findings: "Review
+follow-ups (O13b)"). Against the same-code medians: c520517 subtract
++0.04 ms; 3daa258 BP −0.25 ms (one-pass −0.11); f8f2a7b BP +0.04 ms;
+M33 one-pass +0.019% (small) and +0.038% (host); flash −572 B and
+−500 B; static RAM and stack unchanged. Cost per new decode by pass:
+0.84, 5.20 and 11.09 ms. Alignment trial: spread 0.82 → 0.41 ms,
+adopted for measurement builds only (aligned and plain numbers are not
+comparable).
+
+## OSD sizing round (proposed; not yet run)
+
+Measurement first; the decoder is unchanged (the default release
+binaries byte-identical to the round's parent, checked). The question is
+whether ordered-statistics decoding (Fossorier and Lin, 1995) of the
+candidates belief propagation fails on would buy decoded signals more
+cheaply than the third pass does. It is sized here, not implemented in
+the decoder. The measurement code is a `paired_bench` subcommand and, for
+the Cortex-M33, an image rewritten out of tree; as in E4 it is removed
+afterwards (or kept in the bench only) and the commit to reproduce it is
+recorded. Nothing from WSJT-X is read; the OSD and its acceptance test
+come from the published literature.
+
+**Sets: already-used blocks only.** `crowded`, `wide`, `fading` on
+`main`, `cap1` and `cap2`; `sweep`, `edges` and `empty` on `main`;
+`host`, `host,passes=1` and `small`. No unused block is touched: they
+are kept for the gated round.
+
+**What is measured, per pass, per set and by SNR (the ≤ −17 dB band
+separately):**
+
+1. **The pool.** Every candidate whose belief propagation fails (not
+   converged, CRC failure, all-zero), split by whether it sits on a
+   transmitted message (the existing rule: tone 0 within 4 Hz, start
+   within 0.12 s) and whether that message was decoded anyway (by
+   another candidate or pass). For each failed candidate on a message,
+   against that message's codeword:
+   - the Hamming distance of the channel's hard decisions and of belief
+     propagation's last totals' hard decisions (174 bits);
+   - the errors inside the most reliable basis: positions ordered by
+     |soft bit|, Gaussian elimination over GF(2) picking the 91 most
+     reliable independent positions, and the true codeword's
+     disagreements with the hard decisions there. OSD of order i finds
+     the true codeword in its list exactly when this count is at most
+     i, so this gives OSD-0/1/2/3's reach directly. Both inputs (channel
+     soft bits and belief propagation's last totals) are measured.
+2. **What OSD-1 and OSD-2 would recover.** A measurement-grade OSD
+   (bit-packed elimination, order-i reprocessing over the basis, the
+   best codeword by correlation discrepancy, then the CRC-14 and the
+   message's plausibility: it unpacks, and its fields are the kinds the
+   decoder lists) on every failed candidate. Counted: recovered (the
+   chosen codeword is the transmitted one), new decodes (its message
+   not otherwise decoded in the slot, per pass and after all passes),
+   duplicates, and wrong codewords, each as a function of a distance
+   threshold on the chosen codeword (a trade-off curve, not a chosen
+   threshold).
+3. **The false-decode rate it would add.** Every CRC-passing,
+   plausible codeword that is not a transmitted message is a false
+   decode: on `empty` (every acceptance is false) and on the
+   off-message candidates of every set. Two acceptance forms are
+   measured: the best codeword, then the CRC (2⁻¹⁴ per noise candidate
+   before any threshold, about 0.005 false decodes per slot over 75
+   failures), and the best CRC-passing codeword of the list (OSD-2's
+   list holds 1 + 91 + 4 095 codewords, so about one noise candidate in
+   four would pass by chance). The distance threshold is what holds the
+   rate down, and with it the expected count in these blocks is near
+   zero, so counting alone is weak. The rate is also estimated from its
+   factors: the measured share of noise candidates whose best codeword
+   is under the threshold, × 2⁻¹⁴ for the CRC, × the measured
+   plausibility pass rate of random payloads; the counted false decodes
+   are the check, with their 95% upper bound (rule of three) stated.
+4. **Cost per candidate.** A76 µs per failed candidate for OSD-1 and
+   OSD-2 (elimination and reprocessing separately), timed under the
+   standard protocol (alternated rounds, one source path, binary
+   hashes, live throttle bits); Cortex-M33 emulated instructions per
+   candidate, small and host images; scratch (the 91 × 174 bit matrix
+   is about 2 KB, on the caller's scratch, not the stack), the stack
+   frame, and flash. The per-slot cost follows from the failures per
+   pass (about 75 in pass 1 of a crowded slot).
+5. **The decision metric.** Per pass and in total: ms of OSD per slot
+   ÷ new decodes it adds per slot, against the third pass's ms per new
+   decode as `paired_bench slotcost` now prints it (A76 and M33). The
+   report says which order, which passes and which candidates (all
+   failures, or only those above a sync or soft-bit score) would beat
+   the third pass and by how much, with the false-decode rate at each
+   point. It recommends whether to open the gated round; it does not
+   change a default.
+
+**What the later gated round would need** (written before it runs):
+- its criteria fixed in advance: the order, the candidates it runs on,
+  the distance threshold and plausibility test, the gain bar (new
+  decodes per slot on crowded, wide and fading, and in the ≤ −17 dB
+  band), the no-loss bar, the CPU bound (ms per new decode below the
+  third pass's; the M33 small image's budget in instructions, flash,
+  RAM and stack);
+- one block never used before for every set it judges, so the
+  threshold chosen here is not tested on the data it was chosen from;
+- a false-decode bound: at most a stated rate per slot at 95%
+  confidence, from a run of empty slots on unused seed blocks large
+  enough for that bound (with none observed, three divided by the
+  number of slots), plus the factor estimate above;
+- the 800 WAV slots against the reference decoder (black box), and
+  every output identical with OSD off.
 
 ## Next: gated, result-changing rounds
 
