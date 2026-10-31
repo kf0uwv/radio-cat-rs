@@ -203,7 +203,7 @@ fn the_stopping_test_fails_first_at_every_check() {
         word
     };
     let mut seen = [0u32; M];
-    for c in 0..M {
+    for (c, seen) in seen.iter_mut().enumerate() {
         let above = !0u128 << (c + 1) & ((1u128 << M) - 1);
         for variant in 0..12 {
             let later = if variant % 2 == 0 {
@@ -231,7 +231,7 @@ fn the_stopping_test_fails_first_at_every_check() {
             assert_eq!(first_failing_check(&want), Some(c), "check {c}");
             assert!(!holds);
             assert_eq!(checks_hold(&values), holds, "check {c}, variant {variant}");
-            seen[c] += 1;
+            *seen += 1;
         }
         // The codeword itself holds.
         assert!(checks_hold(&clean));
@@ -606,7 +606,7 @@ fn the_sum_product_round_matches_the_check_by_check_form_bit_for_bit() {
         let mut want_next = next;
         reference_round(&total, &mut want_next, &mut rows);
         // Both targets' forms: the decoder's, and the other one.
-        let forms: [(&str, fn(&[f32; N], &mut [f32; N], &mut [f32; EDGES])); 3] = [
+        let forms: [(&str, Round); 3] = [
             ("decoder", sum_product_round::<VECTOR, PASS_LANES>),
             ("vector", sum_product_round::<true, 24>),
             ("scalar", sum_product_round::<false, 1>),
@@ -627,6 +627,9 @@ fn the_sum_product_round_matches_the_check_by_check_form_bit_for_bit() {
         }
     }
 }
+
+/// A round: the totals, the next totals, the messages.
+type Round = fn(&[f32; N], &mut [f32; N], &mut [f32; EDGES]);
 
 /// The min-sum round as first written (inside `decode_soft`, the inputs
 /// in a separate row): the reference the in-place round must match bit
@@ -680,7 +683,7 @@ fn the_min_sum_round_matches_its_first_form_bit_for_bit() {
         }
         let (mut want_next, mut want_msg) = (next, msg);
         reference_min_sum_round(&total, &mut want_next, &mut want_msg);
-        let forms: [(&str, fn(&[f32; N], &mut [f32; N], &mut [f32; EDGES])); 2] = [
+        let forms: [(&str, Round); 2] = [
             ("vector", min_sum_round::<true>),
             ("scalar", min_sum_round::<false>),
         ];
