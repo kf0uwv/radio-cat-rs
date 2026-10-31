@@ -1040,12 +1040,7 @@ fn finite_reference(v: f32) -> f32 {
 
 /// [`scaled_cos_sin`] as first written: the plain loop, one sample at a
 /// time.
-fn scaled_cos_sin_first<X: Copy>(
-    out: &mut [u8],
-    phase: &[u32],
-    xs: &[X],
-    weight: impl Fn(X) -> f32,
-) {
+fn scaled_cos_sin_first(out: &mut [u8], phase: &[u32], xs: &[f32], weight: impl Fn(f32) -> f32) {
     for ((d, &q), &x) in out.chunks_exact_mut(PAIR).zip(phase).zip(xs) {
         let w = weight(x);
         let (c, s) = cos_sin_turns(q);
@@ -1077,7 +1072,7 @@ fn scaled_cos_sin_matches<const W: usize>(seed: u64) -> usize {
                 let weigh = |x: f32| if clamp { input(x) } else { finite_reference(x) };
                 let mut got = std::vec![0xa5u8; (no + 1) * PAIR];
                 let mut want = got.clone();
-                scaled_cos_sin::<W, f32>(&mut got[..no * PAIR], &phase[..np], &xs[..nx], weigh);
+                scaled_cos_sin::<W>(&mut got[..no * PAIR], &phase[..np], &xs[..nx], weigh);
                 scaled_cos_sin_first(&mut want[..no * PAIR], &phase[..np], &xs[..nx], weigh);
                 assert_eq!(got, want, "W {W} lengths {no} {np} {nx} clamp {clamp}");
                 checked += 1;

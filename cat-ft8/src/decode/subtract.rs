@@ -443,7 +443,7 @@ fn symbol_correlations(
         // The products sample by sample (a loop that vectorises), then
         // their sums by lane.
         let products = &mut work[..(b - a) * PAIR];
-        scaled_cos_sin::<CHAINS, f32>(products, &phase[a..b], xs, input);
+        scaled_cos_sin::<CHAINS>(products, &phase[a..b], xs, input);
         let (re, im) = lane_sums(a, products);
         let k = j0 / T;
         // The conjugate's sine part: the sum's sign turned.
@@ -1101,7 +1101,7 @@ fn get(d: &[u8]) -> (f32, f32) {
 /// envelope `env`, stored in `refs` ([`PAIR`] bytes each) by [`put`].
 #[inline(always)]
 fn reference(refs: &mut [u8], phase: &[u32], env: &[f32]) {
-    scaled_cos_sin::<CHAINS, f32>(refs, phase, env, |w| w);
+    scaled_cos_sin::<CHAINS>(refs, phase, env, |w| w);
 }
 
 /// Samples [`scaled_cos_sin`] takes together: several whole vectors where
@@ -1121,11 +1121,11 @@ const CHAINS: usize = if VECTOR { 16 } else { 1 };
 /// `W` samples at a time, then the rest one by one, over the shortest of
 /// the three. With `W` 1 this is the plain loop.
 #[inline(always)]
-fn scaled_cos_sin<const W: usize, X: Copy>(
+fn scaled_cos_sin<const W: usize>(
     out: &mut [u8],
     phase: &[u32],
-    xs: &[X],
-    weight: impl Fn(X) -> f32,
+    xs: &[f32],
+    weight: impl Fn(f32) -> f32,
 ) {
     let n = (out.len() / PAIR).min(phase.len()).min(xs.len());
     let whole = if W > 1 { n - n % W } else { 0 };
@@ -1135,7 +1135,7 @@ fn scaled_cos_sin<const W: usize, X: Copy>(
             .zip(phase[..whole].chunks_exact(W))
             .zip(xs[..whole].chunks_exact(W));
         for ((d, q), x) in blocks {
-            let (q, x): (&[u32; W], &[X; W]) = (q.try_into().unwrap(), x.try_into().unwrap());
+            let (q, x): (&[u32; W], &[f32; W]) = (q.try_into().unwrap(), x.try_into().unwrap());
             let mut v = [(0.0f32, 0.0f32); W];
             for ((v, &q), &x) in v.iter_mut().zip(q).zip(x) {
                 let w = weight(x);
