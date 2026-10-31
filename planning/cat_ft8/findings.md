@@ -4549,8 +4549,12 @@ share is 31% (small) and 46% (host image), not the A76's 65%.
    NEON) picks the mask, otherwise the select. The M33 round's code is
    again instruction for instruction 593b7c1's, flash equal.
 3. **3120384, 24 values at a time in the tanh and atanh passes**
-   (`each_value::<PASS_LANES>`; one where `VECTOR` is false, so the M33
-   code is unchanged: 79 486 a round). Six independent chains side by
+   (`each_value::<PASS_LANES>`; one where `VECTOR` is false). On the M33
+   the code is not literally unchanged: the normalised disassembly
+   differs only in `sum_product_round` (104 lines in each image); the
+   small image does not run that round, so its count is the same, and
+   the host image's round runs one instruction more (79 486 against
+   79 485, +2 825 over the slot). Six independent chains side by
    side. A76 microbenchmark, cycles per edge (tanh × atanh lanes):
    4 × 4 31.8; 8 28.1; 16 24.3; the 12–24 grid 21.8–24.9 (24 × 24 the
    best); 32 lanes 33.3 (the compiler did not unroll them). In the slot:
@@ -4591,7 +4595,7 @@ share is 31% (small) and 46% (host image), not the A76's 65%.
    configuration's three-pass slot +0.4% (BP unchanged).
 
 The host-image figures in the messages of d1a9334 and 26bb83a
-(487 679 021 and 478 671 277) were measured on a work branch that still
+(487 679 021 and 478 671 277) were measured on a local build that still
 had a04fc5a's masked form on the M33. On `o12-bp` the host slot is
 488 121 501 → 483 101 689 → 474 093 945: the same −1.0% and −1.9%.
 
@@ -4602,6 +4606,11 @@ the M33 one-pass slot together (−1.1% and −2.0% alone); neither moves
 the A76 three-pass slot by more than 0.5% (d1a9334 −0.2%, 26bb83a
 +0.4%). 7 restores the memory bound. 8 removes a regression of the
 small configuration on hosts that 4 introduced (below).
+
+*Deviation (recorded in O12b):* 5 and 6 each fall short of the 3% M33
+bar alone. They were kept as one plan item, and that grouping was
+decided after their numbers were in, not before. Later plans state
+whether a bar applies per commit or per plan item.
 
 ### Slot time per commit
 
@@ -4701,9 +4710,9 @@ helper in any image; thumbv7em builds.
 - **The min-sum check in two fused loops** (inputs with the minimum
   search; outputs with the sums, every operation in the same order;
   on d2667f1): M33 small slot −2.6% (315 473 850 → 307 258 736), flash
-  −60 B; but x86-64 min-sum 20.9 → 27.5 cycles per edge. Under the 3%
-  M33 bar alone, so the current form is kept; a candidate for a later
-  round that weighs the small configuration on hosts.
+  −60 B; but x86-64 min-sum 20.9 → 27.5 cycles per edge (+31%), which
+  rejects it on its own; it is also under the 3% M33 bar. A candidate
+  for a later round that weighs the small configuration on hosts.
 
 ### The round after the changes (A76 counters)
 
@@ -4754,8 +4763,8 @@ small 200 5` 13.55, 13.45 and 12.45 ms (BP 6.45, 6.40, 5.34).
 - **800 WAV slots** × `host`, `small`, `host,passes=1` × plain, `--raw`,
   `--profile` (7 200 runs, timings removed): byte-identical to
   593b7c1's at every code commit. (636350d's x86-64 and AArch64
-  binaries are byte-identical to those of 205d9e5, a work commit with
-  the same tree, on which its timing and identity runs were made.)
+  binaries are byte-identical to those of a local build of the same
+  tree, on which its timing and identity runs were made.)
 - **Encoder:** the 45 `cat-ft8-encode` outputs and their stdout
   identical (d2667f1); no change outside `decode/bp.rs` and its tests.
 - **The small image in the emulator** (seven slots of O10b: s0000,
