@@ -1323,3 +1323,15 @@
   embedded checks (no FMA, no `f64` helper) and the Pi release suite
   pass.
 - Proposed, not run: the gated `i16` residual round (findings).
+- O10b (review follow-ups, output-identical):
+  - 78d4f2f: stage size a const generic; `Lanes::<L>::OK` from
+    `STAGES` (`fft::<8>` fails to build).
+  - 47739f1: `bin_powers` one form (M33 −0.6% instructions, flash
+    +344 B).
+  - 4af3304: reflow.
+  - The emulated small image's output is byte-identical to ddfd48d's
+    on seven slots.
+  - A76 timing with live throttle bits sampled once a second: none set;
+    151.1 → 142.8 ms; 7f89879 142.0.
+  - Records, WAV output and encoder identical; local CI and the Pi suite
+    pass.

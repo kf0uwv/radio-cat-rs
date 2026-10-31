@@ -1600,7 +1600,7 @@ three-pass slot at 55bbbff, in every configuration).
    count is one (the same results by construction).
 4. Under about 2% of the A76 slot is noise: keep the simpler form.
 
-**B. Small fixes from the O9 delta reviews** (all output-identical):
+**B. Small fixes from the O9 follow-ups** (all output-identical):
 `Correction::skip` without the n < 2³² bound (halve the even factor,
 then `wrapping_mul`); the ceiling mode's elapsed seconds to stderr (its
 stdout then compares byte for byte; this removes that figure from
@@ -1627,6 +1627,28 @@ byte-identical (but the moved ceiling figure, which the CLI does not
 print); the encoder identical; A76 `slotcost` and a per-stage profile,
 rounds alternated, one source path, a target directory per commit,
 binary hashes compared.
+
+**O10b, review follow-ups** (same branch, output-identical):
+
+- `bin_powers` reduced to one form, if the M33 instruction count does
+  not rise.
+- The stage size `l` as a const generic.
+- The lane checks derived from `STAGES` and evaluated per lane count,
+  so `fft::<8>` fails to build (MSRV 1.75).
+- The lengthened O9 lines reflowed, in their own commit.
+- The bin-960 wording corrected.
+- The small image's decode output compared in the emulator.
+- The wording notes.
+- A76 timing re-run with the live throttle bits sampled once a second.
+
+Status (findings, "Review follow-ups"): 78d4f2f, 47739f1, 4af3304.
+- M33 instructions per row −0.6% (1 027 705), flash +344 B.
+- Every record (x86-64 and A76), WAV output and encoder output is
+  identical to ddfd48d's.
+- The emulated small image's decodes, spectrogram and decode list are
+  byte-identical to ddfd48d's on seven slots.
+- A76 three-pass slot 151.1 → 142.8 ms (−5.6%; 7f89879 142.0, the
+  difference mostly BP placement). No live throttle bit in any sample.
 
 ## Next: gated, result-changing rounds
 

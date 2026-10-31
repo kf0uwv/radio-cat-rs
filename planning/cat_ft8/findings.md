@@ -4195,9 +4195,9 @@ bit over all 1 920 bins and ranges starting and ending at 0, 960/961 and
 chunk edges, for noise from 10⁻³⁰ to 2¹⁶, tones, constants and
 subnormals, with both forms of the per-bin loop. Mutations (twiddle
 rotation sign, summation order, twiddle index) fail them; moving the
-960/961 boundary by one bin does not (bin 960's two twiddle forms differ
-only by 6·10⁻¹⁷ in a part that adds to a product with −1, so the power is
-the same: an equivalent change). Records:
+960/961 boundary by one bin does not, an equivalent change (the reason
+given here first was wrong; corrected under "Review follow-ups"
+below). Records:
 `paired_bench run` of `main`, `cap1`, `cap2` (`host` on `crowded`,
 `wide`, `fading`; `host` on `sweep`, `edges`, `empty` of `main`;
 `host,passes=1` and `small` on `sweep`, `crowded`, `edges`, `empty` of
@@ -4253,6 +4253,117 @@ throttle flags 0x50000 before and after.
 **Not measured:** Cortex-M33 cycles (instructions only, emulated); the
 transform on other vector targets (one lane is the fallback, with the
 same results).
+
+### Review follow-ups (78d4f2f, 47739f1, 4af3304)
+
+Every output is still equal to ddfd48d's.
+
+- **78d4f2f.** The stage's sub-transform length is a const generic,
+  `stage::<R, L, S>` and `butterflies::<R, L, S>`. So `span == N` and
+  every stride are constants by type, not by inlining. The table check
+  pins each call's (radix, `l`) against `STAGES`.
+  - The lane check is now `Lanes::<L>::OK`, evaluated wherever `fft::<L>`
+    is instantiated. Two conditions are derived from `STAGES`, not a
+    hard-coded 5: L must divide every `l` after the first stage, and N
+    must be a multiple of L·m for every m below the last radix.
+  - `fft::<8>`, `fft::<3>` and `fft::<0>` fail to build on stable and on
+    1.75. `fft::<1>`, `<2>` and `<4>` build.
+  - `cargo check` does not evaluate the check (post-monomorphisation);
+    `cargo build` and `cargo test` do.
+  - M33 instructions per row and the image's flash are unchanged
+    (1 033 614; 85 376 B).
+- **47739f1.** `bin_powers` has one form, the three plain loops; the
+  bin-by-bin path for one lane is gone. Cortex-M33 small image
+  (emulated, 184 rows):
+  - instructions per row 1 033 614 → 1 027 705 (−0.6%);
+  - flash small 85 376 → 85 720 B, host 97 856 → 98 200 B;
+  - `finish_row` frame 464 B and static RAM unchanged;
+  - `vmla` 67 / 143 → 75 / 151 (small / host; the loops' multiply-adds,
+    which round the product first), fused 0, no `f64` helper.
+  - The powers test still checks every bin bit for bit against the form
+    as first written; it now has one per-bin form to run.
+- **Speed and inlining.** With `#[inline(always)]` removed from `stage`,
+  the x86-64 microbenchmark gives the same stage times: 13.1 / 13.0 µs
+  against 13.1 / 12.9 µs, two rounds each.
+  - A76 (rounds alternated, live bits sampled, none set; one sample
+    at 1.7 GHz as the first run started, all others at 2.4 GHz):
+    - stages 1–6: 7f89879 25.80 / 25.87 µs, 47739f1 25.68 / 25.73;
+    - the row with `log2`: 37.31 / 37.31 against 37.33 / 37.32;
+    - without the forced inlining: stages 27.53 / 27.53 (stage 3,
+      `l` = 16, 3.6 → 5.4 µs measured alone), row 37.12 / 37.14.
+  - O10 saw 68 µs per row with the stages not inlined, when `l` was a
+    run-time argument. The transform's speed no longer hangs on the
+    attribute; it is kept.
+  - The transform itself is no slower than 7f89879's.
+- **4af3304.** The two O9 lines that 3a91900's rewrap lengthened are
+  reflowed, in a commit of their own.
+- **Bin 960** (correcting "Identity" above). The table entry
+  `SPLIT_TWIDDLES[960]` is [2.83·10⁻¹⁶, −1.0], and the rotated form from
+  entry 0 is [−0, −1]. At k = 960, Z[k] pairs with itself (c = a), so
+  oi = −0.5·(ar − ar) = ±0 and xi = −ai in both forms. Only xr moves:
+  ar + 2.83·10⁻¹⁶·ai against ar. They differ only when
+  |ar| ≲ 4.7·10⁻⁹·|ai|, and then xr² is far below half an ulp of xi², so
+  the power is the same. That is why moving the 960/961 boundary is an
+  equivalent change.
+- **The one-lane image's output, observed.** The small image
+  decoded seven slots of the 800-WAV corpus in the instruction-set
+  emulator: s0000, s0086, s0174, s0180, s0407, s0446, s0748, with 0, 23,
+  30, 10, 30, 30 and 10 decodes.
+  - The check program was changed out of tree only to read the slot's
+    16-bit samples from memory and write its decodes out.
+  - Byte for byte, ddfd48d and 47739f1 give the same: the report's
+    counts; every decode's frequency, SNR and time bits, score, hard
+    errors, rounds, candidate and text; and the whole spectrogram
+    (`LEVELS`) and decode list statics.
+
+**Timing, with the live throttle bits.** `get_throttled` bits
+16–19 are sticky (0x50000 since boot here), so equal values before and
+after a run prove nothing.
+
+- Every timed A76 run now samples the live bits 0–3, the ARM clock and
+  the temperature once a second, on core 0, while the benchmark runs on
+  core 3. A sample with a live bit set invalidates its run.
+- `slotcost host,passes=1 host 200 5`, one source path, a target
+  directory per commit, the binary's SHA-256 printed before each run,
+  rounds alternated. Results:
+
+| Run (rounds A B, then B A) | three passes, mean ms | one pass | feed | BP | samples; live-bit samples; clock; peak temperature |
+|---|---|---|---|---|---|
+| ddfd48d r1 / r2 | 151.1 / 151.2 | 32.3 / 32.3 | 31.26 / 31.25 | 40.28 / 40.29 | 208 / 209; 0; 2 400 MHz throughout; 53.2 °C |
+| 47739f1 r1 / r2 | 142.7 / 142.8 | 29.6 / 29.6 | 22.14 / 22.15 | 40.92 / 40.92 | 198 / 198; 0; 2 400 MHz; 53.2 °C |
+| **ddfd48d → 47739f1** | **−5.6%** | **−8.4%** | **−29.2%** | +0.64 ms | |
+| 7f89879 r1 / r2 | 142.0 / 142.0 | 29.3 / 29.3 | 22.00 / 22.01 | 40.49 / 40.49 | 197 / 196; 0; 2 400 MHz; 53.8 °C |
+| 47739f1 r1 / r2 | 142.8 / 142.8 | 29.6 / 29.6 | 22.17 / 22.16 | 40.92 / 40.92 | 198 / 198; 0; 2 400 MHz; 53.8 °C |
+| **7f89879 → 47739f1** | **+0.6%** | **+1.0%** | +0.16 ms | +0.43 ms | |
+
+Against O10's head (7f89879), 47739f1 is 0.8 ms slower per three-pass
+slot (+0.6%), and 0.3 ms per one-pass slot. The difference is the same
+in both rounds.
+- Most of it is belief propagation: +0.43 ms, though its code did not
+  change, so this is placement. O10 saw 0.7 ms of BP drift between
+  4089b5b and 7f89879 the same way.
+- The rest is the feed (+0.16 ms, 0.3 µs per row) and the subtraction
+  (+0.13 ms).
+- That is under the 2% rule, and it is reported, not hidden.
+- The rows measured with the old method (O10's table above) agree for
+  ddfd48d: 151.1 then, 151.1 / 151.2 now.
+
+**Checks at 47739f1.**
+- Local CI passes: fmt; clippy `-D warnings` on the workspace, cat-ft8
+  with all targets and features, and the thumbv8m library; workspace,
+  profile, no-std and release tests with the ignored ones; the bulk run;
+  MSRV 1.75; docs; `check.sh --stack`. thumbv7em also builds.
+- Records: `paired_bench run` (the O10 sets) on x86-64 gives 63 000 of
+  63 000 equal to ddfd48d's (timings removed). On the A76, 47739f1's
+  records equal x86-64's of ddfd48d, 63 000 of 63 000.
+- The 800 WAV slots × `host`, `small`, `host,passes=1` × plain, `--raw`,
+  `--profile`: byte-identical to ddfd48d's (7 200 runs).
+- The ceiling's stdout (`crowded`, `wide`, `fading`) is identical to
+  7f89879's, and so to ddfd48d's but for the elapsed figure moved in
+  O10.
+- The 45 `cat-ft8-encode` outputs and their stdout are identical.
+- Raspberry Pi 5: the release test suite with the ignored tests passes
+  (lib 167, then 2 + 0 + 12 + 1 bulk + 7 + 2 + 5).
 
 ### Proposed: `i16` residual, gated (proposed; not yet run)
 
@@ -4319,9 +4430,9 @@ base B (the merged head before it), one attempt, no retune:
   `fading` together, reported per set; `wide` below −16 dB at most 1;
   on the low-level sets together at most 3, and lost minus gained at
   most 2.
-- **Every lost, gained and pass-moved message classified** by the
-  out-of-tree classifier of the O9 gate, its SHA-256 pinned in the gate
-  commit, as (m), (r) or (k) with the O9 definitions; one unexplained
+- **Every lost, gained and pass-moved message classified** by a
+  classifier script (not in the repository), its SHA-256 pinned in the
+  gate commit, as (m), (r) or (k) with the O9 definitions; one unexplained
   message fails.
 - **800 WAV slots:** in every slot, with `host`, `host,passes=1` and
   `small` (plain, `--raw`, `--profile`), the same messages decoded in
