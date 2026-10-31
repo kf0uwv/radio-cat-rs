@@ -299,24 +299,9 @@ pub fn decode_soft(
             .count();
         n.min(255) as u8
     };
-    if checks_hold(total) {
-        hard_decisions(total, hard);
-        let payload = accept(hard)?;
-        return Ok(BpDecode {
-            payload,
-            rounds: 0,
-            hard_errors: hard_errors(hard),
-        });
-    }
-    for round in 1..=max_rounds {
-        *rounds_run = round;
-        *next = *llr;
-        if rule == CheckRule::SumProduct {
-            sum_product_round(total, next, msg);
-        } else {
-            min_sum_round(total, next, msg);
-        }
-        core::mem::swap(&mut total, &mut next);
+    // Round 0 is the channel's own hard decisions.
+    let mut round = 0;
+    loop {
         if checks_hold(total) {
             hard_decisions(total, hard);
             let payload = accept(hard)?;
@@ -326,8 +311,19 @@ pub fn decode_soft(
                 hard_errors: hard_errors(hard),
             });
         }
+        if round == max_rounds {
+            return Err(BpFailure::NotConverged);
+        }
+        round += 1;
+        *rounds_run = round;
+        *next = *llr;
+        if rule == CheckRule::SumProduct {
+            sum_product_round(total, next, msg);
+        } else {
+            min_sum_round(total, next, msg);
+        }
+        core::mem::swap(&mut total, &mut next);
     }
-    Err(BpFailure::NotConverged)
 }
 
 /// Checks of degree 6 (the others have degree 7), from the parity-check
