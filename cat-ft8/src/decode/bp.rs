@@ -97,6 +97,20 @@ impl BpScratch {
     }
 }
 
+/// Measurement only (`profile`): not part of the crate's API.
+#[cfg(feature = "profile")]
+impl BpScratch {
+    /// The totals after the last decode's final round (the channel's
+    /// soft bits if it ran none), whatever its result.
+    pub fn last_totals(&self) -> &[f32; N] {
+        if self.rounds % 2 == 0 {
+            &self.total
+        } else {
+            &self.next
+        }
+    }
+}
+
 impl Default for BpScratch {
     fn default() -> Self {
         Self::new()

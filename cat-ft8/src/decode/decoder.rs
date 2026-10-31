@@ -476,6 +476,20 @@ impl CandidateScratch {
     }
 }
 
+/// Measurement only (`profile`): not part of the crate's API.
+#[cfg(feature = "profile")]
+impl CandidateScratch {
+    /// The last candidate's soft bits.
+    pub fn soft_bits(&self) -> &[f32; N] {
+        &self.llr
+    }
+
+    /// Belief propagation's totals after the last candidate's final round.
+    pub fn bp_totals(&self) -> &[f32; N] {
+        self.bp.last_totals()
+    }
+}
+
 impl Default for CandidateScratch {
     fn default() -> Self {
         Self::new()
