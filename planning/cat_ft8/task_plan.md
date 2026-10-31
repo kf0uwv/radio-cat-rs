@@ -1650,6 +1650,58 @@ Status (findings, "Review follow-ups"): 78d4f2f, 47739f1, 4af3304.
 - A76 three-pass slot 151.1 → 142.8 ms (−5.6%; 7f89879 142.0, the
   difference mostly BP placement). No live throttle bit in any sample.
 
+## O12: belief propagation, bit-identical (2026-10-30)
+
+A bit-identical round on the local branch `o12-bp` from 593b7c1: every
+output equal to 593b7c1's (records, CLI output, encoder), no more
+memory, and the Cortex-M33 cost of belief propagation not worse (it is
+about 65% of the one-pass slot, the configuration of the small image).
+Belief propagation (`sum_product_round` and `decode_soft` around it) is
+32.7% of the A76 three-pass slot.
+
+1. **Measure first.** On the A76 (user-space hardware counters, which
+   the bench allows without privileges) and x86-64 (`perf`): cycles,
+   instructions, L1D misses and branch misses per edge of one round,
+   in an out-of-tree microbenchmark over realistic states; the
+   annotated AArch64 and x86-64 code of the hot loops (A76: a sampled
+   PC histogram); the Cortex-M33 instructions per round and per
+   one-pass slot of the small image in the instruction-set emulator,
+   and the round's stack frame. Record cycles per edge and a floor:
+   per edge, the loads, stores, floating-point operations by class and
+   divides in the AArch64 code, each divided by the A76's throughput
+   for that class (two FP/vector pipes, one divider, two load and one
+   store per cycle); the floor is the largest of those quotients.
+2. **Stop rule (fixed now, before any number).** Stop and record that
+   belief propagation is at its floor, changing no code, if either
+   - the measured round is within 1.3× of the floor of step 1, or
+   - no candidate reaches 2% of the A76 three-pass slot or 3% of the
+     M33 one-pass slot's instructions.
+3. **Candidates** keep every floating-point operation and its order,
+   so identity holds by construction: layout and indexing, bounds
+   checks, hoisting, the loop shape of the check and variable passes,
+   the per-round copies and the stopping test's bookkeeping, and the
+   tanh/atanh path only where exactly the same operations remain.
+   Identity also by tests (the round and the decode bit for bit against
+   the current form over random states and edge values, saturation
+   included), mutants that those tests catch, then the records and the
+   800 WAV slots.
+4. **Decision rule.** Under about 2% of the A76 three-pass slot is
+   noise, unless the M33 one-pass slot gains 3% or more; otherwise the
+   simpler form is kept. An M33 regression in belief propagation is not
+   accepted.
+
+Checks: local CI (fmt, clippy on the workspace, all features and the
+thumbv8m library, tests with the ignored ones, MSRV 1.75, docs,
+`check.sh --stack`, thumbv7em, no FMA and no `f64` helper in any
+thumbv8m image); `paired_bench run` records of `main`, `cap1`, `cap2`
+(`host`, `host,passes=1`, `small`) equal to 593b7c1's on x86-64 and
+the A76; the 800 WAV slots × configurations × modes byte-identical; the
+encoder identical; the small image's decode output in the emulator
+byte-identical on the seven slots of O10b; A76 `slotcost` three and one
+pass, rounds alternated, one source path, a target directory per
+commit, binary hashes compared, the live throttle bits sampled once a
+second (any live bit voids the run). No acceptance block is used.
+
 ## Next: gated, result-changing rounds
 
 Each changes results and needs its own acceptance (the run sets, the
