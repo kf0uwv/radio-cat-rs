@@ -714,6 +714,75 @@ pub fn osd_cost(cfg: &str, slots: usize, runs: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// `osdlib CONFIG [SLOTS] [RUNS]`: one thread, per failed candidate
+/// (channel soft bits) of every pass on the slotcost slots: the decoder's
+/// OSD-1 (this target's elimination form), the same with the other form,
+/// and the sizing's OSD-1 form A (preparation and search), alternated
+/// within each run. Prints the median µs per candidate over RUNS and a
+/// hash of the picks and D bits, which must be equal for all three.
+pub fn osd_lib(cfg: &str, slots: usize, runs: usize) -> Result<(), String> {
+    use cat_ft8::decode::osd::{order1, order1_other_form, OsdScratch};
+    let setup = parse_config(cfg)?;
+    let slots = slots.clamp(1, 200);
+    let input = cost_inputs(&setup, slots);
+    println!("{cfg}: {slots} slots, {} failed candidates", input.len());
+    let gen = generator();
+    let mut osd = Box::new(Osd::new());
+    let mut lib = Box::new(OsdScratch::new());
+    let names = ["library", "other form", "sizing osd1 A"];
+    let runs = runs.max(5);
+    let mut times = vec![Vec::new(); names.len()];
+    let mut hashes = vec![0u64; names.len()];
+    let none = cat_ft8::ldpc::K as u8;
+    for r in 0..runs {
+        for (m, t_m) in times.iter_mut().enumerate() {
+            let mut h = 0xcbf2_9ce4_8422_2325u64;
+            let t = Instant::now();
+            for (_, v) in &input {
+                let v = std::hint::black_box(v);
+                let (pick, d) = match m {
+                    0 => {
+                        let o = order1(v, &mut lib);
+                        (o.pick.unwrap_or(none), o.d)
+                    }
+                    1 => {
+                        let o = order1_other_form(v, &mut lib);
+                        (o.pick.unwrap_or(none), o.d)
+                    }
+                    _ => {
+                        osd.prepare(v, gen);
+                        let a = osd.search_fast(1, false).a;
+                        (a.j, a.d)
+                    }
+                };
+                fnv1a(&mut h, &[pick]);
+                fnv1a(&mut h, &d.to_bits().to_le_bytes());
+            }
+            t_m.push(t.elapsed().as_secs_f64() * 1e6 / input.len() as f64);
+            if r == 0 {
+                hashes[m] = h;
+            } else if hashes[m] != h {
+                return Err(format!("{} results differ between runs", names[m]));
+            }
+        }
+    }
+    if hashes.iter().any(|&h| h != hashes[0]) {
+        return Err(format!("results differ: {hashes:016x?}"));
+    }
+    for (m, name) in names.iter().enumerate() {
+        let mut t = times[m].clone();
+        t.sort_by(f64::total_cmp);
+        println!(
+            "{name:14} median {:.3} us/candidate (min {:.3}, max {:.3}) hash {:016x}",
+            t[t.len() / 2],
+            t[0],
+            t[t.len() - 1],
+            hashes[m]
+        );
+    }
+    Ok(())
+}
+
 /// `osddump CONFIG FILE`: every 50th pass-1 failed candidate's soft bits
 /// on the slotcost slots (16 of them), as `f32` little-endian bits, and the
 /// x86-64 results of OSD-1 and OSD-2 (forms A and B) for each, as text.

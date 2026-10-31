@@ -139,7 +139,7 @@ pub struct Found {
     pub b: Option<Pick>,
 }
 
-/// Working storage (about 8.9 KB).
+/// Working storage (9 200 bytes in the Cortex-M33 image).
 pub struct Osd {
     rows: [Bits; K],
     /// Each reduced row's message part (positions 0..91).
@@ -149,9 +149,9 @@ pub struct Osd {
     w: [f32; N],
     hard: Bits,
     /// Order-0 codeword and its differences from the hard decisions.
-    c0: Bits,
+    cw0: Bits,
     d0: Bits,
-    m0: u128,
+    msg0: u128,
     /// Signed weights: |value| where d0 is 0, −|value| where it is 1.
     s: [f32; N],
     /// D of the order-0 codeword, and each row's Σ s.
@@ -178,9 +178,9 @@ impl Osd {
             order: [0; N],
             w: [0.0; N],
             hard: [0; WORDS],
-            c0: [0; WORDS],
+            cw0: [0; WORDS],
             d0: [0; WORDS],
-            m0: 0,
+            msg0: 0,
             s: [0.0; N],
             big_d0: 0.0,
             row_s: [0.0; K],
@@ -213,6 +213,10 @@ impl Osd {
             let a = v.abs();
             self.w[i] = a;
             total += a;
+            // ±0 is decided 0 (belief propagation's `hard_bit` splits exact
+            // ties by index parity instead): its weight is 0, so D is the
+            // same either way; only the order-0 codeword's bit there and
+            // the Hamming distance can differ.
             hard[i / WB] |= Word::from(v < 0.0) << (i % WB);
         }
         self.total_w = total;
@@ -262,16 +266,16 @@ impl Osd {
         }
         debug_assert_eq!(rank, K);
         // Order 0: the hard decisions on the basis, re-encoded.
-        let mut c0 = [0; WORDS];
+        let mut cw0 = [0; WORDS];
         for j in 0..K {
             if get(&hard, usize::from(self.pivot[j])) {
-                c0 = xor(&c0, &self.rows[j]);
+                cw0 = xor(&cw0, &self.rows[j]);
             }
         }
-        self.c0 = c0;
-        let d0 = xor(&c0, &hard);
+        self.cw0 = cw0;
+        let d0 = xor(&cw0, &hard);
         self.d0 = d0;
-        self.m0 = message_part(&c0);
+        self.msg0 = message_part(&cw0);
         for j in 0..K {
             self.msg[j] = message_part(&self.rows[j]);
         }
@@ -377,7 +381,7 @@ impl Osd {
         let mut syn = [0u16; K];
         let mut syn0 = 0;
         if form_b {
-            syn0 = syndrome(self.m0);
+            syn0 = syndrome(self.msg0);
             for (s, &m) in syn.iter_mut().zip(&self.msg) {
                 *s = syndrome(m);
             }
@@ -388,16 +392,16 @@ impl Osd {
             }
         };
         if H {
-            each(self.big_d0, self.h0, self.m0 != 0);
+            each(self.big_d0, self.h0, self.msg0 != 0);
         }
         if form_b {
-            try_b(syn0, self.m0, a, &mut b);
+            try_b(syn0, self.msg0, a, &mut b);
         }
         if order >= 1 {
             for j in 0..K {
                 let d = self.big_d0 + self.row_s[j];
                 if H {
-                    each(d, self.h0 + self.row_h[j], self.m0 != self.msg[j]);
+                    each(d, self.h0 + self.row_h[j], self.msg0 != self.msg[j]);
                 }
                 let p = Pick {
                     j: j as u8,
@@ -408,7 +412,7 @@ impl Osd {
                     a = p;
                 }
                 if form_b {
-                    try_b(syn0 ^ syn[j], self.m0 ^ self.msg[j], p, &mut b);
+                    try_b(syn0 ^ syn[j], self.msg0 ^ self.msg[j], p, &mut b);
                 }
             }
         }
@@ -422,7 +426,7 @@ impl Osd {
                     let d = (base + self.row_s[k]) - (sh + sh);
                     if H {
                         let h = hb + self.row_h[k] - 2 * hamming_form(&x, &self.d0);
-                        each(d, h, self.m0 ^ self.msg[j] != self.msg[k]);
+                        each(d, h, self.msg0 ^ self.msg[j] != self.msg[k]);
                     }
                     let p = Pick {
                         j: j as u8,
@@ -433,7 +437,7 @@ impl Osd {
                         a = p;
                     }
                     if form_b && sj == syn[k] {
-                        try_b(0, self.m0 ^ self.msg[j] ^ self.msg[k], p, &mut b);
+                        try_b(0, self.msg0 ^ self.msg[j] ^ self.msg[k], p, &mut b);
                     }
                 }
             }
@@ -443,7 +447,7 @@ impl Osd {
 
     /// The codeword of a list entry.
     pub fn codeword(&self, p: &Pick) -> Bits {
-        let mut c = self.c0;
+        let mut c = self.cw0;
         if usize::from(p.j) < K {
             c = xor(&c, &self.rows[usize::from(p.j)]);
         }

@@ -23,7 +23,13 @@
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- suppression CONFIG [GRID] [TRIALS]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- passes CONFIG [BLOCK] [SET] [GRID]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- subcost CONFIG [SUB] [SLOTS] [RUNS]
+//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- osdlib CONFIG [SLOTS] [RUNS]
+//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- osdcal CONFIG RANKS OUTFILE PREFIX FROM TO
 //! ```
+//!
+//! (`osd`, `osdcost`, `osdplaus`, `osdcheck` and `osddump` are the OSD
+//! sizing round's, in `osdsize.rs`; `osdlib` times the decoder's OSD-1
+//! there too, and `osdcal` is described in `osdcal.rs`.)
 //!
 //! **Sets** (encoder-made; each slot's seed comes from its set, block and
 //! index, and the noise from `libm`, so runs decode bit-identical input on
@@ -62,7 +68,9 @@
 //! 64 decodes) followed by optional `,key=value` changes: `rule=sp|ms`,
 //! `rounds=N`, `scale=X`, `candidates=N`, `min_score=N`, and for further
 //! passes `passes=N` (1–3), `later=N` (candidates in every pass after the
-//! first), `seg=N` and `drift=0|1` (the subtraction). Examples:
+//! first), `seg=N` and `drift=0|1` (the subtraction), and `osd=C:T`
+//! (OSD-1 on each pass's first C candidates, accepting a codeword at
+//! most T bits from the hard decisions; off by default). Examples:
 //! `host,candidates=100`, `host,passes=3,later=150,seg=2880`. With more
 //! than one pass, `run` decodes with `decode_passes` and saves the slot's
 //! totals over every pass as its report, and each pass's own counts
@@ -188,6 +196,7 @@ mod channel;
 mod compare;
 mod cost;
 mod osd;
+mod osdcal;
 mod osdsize;
 mod record;
 mod sets;
@@ -267,6 +276,15 @@ pub fn parse_config(spec: &str) -> Result<Setup, String> {
             "min_score" => s.config.with_min_score(num(v)? as i32),
             "passes" => s.config.with_passes(num(v)? as u8),
             "later" => s.config.with_later_candidates(num(v)? as usize),
+            "osd" => {
+                let (c, t) = v.split_once(':').ok_or("osd needs C:T")?;
+                let (c, t) = (num(c)?, num(t)?);
+                if !(0.0..=65_535.0).contains(&c) || !(0.0..=255.0).contains(&t) {
+                    return Err(format!("osd={v}: C 0–65 535, T 0–255"));
+                }
+                s.config
+                    .with_osd(Some(cat_ft8::decode::OsdConfig::new(c as u16, t as u8)))
+            }
             "seg" | "drift" => s
                 .config
                 .with_subtract(subtraction::merge_subtract(s.config.subtract, kv)?),
@@ -370,6 +388,17 @@ fn main() -> ExitCode {
             .and_then(|s| num(3, 5).and_then(|r| osdsize::osd_cost(c, s, r)))
             .map(|()| true),
         (Some("osddump"), Some(c), Some(f)) => osdsize::osd_dump(c, Path::new(f)).map(|()| true),
+        (Some("osdcal"), Some(c), Some(r)) => match (arg(3), arg(4)) {
+            (Some(out), Some(prefix)) => num(5, 0).and_then(|from| {
+                num(6, from).and_then(|to| {
+                    osdcal::osd_cal(c, r, Path::new(out), prefix, from, to).map(|()| true)
+                })
+            }),
+            _ => Err("osdcal CONFIG RANKS OUTFILE PREFIX FROM TO".into()),
+        },
+        (Some("osdlib"), Some(c), _) => num(2, 200)
+            .and_then(|s| num(3, 5).and_then(|r| osdsize::osd_lib(c, s, r)))
+            .map(|()| true),
         (Some("cost"), Some(x), Some(y)) => num(3, 42)
             .and_then(|s| num(4, 5).and_then(|r| cost::cost(x, y, s, r)))
             .map(|()| true),
