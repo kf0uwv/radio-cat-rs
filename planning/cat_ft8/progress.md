@@ -1405,3 +1405,19 @@
   main/cap1/cap2 and E4's empty blocks. All failed candidates: neither
   replace nor supplement. Each pass's top 10, OSD-1: supplement, 4.3 ms
   per new decode, 0.104 per slot. Gated round drafted, not run.
+
+## Session: 2026-10-31 (lean OSD-1 and calibration; branch `osd1` from c3b7dd7)
+
+- 043ee8a: `DecodeConfig::osd` (off by default) and `decode::osd`, the
+  lean OSD-1 form A; storage shared with belief propagation's through a
+  safe enum (+4 B static RAM on the M33); differential test against the
+  sizing OSD. e7e7f48: `paired_bench osdlib`, `osdcal`, `osd=C:T`; the
+  sizing OSD's renames and notes.
+- Option off: records and the 800 WAV slots' decodes identical to
+  511bf32's (profile metadata only: scratch +8 B, table bytes +2 184).
+- Lean cost: A76 23.2 µs per candidate (sizing 31.0), M33 0.204 M
+  instructions (0.352 M), flash +7.4 KB per image.
+- 69fcfad: calibration fixed before running; run on qv0000–qv2999
+  (6.9 M empty slots): T = 21 for host and small.
+- Gated round revised (task plan); proposed, not run.
+

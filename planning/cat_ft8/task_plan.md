@@ -2217,8 +2217,9 @@ candidates.
   decode); replacing it would need 3.0 per slot, at most 0.11 is there.
 - On each pass's 10 best candidates: OSD-1, distance ≤ 24, 0.104 new
   decodes per slot for 0.45 ms (4.3 ms each; ≤ 7.2 ms on the `slotcost`
-  slots, 0.13 per slot there): **a supplement**, at about 0.5% of a
-  crowded slot's decodes. No false decode counted (95% bound 4.2 × 10⁻⁵
+  slots, 0.13 per slot there): **a supplement** (exploratory: the
+  subset was chosen after seeing the data, and the rule as fixed gives
+  "neither"), at about 0.5% of a crowded slot's decodes. No false decode counted (95% bound 4.2 × 10⁻⁵
   per slot); the estimate is 5.1 × 10⁻⁷ per empty slot.
 - Cost: A76 31.0 µs per candidate (OSD-1), 124.9 (OSD-2); M33 0.35 M
   and 2.09 M emulated instructions; flash +6.7 KB (3.6 KB of it the
@@ -2226,7 +2227,7 @@ candidates.
 - Small: top 25, distance ≤ 23, +0.079 decodes per slot for 0.31 ms and
   3.6 M M33 instructions per slot.
 
-## OSD-1 false-decode calibration (fixed before running, 2026-10-31)
+## OSD-1 false-decode calibration (fixed before running, 2026-10-31; done)
 
 Part of the preparation for the gated round below (the decoder's OSD-1,
 e7e7f48; the bench command `osdcal`, same commit).
@@ -2285,69 +2286,92 @@ Only aggregate counts are kept (one JSON per segment and configuration,
 and one line per accepted codeword), under the local cache; no
 per-candidate records.
 
+### Calibration result
+
+Findings, "OSD-1 false-decode calibration (counted)". On 6.9 million
+fresh empty slots, as fixed: **T = 21 for host (top 10) and for small
+(top 25)**; none of 22–24 qualifies (counted at 22/23/24: host 2/2/3,
+small 2/2/6; at 21 and below none). The factor model holds to dH 25
+with the measured π_T (0.37–0.39); one recurring EU VHF contest
+codeword breaks it at dH 26.
+
 ## OSD-1 on the best candidates: gated round (proposed; not yet run)
 
-Drafted from the sizing round; nothing here is implemented or run. The
-criteria are fixed in the commit that names the block, before any
-record of it exists, and applied mechanically: if any fails, nothing
-merges; no retune and no second block.
+Revised from the sizing's draft after the lean implementation (findings,
+"Lean OSD-1 in the library") and the counted calibration. Nothing here
+is run. The criteria are fixed in the commit that names the block,
+before any record of it exists, and applied mechanically: if any fails,
+nothing merges; no retune and no second block.
 
-**The change** (a local branch, result-changing): after belief
-propagation fails on one of a pass's 10 best-scoring candidates, OSD-1
-on its channel soft bits (reliability order, elimination for the most
-reliable basis, the order-0 codeword and every one-bit flip of the
-basis, least discrepancy); the codeword is a decode when its message
-part is non-zero, its CRC-14 passes, it unpacks with no call hashes, and
-it is at most **24** bits from the hard decisions (host; fixed here, not
-retuned). It enters the list like any decode (so it is subtracted
-before the next pass), marked as an OSD decode in the profile only.
-`small` is a separate candidate: top 25, at most 23 bits. Storage:
-the candidate's belief-propagation scratch (idle once it fails) and a
-generator table in flash; no new static RAM. With the option off,
-every output byte-identical to the base.
+**Status of the evidence.** The sizing's "supplement" verdict is
+**exploratory**: the sizing's rule as fixed (all failed candidates)
+gave **"neither"**; the top-10 subset was chosen after seeing the data.
+This round is what would make it a result.
 
-**Blocks.** One block never used before for `crowded`, `wide`, `fading`,
-`sweep` and `edges`, named only in the gate commit and checked absent
-everywhere first (as for `accept3`); and, for the false-decode bound,
-at least 20 unused seed blocks of `empty` (46 000 slots), named the same
-way.
+**The change.** `DecodeConfig::osd` (043ee8a), on a local branch, as
+host's setting `OsdConfig::new(10, 21)`: after belief propagation fails
+on one of a pass's 10 best-scoring candidates, OSD-1 form A on its
+channel soft bits; a decode when the least-D codeword's message part is
+non-zero, its CRC holds, it unpacks with `NoHashes`, and it is at most
+**21** bits from the hard decisions (from the calibration, not
+retuned). It enters the list like any decode (subtracted before the
+next pass); `Stage::Osd` times it. **`small` is a separate candidate,
+`OsdConfig::new(25, 21)`, gated on its own criteria in the same run,
+and may pass or fail independently.** **Storage:** OSD-1's 3 576-byte
+scratch shares the candidate's belief-propagation storage through a safe
+two-variant enum in `CandidateScratch` (no `unsafe`); the generator rows
+are a `static` table in flash. With the option off, every decode output
+byte-identical to the base (shown at e7e7f48 against 511bf32).
 
-**Criteria, OSD on against OSD off, same commit:**
-- **False decodes, counted:** 0 in every record, pass and set of the
-  gate block, on the empty blocks, and in the WAV output (with the 95%
-  bound 3 / slots stated).
-- **False decodes, estimated:** on the unused empty slots, n × qU ×
-  2⁻¹⁴ × πU at most the current rate measured on the same slots (CRC
-  failures per slot × 2⁻¹⁴), with qU the 95% upper bound on the share
-  of top-10 candidates whose best non-zero codeword is within 24 bits
-  and πU = 0.46 (the largest plausible share of CRC-passing noise
-  codewords measured here); n the top-10 failed candidates per slot of
-  a three-pass crowded slot (14.5 here), not the empty slot's 10.
-- **Gain:** new decodes per slot on `crowded`+`wide`+`fading` at least
-  0.05 (half the sizing's 0.104), at or below −17 dB at least 0.015
-  (half of 0.036); sweep 50% point not worse than the existing shift
-  gate (0.05 dB); `edges` no loss.
+**Blocks.** One block never used before for `crowded`, `wide`,
+`fading`, `sweep` and `edges`, named only in the gate commit and
+checked absent everywhere first; and at least 20 unused `empty` blocks
+(46 000 slots), named the same way, none of them `qv0000`–`qv2999`.
+
+**Criteria, OSD on against OSD off, same commit, same run:**
+- **False decodes.** The false-rate criterion is the counted
+  calibration: at T = 21, 0 accepted in 69.0 M host runs and 172.5 M
+  small runs, a 95% bound of 6.3 × 10⁻⁷ (host) and 4.3 × 10⁻⁷ (small)
+  per slot against the current rates 8.9 × 10⁻⁷ and 4.7 × 10⁻⁷ on the
+  same slots. The gate adds counts, not estimates: **0** OSD false
+  decodes in every record, pass and set of the gate block, on its empty
+  blocks and in the WAV output; pooled with the calibration, the bound
+  must still be at most the current rate (one false decode anywhere
+  fails host and small alike). The factor estimate is reported, not
+  used.
+- **Gain** (half the sizing's figure at T = 21, pooled crowded, wide and
+  fading): host at least **0.026** new decodes per slot, at or below
+  −17 dB at least **0.010**; small at least **0.025** and **0.003**;
+  sweep 50% point not worse than the existing shift gate (0.05 dB);
+  `edges` no loss.
 - **Loss:** the existing `compare` no-loss gate (b − c ≤ 3√(b + c) per
   point, ≤ 2√(b + c) per set), and lost messages at most 10% of gained
   per set; every lost, gained and pass-moved message classified by the
   out-of-tree classifier, pinned by SHA-256 in the gate commit, with a
-  class added for OSD decodes and their knock-on (a later-pass change
-  within 50 Hz of an OSD decode's subtraction); one unexplained message
-  fails.
-- **800 WAV slots** against the reference decoder (black box): with the
-  option off, every output byte-identical to the base; with it on, no
+  class for OSD decodes and their knock-on (a later-pass change within
+  50 Hz of an OSD decode's subtraction); one unexplained message fails.
+- **800 WAV slots** against the reference decoder (black box): option
+  off, every decode output byte-identical to the base; option on, no
   slot loses a decode the base had, and every added decode is in the
   reference decoder's output (any other is false).
-- **CPU (A76):** 64-byte-aligned measurement builds, the standing rule
-  for baselines, the live throttle sampler (any live bit voids a run):
-  `slotcost host` three-pass slot up by at most 1.0 ms; OSD's own time
-  (timed as a stage) divided by its new decodes per slot below 11.09 ms
-  on the `slotcost` slots of the gate block.
-- **Cortex-M33 (emulated):** OSD-1 per candidate at most 0.4 M
-  instructions; the small image's one-pass slot up by at most 2% if
-  `small` adopts it (else unchanged); flash at most +7 KB per image;
-  static RAM unchanged; no stack frame above the current largest; no
-  FMA, no `f64` helper; `check.sh --stack` passes.
+- **CPU (A76):** 64-byte-aligned measurement builds, the live throttle
+  sampler once a second (any live bit 0–3 voids a run; the sticky
+  0x50000 is the bench's baseline since boot and is recorded, not a
+  failure). `slotcost host` three-pass slot up by at most 1.0 ms; OSD's
+  own time (the `osd` stage) at most 0.5 ms per crowded slot (lean
+  cost: 23.2 µs × 14.5 candidates = 0.34 ms); **OSD's time divided by
+  its new decodes per slot below the third pass's cost per new decode,
+  re-measured on the gate block's `slotcost` slots in the same run with
+  OSD off** (not the 11.09 ms of `main`).
+- **Cortex-M33 (emulated), ceilings from the lean version:** OSD-1 at
+  most **0.23 M instructions per candidate** (measured 0.204 M mean,
+  0.220 M max on the 16 inputs); the small image's one-pass slot up by
+  at most 2% if `small` adopts it; flash at most **+7.5 KB per image**
+  against 511bf32 (measured +7 420 B small, +7 460 B host, option on or
+  off); static RAM at most **+4 B** (the enum's tag: 212 048 and
+  241 616 B); no frame above the current largest (4 096 B small,
+  4 808 B host), `osd_decode` at most 512 B (measured 488 B); no FMA,
+  no `f64` helper; `check.sh --stack` passes (five images).
 - **Pinned definitions:** on a message = refined tone 0 within 4 Hz and
   start within 0.12 s; false = CRC-passing, plausible and not
   transmitted; plausible = `unpack` with `NoHashes` returns `Ok`.

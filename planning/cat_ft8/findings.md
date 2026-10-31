@@ -5879,3 +5879,215 @@ belief-propagation totals, Dn, or form B.
 - The `slotcost` subset cost is a bound (10 per pass), not a count.
 - A76 cost of the 2cbb245 bench (only measurement-mode code changed after
   48dd456; the timed form's source is the same).
+
+## Lean OSD-1 in the library (2026-10-31; option off, bit-identical)
+
+On branch `osd1` from c3b7dd7. Commits 043ee8a (the decoder's OSD-1 and
+its option), e7e7f48 (bench: `osdlib`, `osdcal`, the sizing OSD's
+renames and notes). Written from Fossorier and Lin (1995) and the sizing
+bench's own OSD; no other implementation was read.
+
+### The change
+
+- `DecodeConfig::osd: Option<OsdConfig>`, `None` in both presets (off).
+  `OsdConfig::new(candidates, max_distance)`: after belief propagation
+  fails on candidate index < `candidates` of a pass, OSD-1 form A on the
+  candidate's soft bits; a decode when the least-D codeword's message
+  part is non-zero, its CRC holds, its payload unpacks with `NoHashes`
+  and it is at most `max_distance` bits from the hard decisions.
+  `Decode::hard_errors` is that distance. `Stage::Osd` times it (a new
+  stage: the profile line gains `osd_seconds`).
+- `decode::osd` (crate-private; public under `profile`): the generator
+  as a `static [Bits; K]` built at compile time (2 184 B of flash);
+  reliability order by a stable LSD radix sort on `!(|v| bits)`, four
+  8-bit digits, counts and the second buffer in the scratch, no
+  recursion; Gauss–Jordan elimination with the XOR written out per word
+  (three 64-bit or six 32-bit), no per-row `j != rank` test (the pivot
+  row cleared with the rest and put back), and message columns no
+  cleared pivot row has touched skipped (their single systematic 1 needs
+  no clearing; bit-identical by construction and by test); row sums in
+  one register accumulator per 64 positions, in the bench's order; the
+  pick as `Option<u8>`; the message part and distance computed once, on
+  the winner. No nibble tables, no `row_h`, no message array, no form B.
+- **Storage:** `OsdScratch` (3 576 B: rows 2 184, signed weights 696,
+  order and radix buffer 348, pivots 91, digit counts 256, BP's round
+  count 1) shares the candidate's belief-propagation storage
+  (`BpScratch`, 3 656 B) through a safe two-variant enum in
+  `CandidateScratch` (`Work::Bp` / `Work::Osd`; `forbid(unsafe_code)`
+  stays). OSD-1 takes the storage only after belief propagation has
+  failed, and the next candidate's belief propagation re-initialises it.
+  The enum's tag is the only memory added: 4 B on the Cortex-M33, 8 B on
+  64-bit hosts (`CandidateScratch` 4 864 → 4 872 B on x86-64).
+- The per-target elimination form is kept: a branch on 32-bit targets,
+  a mask on 64-bit hosts (measured below).
+- `osd_decode` is out of line, so its frame never adds to the candidate
+  decode's own.
+
+### Checks of the result
+
+- **Differential test** (`tests/osd_differential.rs`, `profile`): the
+  library's pick, D (bit for bit), codeword and distance equal the
+  sizing bench's OSD (`examples/paired_bench/osd.rs`) on 15 008 inputs in
+  release builds (1 508 in debug): noisy codewords (σ 0.2–1.8, four
+  scales), pure noise, values on a 0.5 and a 1.0 grid, sprinkled exact
+  ±0, constant inputs (±0, ±1, 10⁻³⁰, −3.5) and alternating patterns; in
+  both elimination forms. Coverage: 5 448 order-0 picks, 1 564 inputs
+  with a tie at the least D, 6 475 with ±0, 5 012 with tied magnitudes
+  in the basis. Two mutations fail it (the clean-column skip applied to
+  every message column; `<=` for `<` in the pick).
+- Unit tests: the rows are `ldpc::encode`'s unit codewords; the order
+  equals a reference sort (ties, ±0); the reduced rows are codewords in
+  systematic form on increasing-rank pivots; the pick's D matches the
+  direct sum and is at most the truth's when the basis holds at most one
+  error; zero input gives the zero codeword. A decoder test: with belief
+  propagation held to round 0, OSD-1 on the first ten candidates
+  recovers a −15 dB signal, `Stage::Osd` is reported for every one of
+  them, the round count survives, a tighter distance rejects it, and
+  zero candidates give the decoder's own result.
+- The Cortex-M33 image's 16 dumped inputs: picks and D bits equal the
+  sizing's x86-64 values in both forms.
+
+### Identity with the option off (x86-64, against 511bf32)
+
+- **Records:** 73 800 (host, host one-pass and small × 24 600:
+  crowded/wide/fading × main/cap1/cap2, sweep/edges/empty main) equal.
+- **800 WAV slots** × 3 configurations × 3 modes (7 200 runs, 95 448
+  lines, 78 648 decode lines): identical except three fields of the
+  2 400 profile lines: `candidate_scratch_bytes` 4 864 → 4 872,
+  `peak_bytes` +8, `static_table_bytes` 37 245 → 39 429 (the generator
+  table). Timing fields are removed before comparing, as before.
+- The committed build (e7e7f48): records again equal (73 800, against
+  the references those of 511bf32 equal), and the WAV output
+  byte-identical to the working-tree build's above.
+
+### Cost (the lean OSD-1 against the sizing's)
+
+| | sizing OSD-1 A (48dd456) | lean (e7e7f48) | change |
+|---|---|---|---|
+| A76 µs / candidate (aligned build, `osdlib host 200 5`) | 31.0 (30.8 in the same run) | **23.17** | −25% |
+| x86-64 µs / candidate (plain build, one thread) | 19.2 (19.5–19.8 same run) | 14.0 | −28% |
+| M33 emulated instructions / candidate (16 inputs) | 352 327 | **204 062** (177 406–219 703; median 207 144) | −42% |
+| flash, small / host image | +6.7 KB code (3.6 KB the core sort) + 2.2 KB rows | **+7 420 / +7 460 B** (option on or off) | |
+| static RAM, M33 | scratch 9 200 B + rows 2 184 B (host over the ceiling unshared) | **+4 B** (212 044 → 212 048; 241 612 → 241 616) | |
+| largest new frame (M33) | search 368 B, preparation 232 B, recursive quicksort 104 B (depth not analysed) | `osd_decode` 488 B (OSD-1 inlined); no recursion | |
+
+- **A76:** 64-byte-aligned measurement build of e7e7f48 (paired_bench
+  sha256 eed244c9…), `osdlib host 200 5` on the 32 481 failed
+  candidates of the `slotcost` slots' three passes, core 3; two runs,
+  138 throttle samples (sticky 0x50000 throughout, no live bit), one
+  sample below 2.39 GHz (the first), peak 51.6 °C; the runs agree within
+  0.04%. The three forms' result hashes are equal (6fe3fb66…).
+- **Per-target elimination split** (the other form in brackets): x86-64
+  mask 14.0 µs (branch 28.6), A76 mask 23.2 µs (branch 37.1), M33 branch
+  204 062 instructions (mask 314 250). The mask is kept on 64-bit hosts
+  and the branch on 32-bit targets.
+- **Flash** (the check program's images, option on and off alike, since
+  the option is a run-time setting): small 86 468 → 93 888 B, host
+  98 128 → 105 588 B. Of the 7.4 KB: the generator table 2 184 B, the
+  plausibility test's own instance of `unpack` (with `NoHashes`) 3 520 B
+  (measured by leaving it out), OSD-1 and its glue about 1.7 KB.
+- **Stack** (`check.sh --stack`): the largest frames are unchanged
+  (`_start` 4 096 B; host `subtract_one` 4 808 B, the subtraction 2 872 B);
+  `decode_a_slot` 2 480 → 2 504 B; the new `osd_decode` 488 B (504 B in
+  the measurement image, where `order1` is out of line at 216 B and the
+  radix sort 64 B). On the candidate path the OSD adds at most about
+  0.5 KB below `decode_a_slot`, inside the 16 KB stack budget; it never
+  runs during a subtraction (the host image's deepest path).
+- No FMA and no `f64` helper in any image (five images now: small,
+  host, each with the option on, and the encoder alone).
+
+## OSD-1 false-decode calibration (counted, 2026-10-31)
+
+As fixed in 69fcfad, before any of these slots existed: the `empty`
+set's blocks `qv0000`–`qv2999` (6 900 000 slots: 3.0 M noise, 1.5 M weak
+carriers, 0.6 M each strong carriers, clipped, floored, impulsive), all
+30 segments run, nothing stopped or extended; `paired_bench osdcal`
+(e7e7f48, the decoder's OSD off; after each pass the decoder's own
+OSD-1 on every failed candidate below the rank). x86-64, 16 threads,
+3.6 h per configuration. Aggregates only (5.6 MB of JSON).
+
+### The current rate on the same slots
+
+| | BP CRC failures / slot | R0 = × 2⁻¹⁴ | BP's own decodes (all false) |
+|---|---|---|---|
+| host | 0.01454 | **8.88 × 10⁻⁷** | 7 (1.0 × 10⁻⁶ per slot, 95% bound 1.9 × 10⁻⁶) |
+| small | 0.00764 | **4.66 × 10⁻⁷** | 4 (5.8 × 10⁻⁷, bound 1.3 × 10⁻⁶) |
+
+(The sizing's 9.03 × 10⁻⁷ and 5.09 × 10⁻⁷ came from 48 300 slots.)
+Belief propagation's counted false decodes agree with the CRC-failure
+estimate within their noise.
+
+### Counted OSD-1 false decodes against the estimate
+
+C = OSD runs (host: top 10, 69 000 069, 10.0 per slot; small: top 25,
+172 499 999, 25.0 per slot). F_T = accepted codewords (non-zero, CRC,
+plausible) at dH ≤ T; none duplicated a belief-propagation decode. The
+bound is R_T = n × U(F_T) / C with n = max(C per slot, crowded n) =
+14.5 (host) and 25.0 (small); "factor" is n × q_T × 2⁻¹⁴ × π_T with
+π_T measured on these codewords' payloads.
+
+| host, T | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 |
+|---|---|---|---|---|---|---|---|---|
+| q_T (non-zero at dH ≤ T, per run) | 8.8e-6 | 3.0e-5 | 9.6e-5 | 3.0e-4 | 8.0e-4 | 2.2e-3 | 5.0e-3 | 1.2e-2 |
+| CRC passing, counted (2⁻¹⁴ expects) | 0 (0.0) | 0 (0.1) | 0 (0.4) | 2 (1.3) | 3 (3.4) | 9 (9.4) | 19 (21.1) | 86 (49.6) |
+| F_T counted | 0 | 0 | 0 | **2** | **2** | **3** | 5 | 53 |
+| R_T bound (95%) | 6.3e-7 | 6.3e-7 | **6.3e-7** | 1.32e-6 | 1.32e-6 | 1.63e-6 | 2.2e-6 | 1.4e-5 |
+| point n·F/C | 0 | 0 | 0 | 4.2e-7 | 4.2e-7 | 6.3e-7 | 1.1e-6 | 1.1e-5 |
+| factor estimate | 2.8e-9 | 9.3e-9 | 3.1e-8 | 1.0e-7 | 2.6e-7 | 7.7e-7 | 1.7e-6 | 3.9e-6 |
+
+| small, T | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 |
+|---|---|---|---|---|---|---|---|---|
+| CRC passing, counted (2⁻¹⁴ expects) | 0 (0.1) | 0 (0.3) | 0 (1.0) | 2 (3.2) | 6 (8.4) | 21 (23.6) | 45 (53.0) | 204 (124.7) |
+| F_T counted | 0 | 0 | 0 | **2** | **2** | **6** | 11 | 120 |
+| R_T bound (95%) | 4.3e-7 | 4.3e-7 | **4.3e-7** | 9.1e-7 | 9.1e-7 | 1.72e-6 | 2.6e-6 | 2.0e-5 |
+| point | 0 | 0 | 0 | 2.9e-7 | 2.9e-7 | 8.7e-7 | 1.6e-6 | 1.7e-5 |
+| factor estimate | 4.8e-9 | 1.7e-8 | 5.4e-8 | 1.7e-7 | 4.5e-7 | 1.3e-6 | 2.9e-6 | 6.6e-6 |
+
+**Decision (the rule as fixed): no T of 22, 23 or 24 qualifies for
+either configuration; the largest T from 16 to 21 with R_T ≤ R0 is 21
+for both: host T = 21 (R_21 = 6.3 × 10⁻⁷ ≤ 8.88 × 10⁻⁷), small T = 21
+(4.34 × 10⁻⁷ ≤ 4.66 × 10⁻⁷, a narrow margin).** At 22 the counts (2 and
+2) are not themselves above the current rate (point 4.2 × 10⁻⁷ host,
+2.9 × 10⁻⁷ small), but 6.9 M slots cannot bound them below it; the
+sizing's draft T = 24 is rejected outright (host bound 1.6 × 10⁻⁶,
+small 1.7 × 10⁻⁶; small's point rate 8.7 × 10⁻⁷ is above its R0).
+
+### What the counts say about the factor model
+
+- **Up to dH 25 it holds.** The CRC passes at dH ≤ 24 are 9 against 9.4
+  expected (host) and 21 against 23.6 (small): the 2⁻¹⁴ assumption
+  holds there, and with π_T measured (0.37–0.39) the factor estimate
+  predicts 3.7 (host) and 9.1 (small) accepted at dH ≤ 24 against 3
+  and 6 counted. At dH ≤ 22 it predicts 0.5 and 1.2 against 2 and 2,
+  within Poisson noise. The threefold under-prediction seen on the
+  sizing's 48 300 slots does not reappear at dH ≤ 25 on fresh slots.
+- **At dH 26 it fails, through one codeword.** One payload, `<...> <...>
+  561202 JE52CU` (EuVhfContest, 0ce89161924b2492da25), is the best
+  codeword at dH 26 36 times (host) and 85 times (small), mostly on
+  strong and weak carriers: an attractor of structured inputs, not
+  noise. With it, CRC passes at dH 26 are 67 against 28.5 expected
+  (host). This is the low-dH tail's skew to EuVhfContest in the sizing;
+  it sits above every T considered, but it is a structural risk the
+  factor model cannot see, and the gate's empty slots must include
+  carriers (they do).
+- **π_T** (plausible share of the near codewords' payloads, CRC
+  ignored) is 0.35–0.44 for T 16–30 (host and small alike), not the
+  sizing's πU = 0.46. By type at dH ≤ 24: FieldDay, RTTY Roundup and
+  reserved types never unpack; telemetry always; standard, EU VHF
+  portable, non-standard call and DXpedition about 0.70; EU VHF contest
+  0.52; free text 0.60. Reserved types are the most common (26%).
+- **Syndromes:** each bit's share of ones is 0.47–0.53 at dH ≤ 24 (many
+  standard deviations from 0.5) and the distribution over 256 groups is
+  far from uniform (χ² 36 363 and 90 238 on 255 degrees of freedom); the
+  syndrome is not uniform, but its zero value occurs at the 2⁻¹⁴ rate
+  (above), which is what the false rate needs.
+- By slot kind, the accepted codewords at dH ≤ 24 come from noise,
+  carriers, clipped and floored slots; none from strong carriers or
+  impulsive noise below dH 25.
+
+### Not measured
+
+- The rate on crowded slots (n = 14.5 is the crowded count; noise on a
+  crowded slot is not white). Empty slots carry no gain information, so
+  T = 21's gain is the sizing's (host 0.052 per slot, ≤ −17 dB 0.020;
+  small 0.050, 0.006) and unconfirmed on a new block.
