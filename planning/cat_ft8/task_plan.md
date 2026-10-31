@@ -1982,7 +1982,7 @@ M33 one-pass +0.019% (small) and +0.038% (host); flash −572 B and
 adopted for measurement builds only (aligned and plain numbers are not
 comparable).
 
-## OSD sizing round (proposed; not yet run)
+## OSD sizing round (running, 2026-10-31; measurement only)
 
 Measurement first; the decoder is unchanged (the default release
 binaries byte-identical to the round's parent, checked). The question is
@@ -2075,6 +2075,126 @@ separately):**
   number of slots), plus the factor estimate above;
 - the 800 WAV slots against the reference decoder (black box), and
   every output identical with OSD off.
+
+### Fixed before any measurement (branch `osd-size` from 511bf32)
+
+Everything below is fixed in this commit, before any number is taken;
+nothing is chosen after seeing data. The decoder is unchanged: the only
+library change allowed is a `profile`-only accessor for the candidate's
+soft bits and belief propagation's last totals (absent from the default
+build, so the default release `cat-ft8-decode` stays byte-identical to
+511bf32's; checked by hash). The OSD is written here from Fossorier and
+Lin (1995); no other implementation is read or copied.
+
+**Configurations.** `host` (three passes) and `small` (one pass).
+`host,passes=1` is host's pass 1 (the same search and candidates), with
+its new decodes counted against pass 1's list; it is derived from the
+host run, not run again.
+
+**Blocks.** `crowded`, `wide`, `fading` on `main`, `cap1`, `cap2`;
+`sweep`, `edges`, `empty` on `main`; and, for false decodes only,
+`empty` on `bulk01`…`bulk20` (46 000 slots already used in E4). No
+other block, and no new seed block, is touched.
+
+**Pool.** Per pass, every candidate whose `decode_candidate` fails (not
+converged, CRC, all-zero). Per pass k of host, the decoder is run with
+k passes and the last pass's candidates are decoded again (outside any
+timing) for their soft bits; a slot whose decode ended before pass k
+has no pass-k pool. On a message: the existing rule (refined tone 0
+within 4 Hz, start within 0.12 s); on several, the one whose codeword
+is nearest the channel's hard decisions. Decoded anyway: the message's
+payload in the list after that pass, and after all passes.
+
+**Inputs.** The channel soft bits (`llr`, positive favours 0) and belief
+propagation's last totals. Hard decision 1 where the value is
+negative. Reliability |value|.
+
+**Most reliable basis (MRB).** Positions in order of reliability,
+largest first, ties to the lower index; Gauss–Jordan elimination over
+GF(2) on the generator's 91 rows takes each position in that order as a
+pivot if it is independent of the pivots so far, until 91. The MRB
+error count e is the number of pivot positions where the true codeword
+differs from the hard decisions; OSD of order i lists the true codeword
+exactly when e ≤ i (reported for i = 0…3).
+
+**The OSD (orders 1 and 2).** The list: the codeword re-encoded from the
+hard decisions on the basis, then every flip of one basis bit, then (order 2)
+every pair, in pivot order. The discrepancy D of a codeword is the sum
+of |value| over positions where it differs from the hard decisions.
+Two acceptance forms:
+- **A (best, then CRC):** the codeword of least D (ties: first listed),
+  accepted if its 91-bit message part is non-zero, passes the CRC-14 and
+  is plausible;
+- **B (best CRC-passing):** the least-D codeword among those whose
+  message part is non-zero and passes the CRC, accepted if plausible.
+
+Plausible: `unpack` with `NoHashes` returns `Ok` (so Field Day and RTTY
+Roundup, which it reports as unsupported, are not). The plausibility
+rate of random payloads: 1 000 000 uniformly random 77-bit payloads
+from a fixed seed.
+
+**Metrics and the curve.** For the accepted codeword: dH, its Hamming
+distance from the hard decisions, and Dn = D / Σ|value| (scale-free).
+Acceptance at threshold T: metric ≤ T. Curves over Dn ∈ [0, 0.30] in
+steps of 0.0025 and dH ∈ [0, 80]. An accepted codeword is **true** (the
+candidate's own message), **other** (another message transmitted in the
+slot) or **false** (none; every acceptance on `empty` is false).
+Recovered messages are counted once per slot at their first recovery;
+**new** means not in the decoder's list (per pass: after that pass;
+overall: after every pass of the configuration). Reported per
+configuration, pass, set and block, by SNR (the ≤ −17 dB band
+separately), and by the candidate's rank in its pass (≤ 10, ≤ 25, all).
+
+**False decodes.** Counted (both forms, every T) on `empty` and on every
+off-message failed candidate, with the rule-of-three 95% bound when
+none. Estimated from factors, per pass, from the empty slots' failed
+candidates (n per slot): form A, n × qA(T) × 2⁻¹⁴ × π, with qA(T) the
+share whose least-D codeword is within T (3/N when none); form B,
+n × mB(T) × 2⁻¹⁴ × π, with mB(T) the mean number of list codewords
+within T per candidate (every list codeword is measured); π the
+plausibility rate. The current rate is the decoder's own, measured the
+same way on the same empty slots: CRC failures per slot × 2⁻¹⁴ (E4).
+**T\*** for each configuration, input, order, form and metric is the
+largest grid T whose estimated added rate is at most the current
+rate (so the total at most doubles). If the counted false decodes at T*
+exceed the estimate's Poisson 95% upper limit, the estimate is rejected
+and T* is lowered to the largest T with no counted false decode.
+
+**Cost.** A76: a `paired_bench osdcost` subcommand times, on one thread,
+the reliability sort with the elimination, OSD-1's and OSD-2's
+reprocessing (forms A and B), per candidate, on every failed candidate
+of host's three passes on the 200 40-signal `crowded` `main` slots
+(the `slotcost` slots), median of 5 runs; a 64-byte-aligned
+measurement build (the adopted rule), two runs in one session, the
+throttle bits sampled once a second on another core (any live bit
+voids a run), the binary's hash recorded. Its outputs (hashed) must
+equal x86-64's. Cortex-M33: an out-of-tree image runs the same OSD
+(`no_std`, no heap, `f32`, no FMA) on 16 failed candidates' inputs
+taken by a fixed rule (every 50th pass-1 failure of the same slots) and
+the emulator counts instructions per call; its results must equal
+x86-64's. Scratch bytes, the largest stack frames (`-Z
+emit-stack-sizes`) and the OSD's flash (its functions and tables) are
+reported. Per slot: failures per pass × cost per candidate.
+
+**The decision metric (fixed).** On the `slotcost` slots, A76: ms of OSD
+per slot ÷ new decodes it adds per slot (new after all three passes),
+at T*, per pass and for passes 1–2 and 1–3 together, against pass 3's
+11.09 ms per new decode (O13b, these slots); also pooled over
+`crowded`/`wide`/`fading` × `main`/`cap1`/`cap2` and on the M33 in
+instructions. The input, order, form and metric used for the verdict
+are those with the most new decodes at T*; the others are reported.
+Verdicts:
+- **replace pass 3:** OSD on passes 1–2 adds at least pass 3's new
+  decodes per slot (3.0) for fewer ms than pass 3's 32.82 ms;
+- **supplement:** some pass's OSD costs less per new decode than
+  11.09 ms;
+- **neither:** otherwise.
+For `small`: new decodes per slot per extra A76 ms and per 10⁷ emulated
+M33 instructions, beside its mean 0.64 ms per decode. **Promising**
+(the later gated round's criteria are then drafted, not run): a
+supplement or replace verdict. What this cannot measure, and the
+verdict does not claim: the knock-on effect of subtracting OSD decodes
+on later passes, and any block not used before.
 
 ## Next: gated, result-changing rounds
 
