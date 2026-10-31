@@ -64,6 +64,9 @@ pub enum CheckRule {
 /// every decode re-initialises it.
 #[derive(Debug, Clone)]
 pub struct BpScratch {
+    /// The totals and the next round's sums. Each round swaps their
+    /// roles: after an even number of rounds the totals are in `total`,
+    /// after an odd number in `next`.
     total: [f32; N],
     next: [f32; N],
     /// The check-to-variable messages, one per edge, laid out by check
@@ -272,6 +275,9 @@ pub fn decode_soft(
     *rounds_run = 0;
     *total = *llr;
     *msg = [0.0; EDGES];
+    // Each round sums into `next`, then the two swap roles: the
+    // references swap, not the arrays' contents.
+    let (mut total, mut next) = (total, next);
     let hard_errors = |hard: &[u8; N]| {
         let n = hard
             .iter()
@@ -296,7 +302,7 @@ pub fn decode_soft(
         } else {
             min_sum_round(total, next, msg);
         }
-        core::mem::swap(total, next);
+        core::mem::swap(&mut total, &mut next);
         if hard_decide(total, hard) {
             let payload = accept(hard)?;
             return Ok(BpDecode {

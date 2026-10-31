@@ -278,11 +278,13 @@ fn rows_of(msg: &[f32; EDGES]) -> [[f32; MAX_DEGREE]; M] {
 }
 
 /// FNV-1a over the bits of the scratch's totals and messages (as rows by
-/// check, so the hash does not depend on the messages' layout).
+/// check, so the hash does not depend on the messages' layout), whichever
+/// array the last round left the totals in.
 fn state_hash(s: &BpScratch) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     let rows = rows_of(&s.msg);
-    let words = s.total.iter().chain(rows.iter().flatten());
+    let totals = if s.rounds % 2 == 0 { &s.total } else { &s.next };
+    let words = totals.iter().chain(rows.iter().flatten());
     for x in words {
         for b in x.to_bits().to_le_bytes() {
             h ^= u64::from(b);
