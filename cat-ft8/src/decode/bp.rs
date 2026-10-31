@@ -392,9 +392,7 @@ fn sum_product_round(total: &[f32; N], next: &mut [f32; N], msg: &mut [f32; EDGE
             *m = total[usize::from(i)] - *m;
         }
     }
-    for x in msg.iter_mut() {
-        *x = tanh_half(*x);
-    }
+    each_value::<PASS_LANES>(msg, tanh_half);
     let (t6, t7) = msg.split_at_mut(LOW_EDGES);
     for tc in t6.chunks_exact_mut(6) {
         others_products::<6>(tc);
@@ -402,13 +400,36 @@ fn sum_product_round(total: &[f32; N], next: &mut [f32; N], msg: &mut [f32; EDGE
     for tc in t7.chunks_exact_mut(7) {
         others_products::<7>(tc);
     }
-    for x in msg.iter_mut() {
-        *x = twice_atanh(*x);
-    }
+    each_value::<PASS_LANES>(msg, twice_atanh);
     for (v, e) in check_edges() {
         for (&m, &i) in msg[e..][..v.len()].iter().zip(v) {
             next[usize::from(i)] += m;
         }
+    }
+}
+
+/// Values the tanh and atanh passes take together: several whole vectors
+/// where the target has a vector unit, one elsewhere. Each value's
+/// operations are the same at any count; only the order of the
+/// independent values' instructions changes. With one vector at a time,
+/// each value's chain (`exp2_neg` or `log2`, and the divisions) is a long
+/// dependent sequence and the Cortex-A76 overlapped few of them; several
+/// side by side keep its vector pipes busy. The count was chosen by
+/// measurement on the Cortex-A76.
+const PASS_LANES: usize = if VECTOR { 24 } else { 1 };
+
+/// `f` applied to every value, `W` values at a time, then the rest.
+#[inline(always)]
+fn each_value<const W: usize>(values: &mut [f32; EDGES], f: impl Fn(f32) -> f32) {
+    let mut blocks = values.chunks_exact_mut(W);
+    for block in &mut blocks {
+        let block: &mut [f32; W] = block.try_into().unwrap();
+        for x in block.iter_mut() {
+            *x = f(*x);
+        }
+    }
+    for x in blocks.into_remainder() {
+        *x = f(*x);
     }
 }
 

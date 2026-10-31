@@ -454,6 +454,45 @@ fn the_sum_product_round_matches_the_check_by_check_form_bit_for_bit() {
 }
 
 #[test]
+fn each_value_gives_the_same_bits_at_any_lane_count() {
+    let mut seed = 0x1a9e_u64;
+    let mut value = move || {
+        seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = seed;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^= z >> 31;
+        match z % 8 {
+            0 => f32::from_bits(z as u32),
+            1 => ((z >> 8) % 2_000_001) as f32 / 1_000_000.0 - 1.0,
+            _ => ((z >> 8) % 400_001) as f32 / 10_000.0 - 20.0,
+        }
+    };
+    fn lanes<const W: usize>(xs: &[f32; EDGES], f: fn(f32) -> f32) -> [u32; EDGES] {
+        let mut v = *xs;
+        each_value::<W>(&mut v, f);
+        v.map(f32::to_bits)
+    }
+    for _ in 0..200 {
+        let mut xs = [0.0f32; EDGES];
+        xs.iter_mut().for_each(|x| *x = value());
+        for f in [tanh_half as fn(f32) -> f32, twice_atanh] {
+            let want = xs.map(|x| f(x).to_bits());
+            for got in [
+                lanes::<1>(&xs, f),
+                lanes::<4>(&xs, f),
+                lanes::<8>(&xs, f),
+                lanes::<16>(&xs, f),
+                lanes::<24>(&xs, f),
+                lanes::<PASS_LANES>(&xs, f),
+            ] {
+                assert_eq!(got, want);
+            }
+        }
+    }
+}
+
+#[test]
 fn the_scratch_holds_one_message_per_edge() {
     assert_eq!(
         core::mem::size_of::<BpScratch>(),
