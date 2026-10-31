@@ -1287,10 +1287,19 @@ impl Removal {
         let (from, base, slope) = (self.from, self.base, self.slope);
         let mut energy = self.energy;
         let mut sums = self.sums;
+        // The ramp index j − from (0 at and before the centre) in 32-bit
+        // integers, so that it converts to `f32` four lanes at a time
+        // rather than one 64-bit value at a time: every index here is a
+        // reference sample or a segment centre, below the waveform's
+        // length, so the difference is exact in `i32`, and its `f32` is
+        // exact as well (below 2²⁴), the same as `(j − from) as f32`.
+        const _: () = assert!(WAVEFORM_SAMPLES < 1 << 24);
+        debug_assert!(j0 + xs.len() <= WAVEFORM_SAMPLES && from <= WAVEFORM_SAMPLES);
+        let (j0, from) = (j0 as i32, from as i32);
         for (i, (x, r)) in xs.iter_mut().zip(refs.chunks_exact(PAIR)).enumerate() {
             let (rc, rs) = get(r);
-            let j = j0 + i;
-            let t = if j > from { (j - from) as f32 } else { 0.0 };
+            let d = j0 + i as i32 - from;
+            let t = if d > 0 { d as f32 } else { 0.0 };
             let (ra, rb) = (base.0 + t * slope.0, base.1 + t * slope.1);
             let est = ra * rc + rb * rs;
             *x = input(*x) - est;

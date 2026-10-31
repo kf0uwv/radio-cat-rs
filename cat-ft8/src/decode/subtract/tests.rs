@@ -1085,3 +1085,101 @@ fn scaled_cos_sin_is_its_first_form_bit_for_bit() {
     checked += scaled_cos_sin_matches::<24>(5);
     assert!(checked > 1_000, "{checked}");
 }
+
+/// [`Removal::run_as`] as first written: the ramp index `(j − from) as
+/// f32` from `usize`.
+fn run_as_first<const REPORT: bool>(r: &mut Removal, j0: usize, xs: &mut [f32], refs: &[u8]) {
+    let (from, base, slope) = (r.from, r.base, r.slope);
+    let mut energy = r.energy;
+    let mut sums = r.sums;
+    for (i, (x, rf)) in xs.iter_mut().zip(refs.chunks_exact(PAIR)).enumerate() {
+        let (rc, rs) = get(rf);
+        let j = j0 + i;
+        let t = if j > from { (j - from) as f32 } else { 0.0 };
+        let (ra, rb) = (base.0 + t * slope.0, base.1 + t * slope.1);
+        let est = ra * rc + rb * rs;
+        *x = input(*x) - est;
+        if REPORT {
+            energy += est * est;
+            sums.add(*x, rc, rs);
+        }
+    }
+    r.energy = energy;
+    r.sums = sums;
+    r.changed += xs.len();
+}
+
+/// The removal's state and output, bit for bit.
+fn removal_bits(r: &Removal, xs: &[f32]) -> Vec<u32> {
+    let f = &r.sums.fit;
+    let mut v: Vec<u32> = [r.energy, f.xc, f.xs, f.cc, f.cs, f.ss, r.sums.xx]
+        .iter()
+        .map(|x| x.to_bits())
+        .collect();
+    v.push(r.sums.n as u32);
+    v.push(r.changed as u32);
+    v.extend(xs.iter().map(|x| x.to_bits()));
+    v
+}
+
+/// The removal with the ramp index in 32-bit integers against its first
+/// form, bit for bit, reporting and not: runs that start before, at and
+/// after the interval's centre and cross it, at every offset modulo the
+/// lanes, up to the waveform's last sample; random and edge audio and
+/// references, slopes of either sign.
+#[test]
+fn removal_ramp_is_its_first_form_bit_for_bit() {
+    let mut n = Noise(77);
+    let mut checked = 0;
+    let froms = [
+        0usize,
+        1,
+        3,
+        960,
+        1_921,
+        WAVEFORM_SAMPLES - 961,
+        WAVEFORM_SAMPLES,
+    ];
+    for &from in &froms {
+        // Runs from before the centre (crossing it), and from far after it
+        // (ramp indices up to the waveform's length).
+        let starts = [0isize, -1, -2, -3, -4, -5, -17, -300, 1, 40_003, 150_000];
+        for off in starts {
+            for len in [0usize, 1, 3, 4, 5, 8, 31, 240, 961] {
+                let j0 = from.saturating_add_signed(off).min(WAVEFORM_SAMPLES);
+                let len = len.min(WAVEFORM_SAMPLES - j0);
+                let mut xs = test_weights(&mut n, len);
+                let refs: Vec<u8> = test_weights(&mut n, 2 * len)
+                    .iter()
+                    .flat_map(|x| x.to_ne_bytes())
+                    .collect();
+                for report in [false, true] {
+                    let mut a = Removal::new(T, (0.0, 0.0), report);
+                    a.from = from;
+                    a.base = ((n.gauss() * 0.1) as f32, (n.gauss() * 0.1) as f32);
+                    a.slope = ((n.gauss() * 1e-4) as f32, (n.gauss() * -1e-4) as f32);
+                    a.energy = (n.uniform() * 3.0) as f32;
+                    a.sums.add(0.25, -0.5, 0.75);
+                    let mut b = Removal::new(T, (0.0, 0.0), report);
+                    (b.from, b.base, b.slope, b.energy, b.sums) =
+                        (a.from, a.base, a.slope, a.energy, a.sums);
+                    let mut ys = xs.clone();
+                    if report {
+                        a.run_as::<true>(j0, &mut xs, &refs);
+                        run_as_first::<true>(&mut b, j0, &mut ys, &refs);
+                    } else {
+                        a.run_as::<false>(j0, &mut xs, &refs);
+                        run_as_first::<false>(&mut b, j0, &mut ys, &refs);
+                    }
+                    assert_eq!(
+                        removal_bits(&a, &xs),
+                        removal_bits(&b, &ys),
+                        "from {from} j0 {j0} len {len} report {report}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(checked, froms.len() * 11 * 9 * 2);
+}
