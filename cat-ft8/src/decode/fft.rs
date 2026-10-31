@@ -438,33 +438,17 @@ pub(crate) fn power_bins<F: FnMut(usize, &[f32])>(
     let mut i = 0;
     while i < count {
         let n = (count - i).min(POWER_CHUNK);
-        bin_powers::<LANES>(&buf.re, &buf.im, first_bin + i, &mut p[..n]);
+        bin_powers(&buf.re, &buf.im, first_bin + i, &mut p[..n]);
         f(i, &p[..n]);
         i += n;
     }
 }
 
-/// Powers of real-transform bins `k0 .. k0 + out.len()` into `out`. With
-/// one lane, bin by bin (the least code, for a Cortex-M); else bin 0 (which
-/// pairs with itself), the bins to 960 and those above as separate plain
-/// loops, which vectorise. The same values either way.
-fn bin_powers<const L: usize>(re: &[f32; N], im: &[f32; N], k0: usize, out: &mut [f32]) {
+/// Powers of real-transform bins `k0 .. k0 + out.len()` into `out`: bin 0
+/// (which pairs with itself), the bins to 960 and those above as separate
+/// plain loops, which vectorise where the target has vectors.
+fn bin_powers(re: &[f32; N], im: &[f32; N], k0: usize, out: &mut [f32]) {
     let n = out.len();
-    if L == 1 {
-        for (j, slot) in out.iter_mut().enumerate() {
-            let k = k0 + j;
-            let c = (N - k) % N;
-            let (wr, wi) = if k <= 960 {
-                let w = SPLIT_TWIDDLES[k];
-                (w[0], w[1])
-            } else {
-                let w = SPLIT_TWIDDLES[k - 960];
-                (w[1], -w[0])
-            };
-            *slot = bin_power(re[k], im[k], re[c], im[c], wr, wi);
-        }
-        return;
-    }
     let zero = usize::from(k0 == 0);
     if zero == 1 {
         let w = SPLIT_TWIDDLES[0];

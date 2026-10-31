@@ -560,23 +560,6 @@ fn powers_equal_the_reference_bit_for_bit() {
             for (i, (g, w)) in got.iter().zip(&want[first..first + count]).enumerate() {
                 assert_eq!(g.to_bits(), w.to_bits(), "bin {}: {g:e} {w:e}", first + i);
             }
-            // Both forms of the per-bin loop, whichever this target uses.
-            for lanes in [1, 4] {
-                got.fill(f32::NAN);
-                if lanes == 1 {
-                    bin_powers::<1>(&buf.re, &buf.im, first, &mut got);
-                } else {
-                    bin_powers::<4>(&buf.re, &buf.im, first, &mut got);
-                }
-                for (i, (g, w)) in got.iter().zip(&want[first..first + count]).enumerate() {
-                    assert_eq!(
-                        g.to_bits(),
-                        w.to_bits(),
-                        "{lanes}: bin {}: {g:e} {w:e}",
-                        first + i
-                    );
-                }
-            }
         }
     }
 }
