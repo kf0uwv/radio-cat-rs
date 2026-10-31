@@ -1660,7 +1660,7 @@ Belief propagation (`sum_product_round` and `decode_soft` around it) is
 32.7% of the A76 three-pass slot.
 
 1. **Measure first.** On the A76 (user-space hardware counters, which
-   the bench allows without privileges) and x86-64 (`perf`): cycles,
+   the Raspberry Pi 5 allows without privileges) and x86-64 (`perf`): cycles,
    instructions, L1D misses and branch misses per edge of one round,
    in an out-of-tree microbenchmark over realistic states; the
    annotated AArch64 and x86-64 code of the hot loops (A76: a sampled
@@ -1714,6 +1714,71 @@ slot 142.75 → 126.25 ms (−11.6%), one pass 29.6 → 21.7 (−26.7%), BP
 −5.0%, one pass −11.4%; Cortex-M33 one-pass slot −9.6% (small image, min-sum) and −2.8%
 (host image); flash −124 / −172 B, decoder frame −8 B. Every record,
 WAV output and encoder output identical.
+
+## O12b: belief propagation review follow-ups (2026-10-31)
+
+On `o12-bp` after 1b1cc91; every output equal to 593b7c1's.
+
+1. **Tests the review found missing**, each with the mutant it must kill:
+   - a decode-level differential test of `decode_soft` against its
+     593b7c1 form (both rules; `max_rounds` 0, 1, 2, 3, 7, 30, 255 and,
+     per vector, the round it converges at and the one before), so a
+     decode that converges exactly at the limit is pinned (mutant: the
+     round limit tested before the checks);
+   - stopping-test states in which every one of the 83 checks is the
+     first to fail (mutant: the last check skipped);
+   - the forms used where nothing vectorises (the select in
+     `tanh_half`, the slice form of the min-sum check, one value at a
+     time in the passes) selectable by a const parameter, so the host
+     tests run both forms (mutant: the select's negative branch
+     returning `x`); and the host image's sum-product path added to the
+     emulated Cortex-M33 output comparison.
+2. **Simplifications**: `VECTOR` by `target_arch` (x86-64, AArch64),
+   not by `target_feature` (32-bit ARM with NEON keeps these loops
+   scalar); the min-sum check over plain slices cut to 6 or 7, if the
+   M33 code stays the same and x86-64 within noise.
+3. **One candidate, the variable-side sums**: every variable has
+   exactly three checks, so a compile-time `VAR_EDGES: [[u16; 3]; N]`
+   (each variable's edges in check order) turns the per-check scatter
+   into `next[i] = llr[i] + m[a] + m[b] + m[c]`, the same additions in
+   the same order, one loop for both rules. Measured on the A76 (three
+   passes and one), x86-64 and the M33 emulator (small one-pass slot,
+   host image). **Kept if the A76 three-pass slot gains ≥ 2% or the
+   M33 small image's one-pass slot ≥ 3%**; flash growth up to +2 KB is
+   accepted for it (the lead's decision, recorded with the result).
+   Otherwise rejected with its numbers, and belief propagation is
+   recorded as done for bit-identical work.
+4. **Findings corrections**: the d1a9334 + 26bb83a grouping recorded as
+   a deviation decided after measuring; 3120384's M33 code "same count
+   (small image), +1 instruction a round (host image)"; the work-branch
+   commit hash dropped; the lane count's fragility in the toolchain-bump
+   checks.
+
+Checks: as in O12 (local CI with MSRV 1.75 and `check.sh --stack`,
+thumbv7em, no FMA and no `f64` helper; records of `main`, `cap1`, `cap2`
+× `host`, `host,passes=1`, `small` on x86-64 and the A76; the 800 WAV
+slots × configurations × modes; the encoder; the emulated small image's
+output on the seven slots, and the host image's; the Pi release suite).
+Timing: rounds alternated, one source path, a target directory per
+commit, binary hashes, the live throttle bits sampled once a second on
+another core (any live bit voids a run).
+
+## O13: the subtraction, measure first (2026-10-31; measurement only)
+
+The subtraction is about 57% of the A76 three-pass slot (72.4 of
+126.2 ms, about 2.1 ms per subtraction). No code changes in this step:
+
+1. A fresh sampled profile of the merged head on the A76 (the PC
+   sampler out of tree) and, where user space allows, hardware counters
+   on each stage: the fit loop, its waveform generator, the time
+   search, the removal. Per stage: ms per slot, cycles and instructions
+   per sample, IPC, and what bounds it (issue, a pipe, latency, memory),
+   with the annotated AArch64 hot loops; the Cortex-M33 static size and
+   emulated instructions of each stage in the host image.
+2. Placement noise: the subtraction moved by about 0.66% between builds
+   that did not change it. Propose how a gate accounts for it.
+3. One to three ranked bit-identical candidates and a stop rule,
+   written into findings before any of them is implemented.
 
 ## Next: gated, result-changing rounds
 
