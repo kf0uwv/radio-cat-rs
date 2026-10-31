@@ -149,6 +149,30 @@ fn hann(n: usize) -> f32 {
     HANN_HALF[n.min(WINDOW - n)]
 }
 
+/// Lane counts the transform takes: `Lanes::<L>::OK` fails to compile
+/// unless every stage after the first has a multiple of `L` butterflies per
+/// block (`l`, at least 4, so `L` is 1, 2 or 4) and the last stage's
+/// twiddle lanes cannot wrap (see [`stage`]): N a multiple of `L`·m for
+/// every m below the last radix. Both bounds come from [`STAGES`].
+struct Lanes<const L: usize>;
+
+impl<const L: usize> Lanes<L> {
+    const OK: () = {
+        let mut l = STAGES[0];
+        let mut i = 1;
+        while i < STAGES.len() {
+            assert!(l % L == 0, "lane count must divide every stage's l");
+            l *= STAGES[i];
+            i += 1;
+        }
+        let mut m = 1;
+        while m < STAGES[STAGES.len() - 1] {
+            assert!(N % (L * m) == 0, "last stage's twiddle lanes would wrap");
+            m += 1;
+        }
+    };
+}
+
 /// Butterflies computed side by side: four where the target has 128-bit
 /// vectors of `f32`, else one (a Cortex-M then runs the plain loops). The
 /// result is the same for any value: lanes are independent butterflies.
@@ -158,41 +182,37 @@ const LANES: usize = if cfg!(any(target_feature = "sse2", target_feature = "neon
     1
 };
 
+const _: () = Lanes::<LANES>::OK;
+
 /// In-place 1 920-point complex DFT of (`re`, `im`), whose input is
 /// already in digit-reversed order. Output in natural order. `L`
 /// butterflies at a time ([`LANES`] outside the tests).
 fn fft<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
-    // One call per entry of `STAGES` (checked at compile time below). The
-    // first stage (`l` = 1) has one butterfly per block: one lane.
-    stage::<4, 1>(re, im, 1);
-    stage::<4, L>(re, im, 4);
-    stage::<4, L>(re, im, 16);
-    stage::<2, L>(re, im, 64);
-    stage::<3, L>(re, im, 128);
-    stage::<5, L>(re, im, 384);
+    let () = Lanes::<L>::OK;
+    // One call per entry of `STAGES`, with its `l` (checked at compile
+    // time below). The first stage (`l` = 1) has one butterfly per block:
+    // one lane.
+    stage::<4, 1, 1>(re, im);
+    stage::<4, L, 4>(re, im);
+    stage::<4, L, 16>(re, im);
+    stage::<2, L, 64>(re, im);
+    stage::<3, L, 128>(re, im);
+    stage::<5, L, 384>(re, im);
 }
 
 const _: () = {
-    let calls = [4, 4, 4, 2, 3, 5];
+    let calls = [(4, 1), (4, 4), (4, 16), (2, 64), (3, 128), (5, 384)];
+    let mut l = 1;
     let mut i = 0;
     while i < STAGES.len() {
-        assert!(STAGES[i] == calls[i]);
+        assert!(STAGES[i] == calls[i].0 && l == calls[i].1);
+        l *= STAGES[i];
         i += 1;
-    }
-    // Every stage after the first has a multiple of LANES butterflies per
-    // block (LANES divides 4, the least `l` there), and the last stage's
-    // twiddle lanes do not wrap (see `stage`): N is a multiple of 4·m, so
-    // of LANES·m, for every m < 5.
-    assert!(LANES == 1 || LANES == 2 || LANES == 4);
-    let mut m = 1;
-    while m < 5 {
-        assert!(N % (4 * m) == 0);
-        m += 1;
     }
 };
 
-/// One radix-`R` stage over sub-transforms of length `l` (a multiple of
-/// `L`): for each `k < l` and each block of `l · R` values,
+/// One radix-`R` stage over sub-transforms of length `S` (a multiple of
+/// `L`; `l` below): for each `k < l` and each block of `l · R` values,
 /// out[q] = Σ_m a[m] · W_span^(m · (k + q·l)), summed in the order of `m`.
 /// The `m = 0` twiddle is exactly 1 (`TWIDDLES[0]` = [1.0, −0.0]), so that
 /// product is the value itself and is not computed. (Its sign of zero may
@@ -215,13 +235,14 @@ const _: () = {
 ///
 /// [`INPUT_LIMIT`]: super::frontend::INPUT_LIMIT
 #[inline(always)]
-fn stage<const R: usize, const L: usize>(re: &mut [f32; N], im: &mut [f32; N], l: usize) {
+fn stage<const R: usize, const L: usize, const S: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
+    let l = S;
     let span = l * R;
     let step = N / span; // W_span^x = W_N^(x · step)
     let mut k0 = 0;
     if span == N {
         while k0 < l {
-            butterflies::<R, L>(re, im, k0, l, |m, q| {
+            butterflies::<R, L, S>(re, im, k0, |m, q| {
                 let f = (m * (k0 + q * l)) % N;
                 let t = &TWIDDLES[f..f + (L - 1) * m + 1];
                 (
@@ -247,7 +268,7 @@ fn stage<const R: usize, const L: usize>(re: &mut [f32; N], im: &mut [f32; N], l
             }
             let mut base = k0;
             while base < N {
-                butterflies::<R, L>(re, im, base, l, |m, q| w[m][q]);
+                butterflies::<R, L, S>(re, im, base, |m, q| w[m][q]);
                 base += span;
             }
             k0 += L;
@@ -256,16 +277,16 @@ fn stage<const R: usize, const L: usize>(re: &mut [f32; N], im: &mut [f32; N], l
 }
 
 /// `L` radix-`R` butterflies side by side, at `k` = `base` + j of a block
-/// (inputs at `base + m · l`), with the twiddles of (m, q) from `w`, called
+/// (inputs at `base + m · S`), with the twiddles of (m, q) from `w`, called
 /// for m = 1.. within q = 0.. in order.
 #[inline(always)]
-fn butterflies<const R: usize, const L: usize>(
+fn butterflies<const R: usize, const L: usize, const S: usize>(
     re: &mut [f32; N],
     im: &mut [f32; N],
     base: usize,
-    l: usize,
     mut w: impl FnMut(usize, usize) -> ([f32; L], [f32; L]),
 ) {
+    let l = S;
     let len = (R - 1) * l + L;
     let (r, i) = (&mut re[base..base + len], &mut im[base..base + len]);
     let mut ar = [[0.0f32; L]; R];
