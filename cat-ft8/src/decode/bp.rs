@@ -432,22 +432,13 @@ fn each_value<const W: usize>(values: &mut [f32; EDGES], f: impl Fn(f32) -> f32)
 fn min_sum_round(total: &[f32; N], next: &mut [f32; N], msg: &mut [f32; EDGES]) {
     for (v, e) in check_edges() {
         let row = &mut msg[e..][..v.len()];
-        // Where the loops vectorise, the check's size as a type, so the
-        // compiler drops the vector forms of these short loops (which no
-        // check reaches); elsewhere one instance for both sizes.
+        // Where the loops vectorise, the check's size as a constant (the
+        // slices cut to 6 or 7 once this is inlined), so the compiler
+        // drops the vector forms of these short loops, which no check
+        // reaches; elsewhere one form for both sizes.
         match (VECTOR, v.len()) {
-            (true, 6) => min_sum_check::<[u8; 6], [f32; 6]>(
-                total,
-                next,
-                v.try_into().unwrap(),
-                row.try_into().unwrap(),
-            ),
-            (true, _) => min_sum_check::<[u8; 7], [f32; 7]>(
-                total,
-                next,
-                v.try_into().unwrap(),
-                row.try_into().unwrap(),
-            ),
+            (true, 6) => min_sum_check(total, next, &v[..6], &mut row[..6]),
+            (true, _) => min_sum_check(total, next, &v[..7], &mut row[..7]),
             (false, _) => min_sum_check(total, next, v, row),
         }
     }
@@ -456,12 +447,7 @@ fn min_sum_round(total: &[f32; N], next: &mut [f32; N], msg: &mut [f32; EDGES]) 
 /// [`min_sum_round`] for one check: its variables `v` and its messages
 /// `row`, of the same length.
 #[inline(always)]
-fn min_sum_check<V, R>(total: &[f32; N], next: &mut [f32; N], v: &V, row: &mut R)
-where
-    V: AsRef<[u8]> + ?Sized,
-    R: AsMut<[f32]> + ?Sized,
-{
-    let (v, row) = (v.as_ref(), row.as_mut());
+fn min_sum_check(total: &[f32; N], next: &mut [f32; N], v: &[u8], row: &mut [f32]) {
     for (m, &i) in row.iter_mut().zip(v) {
         *m = total[usize::from(i)] - *m;
     }
