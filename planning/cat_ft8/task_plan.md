@@ -1797,6 +1797,79 @@ products; the removal's ramp index as an exact `f32` per lane; the
 fit's sums kept in registers. Stop rule and a placement-noise
 allowance for gates recorded. Not implemented.
 
+## O13: the subtraction, bit-identical round (2026-10-31)
+
+On the local branch `o13-sub` from 67e2458. Every output equal to
+67e2458's (records, CLI output, encoder, the emulated Cortex-M33 small
+and host images' decodes); memory never larger. These rules are fixed
+before any new measurement.
+
+**Candidates, in this order**, one commit each, each judged against the
+branch head before it:
+
+1. **Several independent four-lane chains side by side** in the
+   reference (cosine and sine) and the time search's products, with the
+   count set by `VECTOR` (one chain where nothing vectorises, so the M33
+   code stays as it is); and the seven polynomial constants the products
+   loop re-makes (`dup`) every iteration hoisted out of it.
+2. **The removal's ramp index as an exact `f32` per lane**: `j − from`
+   is below 2²⁴, so an `f32` per lane (a 32-bit conversion, or a lane
+   counter stepped by 4.0) is exactly `(j − from) as f32`, replacing the
+   64-bit conversions and lane inserts. The exactness is proved in the
+   code's comment and by test.
+3. **The fit's five lane sums kept in registers and the sine loaded
+   once.**
+4. **The variable-side sums in belief propagation** (and the flat
+   edge-variable inputs; the O12b candidate forms), entered again under
+   this round's rule.
+
+**Decision rule**, per candidate, with no regrouping after measuring:
+
+- Timing: A76 `slotcost host,passes=1 host 200 5`, the candidate against
+  its parent in two alternated rounds, one source path, a target
+  directory per commit, binary hashes compared, the live throttle bits
+  sampled once a second on another core (any live bit voids the run).
+- The changed stages are the slot benchmark's stages that hold the
+  changed code (`subtract` for 1–3, `belief_propagation` for 4). Their
+  gain G is the parent's summed stage means less the candidate's, ms.
+  The bar B is 2% of the parent's three-pass slot mean.
+- The allowance A is the larger of 1.0 ms and the largest move of an
+  untouched stage in the same A/B.
+- **Keep** if G ≥ B + A, or the Cortex-M33 one-pass slot's emulated
+  instructions fall by ≥ 3% (the small image; for 4 also the host
+  image; 1–3 do not run in a one-pass slot, so for them only the A76
+  bar can carry a candidate). **Reject** if G < B − A and the M33 bar
+  is not met.
+- **Inconclusive**, re-measured with a second build pair (both commits
+  built at a second, different source path): G between B − A and
+  B + A, or the untouched stages' net move above 1.0 ms. After the
+  second pair the candidate is decided on the mean G of the two pairs
+  against B, with no further pairs.
+- **Bounds** (a candidate that breaks one is rejected): no Cortex-M33
+  instruction regression in either image (the one-pass slots, and for
+  1–3 the subtraction's instructions in the multi-pass measurement
+  image); small-image flash unchanged, except +2 KB allowed for 4 (as
+  recorded in O12b); host-image flash at most +512 B for 1–3 (+2 KB for
+  4); no larger stack frames; static RAM unchanged.
+
+**Stop rule**: stop and record the subtraction as done for bit-identical
+work if the measured subtraction is within 1.3× of its issue floor
+(counters, as in O13's measurement), or no candidate reaches the bar.
+
+**Tests**, one commit with each change: the new form against the
+current form bit for bit (random and edge inputs, both `VECTOR` forms
+through a const parameter as in 49db9e3), and a mutant per new test
+that it kills.
+
+Checks: local CI (fmt; clippy on the workspace, all features and the
+thumbv8m library; tests with the ignored ones; MSRV 1.75; docs;
+`check.sh --stack`; thumbv7em; no FMA and no `f64` helper in any
+thumbv8m image); the 73 800 `paired_bench run` records identical on
+x86-64 and the A76; the 800 WAV slots × configurations × modes
+byte-identical; the encoder identical; the emulated small and host
+images' decodes on the seven WAV slots identical; the Pi release
+suite. No acceptance block is used.
+
 ## Next: gated, result-changing rounds
 
 Each changes results and needs its own acceptance (the run sets, the
