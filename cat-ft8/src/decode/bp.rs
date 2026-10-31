@@ -430,30 +430,59 @@ fn each_value<const W: usize>(values: &mut [f32; EDGES], f: impl Fn(f32) -> f32)
 fn min_sum_round(total: &[f32; N], next: &mut [f32; N], msg: &mut [f32; EDGES]) {
     for (v, e) in check_edges() {
         let row = &mut msg[e..][..v.len()];
-        for (m, &i) in row.iter_mut().zip(v) {
-            *m = total[usize::from(i)] - *m;
+        // Where the loops vectorise, the check's size as a type, so the
+        // compiler drops the vector forms of these short loops (which no
+        // check reaches); elsewhere one instance for both sizes.
+        match (VECTOR, v.len()) {
+            (true, 6) => min_sum_check::<[u8; 6], [f32; 6]>(
+                total,
+                next,
+                v.try_into().unwrap(),
+                row.try_into().unwrap(),
+            ),
+            (true, _) => min_sum_check::<[u8; 7], [f32; 7]>(
+                total,
+                next,
+                v.try_into().unwrap(),
+                row.try_into().unwrap(),
+            ),
+            (false, _) => min_sum_check(total, next, v, row),
         }
-        let (mut min1, mut min2, mut at) = (f32::MAX, f32::MAX, 0);
-        let mut negatives = 0u32;
-        for (j, &x) in row.iter().enumerate() {
-            let a = if x < 0.0 { -x } else { x };
-            negatives += u32::from(x < 0.0);
-            if a < min1 {
-                min2 = min1;
-                min1 = a;
-                at = j;
-            } else if a < min2 {
-                min2 = a;
-            }
+    }
+}
+
+/// [`min_sum_round`] for one check: its variables `v` and its messages
+/// `row`, of the same length.
+#[inline(always)]
+fn min_sum_check<V, R>(total: &[f32; N], next: &mut [f32; N], v: &V, row: &mut R)
+where
+    V: AsRef<[u8]> + ?Sized,
+    R: AsMut<[f32]> + ?Sized,
+{
+    let (v, row) = (v.as_ref(), row.as_mut());
+    for (m, &i) in row.iter_mut().zip(v) {
+        *m = total[usize::from(i)] - *m;
+    }
+    let (mut min1, mut min2, mut at) = (f32::MAX, f32::MAX, 0);
+    let mut negatives = 0u32;
+    for (j, &x) in row.iter().enumerate() {
+        let a = if x < 0.0 { -x } else { x };
+        negatives += u32::from(x < 0.0);
+        if a < min1 {
+            min2 = min1;
+            min1 = a;
+            at = j;
+        } else if a < min2 {
+            min2 = a;
         }
-        for (j, x) in row.iter_mut().enumerate() {
-            let others_negative = negatives - u32::from(*x < 0.0);
-            let mag = ALPHA * if j == at { min2 } else { min1 };
-            *x = if others_negative % 2 == 1 { -mag } else { mag };
-        }
-        for (&m, &i) in row.iter().zip(v) {
-            next[usize::from(i)] += m;
-        }
+    }
+    for (j, x) in row.iter_mut().enumerate() {
+        let others_negative = negatives - u32::from(*x < 0.0);
+        let mag = ALPHA * if j == at { min2 } else { min1 };
+        *x = if others_negative % 2 == 1 { -mag } else { mag };
+    }
+    for (&m, &i) in row.iter().zip(v) {
+        next[usize::from(i)] += m;
     }
 }
 
