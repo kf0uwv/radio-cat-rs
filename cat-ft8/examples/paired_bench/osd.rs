@@ -35,17 +35,47 @@
 use cat_ft8::crc;
 use cat_ft8::ldpc::{encode, K, N};
 
-/// 174 bits, bit i at word i / 64, bit i % 64 (LSB first).
-pub type Bits = [u64; 3];
+/// A word of the bit vectors: the target's own width (64 bits on 64-bit
+/// hosts, 32 on the Cortex-M33). Every sum is taken in an order that does
+/// not depend on it, so results are the same on every target.
+#[cfg(target_pointer_width = "64")]
+pub type Word = u64;
+#[cfg(not(target_pointer_width = "64"))]
+pub type Word = u32;
+const WB: usize = Word::BITS as usize;
+/// Words of 174 bits.
+pub const WORDS: usize = (N + WB - 1) / WB;
 
+/// 174 bits, bit i at word i / WB, bit i % WB (LSB first).
+pub type Bits = [Word; WORDS];
+
+/// Bit i.
 #[inline(always)]
-fn get(b: &Bits, i: usize) -> bool {
-    (b[i >> 6] >> (i & 63)) & 1 == 1
+pub fn get(b: &Bits, i: usize) -> bool {
+    (b[i / WB] >> (i % WB)) & 1 == 1
 }
 
 #[inline(always)]
 fn xor(a: &Bits, b: &Bits) -> Bits {
-    [a[0] ^ b[0], a[1] ^ b[1], a[2] ^ b[2]]
+    let mut c = *a;
+    for (x, y) in c.iter_mut().zip(b) {
+        *x ^= y;
+    }
+    c
+}
+
+#[inline(always)]
+fn and(a: &Bits, b: &Bits) -> Bits {
+    let mut c = *a;
+    for (x, y) in c.iter_mut().zip(b) {
+        *x &= y;
+    }
+    c
+}
+
+#[inline(always)]
+fn ones(x: &Bits) -> u32 {
+    x.iter().map(|w| w.count_ones()).sum()
 }
 
 /// The generator's rows: row k is the codeword of message bit k (bit k of
@@ -56,7 +86,7 @@ pub struct Generator {
 
 impl Generator {
     pub fn new() -> Self {
-        let mut rows = [[0u64; 3]; K];
+        let mut rows = [[0; WORDS]; K];
         for (k, row) in rows.iter_mut().enumerate() {
             *row = codeword_bits(1u128 << (K - 1 - k));
         }
@@ -67,19 +97,30 @@ impl Generator {
 /// The codeword of a 91-bit message-plus-CRC word, as [`Bits`].
 pub fn codeword_bits(a91: u128) -> Bits {
     let cw = encode(a91);
-    let mut b = [0u64; 3];
+    let mut b = [0; WORDS];
     for i in 0..N {
-        b[i >> 6] |= u64::from(cw.bit(i)) << (i & 63);
+        b[i / WB] |= Word::from(cw.bit(i)) << (i % WB);
     }
     b
 }
 
 /// The 91-bit message part (positions 0..91, first bit most significant).
+#[cfg(target_pointer_width = "64")]
 #[inline(always)]
 pub fn message_part(b: &Bits) -> u128 {
     // Positions 0..64 then 64..91, each reversed so the first is highest.
     (u128::from(b[0].reverse_bits()) << 27)
         | u128::from((b[1] & ((1 << 27) - 1)).reverse_bits() >> 37)
+}
+
+/// The 91-bit message part (positions 0..91, first bit most significant).
+#[cfg(not(target_pointer_width = "64"))]
+#[inline(always)]
+pub fn message_part(b: &Bits) -> u128 {
+    // Positions 0..32, 32..64 and 64..91, each reversed.
+    (u128::from(b[0].reverse_bits()) << 59)
+        | (u128::from(b[1].reverse_bits()) << 27)
+        | u128::from((b[2] & ((1 << 27) - 1)).reverse_bits() >> 5)
 }
 
 /// One list codeword: the flipped basis rows (`K` for none).
@@ -98,7 +139,7 @@ pub struct Found {
     pub b: Option<Pick>,
 }
 
-/// Working storage (about 3.2 KB).
+/// Working storage (about 8.9 KB).
 pub struct Osd {
     rows: [Bits; K],
     /// Each reduced row's message part (positions 0..91).
@@ -121,23 +162,24 @@ pub struct Osd {
     row_h: [i32; K],
     pub total_w: f32,
     /// Σ s over each nibble's set bits, per nibble of the 176-bit form.
-    nib: [[f32; 16]; NIBBLES],
+    nib: [[[f32; 16]; 4]; NIBBLES / 4],
 }
 
-/// Nibbles of 174 bits (the last one partial).
-const NIBBLES: usize = 44;
+/// Nibbles of the words (176 or 192 bits; those past bit 173 are always 0,
+/// and their tables hold +0.0, which leaves a sum unchanged).
+const NIBBLES: usize = WORDS * WB / 4;
 
 impl Osd {
     pub const fn new() -> Self {
         Osd {
-            rows: [[0; 3]; K],
+            rows: [[0; WORDS]; K],
             msg: [0; K],
             pivot: [0; K],
             order: [0; N],
             w: [0.0; N],
-            hard: [0; 3],
-            c0: [0; 3],
-            d0: [0; 3],
+            hard: [0; WORDS],
+            c0: [0; WORDS],
+            d0: [0; WORDS],
             m0: 0,
             s: [0.0; N],
             big_d0: 0.0,
@@ -145,7 +187,7 @@ impl Osd {
             h0: 0,
             row_h: [0; K],
             total_w: 0.0,
-            nib: [[0.0; 16]; NIBBLES],
+            nib: [[[0.0; 16]; 4]; NIBBLES / 4],
         }
     }
 
@@ -156,22 +198,22 @@ impl Osd {
 
     /// The basis positions as a mask.
     pub fn pivot_mask(&self) -> Bits {
-        let mut m = [0u64; 3];
+        let mut m = [0; WORDS];
         for &p in &self.pivot {
-            m[usize::from(p) >> 6] |= 1 << (p & 63);
+            m[usize::from(p) / WB] |= 1 << (usize::from(p) % WB);
         }
         m
     }
 
     /// Reliability order and elimination for `values` (positive favours 0).
     pub fn prepare(&mut self, values: &[f32; N], gen: &Generator) {
-        let mut hard = [0u64; 3];
+        let mut hard = [0; WORDS];
         let mut total = 0.0f32;
         for (i, &v) in values.iter().enumerate() {
             let a = v.abs();
             self.w[i] = a;
             total += a;
-            hard[i >> 6] |= u64::from(v < 0.0) << (i & 63);
+            hard[i / WB] |= Word::from(v < 0.0) << (i % WB);
         }
         self.total_w = total;
         self.hard = hard;
@@ -188,7 +230,7 @@ impl Osd {
         let rows = &mut self.rows;
         let mut rank = 0;
         for &p in self.order.iter() {
-            let (wi, bi) = (usize::from(p) >> 6, p & 63);
+            let (wi, bi) = (usize::from(p) / WB, usize::from(p) % WB);
             let mut r = rank;
             while r < K && (rows[r][wi] >> bi) & 1 == 0 {
                 r += 1;
@@ -198,12 +240,19 @@ impl Osd {
             }
             rows.swap(rank, r);
             let piv = rows[rank];
-            // Branch-free: every other row with a 1 in the pivot's column.
+            // Every other row with a 1 in the pivot's column: branch-free
+            // on 64-bit hosts (deep pipelines), a branch on the M33.
             for (j, row) in rows.iter_mut().enumerate() {
-                let m = 0u64.wrapping_sub((row[wi] >> bi) & 1 & u64::from(j != rank));
-                row[0] ^= piv[0] & m;
-                row[1] ^= piv[1] & m;
-                row[2] ^= piv[2] & m;
+                if cfg!(target_pointer_width = "64") {
+                    let m = Word::wrapping_sub(0, (row[wi] >> bi) & 1 & Word::from(j != rank));
+                    for (x, y) in row.iter_mut().zip(&piv) {
+                        *x ^= y & m;
+                    }
+                } else if j != rank && (row[wi] >> bi) & 1 == 1 {
+                    for (x, y) in row.iter_mut().zip(&piv) {
+                        *x ^= y;
+                    }
+                }
             }
             self.pivot[rank] = p;
             rank += 1;
@@ -213,7 +262,7 @@ impl Osd {
         }
         debug_assert_eq!(rank, K);
         // Order 0: the hard decisions on the basis, re-encoded.
-        let mut c0 = [0u64; 3];
+        let mut c0 = [0; WORDS];
         for j in 0..K {
             if get(&hard, usize::from(self.pivot[j])) {
                 c0 = xor(&c0, &self.rows[j]);
@@ -239,7 +288,7 @@ impl Osd {
         }
         self.big_d0 = big_d0;
         self.h0 = h0;
-        for (q, t) in self.nib.iter_mut().enumerate() {
+        for (q, t) in self.nib.iter_mut().flatten().enumerate() {
             t[0] = 0.0;
             for v in 1..16usize {
                 let low = v.trailing_zeros() as usize;
@@ -255,14 +304,15 @@ impl Osd {
         }
     }
 
-    /// Σ s over the positions set in `x`: one sum per word (in bit order),
-    /// then (w0 + w1) + w2. Also returns `x`.
+    /// Σ s over the positions set in `x`: one sum per 64 positions (in
+    /// position order), then (g0 + g1) + g2. Also returns `x`.
     #[inline(always)]
     fn masked_sum(&self, x: &Bits) -> (f32, Bits) {
         let mut sums = [0.0f32; 3];
-        for (wi, sum) in sums.iter_mut().enumerate() {
-            let mut b = x[wi];
-            let s = &self.s[wi << 6..];
+        for (wi, &word) in x.iter().enumerate() {
+            let sum = &mut sums[wi * WB / 64];
+            let s = &self.s[wi * WB..];
+            let mut b = word;
             while b != 0 {
                 *sum += s[b.trailing_zeros() as usize];
                 b &= b - 1;
@@ -276,26 +326,44 @@ impl Osd {
     /// (r0 + r1) + (r2 + r3)), and those positions.
     #[inline(always)]
     fn shared(&self, j: usize, k: usize) -> (f32, Bits) {
-        let (a, b) = (&self.rows[j], &self.rows[k]);
-        let x = [a[0] & b[0], a[1] & b[1], a[2] & b[2]];
-        let mut r = [0.0f32; 4];
+        let x = and(&self.rows[j], &self.rows[k]);
+        let (mut r0, mut r1, mut r2, mut r3) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
         for (wi, &w) in x.iter().enumerate() {
-            for n in 0..16 {
-                let q = wi * 16 + n;
-                if q < NIBBLES {
-                    r[n & 3] += self.nib[q][((w >> (4 * n)) & 15) as usize];
-                }
+            // Four nibbles at a time: nibble q goes to sum q mod 4.
+            for g in 0..WB / 16 {
+                let n = (w >> (16 * g)) as usize;
+                let q = &self.nib[wi * (WB / 16) + g];
+                r0 += q[0][n & 15];
+                r1 += q[1][(n >> 4) & 15];
+                r2 += q[2][(n >> 8) & 15];
+                r3 += q[3][(n >> 12) & 15];
             }
         }
+        let r = [r0, r1, r2, r3];
         ((r[0] + r[1]) + (r[2] + r[3]), x)
     }
 
     /// The list of order `order` (0, 1 or 2) after [`Osd::prepare`].
     /// `each(d, h)` sees every list codeword's D and Hamming distance from
-    /// the hard decisions (measurement only; a no-op closure costs
-    /// nothing). With `form_b`, also the least-D codeword passing the CRC.
+    /// the hard decisions (measurement only; [`Osd::search_fast`] is the
+    /// timed form). With `form_b`, also the least-D codeword passing the CRC.
+    pub fn search(&self, order: u8, form_b: bool, each: impl FnMut(f32, i32)) -> Found {
+        self.search_impl::<true>(order, form_b, each)
+    }
+
+    /// [`Osd::search`] without the per-codeword measurement (the timed
+    /// form): the same result.
+    pub fn search_fast(&self, order: u8, form_b: bool) -> Found {
+        self.search_impl::<false>(order, form_b, |_, _| {})
+    }
+
     #[allow(clippy::needless_range_loop)]
-    pub fn search(&self, order: u8, form_b: bool, mut each: impl FnMut(f32, i32)) -> Found {
+    fn search_impl<const H: bool>(
+        &self,
+        order: u8,
+        form_b: bool,
+        mut each: impl FnMut(f32, i32),
+    ) -> Found {
         let none = K as u8;
         let mut a = Pick {
             j: none,
@@ -348,7 +416,9 @@ impl Osd {
                 for k in j + 1..K {
                     let (sh, x) = self.shared(j, k);
                     let d = (base + self.row_s[k]) - (sh + sh);
-                    each(d, hb + self.row_h[k] - 2 * hamming_form(&x, &self.d0));
+                    if H {
+                        each(d, hb + self.row_h[k] - 2 * hamming_form(&x, &self.d0));
+                    }
                     let p = Pick {
                         j: j as u8,
                         k: k as u8,
@@ -388,7 +458,7 @@ impl Osd {
                 d += self.w[i];
             }
         }
-        (d, x[0].count_ones() + x[1].count_ones() + x[2].count_ones())
+        (d, ones(&x))
     }
 }
 
@@ -404,31 +474,24 @@ pub fn syndrome(m: u128) -> u16 {
 /// Σ (1 − 2·d0) over the positions set in `x`.
 #[inline(always)]
 fn hamming_form(x: &Bits, d0: &Bits) -> i32 {
-    let mut h = 0i32;
-    for w in 0..3 {
-        h += x[w].count_ones() as i32 - 2 * (x[w] & d0[w]).count_ones() as i32;
-    }
-    h
+    ones(x) as i32 - 2 * ones(&and(x, d0)) as i32
 }
 
 /// Positions where `a` and `b` differ.
 pub fn distance(a: &Bits, b: &Bits) -> u32 {
-    let x = xor(a, b);
-    x[0].count_ones() + x[1].count_ones() + x[2].count_ones()
+    ones(&xor(a, b))
 }
 
 /// Positions in `mask` where `a` and `b` differ.
 pub fn distance_in(a: &Bits, b: &Bits, mask: &Bits) -> u32 {
-    let x = xor(a, b);
-    (x[0] & mask[0]).count_ones() + (x[1] & mask[1]).count_ones() + (x[2] & mask[2]).count_ones()
+    ones(&and(&xor(a, b), mask))
 }
 
 /// Hard decisions of `values` (1 where negative).
 pub fn hard_of(values: &[f32; N]) -> Bits {
-    let mut b = [0u64; 3];
+    let mut b = [0; WORDS];
     for (i, &v) in values.iter().enumerate() {
-        b[i >> 6] |= u64::from(v < 0.0) << (i & 63);
+        b[i / WB] |= Word::from(v < 0.0) << (i % WB);
     }
     b
 }
-

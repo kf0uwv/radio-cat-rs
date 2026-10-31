@@ -35,7 +35,7 @@ use serde_json::{json, Value};
 
 use crate::common::{fnv1a, par_map, Rng};
 use crate::osd::{
-    codeword_bits, distance, distance_in, hard_of, message_part, Bits, Generator, Osd,
+    codeword_bits, distance, distance_in, get, hard_of, message_part, Bits, Generator, Osd,
 };
 use crate::record::{on, position};
 use crate::sets::{build, set_size, Sent, Slot};
@@ -661,7 +661,7 @@ pub fn osd_cost(cfg: &str, slots: usize, runs: usize) -> Result<(), String> {
             for (_, v) in &input {
                 osd.prepare(std::hint::black_box(v), gen);
                 if let Some((order, b)) = *mode {
-                    let f = osd.search(order, b, |_, _| {});
+                    let f = osd.search_fast(order, b);
                     fnv1a(&mut h, &[f.a.j, f.a.k]);
                     fnv1a(&mut h, &f.a.d.to_bits().to_le_bytes());
                     if let Some(q) = f.b {
@@ -753,11 +753,7 @@ pub fn osd_check(trials: usize) -> Result<(), String> {
         let sigma = 0.4 + 0.8 * r.uniform();
         let mut v = [0.0f32; N];
         for (i, x) in v.iter_mut().enumerate() {
-            let s = if (truth[i >> 6] >> (i & 63)) & 1 == 1 {
-                -1.0
-            } else {
-                1.0
-            };
+            let s = if get(&truth, i) { -1.0 } else { 1.0 };
             *x = (s + sigma * r.gauss()) as f32;
         }
         osd.prepare(&v, gen);
@@ -779,7 +775,7 @@ pub fn osd_check(trials: usize) -> Result<(), String> {
             let c = osd.codeword(&f.a);
             let mut bits = [0u8; N];
             for (i, b) in bits.iter_mut().enumerate() {
-                *b = ((c[i >> 6] >> (i & 63)) & 1) as u8;
+                *b = u8::from(get(&c, i));
             }
             if !Codeword::from_bits(&bits).satisfies_parity_checks() {
                 return Err("chosen word is not a codeword".into());
