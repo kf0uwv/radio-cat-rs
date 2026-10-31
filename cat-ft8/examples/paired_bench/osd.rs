@@ -44,7 +44,7 @@ pub type Word = u64;
 pub type Word = u32;
 const WB: usize = Word::BITS as usize;
 /// Words of 174 bits.
-pub const WORDS: usize = (N + WB - 1) / WB;
+pub const WORDS: usize = N.div_ceil(WB);
 
 /// 174 bits, bit i at word i / WB, bit i % WB (LSB first).
 pub type Bits = [Word; WORDS];
