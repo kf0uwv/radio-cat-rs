@@ -196,6 +196,66 @@ fn tanh_and_atanh_helpers() {
     assert!(twice_atanh(1.0).is_finite() && twice_atanh(1.0) > 16.0);
 }
 
+/// `tanh_half` as first written (the magnitude by a select): the
+/// reference the current form must match bit for bit.
+fn tanh_half_first_form(x: f32) -> f32 {
+    let negative = x < 0.0;
+    let a = if negative { -x } else { x };
+    let e = exp2_neg(-a * LOG2_E);
+    let t = (1.0 - e) / (1.0 + e);
+    if negative {
+        -t
+    } else {
+        t
+    }
+}
+
+/// Every 2⁻ᵏ step of the bit patterns plus the special values, or (with
+/// `step` 1) all 2³² of them.
+fn tanh_half_matches_its_first_form(step: usize) {
+    let specials = [
+        0.0f32,
+        -0.0,
+        f32::MIN_POSITIVE,
+        -f32::MIN_POSITIVE,
+        f32::from_bits(1),
+        f32::from_bits(0x8000_0001),
+        f32::MAX,
+        f32::MIN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NAN,
+        -f32::NAN,
+        f32::from_bits(0x7f80_0001),
+        f32::from_bits(0xffc0_0001),
+        87.336_54,
+        -87.336_54,
+        175.0,
+        -175.0,
+    ];
+    let patterns = (0..=u32::MAX).step_by(step).map(f32::from_bits);
+    for x in specials.into_iter().chain(patterns) {
+        assert_eq!(
+            tanh_half(x).to_bits(),
+            tanh_half_first_form(x).to_bits(),
+            "{x:e} ({:#010x})",
+            x.to_bits()
+        );
+    }
+}
+
+#[test]
+fn tanh_half_is_its_first_form_bit_for_bit() {
+    tanh_half_matches_its_first_form(4_099);
+}
+
+/// All 2³² inputs (about a minute in release).
+#[test]
+#[ignore]
+fn tanh_half_is_its_first_form_bit_for_bit_everywhere() {
+    tanh_half_matches_its_first_form(1);
+}
+
 #[test]
 fn the_check_table_is_the_parity_check_matrix_0_based() {
     for (c, row) in PARITY_CHECKS.iter().enumerate() {

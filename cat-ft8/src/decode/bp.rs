@@ -178,10 +178,13 @@ fn check(c: usize) -> (&'static [u8; MAX_DEGREE], usize) {
 /// tanh(x / 2) for any finite x.
 #[inline]
 fn tanh_half(x: f32) -> f32 {
-    // One comparison for both the magnitude and the sign, so the two
-    // selects share a mask when a loop over lanes vectorises.
     let negative = x < 0.0;
-    let a = if negative { -x } else { x };
+    // |x| by clearing the sign bit, not `if negative { -x } else { x }`:
+    // the compiler moved that select past `exp2_neg` and the division,
+    // evaluating the whole chain for both x and −x and choosing at the end
+    // (two divisions per value). The results are the same: the forms
+    // differ only for −0.0 and NaN, whose e is 1.0 and 0.0 either way.
+    let a = f32::from_bits(x.to_bits() & 0x7fff_ffff);
     let e = exp2_neg(-a * LOG2_E); // e^(−|x|)
     let t = (1.0 - e) / (1.0 + e);
     if negative {
