@@ -2226,6 +2226,65 @@ candidates.
 - Small: top 25, distance ≤ 23, +0.079 decodes per slot for 0.31 ms and
   3.6 M M33 instructions per slot.
 
+## OSD-1 false-decode calibration (fixed before running, 2026-10-31)
+
+Part of the preparation for the gated round below (the decoder's OSD-1,
+e7e7f48; the bench command `osdcal`, same commit).
+
+On branch `osd1`. The sizing round's false-decode rate rests on a
+factor estimate (n × q × 2⁻¹⁴ × π) calibrated only at large distances;
+in the low-distance tail it under-predicted the counts about threefold
+on the 48 300 empty slots already used. This round counts instead.
+Empty slots carry no gain information, so the threshold T is chosen
+from this calibration alone and nothing here looks at a block with
+signals.
+
+**Slots.** The `empty` set (2 300 slots a block: noise, weak and strong
+carriers, clipped, floored, impulsive) on blocks `qv0000` … `qv2999`:
+3 000 blocks, 6 900 000 slots, named here first and checked absent from
+the repository's history and every earlier result file and log.
+All 3 000 are run (in segments of 100, `qv0000–qv0099` first); the
+count is fixed here, and the run is not stopped or extended on what it
+shows. The same slots for both configurations.
+
+**Runs.** `paired_bench osdcal host 10 …` and `osdcal small 25 …` (the
+decoder's OSD off; after each pass, the decoder's own OSD-1 on the soft
+bits of every failed candidate of rank below 10, or 25 for `small`).
+Counted per configuration, by the accepted codeword's Hamming distance
+dH from the hard decisions: OSD runs C; least-D codewords that are
+non-zero; of those, passing the CRC; of those, plausible (`unpack` with
+`NoHashes` returns `Ok`) — every such codeword on an empty slot is a
+false decode, F(dH). Also: belief propagation's CRC failures and
+decodes per slot on the same slots (the current rate R0 = CRC failures
+per slot × 2⁻¹⁴, and its own counted false decodes); for the non-zero
+codewords at dH ≤ 30, the message-type histogram and each type's
+plausible share (CRC ignored), the 14 syndrome bits and the syndrome's
+distribution (dH ≤ 24 and 25–30); and every count by slot kind.
+
+**Decision rule** (per configuration; T ∈ {22, 23, 24}):
+- F_T = Σ F(dH) over dH ≤ T (accepted codewords that duplicate a
+  belief-propagation decode of the same slot are not new and are left
+  out); U_T its exact one-sided 95% Poisson upper bound (2.996 for 0,
+  4.744 for 1, 6.296 for 2, …).
+- The added rate per slot is bounded by R_T = n × U_T / C, with n the
+  larger of C per calibration slot and the candidates OSD runs on in a
+  crowded slot (host 14.5 over three passes, `small` 10.1; the sizing's
+  pooled crowded/wide/fading figures).
+- **T is the largest of 22, 23, 24 with R_T ≤ R0.** If none qualifies,
+  the largest T from 16 to 21 with R_T ≤ R0 is reported, and the gated
+  round uses it; if none from 16 up qualifies, OSD-1 does not go to the
+  gated round for that configuration.
+- Reported beside it, not deciding: the point rate n × F_T / C; the
+  factor estimate with π_T from the type histogram (n × q_T × 2⁻¹⁴ ×
+  π_T, q_T the share of runs with a non-zero codeword at dH ≤ T, π_T the
+  plausible share of those codewords' payloads) against the count; the
+  syndrome test (each bit's share of ones, and χ² of the 16 384 values
+  against uniform, at dH ≤ 24 and at 25–30); counts by slot kind.
+
+Only aggregate counts are kept (one JSON per segment and configuration,
+and one line per accepted codeword), under the local cache; no
+per-candidate records.
+
 ## OSD-1 on the best candidates: gated round (proposed; not yet run)
 
 Drafted from the sizing round; nothing here is implemented or run. The
