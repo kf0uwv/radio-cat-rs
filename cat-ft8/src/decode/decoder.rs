@@ -80,15 +80,16 @@
 
 use core::ops::ControlFlow;
 
-use super::bp::{decode_soft, BpFailure, BpScratch, CheckRule};
+use super::bp::{decode_soft, BpDecode, BpFailure, BpScratch, CheckRule};
 use super::frontend::BIN_HZ;
 use super::frontend::{Band, FrontEnd, Spectrogram};
+use super::osd::{self, OsdScratch};
 use super::snr;
 use super::soft::soft_bits_at;
 use super::subtract::{subtract_unreported, SubtractConfig, MIN_SCRATCH_BYTES};
 use super::sync::{self, Candidate, SyncReport, ROW_SECONDS};
 use crate::ldpc::N;
-use crate::message::{unpack, CallHashes, MessageType, Payload};
+use crate::message::{unpack, CallHashes, MessageType, NoHashes, Payload};
 use crate::Error;
 
 /// Recommended candidate buffer capacity (hosts and small targets): the
@@ -155,6 +156,47 @@ pub struct DecodeConfig {
     /// first, so a capped slot's output is a prefix of the uncapped one's
     /// and as reproducible.
     pub max_subtractions: Option<u16>,
+    /// Ordered-statistics decoding of the candidates belief propagation
+    /// fails on ([`OsdConfig`]); `None`, the default and in both presets:
+    /// off, and the decoder's output is as without the option.
+    pub osd: Option<OsdConfig>,
+}
+
+/// Ordered-statistics decoding of order 1 (OSD-1) after belief propagation
+/// fails, for [`DecodeConfig::osd`]. **Experimental**: off by default and
+/// not yet validated for use (its false-decode rate is measured, not
+/// promised).
+///
+/// On candidate `index < candidates` of a pass (the pass's best-scoring
+/// candidates, as the sync search lists them) whose belief propagation
+/// failed, OSD-1 on the candidate's soft bits gives the least-discrepancy
+/// codeword among the hard decisions re-encoded on the most reliable basis
+/// and its 91 one-bit flips. It is a decode when its message part is not
+/// zero, its CRC holds, its payload unpacks with no call hashes
+/// ([`NoHashes`]) and it is at most `max_distance` bits from the soft
+/// bits' hard decisions (a soft bit of exactly 0 decided 0); the decode's
+/// [`Decode::hard_errors`] is that distance and [`Decode::rounds`] belief
+/// propagation's. It is then listed like any decode (and subtracted before
+/// the next pass). The working storage is the candidate's
+/// [`CandidateScratch`], so it needs no memory of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct OsdConfig {
+    /// Each pass's first candidates (by sync score) it runs on.
+    pub candidates: u16,
+    /// The largest accepted Hamming distance from the hard decisions.
+    pub max_distance: u8,
+}
+
+impl OsdConfig {
+    /// OSD-1 on each pass's first `candidates` candidates, accepting a
+    /// codeword at most `max_distance` bits from the hard decisions.
+    pub const fn new(candidates: u16, max_distance: u8) -> Self {
+        OsdConfig {
+            candidates,
+            max_distance,
+        }
+    }
 }
 
 impl DecodeConfig {
@@ -181,6 +223,7 @@ impl DecodeConfig {
         later_candidates: 50,
         subtract: SubtractConfig::DEFAULT.with_segment(2 * crate::SAMPLES_PER_SYMBOL),
         max_subtractions: None,
+        osd: None,
     };
 
     /// Small targets: normalised min-sum, which costs about a third as
@@ -253,6 +296,12 @@ impl DecodeConfig {
             max_subtractions,
             ..self
         }
+    }
+
+    /// With ordered-statistics decoding `osd` (`None`: off); see
+    /// [`OsdConfig`].
+    pub const fn with_osd(self, osd: Option<OsdConfig>) -> Self {
+        DecodeConfig { osd, ..self }
     }
 
     /// Entries the candidate buffer needs: the larger of
@@ -371,6 +420,9 @@ pub enum Stage {
     SoftBits,
     /// Belief propagation, the CRC and the all-zero test.
     BeliefPropagation,
+    /// Ordered-statistics decoding and its acceptance tests (only when
+    /// [`DecodeConfig::osd`] runs it, after belief propagation failed).
+    Osd,
     /// Re-encoding the decoded payload and estimating the SNR (decodes
     /// only).
     Snr,
@@ -378,10 +430,11 @@ pub enum Stage {
 
 impl Stage {
     /// Every stage, in the order they run.
-    pub const ALL: [Stage; 4] = [
+    pub const ALL: [Stage; 5] = [
         Stage::Refine,
         Stage::SoftBits,
         Stage::BeliefPropagation,
+        Stage::Osd,
         Stage::Snr,
     ];
 
@@ -391,17 +444,19 @@ impl Stage {
             Stage::Refine => 0,
             Stage::SoftBits => 1,
             Stage::BeliefPropagation => 2,
-            Stage::Snr => 3,
+            Stage::Osd => 3,
+            Stage::Snr => 4,
         }
     }
 
     /// A short snake-case name (`refine`, `soft_bits`,
-    /// `belief_propagation`, `snr`).
+    /// `belief_propagation`, `osd`, `snr`).
     pub const fn name(self) -> &'static str {
         match self {
             Stage::Refine => "refine",
             Stage::SoftBits => "soft_bits",
             Stage::BeliefPropagation => "belief_propagation",
+            Stage::Osd => "osd",
             Stage::Snr => "snr",
         }
     }
@@ -411,13 +466,62 @@ impl Stage {
 pub type CandidateResult = Result<Decode, BpFailure>;
 
 /// Working storage for one candidate (soft bits, belief-propagation
-/// messages and the noise histogram, about 5.1 KB). One per worker; every
-/// candidate re-initialises it.
+/// messages or the ordered-statistics decoder's storage, and the noise
+/// histogram, about 5.1 KB). One per worker; every candidate
+/// re-initialises it.
 #[derive(Clone)]
 pub struct CandidateScratch {
     llr: [f32; N],
-    bp: BpScratch,
+    work: Work,
     hist: [u16; 256],
+}
+
+/// Belief propagation's storage, or OSD-1's: one memory for both. OSD-1
+/// runs only after belief propagation has failed, when its storage is
+/// idle, and the next candidate's belief propagation re-initialises it.
+/// A safe enum (the crate forbids `unsafe`): its tag is the only memory
+/// the sharing costs.
+#[derive(Clone)]
+enum Work {
+    Bp(BpScratch),
+    Osd(OsdScratch),
+}
+
+impl Work {
+    /// Belief propagation's storage (fresh if OSD-1 had it).
+    fn bp(&mut self) -> &mut BpScratch {
+        if let Work::Osd(_) = self {
+            *self = Work::Bp(BpScratch::new());
+        }
+        match self {
+            Work::Bp(b) => b,
+            Work::Osd(_) => unreachable!(),
+        }
+    }
+
+    /// OSD-1's storage, taking over belief propagation's (whose round
+    /// count it keeps).
+    fn osd(&mut self) -> &mut OsdScratch {
+        if let Work::Bp(b) = self {
+            let rounds = b.rounds();
+            *self = Work::Osd(OsdScratch::new());
+            if let Work::Osd(o) = self {
+                o.bp_rounds = rounds;
+            }
+        }
+        match self {
+            Work::Osd(o) => o,
+            Work::Bp(_) => unreachable!(),
+        }
+    }
+
+    /// Belief propagation's rounds for the last candidate.
+    fn bp_rounds(&self) -> u8 {
+        match self {
+            Work::Bp(b) => b.rounds(),
+            Work::Osd(o) => o.bp_rounds,
+        }
+    }
 }
 
 impl CandidateScratch {
@@ -425,7 +529,7 @@ impl CandidateScratch {
     pub const fn new() -> Self {
         CandidateScratch {
             llr: [0.0; N],
-            bp: BpScratch::new(),
+            work: Work::Bp(BpScratch::new()),
             hist: [0; 256],
         }
     }
@@ -472,7 +576,7 @@ impl CandidateScratch {
     /// Message-passing rounds the last candidate decoded with this scratch
     /// ran, whatever its result (for cost measurement).
     pub fn last_rounds(&self) -> u8 {
-        self.bp.rounds()
+        self.work.bp_rounds()
     }
 }
 
@@ -672,7 +776,7 @@ impl<'a> Decoder<'a> {
         mut done: impl FnMut(Stage),
     ) -> Option<CandidateResult> {
         let c = *self.candidates().get(index)?;
-        let CandidateScratch { llr, bp, hist } = scratch;
+        let CandidateScratch { llr, work, hist } = scratch;
         let (frac_row, frac_bin) = sync::refine(&self.spec, &c);
         done(Stage::Refine);
         soft_bits_at(
@@ -684,8 +788,14 @@ impl<'a> Decoder<'a> {
             llr,
         );
         done(Stage::SoftBits);
-        let decoded = decode_soft(llr, self.config.rule, self.config.max_rounds, bp);
+        let mut decoded = decode_soft(llr, self.config.rule, self.config.max_rounds, work.bp());
         done(Stage::BeliefPropagation);
+        if let (Err(failure), Some(cfg)) = (decoded, self.config.osd) {
+            if index < usize::from(cfg.candidates) {
+                decoded = osd_decode(llr, work.osd(), cfg).ok_or(failure);
+                done(Stage::Osd);
+            }
+        }
         let result = decoded.map(|d| {
             let base = (self.spec.band().first_bin() + usize::from(c.base)) as f32 + frac_bin;
             let tones = crate::encode_payload(&d.payload);
@@ -1042,6 +1152,25 @@ impl<'a> Decoder<'a> {
     }
 }
 
+/// OSD-1 on soft bits `llr` whose belief propagation failed, and its
+/// acceptance tests ([`OsdConfig`]). Kept out of line: a rare path, whose
+/// frame then never adds to the candidate decode's.
+#[inline(never)]
+fn osd_decode(llr: &[f32; N], scratch: &mut OsdScratch, cfg: OsdConfig) -> Option<BpDecode> {
+    let best = osd::order1(llr, scratch);
+    if best.distance > u32::from(cfg.max_distance) || best.a91 == 0 || !crate::crc::check(best.a91)
+    {
+        return None;
+    }
+    let payload = Payload::from_bits(best.a91 >> 14)?;
+    unpack(&payload, &mut NoHashes).ok()?;
+    Some(BpDecode {
+        payload,
+        rounds: scratch.bp_rounds,
+        hard_errors: best.distance as u8,
+    })
+}
+
 /// One step of a pass, reported by [`Decoder::decode_passes_staged`] as
 /// it ends.
 ///
@@ -1346,8 +1475,12 @@ impl CandidateScratch {
         &self.llr
     }
 
-    /// Belief propagation's totals after the last candidate's final round.
-    pub fn bp_totals(&self) -> &[f32; N] {
-        self.bp.last_totals()
+    /// Belief propagation's totals after the last candidate's final round
+    /// (`None` if OSD-1 has used their storage since).
+    pub fn bp_totals(&self) -> Option<&[f32; N]> {
+        match &self.work {
+            Work::Bp(b) => Some(b.last_totals()),
+            Work::Osd(_) => None,
+        }
     }
 }

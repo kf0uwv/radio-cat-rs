@@ -124,7 +124,9 @@ fn decode_k(slot: &Slot, setup: &Setup, k: u8) -> (Vec<u128>, u8, Vec<Failed>, u
     let n = dec.candidates().len();
     for i in 0..n {
         if let Some(Err(kind)) = dec.decode_candidate(i, &mut scratch) {
-            let bp = *scratch.bp_totals();
+            let bp = *scratch
+                .bp_totals()
+                .expect("belief propagation's storage (OSD is off)");
             if kind == BpFailure::Crc {
                 // The accessor's check: a CRC failure's last totals are a codeword.
                 let mut bits = [0u8; N];

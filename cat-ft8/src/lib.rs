@@ -244,6 +244,7 @@ mod tests {
         "VAR_EDGES",
         "EDGE_VARS",
         "LEVEL_POWER",
+        "OSD_ROWS",
     ];
     const NOT_COUNTED: &[&str] = &[
         "GENERATOR", // compile-time input to GENERATOR_ROWS only
@@ -331,7 +332,8 @@ mod tests {
             + size_of_val(&crate::decode::bp::DEGREES)
             + size_of_val(&crate::decode::bp::VAR_EDGES)
             + size_of_val(&crate::decode::bp::EDGE_VARS)
-            + size_of_val(&crate::decode::tables::LEVEL_POWER);
+            + size_of_val(&crate::decode::tables::LEVEL_POWER)
+            + size_of_val(&crate::decode::osd::OSD_ROWS);
         assert_eq!(crate::decode::TABLE_BYTES, parts);
     }
 }

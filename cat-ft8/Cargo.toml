@@ -78,3 +78,7 @@ required-features = ["profile"]
 [[example]]
 name = "paired_bench"
 required-features = ["profile"]
+
+[[test]]
+name = "osd_differential"
+required-features = ["profile"]

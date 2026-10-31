@@ -23,7 +23,7 @@
 //! passes"); [`Decoder::decode_further_passes`] runs the passes after a
 //! first pass fed as the audio arrived.
 //!
-//! The stages (`sync`, `soft`, `bp`) are crate-private; the `profile`
+//! The stages (`sync`, `soft`, `bp`, `osd`) are crate-private; the `profile`
 //! feature makes them public for measurement benches only.
 
 #[cfg(feature = "profile")]
@@ -35,6 +35,11 @@ pub mod decoder;
 pub(crate) mod fft;
 pub mod frontend;
 pub(crate) mod math;
+#[cfg(feature = "profile")]
+#[doc(hidden)]
+pub mod osd;
+#[cfg(not(feature = "profile"))]
+pub(crate) mod osd;
 pub(crate) mod snr;
 #[cfg(feature = "profile")]
 #[doc(hidden)]
@@ -54,8 +59,8 @@ pub(crate) mod testutil;
 pub use bp::{BpFailure, CheckRule};
 pub use decoder::{
     CandidateResult, CandidateScratch, Decode, DecodeConfig, DecodeList, DecodeReport, Decoder,
-    PassEvent, PassReport, PassStep, PassesEnd, PassesReport, Stage, CANDIDATES, HOST_DECODES,
-    SMALL_DECODES,
+    OsdConfig, PassEvent, PassReport, PassStep, PassesEnd, PassesReport, Stage, CANDIDATES,
+    HOST_DECODES, SMALL_DECODES,
 };
 pub use frontend::{Band, FrontEnd, Spectrogram, BIN_HZ, HOP, ROWS, ROW_ORIGIN};
 pub use snr::SNR_FLOOR_DB;
@@ -71,9 +76,11 @@ pub use sync::{Candidate, SyncReport};
 /// Bytes of the decoder's static tables (FFT twiddles, real-split
 /// twiddles, half Hann window, digit-reversal table, belief
 /// propagation's check degrees, each variable's edges and each edge's
-/// variable, and the level-to-power table), in flash.
+/// variable, the level-to-power table, and the generator's rows for
+/// ordered-statistics decoding, 2 184 bytes on every target), in flash.
 pub const TABLE_BYTES: usize = fft::TABLE_BYTES
     + core::mem::size_of::<[u8; 83]>()
     + core::mem::size_of::<[[u16; 3]; 174]>()
     + core::mem::size_of::<[u8; 522]>()
-    + core::mem::size_of::<[f32; 256]>();
+    + core::mem::size_of::<[f32; 256]>()
+    + 91 * 24;

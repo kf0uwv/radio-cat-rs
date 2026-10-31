@@ -14,8 +14,9 @@
 # limitations under the License.
 #
 # Lints and formats the bare-metal check program, links it for
-# thumbv8m.main-none-eabihf in three images (the small decoder
-# configuration, the host configuration, and the encoder alone), prints
+# thumbv8m.main-none-eabihf in five images (the small decoder
+# configuration, the host configuration, each with ordered-statistics
+# decoding on, and the encoder alone), prints
 # each image's size (flash = .text + .rodata + .data; static RAM = .data +
 # .bss), and fails if an image's static RAM is above its ceiling (the
 # `ram_limit` setting below, the one place it is set: the RAM `link.x` maps
@@ -47,9 +48,11 @@ rustfmt --edition 2021 --check "$here/src/main.rs" "$here/build.rs"
 
 # One image per decoder configuration, plus the encoder alone as a
 # baseline for the decoder's size.
-for variant in small host encoder-only; do
+for variant in small host small-osd host-osd encoder-only; do
   case "$variant" in
     small) features="" ;;
+    small-osd) features="--features osd" ;;
+    host-osd) features="--features host,osd" ;;
     *) features="--features $variant" ;;
   esac
   # Static RAM ceiling, the same for every image: the link map's 256 KiB

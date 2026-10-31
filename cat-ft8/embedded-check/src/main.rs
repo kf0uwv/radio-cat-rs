@@ -21,7 +21,9 @@
 //! is a host feature; the small image does not link it), with every
 //! buffer in statics: the small configuration by default, the host
 //! configuration with the `host` feature, none with `encoder-only` (a
-//! baseline for the decoder's size); `check.sh` builds every image. The
+//! baseline for the decoder's size), and either decoder configuration
+//! with ordered-statistics decoding on with `osd`; `check.sh` builds every
+//! image. The
 //! check-node rule is a run-time field of the configuration, so both
 //! rules are linked in either decoder image. Linking at all proves the
 //! core needs neither an allocator nor `std`; `check.sh` then rejects any
@@ -51,7 +53,13 @@ mod setup {
     use cat_ft8::decode::{Band, DecodeConfig, SMALL_DECODES};
     /// 200–2900 Hz: the band sized for this class of part.
     pub const BAND: Band = Band::SMALL;
+    #[cfg(not(feature = "osd"))]
     pub const CONFIG: DecodeConfig = DecodeConfig::SMALL;
+    /// With ordered-statistics decoding on (its settings do not change
+    /// the image's size).
+    #[cfg(feature = "osd")]
+    pub const CONFIG: DecodeConfig =
+        DecodeConfig::SMALL.with_osd(Some(cat_ft8::decode::OsdConfig::new(25, 23)));
     pub const DECODES: usize = SMALL_DECODES;
 }
 #[cfg(all(feature = "host", not(feature = "encoder-only")))]
@@ -59,7 +67,13 @@ mod setup {
     use cat_ft8::decode::{Band, DecodeConfig, HOST_DECODES};
     /// 100–3100 Hz.
     pub const BAND: Band = Band::DEFAULT;
+    #[cfg(not(feature = "osd"))]
     pub const CONFIG: DecodeConfig = DecodeConfig::HOST;
+    /// With ordered-statistics decoding on (its settings do not change
+    /// the image's size).
+    #[cfg(feature = "osd")]
+    pub const CONFIG: DecodeConfig =
+        DecodeConfig::HOST.with_osd(Some(cat_ft8::decode::OsdConfig::new(10, 24)));
     pub const DECODES: usize = HOST_DECODES;
 }
 

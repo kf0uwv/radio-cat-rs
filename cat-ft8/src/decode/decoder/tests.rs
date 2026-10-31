@@ -626,7 +626,7 @@ fn staged_decoding_reports_its_stages_and_gives_the_same_result() {
     }
     assert_eq!(
         Stage::ALL.map(Stage::name),
-        ["refine", "soft_bits", "belief_propagation", "snr"]
+        ["refine", "soft_bits", "belief_propagation", "osd", "snr"]
     );
 }
 
@@ -1217,4 +1217,58 @@ fn next_pass_restarts_the_index_and_keeps_the_entries() {
     assert_eq!(list.len(), 3);
     assert_eq!((list.tally.duplicates, list.tally.earlier), (2, 1));
     assert_eq!(list.finish_payloads()[1].candidate, 1);
+}
+
+/// With belief propagation held to round 0 (the hard decisions only), a
+/// signal whose hard decisions hold a few errors fails it; OSD-1 on the
+/// best candidates recovers it, reports its stage, keeps belief
+/// propagation's round count, and with zero candidates (or `None`) the
+/// result is the decoder's without it.
+#[test]
+fn osd_recovers_what_belief_propagation_missed() {
+    let mut s = empty_slot();
+    add_signal(
+        &mut s,
+        &symbols_of("CQ K1ABC FN42"),
+        1_234.5,
+        0.1,
+        amplitude_for(-15.0),
+    );
+    add_noise(&mut s, NOISE_RMS, 31);
+    let base = DecodeConfig::HOST.with_max_rounds(0);
+    let run = |config: DecodeConfig| {
+        let mut b = Bufs::new(Band::DEFAULT);
+        let mut dec = b.decoder(config);
+        dec.feed(&s);
+        let mut store = [Decode::EMPTY; 8];
+        let mut list = DecodeList::new(&mut store);
+        let mut scratch = Box::new(CandidateScratch::new());
+        let report = dec.decode(&mut scratch, &mut list);
+        let mut osd_stages = 0;
+        let mut errors = Vec::new();
+        for i in 0..report.candidates_kept {
+            let r = dec.decode_candidate_staged(i, &mut scratch, |st| {
+                osd_stages += usize::from(st == Stage::Osd);
+            });
+            assert_eq!(scratch.last_rounds(), 0);
+            if let Some(Ok(d)) = r {
+                errors.push(d.hard_errors);
+            }
+        }
+        (texts(&list), report, osd_stages, errors)
+    };
+    let (none, r0, s0, _) = run(base);
+    assert!(none.is_empty(), "{none:?}");
+    assert_eq!(s0, 0);
+    let off = run(base.with_osd(Some(OsdConfig::new(0, 40))));
+    assert_eq!((off.0, off.1, off.2), (none, r0, 0));
+    let (on, r1, s1, errors) = run(base.with_osd(Some(OsdConfig::new(10, 40))));
+    assert_eq!(on, ["CQ K1ABC FN42"]);
+    // Every one of the best ten failed belief propagation (no rounds).
+    assert_eq!(s1, r1.candidates_kept.min(10));
+    assert!(errors.iter().all(|&e| (1..=40).contains(&e)), "{errors:?}");
+    // A distance bound below the decode's rejects it.
+    let least = *errors.iter().min().unwrap();
+    let (tight, _, _, _) = run(base.with_osd(Some(OsdConfig::new(10, least - 1))));
+    assert!(tight.is_empty());
 }
