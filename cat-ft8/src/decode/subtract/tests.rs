@@ -1025,6 +1025,19 @@ fn test_weights(n: &mut Noise, len: usize) -> Vec<f32> {
         .collect()
 }
 
+/// A test weight as a reference value can be: finite (the reference is
+/// an envelope times a cosine or sine), the non-finite ones replaced.
+/// Comparing NaN results bit for bit would not be meaningful: Rust does
+/// not specify the sign or payload of a NaN that arithmetic produces (an
+/// unoptimised build gave a NaN energy the other sign).
+fn finite_reference(v: f32) -> f32 {
+    if v.is_finite() {
+        v
+    } else {
+        0.75
+    }
+}
+
 /// [`scaled_cos_sin`] as first written: the plain loop, one sample at a
 /// time.
 fn scaled_cos_sin_first<X: Copy>(
@@ -1059,7 +1072,9 @@ fn scaled_cos_sin_matches<const W: usize>(seed: u64) -> usize {
         ];
         for (no, np, nx) in shapes {
             for clamp in [false, true] {
-                let weigh = |x: f32| if clamp { input(x) } else { x };
+                // The audio through the front end's clamp; the envelope,
+                // which is finite, as it is.
+                let weigh = |x: f32| if clamp { input(x) } else { finite_reference(x) };
                 let mut got = std::vec![0xa5u8; (no + 1) * PAIR];
                 let mut want = got.clone();
                 scaled_cos_sin::<W, f32>(&mut got[..no * PAIR], &phase[..np], &xs[..nx], weigh);
@@ -1151,6 +1166,7 @@ fn removal_ramp_is_its_first_form_bit_for_bit() {
                 let mut xs = test_weights(&mut n, len);
                 let refs: Vec<u8> = test_weights(&mut n, 2 * len)
                     .iter()
+                    .map(|&v| finite_reference(v))
                     .flat_map(|x| x.to_ne_bytes())
                     .collect();
                 for report in [false, true] {
