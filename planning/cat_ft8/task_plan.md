@@ -1745,7 +1745,7 @@ On `o12-bp` after 1b1cc91; every output equal to 593b7c1's.
    passes and one), x86-64 and the M33 emulator (small one-pass slot,
    host image). **Kept if the A76 three-pass slot gains ≥ 2% or the
    M33 small image's one-pass slot ≥ 3%**; flash growth up to +2 KB is
-   accepted for it (the lead's decision, recorded with the result).
+   accepted for it (the maintainer's decision, recorded with the result).
    Otherwise rejected with its numbers, and belief propagation is
    recorded as done for bit-identical work.
 4. **Findings corrections**: the d1a9334 + 26bb83a grouping recorded as
@@ -1763,6 +1763,14 @@ Timing: rounds alternated, one source path, a target directory per
 commit, binary hashes, the live throttle bits sampled once a second on
 another core (any live bit voids a run).
 
+Status (findings, "Belief propagation, review follow-ups"): 76151f8,
+676d274, 49db9e3, c6e0e4e, 627d356, ee047b8; the four mutants the review
+found surviving are killed. The variable-side sums: A76 three-pass
+−1.21% (with flat inputs −1.94%), M33 small one-pass −1.62%, flash
++1 052 / +1 444 B; rejected under the fixed bar. Belief propagation is
+done for bit-identical work. Every record, WAV output, encoder output
+and emulated M33 output (small and host images) identical.
+
 ## O13: the subtraction, measure first (2026-10-31; measurement only)
 
 The subtraction is about 57% of the A76 three-pass slot (72.4 of
@@ -1779,6 +1787,15 @@ The subtraction is about 57% of the A76 three-pass slot (72.4 of
    that did not change it. Propose how a gate accounts for it.
 3. One to three ranked bit-identical candidates and a stop rule,
    written into findings before any of them is implemented.
+
+Status (findings, "The subtraction, measured first"): 72.1 of the
+125.8 ms three-pass slot, 32.0 cycles a sample, 2.0× an issue floor; by
+stage the time search 18.2 ms, removal 16.9, reference 13.3
+(latency-bound), generator 8.7, correction 7.4, fit 6.7. Ranked:
+several four-lane chains in the reference and the time-search
+products; the removal's ramp index as an exact `f32` per lane; the
+fit's sums kept in registers. Stop rule and a placement-noise
+allowance for gates recorded. Not implemented.
 
 ## Next: gated, result-changing rounds
 

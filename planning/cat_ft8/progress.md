@@ -1366,3 +1366,29 @@
   to x86-64's), 800 WAV slots × 3 configurations × 3 modes, 45 encoder
   outputs, the emulated small image's output on seven slots. Local CI
   and the embedded checks pass.
+
+## Session: 2026-10-31 (O12b review follow-ups and O13 measurement; branch `o12-bp`)
+
+- bc54e8e: O12b and O13 plan, the candidate's rule fixed before any
+  number (A76 three-pass ≥ 2% or M33 small one-pass ≥ 3%; flash up to
+  +2 KB accepted).
+- 76151f8: `VECTOR` by `target_arch`. 676d274: the min-sum check over
+  plain slices (M33 code identical). 49db9e3: the scalar forms under test
+  on hosts (const parameters). c6e0e4e: every check as the first
+  failure. 627d356: `decode_soft` against its first form at every round
+  limit. ee047b8: clippy (a type alias). 8b9a50d: O12 findings
+  corrected.
+- Mutants that survived O12's suite and are now killed: the round limit
+  before the checks, the last check skipped, the select's negative
+  branch, the scalar min-sum arm.
+- Variable-side sums (and flat inputs): A76 −1.21% / −1.94%, M33 small
+  −1.62%; rejected under the fixed bar. Belief propagation is done for
+  bit-identical work.
+- Identity at 627d356 (ee047b8's x86-64 and AArch64 binaries are
+  byte-identical to it): records x86-64 and A76, 800 WAV slots, encoder,
+  the emulated small and host images. Local CI and the Pi suite pass.
+- O13 measured: the subtraction 72.1 ms of the 125.8 ms three-pass slot,
+  32.0 cycles a sample, 2.0× an issue floor; reference 13.3 ms
+  (latency-bound), removal 16.9, time search 18.2, fit 6.7, generator
+  8.7, correction 7.4. Three ranked candidates and a stop rule recorded;
+  none implemented.
