@@ -242,6 +242,8 @@ mod tests {
         "DIGIT_REV",
         "CHECKS",
         "DEGREES",
+        "VAR_EDGES",
+        "EDGE_VARS",
         "LEVEL_POWER",
     ];
     const NOT_COUNTED: &[&str] = &[
@@ -329,6 +331,8 @@ mod tests {
         let parts = crate::decode::fft::table_bytes_of_statics()
             + size_of_val(&crate::decode::bp::CHECKS)
             + size_of_val(&crate::decode::bp::DEGREES)
+            + size_of_val(&crate::decode::bp::VAR_EDGES)
+            + size_of_val(&crate::decode::bp::EDGE_VARS)
             + size_of_val(&crate::decode::tables::LEVEL_POWER);
         assert_eq!(crate::decode::TABLE_BYTES, parts);
     }

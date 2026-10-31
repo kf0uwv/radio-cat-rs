@@ -313,11 +313,10 @@ pub fn decode_soft(
         }
         round += 1;
         *rounds_run = round;
-        *next = *llr;
         if rule == CheckRule::SumProduct {
-            sum_product_round::<VECTOR, PASS_LANES>(total, next, msg);
+            sum_product_round::<VECTOR, PASS_LANES>(llr, total, next, msg);
         } else {
-            min_sum_round::<VECTOR>(total, next, msg);
+            min_sum_round::<VECTOR>(llr, total, next, msg);
         }
         core::mem::swap(&mut total, &mut next);
     }
@@ -376,14 +375,13 @@ fn check_edges() -> impl Iterator<Item = (&'static [u8], usize)> {
 /// its own.
 #[inline(never)]
 fn sum_product_round<const V: bool, const W: usize>(
+    llr: &[f32; N],
     total: &[f32; N],
     next: &mut [f32; N],
     msg: &mut [f32; EDGES],
 ) {
-    for (v, e) in check_edges() {
-        for (m, &i) in msg[e..][..v.len()].iter_mut().zip(v) {
-            *m = total[usize::from(i)] - *m;
-        }
+    for (m, &i) in msg.iter_mut().zip(&EDGE_VARS) {
+        *m = total[usize::from(i)] - *m;
     }
     each_value::<W>(msg, tanh_half::<V>);
     let (t6, t7) = msg.split_at_mut(LOW_EDGES);
@@ -394,10 +392,71 @@ fn sum_product_round<const V: bool, const W: usize>(
         others_products::<7>(tc);
     }
     each_value::<W>(msg, twice_atanh);
-    for (v, e) in check_edges() {
-        for (&m, &i) in msg[e..][..v.len()].iter().zip(v) {
-            next[usize::from(i)] += m;
+    sums(llr, next, msg);
+}
+
+/// Each variable's three edges in the messages' layout ([`check_edges`]),
+/// in check order: every variable is in exactly three checks.
+pub(crate) static VAR_EDGES: [[u16; 3]; N] = {
+    let mut out = [[0u16; 3]; N];
+    let mut seen = [0usize; N];
+    let (mut low, mut high) = (0, LOW_EDGES);
+    let mut c = 0;
+    while c < M {
+        let mut n = 0;
+        let mut j = 0;
+        while j < MAX_DEGREE {
+            n += (PARITY_CHECKS[c][j] != 0) as usize;
+            j += 1;
         }
+        let first = if n == 6 { low } else { high };
+        let (mut j, mut k) = (0, 0);
+        while j < MAX_DEGREE {
+            if PARITY_CHECKS[c][j] != 0 {
+                let i = (PARITY_CHECKS[c][j] - 1) as usize;
+                assert!(seen[i] < 3);
+                out[i][seen[i]] = (first + k) as u16;
+                seen[i] += 1;
+                k += 1;
+            }
+            j += 1;
+        }
+        if n == 6 {
+            low += 6;
+        } else {
+            high += 7;
+        }
+        c += 1;
+    }
+    let mut i = 0;
+    while i < N {
+        assert!(seen[i] == 3);
+        i += 1;
+    }
+    out
+};
+
+/// Each edge's variable, in the messages' layout ([`check_edges`]).
+pub(crate) static EDGE_VARS: [u8; EDGES] = {
+    let mut out = [0u8; EDGES];
+    let mut i = 0;
+    while i < N {
+        let mut k = 0;
+        while k < 3 {
+            out[VAR_EDGES[i][k] as usize] = i as u8;
+            k += 1;
+        }
+        i += 1;
+    }
+    out
+};
+
+/// The next totals: each variable's soft bit plus its three checks'
+/// messages, added in check order.
+#[inline(always)]
+fn sums(llr: &[f32; N], next: &mut [f32; N], msg: &[f32; EDGES]) {
+    for ((x, &l), e) in next.iter_mut().zip(llr).zip(&VAR_EDGES) {
+        *x = l + msg[usize::from(e[0])] + msg[usize::from(e[1])] + msg[usize::from(e[2])];
     }
 }
 
@@ -436,7 +495,12 @@ fn each_value<const W: usize>(values: &mut [f32; EDGES], f: impl Fn(f32) -> f32)
 /// [`VECTOR`], the tests both). Not inlined, so its frame is measured on
 /// its own.
 #[inline(never)]
-fn min_sum_round<const V: bool>(total: &[f32; N], next: &mut [f32; N], msg: &mut [f32; EDGES]) {
+fn min_sum_round<const V: bool>(
+    llr: &[f32; N],
+    total: &[f32; N],
+    next: &mut [f32; N],
+    msg: &mut [f32; EDGES],
+) {
     for (v, e) in check_edges() {
         let row = &mut msg[e..][..v.len()];
         // Where the loops vectorise, the check's size as a constant (the
@@ -444,17 +508,18 @@ fn min_sum_round<const V: bool>(total: &[f32; N], next: &mut [f32; N], msg: &mut
         // drops the vector forms of these short loops, which no check
         // reaches; elsewhere one form for both sizes.
         match (V, v.len()) {
-            (true, 6) => min_sum_check(total, next, &v[..6], &mut row[..6]),
-            (true, _) => min_sum_check(total, next, &v[..7], &mut row[..7]),
-            (false, _) => min_sum_check(total, next, v, row),
+            (true, 6) => min_sum_check(total, &v[..6], &mut row[..6]),
+            (true, _) => min_sum_check(total, &v[..7], &mut row[..7]),
+            (false, _) => min_sum_check(total, v, row),
         }
     }
+    sums(llr, next, msg);
 }
 
 /// [`min_sum_round`] for one check: its variables `v` and its messages
 /// `row`, of the same length.
 #[inline(always)]
-fn min_sum_check(total: &[f32; N], next: &mut [f32; N], v: &[u8], row: &mut [f32]) {
+fn min_sum_check(total: &[f32; N], v: &[u8], row: &mut [f32]) {
     for (m, &i) in row.iter_mut().zip(v) {
         *m = total[usize::from(i)] - *m;
     }
@@ -475,9 +540,6 @@ fn min_sum_check(total: &[f32; N], next: &mut [f32; N], v: &[u8], row: &mut [f32
         let others_negative = negatives - u32::from(*x < 0.0);
         let mag = ALPHA * if j == at { min2 } else { min1 };
         *x = if others_negative % 2 == 1 { -mag } else { mag };
-    }
-    for (&m, &i) in row.iter().zip(v) {
-        next[usize::from(i)] += m;
     }
 }
 

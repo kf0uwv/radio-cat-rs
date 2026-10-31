@@ -612,10 +612,10 @@ fn the_sum_product_round_matches_the_check_by_check_form_bit_for_bit() {
             ("scalar", sum_product_round::<false, 1>),
         ];
         for (form, round) in forms {
-            let (mut next, mut msg) = (next, msg);
-            round(&total, &mut next, &mut msg);
+            let (mut got_next, mut msg) = ([f32::NAN; N], msg);
+            round(&next, &total, &mut got_next, &mut msg);
             assert_eq!(
-                bits(&mut next.iter()),
+                bits(&mut got_next.iter()),
                 bits(&mut want_next.iter()),
                 "state {state}, {form}: sums"
             );
@@ -628,8 +628,8 @@ fn the_sum_product_round_matches_the_check_by_check_form_bit_for_bit() {
     }
 }
 
-/// A round: the totals, the next totals, the messages.
-type Round = fn(&[f32; N], &mut [f32; N], &mut [f32; EDGES]);
+/// A round: the soft bits, the totals, the next totals, the messages.
+type Round = fn(&[f32; N], &[f32; N], &mut [f32; N], &mut [f32; EDGES]);
 
 /// The min-sum round as first written (inside `decode_soft`, the inputs
 /// in a separate row): the reference the in-place round must match bit
@@ -688,10 +688,10 @@ fn the_min_sum_round_matches_its_first_form_bit_for_bit() {
             ("scalar", min_sum_round::<false>),
         ];
         for (form, round) in forms {
-            let (mut next, mut msg) = (next, msg);
-            round(&total, &mut next, &mut msg);
+            let (mut got_next, mut msg) = ([f32::NAN; N], msg);
+            round(&next, &total, &mut got_next, &mut msg);
             assert_eq!(
-                next.map(f32::to_bits),
+                got_next.map(f32::to_bits),
                 want_next.map(f32::to_bits),
                 "state {state}, {form}: sums"
             );
