@@ -1294,3 +1294,32 @@
   and the Pi release suite pass. A76 profile: subtraction 44.1% (fit
   18.5%, time search 11.1%, removal 8.6%, fit-path generator 5.8%), BP
   31.7%, feed 18.9%.
+
+## Session: 2026-10-30 (O10, the spectrogram transform; branch `o10-fft`)
+
+- 6ed0020: O10 plan (task_plan.md), committed before the code.
+- Measured first (out-of-tree microbenchmark of one row, both hosts;
+  AArch64 and x86-64 code of the stages): A76 row 53.2 µs, of it the
+  transform 39.7 (stages 2–6 scalar, stages 2 and 3 reloading spilled
+  twiddles per butterfly), split and powers 6.6, `log2` and level 2.4.
+- 4089b5b: butterflies side by side (four lanes on SSE2/NEON, one
+  elsewhere), real/imaginary arrays, split and powers as vectorising
+  loops. Bit-identical by construction and by test (transform at 1, 2, 4
+  lanes against the reference; powers against the form as first
+  written, every bin). Row: A76 53.2 → 37.3 µs, x86-64 26.2 → 20.9.
+  M33 (emulated, small image): instructions per row −12.4%, flash
+  −132 B, stack unchanged.
+- e641a61: `Correction::skip` exact for any count (no bound, no
+  assertion; test to `u64::MAX`).
+- 5cb0e43: ceiling elapsed time to stderr (stdout loses only that).
+- 7f89879: coefficient provenance (LP grid fit, not Remez; S5 not
+  f32-tuned) and the re-pin note.
+- Slot: A76 three passes 151.1 → 142.0 ms (−6.0%), one pass 32.3 →
+  29.3 (−9.3%), feed 31.2 → 22.0; x86-64 85.5 → 82.1 (−4.0%). A76
+  profile: `power_bins` 17.7% → 13.0% of the slot.
+- Identity: 63 000 records equal on x86-64 and on the A76 (against
+  x86-64's ddfd48d); 800 WAV slots byte-identical; ceiling stdout equal
+  but for the moved figure; encoder outputs identical. Local CI, the
+  embedded checks (no FMA, no `f64` helper) and the Pi release suite
+  pass.
+- Proposed, not run: the gated `i16` residual round (findings).

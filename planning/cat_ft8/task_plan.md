@@ -1319,6 +1319,8 @@ Measured in O3 (findings): the multi-pass residual held as 16-bit samples
 halves the caller's 720 000 B; no measurable decode change on the run
 sets or the 800 WAV slots. Changes results and the residual's type, so
 it needs its own plan and acceptance round.
+A proposed gate for it is in findings.md, "Proposed: `i16` residual,
+gated" (O10; proposed, not yet run).
 
 ## O3: CPU and memory per decoded signal (2026-10-29)
 
@@ -1609,6 +1611,12 @@ long lines).
 
 **C. Plan only:** a proposed gated `i16` residual round (findings,
 "Proposed: `i16` residual, gated"), not run.
+
+Status (findings, "tenth round"): 4089b5b (FFT), e641a61, 5cb0e43,
+7f89879. A76 three-pass slot 151.1 → 142.0 ms (−6.0%), one pass −9.3%,
+x86-64 −4.0%; every record, WAV output and encoder output identical;
+Cortex-M33 instructions per spectrogram row −12.4%, flash −132 B, stack
+unchanged. The `i16` gate is proposed, not yet run.
 
 Checks: local CI (fmt, clippy on the workspace, all features and the
 thumbv8m library, tests with the ignored ones, MSRV 1.75, docs,

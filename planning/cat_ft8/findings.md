@@ -3689,13 +3689,13 @@ get_throttled` 0x50000 before and after every Pi run). **Adopted: 44d01ba
    index), and the lanes are added `(l0 + l1) + (l2 + l3)` at the end of
    the segment (fit) or block (time search). The order is set by the
    sample index alone, so it is the same on every target, for every
-   scratch size and whether the reference is held or
-   rerun (the existing tests of both pass). Sine sums are taken positive
-   and their sign turned once (exact: negation commutes with rounding).
-   The held ring is rounded down to a multiple of 4 pairs so that 4
-   samples from a multiple of 4 never wrap: for speed only, the sums'
-   order does not depend on it. Portable Rust only: no `unsafe`, no `std::arch`, `f32`, MSRV 1.75
-   (`next_multiple_of`), `no_std`.
+   scratch size and whether the reference is held or rerun (the
+   existing tests of both pass). Sine sums are taken positive and their
+   sign turned once (exact: negation commutes with rounding). The held
+   ring is rounded down to a multiple of 4 pairs so that 4 samples from
+   a multiple of 4 never wrap: for speed only, the sums' order does not
+   depend on it. Portable Rust only: no `unsafe`, no `std::arch`,
+   `f32`, MSRV 1.75 (`next_multiple_of`), `no_std`.
 
 ### Degree
 
@@ -3741,8 +3741,8 @@ three-pass slot, both rounds; subtraction and BP means:
 BP, feed and sync are unchanged within 0.5 ms; the single pass is
 unchanged (A76 32.3–32.5 ms, x86-64 18.6–19.0). Step 1 alone is −0.5% on
 the A76 and +2% on x86-64 (subtraction +2.7 ms there, reproducible in two
-rounds of an earlier, interrupted pairwise run as well): the closed form itself costs
-nothing per sample, so this is code placement in `run`; it is kept
+rounds of an earlier, interrupted pairwise run as well): the closed
+form itself costs nothing per sample, so this is code placement in `run`; it is kept
 because steps 2–3 need a closed-form skip after the four-lane phases.
 d4e669e's release binaries are byte-identical to the measurement build
 of degree 5/4 (ec72aa0, the same code with the coefficients inline):
@@ -3814,8 +3814,8 @@ Per set (both commits): `crowded` 40 452, `wide` 50 996, `fading`
 35 888 decoded over the three blocks (127 336), by pass 93 044 / 28 428 /
 5 864 (`crowded` 29 088 / 9 227 / 2 137, `wide` 37 424 / 11 368 /
 2 204, `fading` 26 532 / 7 833 / 1 523; d4e669e: 5 863 in pass 3);
-`sweep` 8 764, `edges` 1 228, `empty` 0, unchanged; `wide` below −16 dB: 1 788 / 1 887 / 1 843 decoded per block,
-none lost or gained. `host,passes=1` and `small`: 19 200 records each,
+`sweep` 8 764, `edges` 1 228, `empty` 0, unchanged; `wide` below
+−16 dB: 1 788 / 1 887 / 1 843 decoded per block, none lost or gained. `host,passes=1` and `small`: 19 200 records each,
 all equal to bafed37's. What differs in the `host` records (ee7c0ce):
 later passes' sync point counts (1 448 pass reports), the reported SNR,
 time, frequency and score of later-pass decodes (730 / 421 / 394 / 203),
@@ -4062,9 +4062,286 @@ loops, inlined in the subtraction's body, 18.5%; removal 8.6%; time
 search 11.1%, its generator 4.0% of that; the generator on the fit path
 5.8%; frequency estimate ~0), belief propagation 31.7%, feed 18.9%,
 sync 3.1%, soft bits 1.8%. At 1b47a55 the subtraction was 53.7% and BP
-26.2%: belief propagation is now the next largest single stage after
-the subtraction's fit.
+26.2%: belief propagation is now the largest single stage; the
+subtraction as a whole is 44.1%. (Corrected in O10: this said BP was the
+next largest after the subtraction's fit, which is 18.5%.)
 
-**Not measured:** any Cortex-M at run time (static counts only); off-air audio; slots beyond
-40 signals; the `ceiling` mode (single-pass by construction: it never
-calls the subtraction; left to the gate).
+**Not measured:** any Cortex-M at run time (static counts only);
+off-air audio; slots beyond 40 signals; the `ceiling` mode (single-pass
+by construction: it never calls the subtraction; left to the gate).
+
+## The spectrogram's transform, tenth round (O10, bit-identical, 2026-10-30)
+
+The plan is task_plan.md, "O10". Branch `o10-fft` from ddfd48d; every
+output equal to ddfd48d's. Measured with the hygiene of O5–O9 (one
+source path, a target directory per commit, SHA-256 checked on the Pi,
+rounds alternated, one benchmark at a time, `vcgencmd get_throttled`
+0x50000 before and after every Pi run).
+
+### Where a row's time went (ddfd48d)
+
+An out-of-tree microbenchmark of one spectrogram row (the band of
+`Band::DEFAULT`, noise input; the stages timed one at a time from a
+saved buffer), per row:
+
+| | Cortex-A76 | x86-64 |
+|---|---|---|
+| load (digit reversal, window) | 4.4 µs | 2.6 µs |
+| stage 1, radix 4 (l = 1) | 3.4 | 1.7 |
+| stage 2, radix 4 (l = 4) | 9.5 | 2.1 |
+| stage 3, radix 4 (l = 16) | 9.5 | 2.3 |
+| stage 4, radix 2 (l = 64) | 4.1 | 1.9 |
+| stage 5, radix 3 (l = 128) | 3.1 | 3.3 |
+| stage 6, radix 5 (l = 384) | 10.2 | 4.8 |
+| real split and powers | 6.6 | 2.8 |
+| per-bin `log2` and level | 2.4 | 4.6 |
+| **row** | **53.2** | **26.2** |
+
+So the per-bin `log2` (which the profile could not separate from the
+transform: it is inlined into `power_bins`) is 4.5% of the row on the
+A76; the transform is 79% and the split 12%. The transform was 39.7 µs
+on the A76, about 95 000 cycles at 2.4 GHz. The code explains it: only
+the first stage (one butterfly per block, constant twiddles) was
+vectorised, across blocks with many lane shuffles; stages 2–6 were scalar
+complex arithmetic, stages 2 and 3 with their twelve twiddles spilled to
+the stack and reloaded for every butterfly (A76: 114 instructions, 24
+stack loads per butterfly). Each complex product is four multiplies and
+two adds and cannot change, so the scalar stages were at the A76's
+floating-point throughput.
+
+### Change (4089b5b)
+
+No butterfly's operations or their order change:
+
+- the work buffer as separate real and imaginary arrays (same 15 360 B);
+- after the first stage, `LANES` butterflies of adjacent k run side by
+  side (four where the target has 128-bit `f32` vectors, SSE2 or NEON;
+  one elsewhere, so a Cortex-M runs plain loops). Multi-block stages read
+  their twiddles once per group of k and reuse them over the blocks; the
+  last stage (one block) reads each where it is used, at
+  `TWIDDLES[f + j·m]`, f = m·(k + q·l) mod N a multiple of 4m, so its
+  lanes never wrap (checked at compile time for the lane count);
+- the real split and powers as plain loops over bins (bin 0, bins to 960,
+  bins above 960 with −i times the table's twiddle), which vectorise;
+  bin by bin with one lane.
+
+Forms tried and dropped (A76 row, µs): twiddles gathered per group for
+the last stage too, 17.3 for that stage (store-forwarding stalls, index
+arithmetic; worse than 10.2); an incrementally updated twiddle index in
+the last stage, 8.9 against 10.4 for the plain `% N` (−0.5% of the slot,
+under the 2% rule: the simpler form kept, and it is also the cheaper one
+on the M33); explicit four-wide helper functions (no change); stages not
+forced inline (68 µs: the stage sizes stop being constants).
+
+### Result
+
+Per row (microbenchmark, same input), ddfd48d → 4089b5b:
+
+| | A76 | x86-64 |
+|---|---|---|
+| load | 4.4 → 4.4 µs | 2.6 → 2.4 |
+| stages 1–6 | 39.7 → 25.9 | 16.2 → 13.0 |
+| split and powers | 6.6 → 2.3 | 2.8 → 0.9 |
+| `log2` and level | 2.4 → 2.8 | 4.6 → 4.5 |
+| **row** | **53.2 → 37.3 (−30%)** | **26.2 → 20.9 (−20%)** |
+
+Slot (`slotcost host,passes=1 host 200 5`, ddfd48d, 4089b5b and the
+round's head 7f89879 round-robin, two rounds, order reversed in the
+second; worst / mean ms, both rounds; stage means of the three-pass
+slot):
+
+| | A76 three passes | A76 one pass | A76 feed (3 passes) | x86-64 three passes | x86-64 feed |
+|---|---|---|---|---|---|
+| ddfd48d | 160.8 / 151.1, 151.1 | 32.3, 32.3 | 31.2 | 91.4–91.9 / 85.5, 85.6 | 15.4 |
+| 4089b5b (FFT) | 152.1–152.3 / 142.5, 142.6 | 29.6, 29.6 | 22.0 | 88.0–89.4 / 82.0, 82.8 | 12.6 |
+| 7f89879 (head) | 151.7 / 142.0, 141.9 | 29.3, 29.3 | 22.0 | 87.4–88.8 / 82.3, 81.9 | 12.6–12.7 |
+| **ddfd48d → 7f89879** | **−6.0%** | **−9.3%** | **−29.5%** | **−4.0%** | **−18%** |
+
+Belief propagation and the subtraction are unchanged within 0.9 ms
+(placement); throttle flags 0x50000 before and after every A76 run. The
+A76 profile (out-of-tree sampler, the three-pass side, 348 378 and
+327 296 samples; the sampler puts the slot at 156.0 and 145.9 ms):
+`power_bins` 17.7% → 13.0% of the slot (27.6 → 18.9 ms); belief
+propagation 31.1% → 32.7% (48.5 → 47.8 ms), the subtraction's fit
+18.6% → 20.0%, removal 8.7%, time search 6.2% → 6.5%, the generator
+9.8% → 10.4%: the transform is now third, behind BP and the fit.
+
+**Cortex-M33** (the small image, `opt-level = "s"`, LTO; the image run
+from `_start` in an instruction-set emulator (unicorn, Cortex-M33 model),
+instructions counted inside `finish_row` and the helpers it calls, 184
+rows of the check program's slot; instructions, not cycles):
+
+| | ddfd48d | 4089b5b |
+|---|---|---|
+| instructions per row | 1 179 855 | 1 033 614 (−12.4%) |
+| of which load / stages 1–6 / split and powers / levels / `memclr` | 55 725 / 909 225 / 39 622 / 46 477 / 128 806 | 55 722 / 849 947 / 47 862 / 46 925 / 33 158 |
+| flash small / host / encoder | 85 508 / 97 948 / 35 536 B | 85 376 / 97 816 / 35 536 B |
+| `finish_row` frame | 464 B | 464 B |
+| static RAM small / host | 212 044 / 241 612 B | same |
+
+Most of the M33 saving is zeroing no longer done (each butterfly's and
+each k's arrays are now written whole); the stages' own instructions
+fall 7%. The lane count is one there, so the code is the plain loops.
+Not measured: M33 cycles (no board).
+
+**Identity.** By construction (each lane is one butterfly's own
+operations; Rust never contracts to FMA) and by test: the transform
+equals the reference bit for bit at 1, 2 and 4 lanes on the existing
+inputs (noise to 2¹⁶, subnormals, signed zeros, full-scale coherent);
+a new test compares the powers with the form as first written bit for
+bit over all 1 920 bins and ranges starting and ending at 0, 960/961 and
+chunk edges, for noise from 10⁻³⁰ to 2¹⁶, tones, constants and
+subnormals, with both forms of the per-bin loop. Mutations (twiddle
+rotation sign, summation order, twiddle index) fail them; moving the
+960/961 boundary by one bin does not (bin 960's two twiddle forms differ
+only by 6·10⁻¹⁷ in a part that adds to a product with −1, so the power is
+the same: an equivalent change). Records:
+`paired_bench run` of `main`, `cap1`, `cap2` (`host` on `crowded`,
+`wide`, `fading`; `host` on `sweep`, `edges`, `empty` of `main`;
+`host,passes=1` and `small` on `sweep`, `crowded`, `edges`, `empty` of
+`main`): 63 000 records of 7f89879 equal to ddfd48d's (timings removed)
+on x86-64, and the A76's records of 7f89879 equal x86-64's of ddfd48d,
+63 000 of 63 000. The 800 WAV slots (`cat-ft8-decode`, plain, `--raw`,
+`--profile` without timings; `host`, `small`, `host,passes=1`):
+byte-identical, 7 200 runs. `ceiling host main SET` for `crowded`,
+`wide`, `fading`: stdout identical but for the moved elapsed figure. The
+45 `cat-ft8-encode` outputs identical; no change under `src/waveform`,
+`src/message`, `lib.rs` or the encode CLI.
+
+### Small fixes (e641a61, 5cb0e43, 7f89879)
+
+- `Correction::skip` halves the even factor of n(n − 1) before the
+  wrapping multiply: exact modulo 2⁶⁴ for every n; the bound and its
+  debug assertion are gone; a test checks counts up to `u64::MAX`
+  against 128-bit arithmetic.
+- `paired_bench ceiling`: the elapsed seconds of the 50%-point line go
+  to stderr (as the per-set time already did). The ceiling's stdout loses
+  that figure and nothing else, and now compares byte for byte.
+- `math.rs`: the coefficients were fitted by linear programming on a grid
+  of 4 001 points (`f64`), not by a Remez exchange as the comment (and
+  1f7d398's message) said; S5 is weakly determined (79.528 here; other
+  grids and fitters 79.52–79.53) and was not adjusted for `f32`. The
+  exhaustive test's lower bound is marked as a pin to update with the
+  coefficients.
+- 1f7d398's message reads the mutation backwards. Correct: the lanes are
+  keyed by the sample index within the block (the documented order), and
+  the mutation the new test kills keys them from the first usable sample
+  (`lane_sums(0, …)`); dropping the single samples after the whole lanes
+  is the other. History is not rewritten.
+- O9's profile paragraph: belief propagation (31.7%) is the largest
+  single stage, not the next after the fit (18.5%); corrected above, and
+  two long lines rewrapped.
+
+### Checks at 7f89879
+
+Local CI (fmt, clippy `-D warnings` on the workspace, cat-ft8 with all
+targets and features and the thumbv8m library, workspace tests,
+profile and no-std tests, release tests with the ignored ones (lib 167,
+the exhaustive sine/cosine test included), the bulk run, MSRV 1.75,
+docs, `check.sh --stack`) passes; thumbv7em builds. In every thumbv8m
+image (`llvm-objdump --triple=thumbv8m.main-none-eabihf
+--mattr=+fp-armv8d16sp`): 0 `vfma`/`vfms`/`vfnma`/`vfnms` (`vmla` 67 /
+143 / 13 in small / host / encoder, as at ddfd48d), no `f64` helper.
+Images: small 85 376 B flash (ddfd48d 85 508), host 97 856 B (97 948),
+encoder-only 35 536 B (unchanged); static RAM unchanged; the largest
+frames unchanged. Raspberry Pi 5: the release test suite with the
+ignored tests passes (lib 167, then 2 + 0 + 12 + 1 bulk + 7 + 2 + 5);
+throttle flags 0x50000 before and after.
+
+**Not measured:** Cortex-M33 cycles (instructions only, emulated); the
+transform on other vector targets (one lane is the fallback, with the
+same results).
+
+### Proposed: `i16` residual, gated (proposed; not yet run)
+
+A result-changing memory round, written here for review before any code
+or run. Nothing below has been run; no block is named yet.
+
+**Change.** The multi-pass caller's residual held as 16-bit samples:
+720 000 → 360 000 B per slot (180 000 samples). Pass 1 is fed from the
+caller's audio as now, so it does not change. The residual is the audio
+rounded once to 16 bits before the first subtraction (exact for 16-bit
+input such as WAV), and each subtraction's output sample y is stored as
+
+- s = y × 32 768 (exact), clamped to [−32 768, 32 767] with `max` then
+  `min` (a NaN goes to −32 768; the subtraction's output is finite by
+  construction);
+- r = (s + 12 582 912.0) − 12 582 912.0 in `f32`, which rounds to the
+  nearest integer, ties to even, for |s| ≤ 2²² (12 582 912 = 1.5 · 2²³):
+  two additions, no fused multiply-add, the same bits on every target and
+  no dependence on the float-to-integer conversion's rounding;
+- r as `i16` (exact: r is an integer in range).
+
+Reading a sample back is `f32::from(i16) / 32 768` (exact). The fit,
+the time search and the removal read 16-bit samples (one conversion per
+sample read); the removal rounds once per sample written. The API
+change (`decode_passes`, `decode_further_passes` and `subtract` taking
+`&mut [i16]`, or a choice of either) is settled with the plan.
+
+**Expected cost and effect.** Rounding adds a uniform error of
+1/√12 ≈ 0.29 LSB rms per removal at each sample a removal touches;
+after about 34 removals in a 40-signal slot, about √34 × 0.29 ≈ 1.7 LSB
+rms. That is invisible against the benchmark's noise (0.03 rms, about
+980 LSB) and against any real receiver's, and shows only when the input
+sits within a few LSB of silence: the low-level sets below are there to
+measure it. The O3 prototype (rounding the whole buffer after each
+subtraction) changed 31 of about 38 900 slots' messages (22 gained, 9
+lost) and no WAV decode; its speed was not measured. On the A76 the
+per-sample conversion in the fit and time search (27% of the slot with
+the removal) may cost time, while 360 KB fits the 512 KB L2 and 720 KB
+does not, which may save it; this is measured on `main`, not assumed.
+
+**Gate (proposed; to be fixed and committed before any record of the
+acceptance block exists).** Candidate C (the round's head) against the
+base B (the merged head before it), one attempt, no retune:
+
+- **Block.** One block never used, named in the gate commit, checked
+  unused on the host and the Raspberry Pi 5 before that commit and
+  again immediately before the run (as for `accept3`).
+- **Low-level sets** (new `paired_bench` sets, fixed in the gate commit
+  and checked on `main`, `cap1`, `cap2` first, not on the acceptance
+  block): the `crowded` layouts (10, 20 and 40 signals; the same SNRs
+  relative to the noise) with the noise at 2 and at 4 LSB rms (about
+  −84 and −78 dBFS) instead of 0.03, so that the accumulated rounding
+  (about 1.7 LSB rms) is comparable to the noise.
+- **False decodes: 0** in every pass of every record, in the ceiling
+  runs and in the WAV output.
+- **Pass 1 byte-identical:** the `host,passes=1` and `small` records
+  equal to B's (timings removed); in every `host` record the pass-1
+  decodes and pass-1 report equal; the WAV output with `host,passes=1`
+  and `small` byte-identical.
+- **Ceiling byte-identical:** `ceiling host BLOCK SET` stdout for
+  `crowded`, `wide`, `fading` equal to B's with nothing removed (the
+  elapsed times are on stderr since O10).
+- **Lost:** at most 3 on the acceptance block's `crowded`, `wide`,
+  `fading` together, reported per set; `wide` below −16 dB at most 1;
+  on the low-level sets together at most 3, and lost minus gained at
+  most 2.
+- **Every lost, gained and pass-moved message classified** by the
+  out-of-tree classifier of the O9 gate, its SHA-256 pinned in the gate
+  commit, as (m), (r) or (k) with the O9 definitions; one unexplained
+  message fails.
+- **800 WAV slots:** in every slot, with `host`, `host,passes=1` and
+  `small` (plain, `--raw`, `--profile`), the same messages decoded in
+  the same passes as B; other differing lines listed by kind, not
+  judged. (WAV input is 16-bit, so only the per-removal rounding acts.)
+- **CPU (pre-registered, A76):** measured on `main`, never on the
+  acceptance block: the `slotcost host,passes=1 host 200 5` three-pass
+  mean of C not above B's by more than the larger of B's own spread
+  between its two rounds and 0.5%, rounds alternated (B C, then C B);
+  and the mean three-pass decode time per slot of the `main` A76 run
+  records (`taskset -c 3`, two rounds, order reversed) under the same
+  bound. x86-64 `slotcost` not slower than B's by more than 2%.
+- **Memory:** the residual 360 000 B per slot (its type's size, stated);
+  `check.sh --stack`: static RAM of every image not above B's, the
+  subtraction's frame not above B's.
+- **Identity:** the A76 run records equal x86-64's for C (timings
+  removed); the A76 release suite with the ignored tests passes;
+  thumbv8m.main-none-eabihf and thumbv7em build; no `f64` helper and no
+  fused multiply-add in any thumbv8m image.
+- **Encoder byte-identical:** no change under `src/waveform`,
+  `src/message`, `lib.rs` or the encode CLI; the golden waveform hashes
+  pass; the 45 `cat-ft8-encode` outputs identical.
+
+**Merge rule.** C merges if every criterion passes; else nothing merges
+and the result is recorded. Applied mechanically.
