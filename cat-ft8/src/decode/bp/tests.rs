@@ -64,7 +64,7 @@ fn hard_decisions_split_exact_ties_by_index() {
     let mut hard = [9u8; N];
     for tie in [0.0f32, -0.0] {
         // Every value an exact tie (−0.0 included): bit i goes to i % 2.
-        hard_decide(&[tie; N], &mut hard);
+        hard_decisions(&[tie; N], &mut hard);
         for (i, &h) in hard.iter().enumerate() {
             assert_eq!(usize::from(h), i % 2, "tie {tie:?} at {i}");
         }
@@ -74,10 +74,61 @@ fn hard_decisions_split_exact_ties_by_index() {
     for (i, v) in values.iter_mut().enumerate() {
         *v = if i % 3 == 0 { -1.0e-30 } else { 2.5 };
     }
-    hard_decide(&values, &mut hard);
+    hard_decisions(&values, &mut hard);
     for (i, &h) in hard.iter().enumerate() {
         assert_eq!(h, u8::from(i % 3 == 0), "at {i}");
     }
+}
+
+/// The stopping test as first written: every bit decided, then the
+/// checks over the decisions.
+fn hard_decide_first_form(values: &[f32; N], hard: &mut [u8; N]) -> bool {
+    for (i, (h, &x)) in hard.iter_mut().zip(values.iter()).enumerate() {
+        *h = u8::from(x < 0.0 || (x == 0.0 && i % 2 == 1));
+    }
+    (0..M).all(|c| {
+        let (v, n) = check(c);
+        v[..n]
+            .iter()
+            .fold(0u8, |acc, &i| acc ^ hard[usize::from(i)])
+            == 0
+    })
+}
+
+#[test]
+fn the_stopping_test_matches_its_first_form() {
+    // Codewords with a few bits flipped, erased (±0) or perturbed, so both
+    // outcomes and every check position of the first failure occur, and
+    // random states.
+    let (_, cw) = codeword("K1ABC W9XYZ RR73");
+    let clean = channel(&cw, 2.0, 0.0, 1);
+    let mut value = random_values(0x57_0b);
+    let mut word = 0x9e37_79b9_u64;
+    let mut held = 0;
+    for state in 0..20_000 {
+        let mut values = clean;
+        if state % 2 == 0 {
+            values.iter_mut().for_each(|x| *x = value());
+        } else {
+            for _ in 0..state % 5 {
+                word = word.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                let i = (word >> 33) as usize % N;
+                values[i] = match (word >> 20) % 3 {
+                    0 => -values[i],
+                    1 => 0.0,
+                    _ => -0.0,
+                };
+            }
+        }
+        let mut want = [0u8; N];
+        let holds = hard_decide_first_form(&values, &mut want);
+        assert_eq!(checks_hold(&values), holds, "state {state}");
+        held += usize::from(holds);
+        let mut hard = [9u8; N];
+        hard_decisions(&values, &mut hard);
+        assert_eq!(hard, want, "state {state}");
+    }
+    assert!(held > 1_000, "{held}");
 }
 
 #[test]

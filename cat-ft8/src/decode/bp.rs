@@ -72,6 +72,7 @@ pub struct BpScratch {
     /// The check-to-variable messages, one per edge, laid out by check
     /// degree ([`check_edges`]).
     msg: [f32; EDGES],
+    /// The hard decisions of the last totals whose checks all held.
     hard: [u8; N],
     /// Message-passing rounds run by the last decode, whatever its result.
     rounds: u8,
@@ -224,21 +225,33 @@ fn twice_atanh(p: f32) -> f32 {
     }
 }
 
-/// Hard decisions of `values` into `hard`; true if every check holds.
-fn hard_decide(values: &[f32; N], hard: &mut [u8; N]) -> bool {
-    // An exact tie (0, e.g. an erased bit no check has informed) goes to
-    // the bit's index parity: deterministic, and favouring neither value,
-    // so ties do not pull towards the all-zero codeword.
-    for (i, (h, &x)) in hard.iter_mut().zip(values.iter()).enumerate() {
-        *h = u8::from(x < 0.0 || (x == 0.0 && i % 2 == 1));
-    }
+/// The hard decision of value `x` at bit `i`. An exact tie (0, e.g. an
+/// erased bit no check has informed) goes to the bit's index parity:
+/// deterministic, and favouring neither value, so ties do not pull towards
+/// the all-zero codeword.
+#[inline]
+fn hard_bit(x: f32, i: usize) -> u8 {
+    u8::from(x < 0.0 || (x == 0.0 && i % 2 == 1))
+}
+
+/// True if every parity check holds for the hard decisions of `values`.
+/// Each check decides its own bits as it is tested, so a round that fails
+/// stops at its first failing check without deciding the other bits.
+fn checks_hold(values: &[f32; N]) -> bool {
     (0..M).all(|c| {
         let (v, n) = check(c);
-        v[..n]
-            .iter()
-            .fold(0u8, |acc, &i| acc ^ hard[usize::from(i)])
-            == 0
+        v[..n].iter().fold(0u8, |acc, &i| {
+            let i = usize::from(i);
+            acc ^ hard_bit(values[i], i)
+        }) == 0
     })
+}
+
+/// Hard decisions of `values` into `hard`.
+fn hard_decisions(values: &[f32; N], hard: &mut [u8; N]) {
+    for (i, (h, &x)) in hard.iter_mut().zip(values.iter()).enumerate() {
+        *h = hard_bit(x, i);
+    }
 }
 
 /// The payload of a codeword in hard decisions, after the CRC and the
@@ -286,7 +299,8 @@ pub fn decode_soft(
             .count();
         n.min(255) as u8
     };
-    if hard_decide(total, hard) {
+    if checks_hold(total) {
+        hard_decisions(total, hard);
         let payload = accept(hard)?;
         return Ok(BpDecode {
             payload,
@@ -303,7 +317,8 @@ pub fn decode_soft(
             min_sum_round(total, next, msg);
         }
         core::mem::swap(&mut total, &mut next);
-        if hard_decide(total, hard) {
+        if checks_hold(total) {
+            hard_decisions(total, hard);
             let payload = accept(hard)?;
             return Ok(BpDecode {
                 payload,
