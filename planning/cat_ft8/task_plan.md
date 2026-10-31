@@ -1870,6 +1870,22 @@ byte-identical; the encoder identical; the emulated small and host
 images' decodes on the seven WAV slots identical; the Pi release
 suite. No acceptance block is used.
 
+Status (findings, "The subtraction, thirteenth round"): all four kept.
+- d486205: 16 samples at a time (subtract −5.07 ms).
+- d116122: the ramp index in `i32` (−6.45 ms).
+- 94ae1b8: the fit's sums out of line (−3.48 ms).
+- 57cbc67: belief propagation's sums by variable and inputs by edge (BP
+  −3.34 ms).
+- e3f5444: test fix.
+
+Candidates 3 and 4 pass by 0.20 and 0.12 ms. A76 three-pass slot 125.81
+→ 107.28 ms (−14.7%), one pass 21.70 → 20.30, the subtraction 72.07 →
+56.59 (−21.5%), 1.81× its floor (from 2.01×). Cortex-M33: the
+subtraction −7.3%; the one-pass slots −1.6% (small) and −2.9% (host).
+Every record, decode and residual is identical. The one changed output
+is `static_table_bytes` in `--profile` (+1 566, the BP tables), and
+flash is +1 444 B (small) and +600 B (host) net.
+
 ## Next: gated, result-changing rounds
 
 Each changes results and needs its own acceptance (the run sets, the

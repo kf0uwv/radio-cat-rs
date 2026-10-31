@@ -5166,3 +5166,278 @@ instructions a sample on the M33 (1.8 cycles on the A76).
 - M33 cycles: emulated instructions only, of an out-of-line build. The
   shipping image inlines the stages into one function (1.42 G against
   1.36 G instructions for the slot's subtractions).
+
+## The subtraction, thirteenth round (O13, bit-identical, 2026-10-31)
+
+On the local branch `o13-sub` from 67e2458; the round's rules (a003d6e)
+were committed before any new measurement. Four candidates, each judged
+against the branch head before it by the stages it changes; all four
+pass. The A76 three-pass slot is 125.84 → 107.29 ms (−14.7%) and the
+subtraction 72.09 → 56.58 ms (−21.5%) in the per-candidate pairs.
+Records, decodes and residuals are equal to 67e2458's on every target
+measured. One output changes: `static_table_bytes` in
+`cat-ft8-decode --profile` (36 260 → 37 826), the fourth candidate's
+tables. The three subtraction commits alone (e3f5444) change no output.
+
+### Changes
+
+1. **d486205: the reference and the time-search products, 16 samples
+   at a time.**
+   - `scaled_cos_sin::<CHAINS>` does the work. `CHAINS` is 16 where
+     `VECTOR` is set and 1 elsewhere. `VECTOR` moved to `math.rs`, and
+     `bp` now uses it from there.
+   - Each sample's operations are the plain loop's. Four independent
+     four-lane chains interleave.
+   - The blocked products loop no longer re-makes its seven constants
+     (`dup`). It is 195 AArch64 instructions per 16 samples, against
+     4 × 53 before.
+   - The count was chosen with the microbenchmark (below). The
+     subtraction's cycles per sample, and the reference stage's:
+
+     | samples at a time | subtraction | reference |
+     |---|---|---|
+     | 4 (before) | 31.86 | 6.66 |
+     | 8 | 34.42 | 10.37 |
+     | **16** | **29.35** | **5.32** |
+     | 24 | 29.49 | 5.23 |
+     | 32 | 30.64 | 5.43 |
+
+     At 8 the reference block is not unrolled well.
+   - On the M33 (count 1) the small image is the same code instruction
+     for instruction. The host image differs only in the order of a few
+     stores outside the loops, with the same counts.
+   - Test: `scaled_cos_sin` at 1, 4, 8, 16 and 24 samples at a time
+     against the plain loop, byte for byte. Inputs: random and edge
+     phases and weights, every length up to three blocks and beyond,
+     each input the shortest in turn. A mutant that drops the audio's
+     length from the count fails only this test.
+2. **d116122: the removal's ramp index in `i32`.**
+   - Exactness. Every index here is a reference sample or a segment
+     centre, at most `WAVEFORM_SAMPLES` (below 2²⁴, asserted at compile
+     time). So `j0 + i − from` is exact in `i32`. Integers below 2²⁴
+     are exact in `f32`, so its `f32` equals that of the `usize`
+     difference. At and before the centre the clamp gives +0.0 in both
+     forms.
+   - The loop converts four lanes at a time (`smax`, `ucvtf v.4s`). It
+     is 28 AArch64 instructions per four samples, down from 45; the
+     reporting loop is 168, down from 206.
+   - On the M33 (`usize` is 32 bits there), the removal's loops are four
+     instructions a sample shorter.
+   - Test: `run_as` against its first form, reporting and not. The runs
+     start before, at, across and far after the centre (indices up to
+     the waveform's end), at every lane offset. A mutant that narrows
+     the index to `i16` fails only this test.
+3. **94ae1b8: `Fit4::add_all` out of line.**
+   - Inlined into the fit's block loop, the compiler assembled the lanes
+     from single-lane loads, lane moves and transposes. It also kept
+     some sums as scalar lanes: 47 instructions per four samples.
+   - Out of line, the five sums stay in vector registers, and the
+     reference comes in through one de-interleaving load: 27
+     instructions.
+   - The sine's lanes are still loaded a second time for its square. No
+     source form tried changed that: statement order, separate lane
+     loops, products first, an explicit eight-value de-interleave, a
+     fixed-size chunk.
+   - Test: `add_all` against its definition (sample i in lane i % 4,
+     each lane in sample order), from random sums at every start modulo
+     the lanes. A mutant that puts the edge samples in the next lane
+     fails it and `anchored_to_the_unheld_subtraction`.
+4. **e3f5444: the new tests compare finite references** (tests only).
+   - An unoptimised build failed the removal test with NaN references:
+     the energy came out a NaN of the other sign.
+   - Rust does not specify the sign or payload of a NaN that arithmetic
+     produces, so a bit-for-bit check means something only where no NaN
+     is computed.
+   - The reference (an envelope times a cosine or sine) is finite, so
+     only finite references are compared. The audio keeps its
+     non-finite edge values, which the front end's clamp takes to zero.
+5. **57cbc67: belief propagation's sums by variable and inputs by
+   edge.** This is the O12b candidate with flat inputs, ported.
+   - The round tests now start the next totals as NaN, so the folded
+     copy of the soft bits is under test.
+   - A mutant that swaps the second and third edges' order fails four
+     tests: the two rounds', the pinned state and the decode-level
+     reference.
+   - Its A76 binaries are byte-identical to those of the candidate
+     commit that was measured (5903527, on a side branch from 94ae1b8).
+
+### Decision table
+
+A76, `slotcost host,passes=1 host 200 5`, each commit against its
+parent, in two alternated rounds. One source path, a target directory per
+commit, the binary hashes printed. Stage means are summed over the
+passes (ms); G is the changed stage's gain, B the bar (2% of the
+parent's slot), A the allowance:
+
+| Candidate | changed stage | G (ms) | % of slot | B | A (largest untouched move) | untouched net | one pass | result |
+|---|---|---|---|---|---|---|---|---|
+| 1 d486205 | subtract 72.09 → 67.02 | 5.07 | 4.03 | 2.52 | 1.00 (feed −0.27) | −0.35 | 21.70 → 21.60 | **kept** |
+| 2 d116122 | subtract 67.02 → 60.56 | 6.45 | 5.36 | 2.41 | 1.00 (feed −0.14) | −0.14 | 21.60 → 21.50 | **kept** |
+| 3 94ae1b8 | subtract 60.56 → 57.09 | 3.48 | 3.05 | 2.28 | 1.00 (BP +0.82) | +0.80 | 21.50 → 21.90 | **kept** |
+| 4 57cbc67 | BP 24.64 → 21.31 | 3.34 | 3.00 | 2.22 | 1.00 (subtract −0.47) | −0.48 | 21.90 → 20.30 | **kept** |
+
+The slots (sums of stage means) went 125.84 → 120.41 → 113.82 → 111.12
+→ 107.29 ms. No result fell in the inconclusive band, so no second build
+pair was run. Two results are near its edge:
+
+- **Candidate 3 passes by 0.20 ms** (B + A = 3.28). Its untouched BP
+  moved +0.82 ms. `sum_product_round` is the same AArch64 code
+  instruction for instruction at both commits, 0x610 bytes apart, so
+  that move is placement.
+- **Candidate 4 passes by 0.12 ms** (B + A = 3.22). It was measured
+  against 94ae1b8, whose BP was the inflated 24.64 ms (23.82 at
+  d116122). Against d116122's BP the gain would be 2.51 ms, inside the
+  band. The rule was applied as fixed, but this result is the weakest of
+  the four.
+
+### Cortex-M33 (emulated instructions) and sizes
+
+The `check.sh` images give the one-pass slots. The subtraction's count
+comes from the host image rewritten out of tree to decode slot s0086 and
+then run the further passes (37 subtractions).
+
+| | small one-pass slot | host one-pass slot | subtraction, s0086 | flash small / host (B) |
+|---|---|---|---|---|
+| 67e2458 | 315 473 850 | 474 456 751 | 1 451 983 677 | 85 596 / 98 028 |
+| d486205 | 315 473 850 | 474 456 751 | 1 451 983 677 | 85 596 / 98 028 |
+| d116122 | 315 473 850 | 474 456 751 | 1 429 616 229 (−1.5%) | 85 596 / 98 024 |
+| 94ae1b8 | 315 473 850 | 474 456 748 | 1 345 966 536 (−5.9%) | 85 596 / 97 184 |
+| 57cbc67 | 310 353 198 (−1.6%) | 460 860 102 (−2.9%) | (no change to it) | 87 040 / 98 628 |
+
+- No candidate meets the 3% M33 bar, so each is carried by the A76 bar.
+  No M33 count rises.
+- In the multi-pass image, code outside the subtraction (for example
+  `Spectrogram::finish_row`) is inlined differently from build to
+  build: ±70 656 instructions with no change to it. That image's
+  whole-slot figure is therefore not used. The `check.sh` images do not
+  differ there.
+- Static RAM is unchanged (212 044 / 241 612 / 0 B).
+- Frames: `subtract_one` 4 856 → 4 808 B; the others are unchanged.
+- Flash at 94ae1b8 is below 67e2458's in both images. 57cbc67 adds the
+  tables, +1 444 B in both, within the +2 KB recorded in O12b.
+- No fused multiply-add (0 `vfma`/`vfms`/`vfnma`/`vfnms`; `vmla` 75 /
+  146 / 13) and no `f64` helper or instruction in any image. thumbv7em
+  builds.
+
+### The subtraction against its floor
+
+The microbenchmark runs the O13 measurement's crowded synthesized slot
+on the A76 with its operation-class counters. The floor is the larger of
+instructions ÷ 4 and vector/FP operations ÷ 2.
+
+| | cycles / sample | instructions | vector + FP | floor | ÷ floor |
+|---|---|---|---|---|---|
+| 67e2458 | 31.84 | 63.46 | 30.60 | 15.87 | 2.01 |
+| 94ae1b8 | 26.33 | 58.11 | 29.13 | 14.57 | 1.81 |
+
+By stage, in cycles per sample:
+
+| stage | 67e2458 | 94ae1b8 |
+|---|---|---|
+| correlations (per core sample) | 15.20 | 13.60 |
+| reference | 6.66 | 5.31 |
+| fit | 6.24 | 3.19 |
+| removal | 7.07 | 4.34 |
+
+The generator and the correction are unchanged.
+
+The stop rule's first condition does not hold (1.81× the floor), and
+neither does its second: every candidate reached the bar. The fixed list
+is used up, so the round ends here. What is left:
+
+- the time search's correlations, the largest stage, at about twice
+  their floor;
+- the reference, issue-bound at 5.3 cycles a sample against about 4.2
+  for its vector operations;
+- the sine's second load in the fit.
+
+### x86-64
+
+Threadripper 3970X, `taskset -c 5`, two alternated rounds, on a quiet
+host (ms; the means of the two rounds):
+
+| | three passes | one pass | subtract | BP, three passes |
+|---|---|---|---|---|
+| a003d6e (67e2458's code) | 78.6 | 16.1 | 39.86 | 17.63 |
+| 94ae1b8 | 73.2 | 16.25 | 34.29 | 17.73 |
+| 57cbc67 | 71.4 | 15.4 | 34.38 | 15.77 |
+| a003d6e → 57cbc67 | −9.2% | −4.3% | −13.7% | −10.6% |
+
+### The round as a whole (A76)
+
+a003d6e (67e2458's code; the same `paired_bench` binary as 627d356's)
+against 57cbc67 in two alternated rounds (ms):
+
+| | three passes | one pass | subtract | BP, three passes | feed |
+|---|---|---|---|---|---|
+| a003d6e | 125.81 | 21.70 | 72.07 | 23.91 | 22.44 |
+| 57cbc67 | 107.28 | 20.30 | 56.59 | 21.30 | 21.99 |
+| change | **−14.7%** | **−6.5%** | **−21.5%** | **−10.9%** | −0.45 (placement) |
+
+The small configuration (`slotcost small small 200 5`) went from 15.4 to
+15.2 ms (BP 5.54 → 5.50). The subtraction is now 52.8% of the three-pass
+slot, down from 57.3%.
+
+Every timed A76 run of this round is valid: 24 slot runs and 16
+microbenchmark runs, with no live throttle bit in any of 3 377 samples.
+The clock was 2 400 MHz in every sample except five, all in a run's
+first second (1 500–1 700 MHz). Peak 56.0 °C. A binary's two rounds
+agree within 0.1 ms.
+
+### Identity
+
+- **Records:** the 73 800 `paired_bench run` records (`crowded`,
+  `wide`, `fading` on `main`, `cap1`, `cap2`; `sweep`, `edges`, `empty`
+  on `main`; each with `host`, `host,passes=1`, `small`).
+  - x86-64: equal to 593b7c1's at d486205, d116122, 94ae1b8 and 57cbc67
+    (24 600 + 24 600 + 24 600, 0 differ).
+  - A76: equal to x86-64's at 94ae1b8 and at 57cbc67.
+- **800 WAV slots** × `host`, `small`, `host,passes=1` × plain, `--raw`,
+  `--profile` (7 200 runs, 78 648 decode lines, timings removed):
+  - byte-identical to 593b7c1's at d486205, d116122 and 94ae1b8;
+  - at 57cbc67, identical except `static_table_bytes` in the 2 400
+    `--profile` lines (36 260 → 37 826, the new tables).
+- **Encoder:** the 45 `cat-ft8-encode` WAV files identical (57cbc67).
+- **Cortex-M33 in the emulator:**
+  - the small and host images' decodes on the seven WAV slots of O10b:
+    report counts, every decode's fields and text, and the `LEVELS` and
+    `DECODES_LIST` statics byte-identical to 627d356's, at 94ae1b8 and
+    57cbc67 (14 of 14);
+  - new this round, the multi-pass host image's residual after the
+    further passes on s0086 and s0407 (180 000 `f32` each): identical at
+    67e2458, 94ae1b8 and 57cbc67.
+
+### Checks at 57cbc67
+
+- **Local CI passes:**
+  - fmt;
+  - clippy `-D warnings` on the workspace, cat-ft8 with all targets and
+    features, and the thumbv8m library;
+  - workspace, profile, no-std and release tests, with the ignored ones;
+  - the bulk run;
+  - MSRV 1.75;
+  - docs, with and without `std`;
+  - `check.sh --stack`.
+  - (The first run, at 94ae1b8, failed the unoptimised tests;
+    e3f5444 fixes it, above.)
+- thumbv7em builds. No FMA and no `f64` in any thumbv8m image.
+- **Raspberry Pi 5:** the release test suite with the ignored tests
+  passes at 57cbc67 (lib 178, then 2 + 0 + 12 + 1 bulk + 7 + 2 + 5), so
+  the new bit-for-bit tests pass on AArch64 too.
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instructions only, as before).
+- The chain count on other cores. 16 was chosen on the A76; on x86-64
+  it was not swept.
+- The 16-sample block and the out-of-line fit both depend on the
+  compiler's choices. A toolchain change can lose them with every test
+  passing, as with `PASS_LANES`. After a toolchain bump, re-run the A76
+  `slotcost`, or check the AArch64 loops' sizes in the release
+  `paired_bench` (rustc 1.93.0, 94ae1b8):
+  - the blocked reference loops: 142 and 143 instructions;
+  - the blocked products loop: 195;
+  - `Fit4::add_all`'s loop: 27;
+  - the removal's loops: 28 (not reporting) and 168 (reporting).
+- A second build pair for candidates 3 and 4, which pass by 0.20 and
+  0.12 ms; the rule did not call for one.
