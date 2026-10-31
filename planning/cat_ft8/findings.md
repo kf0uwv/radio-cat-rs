@@ -3742,8 +3742,9 @@ BP, feed and sync are unchanged within 0.5 ms; the single pass is
 unchanged (A76 32.3–32.5 ms, x86-64 18.6–19.0). Step 1 alone is −0.5% on
 the A76 and +2% on x86-64 (subtraction +2.7 ms there, reproducible in two
 rounds of an earlier, interrupted pairwise run as well): the closed
-form itself costs nothing per sample, so this is code placement in `run`; it is kept
-because steps 2–3 need a closed-form skip after the four-lane phases.
+form itself costs nothing per sample, so this is code placement in
+`run`; it is kept because steps 2–3 need a closed-form skip after the
+four-lane phases.
 d4e669e's release binaries are byte-identical to the measurement build
 of degree 5/4 (ec72aa0, the same code with the coefficients inline):
 SHA-256 equal on both targets, so its measurements are d4e669e's.
@@ -3815,8 +3816,9 @@ Per set (both commits): `crowded` 40 452, `wide` 50 996, `fading`
 5 864 (`crowded` 29 088 / 9 227 / 2 137, `wide` 37 424 / 11 368 /
 2 204, `fading` 26 532 / 7 833 / 1 523; d4e669e: 5 863 in pass 3);
 `sweep` 8 764, `edges` 1 228, `empty` 0, unchanged; `wide` below
-−16 dB: 1 788 / 1 887 / 1 843 decoded per block, none lost or gained. `host,passes=1` and `small`: 19 200 records each,
-all equal to bafed37's. What differs in the `host` records (ee7c0ce):
+−16 dB: 1 788 / 1 887 / 1 843 decoded per block, none lost or gained.
+`host,passes=1` and `small`: 19 200 records each, all equal to
+bafed37's. What differs in the `host` records (ee7c0ce):
 later passes' sync point counts (1 448 pass reports), the reported SNR,
 time, frequency and score of later-pass decodes (730 / 421 / 394 / 203),
 BP rounds of 4 decodes, one candidate index; the slot reports' counts.
