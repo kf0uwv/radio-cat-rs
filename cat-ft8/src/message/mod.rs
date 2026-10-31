@@ -1138,6 +1138,27 @@ pub fn unpack<H: CallHashes + ?Sized>(
     payload: &Payload,
     hashes: &mut H,
 ) -> Result<MessageText, Error> {
+    unpack_dyn(payload, &mut Forward(hashes))
+}
+
+/// `H` as a sized [`CallHashes`], so that any `H` (a `dyn CallHashes`
+/// included) reaches [`unpack_dyn`] as a trait object.
+struct Forward<'h, H: ?Sized>(&'h mut H);
+
+impl<H: CallHashes + ?Sized> CallHashes for Forward<'_, H> {
+    fn remember(&mut self, call: &str) {
+        self.0.remember(call);
+    }
+    fn lookup(&self, size: HashSize, hash: u32) -> Option<Call> {
+        self.0.lookup(size, hash)
+    }
+}
+
+/// [`unpack`]'s body, compiled once whatever the caller's table: each
+/// table type then adds only its two forwarding methods, not another copy
+/// of the unpacker (about 3.4 KB on a Cortex-M33).
+#[inline(never)]
+fn unpack_dyn(payload: &Payload, hashes: &mut dyn CallHashes) -> Result<MessageText, Error> {
     let mut out = MessageText::new();
     let mut heard: [Option<Call>; 2] = [None, None];
     let w = |_: fmt::Error| Error::InvalidPayload;
