@@ -751,3 +751,151 @@ fn the_scratch_holds_one_message_per_edge() {
         4 * (2 * N + EDGES) + N + 1 + 1
     );
 }
+
+/// `decode_soft` as at its first exit-per-path form: round 0's test
+/// before the loop, then each round's test after it, the totals' arrays
+/// swapped by contents, every bit decided before the checks, and the
+/// rounds in their first forms. The messages are kept in the edge
+/// layout. Returns the result, the rounds run, the totals and the
+/// messages.
+fn decode_soft_first_form(
+    llr: &[f32; N],
+    rule: CheckRule,
+    max_rounds: u8,
+) -> (Result<BpDecode, BpFailure>, u8, [f32; N], [f32; EDGES]) {
+    let (mut total, mut msg, mut hard) = (*llr, [0.0f32; EDGES], [0u8; N]);
+    let hard_errors = |hard: &[u8; N]| {
+        let n = hard
+            .iter()
+            .zip(llr.iter())
+            .filter(|(&h, &l)| l != 0.0 && h != u8::from(l < 0.0))
+            .count();
+        n.min(255) as u8
+    };
+    let done = |round: u8, hard: &[u8; N]| {
+        accept(hard).map(|payload| BpDecode {
+            payload,
+            rounds: round,
+            hard_errors: hard_errors(hard),
+        })
+    };
+    if hard_decide_first_form(&total, &mut hard) {
+        return (done(0, &hard), 0, total, msg);
+    }
+    for round in 1..=max_rounds {
+        let mut next = *llr;
+        if rule == CheckRule::SumProduct {
+            let mut rows = rows_of(&msg);
+            reference_round(&total, &mut next, &mut rows);
+            for (row, (v, e)) in rows.iter().zip(check_edges()) {
+                msg[e..][..v.len()].copy_from_slice(&row[..v.len()]);
+            }
+        } else {
+            reference_min_sum_round(&total, &mut next, &mut msg);
+        }
+        core::mem::swap(&mut total, &mut next);
+        if hard_decide_first_form(&total, &mut hard) {
+            return (done(round, &hard), round, total, msg);
+        }
+    }
+    (Err(BpFailure::NotConverged), max_rounds, total, msg)
+}
+
+/// `decode_soft` against its first form over `vectors` soft-bit vectors
+/// (noisy codewords of four messages, of one with a wrong CRC and of the
+/// all-zero word, σ 0.3–2.9, some with bits erased to ±0, some random
+/// values, one all zero), both rules, round limits 0,
+/// 1, 2, 3, 7, 30 and 255 and, for each vector that converges at round
+/// r > 0, the limits r and r − 1: the result, the rounds run, and the
+/// totals' and messages' bits. Returns the outcomes: decodes at round 0,
+/// exactly at their limit (> 0), at other rounds, then the failures not
+/// converged, by CRC and all zero.
+fn decode_soft_against_its_first_form(vectors: usize) -> [usize; 6] {
+    let messages = [
+        "CQ K1ABC FN42",
+        "K1ABC W9XYZ -11",
+        "W9XYZ K1ABC R-09",
+        "CQ DX K1ABC FN42",
+    ];
+    let mut words: std::vec::Vec<_> = messages.iter().map(|m| codeword(m).1).collect();
+    words.push(ldpc::encode(crc::append_crc(&codeword(messages[0]).0) ^ 1));
+    words.push(ldpc::encode(0));
+    let mut value = random_values(0xd1ff);
+    let mut scratch = BpScratch::new();
+    let mut outcomes = [0usize; 6];
+    for k in 0..vectors {
+        let sigma = 0.3 + 2.6 * (k % 53) as f64 / 52.0;
+        let mut llr = channel(&words[k % words.len()], 2.0, sigma, 0x5107 + k as u64);
+        match k % 11 {
+            0 => llr.iter_mut().for_each(|x| *x = value()),
+            3 | 7 => {
+                for (i, x) in llr.iter_mut().enumerate() {
+                    if (i * 31 + k) % 9 == 0 {
+                        *x = if i % 2 == 0 { 0.0 } else { -0.0 };
+                    }
+                }
+            }
+            _ => {}
+        }
+        if k == 1 {
+            llr = [0.0; N];
+        }
+        for rule in RULES {
+            let mut limits = std::vec![0u8, 1, 2, 3, 7, 30, 255];
+            if let Ok(d) = decode_soft(&llr, rule, 30, &mut scratch) {
+                if d.rounds > 0 {
+                    limits.extend([d.rounds, d.rounds - 1]);
+                }
+            }
+            for max_rounds in limits {
+                let (want, want_rounds, want_total, want_msg) =
+                    decode_soft_first_form(&llr, rule, max_rounds);
+                let got = decode_soft(&llr, rule, max_rounds, &mut scratch);
+                let at = std::format!("vector {k}, {rule:?}, limit {max_rounds}");
+                assert_eq!(got, want, "{at}");
+                assert_eq!(scratch.rounds(), want_rounds, "{at}");
+                let totals = if scratch.rounds % 2 == 0 {
+                    &scratch.total
+                } else {
+                    &scratch.next
+                };
+                assert_eq!(
+                    totals.map(f32::to_bits),
+                    want_total.map(f32::to_bits),
+                    "{at}"
+                );
+                assert_eq!(
+                    scratch.msg.map(f32::to_bits),
+                    want_msg.map(f32::to_bits),
+                    "{at}"
+                );
+                outcomes[match got {
+                    Ok(d) if d.rounds == 0 => 0,
+                    Ok(d) if d.rounds == max_rounds => 1,
+                    Ok(_) => 2,
+                    Err(BpFailure::NotConverged) => 3,
+                    Err(BpFailure::Crc) => 4,
+                    Err(_) => 5,
+                }] += 1;
+            }
+        }
+    }
+    std::println!("outcomes {outcomes:?}");
+    outcomes
+}
+
+#[test]
+fn decode_soft_matches_its_first_form() {
+    let outcomes = decode_soft_against_its_first_form(120);
+    assert!(outcomes.iter().all(|&n| n > 0), "{outcomes:?}");
+    assert!(outcomes[1] >= 40, "{outcomes:?}");
+}
+
+/// The same over 3 000 vectors (about ten seconds in release).
+#[test]
+#[ignore]
+fn decode_soft_matches_its_first_form_widely() {
+    let outcomes = decode_soft_against_its_first_form(3_000);
+    assert!(outcomes.iter().all(|&n| n > 0), "{outcomes:?}");
+    assert!(outcomes[1] >= 1_000, "{outcomes:?}");
+}
