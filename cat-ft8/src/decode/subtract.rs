@@ -773,8 +773,12 @@ impl Fit4 {
 
     /// The samples `i0..i0 + xs.len()` of a block that starts at a
     /// multiple of [`LANES`]: the audio `xs` and the reference stored in
-    /// `refs` ([`PAIR`] bytes each).
-    #[inline(always)]
+    /// `refs` ([`PAIR`] bytes each). Not inlined: inside the fit's block
+    /// loop the compiler assembled the lanes from single-lane loads and
+    /// moves and kept some sums as scalars (47 AArch64 instructions per
+    /// four samples); on its own the five sums stay in vector registers
+    /// over the call (27). One call per block of at most 240 samples.
+    #[inline(never)]
     #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
     fn add_all(&mut self, i0: usize, xs: &[f32], refs: &[u8]) {
         let (m0, m1) = lane_bounds(i0, i0 + xs.len());

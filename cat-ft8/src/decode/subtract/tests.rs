@@ -1183,3 +1183,58 @@ fn removal_ramp_is_its_first_form_bit_for_bit() {
     }
     assert_eq!(checked, froms.len() * 11 * 9 * 2);
 }
+
+/// The fit's lane sums bit for bit.
+fn fit4_bits(f: &Fit4) -> Vec<u32> {
+    [f.xc, f.xs, f.cc, f.cs, f.ss]
+        .iter()
+        .flatten()
+        .map(|x| x.to_bits())
+        .collect()
+}
+
+/// [`Fit4::add_all`] against its definition, sample by sample: sample i
+/// of the block in lane i % `LANES`, each lane in sample order, the audio
+/// as the front end takes it. Bit for bit, from random lane sums, at every
+/// start modulo the lanes and lengths up to a block, random and edge audio
+/// and references.
+#[test]
+fn fit_sums_follow_the_sample_index_bit_for_bit() {
+    let mut n = Noise(91);
+    let mut checked = 0;
+    for i0 in 0..2 * LANES + 1 {
+        for len in (0..=13).chain([BLOCK - i0, 961]) {
+            let xs = test_weights(&mut n, len);
+            let refs: Vec<u8> = test_weights(&mut n, 2 * len)
+                .iter()
+                .map(|&v| {
+                    if v.is_finite() {
+                        v.clamp(-4.0, 4.0)
+                    } else {
+                        0.5
+                    }
+                })
+                .flat_map(|x| x.to_ne_bytes())
+                .collect();
+            let mut got = Fit4::default();
+            for l in 0..LANES {
+                (got.xc[l], got.xs[l], got.cc[l]) = (l as f32, -0.5, 2.0);
+                (got.cs[l], got.ss[l]) = ((n.gauss()) as f32, 0.125);
+            }
+            let mut want = got;
+            got.add_all(i0, &xs, &refs);
+            for (k, &x) in xs.iter().enumerate() {
+                let (c, s) = get(&refs[k * PAIR..]);
+                let (w, l) = (input(x), (i0 + k) % LANES);
+                want.xc[l] += w * c;
+                want.xs[l] += w * s;
+                want.cc[l] += c * c;
+                want.cs[l] += c * s;
+                want.ss[l] += s * s;
+            }
+            assert_eq!(fit4_bits(&got), fit4_bits(&want), "i0 {i0} len {len}");
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, (2 * LANES + 1) * 16);
+}
