@@ -164,8 +164,8 @@ pub(crate) static DEGREES: [u8; M] = {
 /// The largest check degree: the width of the parity-check table's rows.
 const MAX_DEGREE: usize = 7;
 
-/// Width of one check's working row: the min-sum rule's inputs and the
-/// sum-product products' prefixes.
+/// One check's values at most (the sum-product products' prefixes have
+/// one more entry).
 const LANES: usize = 8;
 const _: () = assert!(LANES >= MAX_DEGREE);
 
@@ -294,35 +294,7 @@ pub fn decode_soft(
         if rule == CheckRule::SumProduct {
             sum_product_round(total, next, msg);
         } else {
-            for (v, e) in check_edges() {
-                let n = v.len();
-                let row = &mut msg[e..][..n];
-                let mut q = [0.0f32; LANES];
-                for j in 0..n {
-                    q[j] = total[usize::from(v[j])] - row[j];
-                }
-                let (mut min1, mut min2, mut at) = (f32::MAX, f32::MAX, 0);
-                let mut negatives = 0u32;
-                for (j, &x) in q.iter().enumerate().take(n) {
-                    let a = if x < 0.0 { -x } else { x };
-                    negatives += u32::from(x < 0.0);
-                    if a < min1 {
-                        min2 = min1;
-                        min1 = a;
-                        at = j;
-                    } else if a < min2 {
-                        min2 = a;
-                    }
-                }
-                for (j, &x) in q.iter().enumerate().take(n) {
-                    let others_negative = negatives - u32::from(x < 0.0);
-                    let mag = ALPHA * if j == at { min2 } else { min1 };
-                    row[j] = if others_negative % 2 == 1 { -mag } else { mag };
-                }
-                for j in 0..n {
-                    next[usize::from(v[j])] += row[j];
-                }
-            }
+            min_sum_round(total, next, msg);
         }
         core::mem::swap(total, next);
         if hard_decide(total, hard) {
@@ -430,6 +402,41 @@ fn each_value<const W: usize>(values: &mut [f32; EDGES], f: impl Fn(f32) -> f32)
     }
     for x in blocks.into_remainder() {
         *x = f(*x);
+    }
+}
+
+/// One normalised min-sum round, in place on the messages: check by check
+/// in order, the inputs (totals less the check's own messages) replace its
+/// messages, then its new messages, which are added to `next`. Not
+/// inlined, so its frame is measured on its own.
+#[inline(never)]
+fn min_sum_round(total: &[f32; N], next: &mut [f32; N], msg: &mut [f32; EDGES]) {
+    for (v, e) in check_edges() {
+        let row = &mut msg[e..][..v.len()];
+        for (m, &i) in row.iter_mut().zip(v) {
+            *m = total[usize::from(i)] - *m;
+        }
+        let (mut min1, mut min2, mut at) = (f32::MAX, f32::MAX, 0);
+        let mut negatives = 0u32;
+        for (j, &x) in row.iter().enumerate() {
+            let a = if x < 0.0 { -x } else { x };
+            negatives += u32::from(x < 0.0);
+            if a < min1 {
+                min2 = min1;
+                min1 = a;
+                at = j;
+            } else if a < min2 {
+                min2 = a;
+            }
+        }
+        for (j, x) in row.iter_mut().enumerate() {
+            let others_negative = negatives - u32::from(*x < 0.0);
+            let mag = ALPHA * if j == at { min2 } else { min1 };
+            *x = if others_negative % 2 == 1 { -mag } else { mag };
+        }
+        for (&m, &i) in row.iter().zip(v) {
+            next[usize::from(i)] += m;
+        }
     }
 }
 
