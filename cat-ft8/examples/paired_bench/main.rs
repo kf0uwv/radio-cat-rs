@@ -187,6 +187,8 @@ mod ceiling;
 mod channel;
 mod compare;
 mod cost;
+mod osd;
+mod osdsize;
 mod record;
 mod sets;
 mod subtraction;
@@ -353,6 +355,21 @@ fn main() -> ExitCode {
         (Some("slotcost"), Some(x), Some(y)) => num(3, 200)
             .and_then(|s| num(4, 5).and_then(|r| cost::slot_cost(x, y, s, r)))
             .map(|()| true),
+        (Some("osd"), Some(c), Some(o)) => osdsize::osd_run(
+            c,
+            &PathBuf::from(o),
+            arg(3).unwrap_or("crowded,wide,fading"),
+            arg(4).unwrap_or("main"),
+        )
+        .map(|()| true),
+        (Some("osdcheck"), _, _) => num(1, 2_000).and_then(osdsize::osd_check).map(|()| true),
+        (Some("osdplaus"), _, _) => num(1, 1_000_000)
+            .and_then(osdsize::osd_plaus)
+            .map(|()| true),
+        (Some("osdcost"), Some(c), _) => num(2, 200)
+            .and_then(|s| num(3, 5).and_then(|r| osdsize::osd_cost(c, s, r)))
+            .map(|()| true),
+        (Some("osddump"), Some(c), Some(f)) => osdsize::osd_dump(c, Path::new(f)).map(|()| true),
         (Some("cost"), Some(x), Some(y)) => num(3, 42)
             .and_then(|s| num(4, 5).and_then(|r| cost::cost(x, y, s, r)))
             .map(|()| true),

@@ -463,14 +463,14 @@ pub fn misses_text(n: &[u64; 7]) -> String {
 
 /// A candidate's refined tone 0 (Hz) and start (s), as `decode_candidate`
 /// computes them.
-fn position(spec: &Spectrogram<'_>, c: &Candidate) -> (f32, f32) {
+pub fn position(spec: &Spectrogram<'_>, c: &Candidate) -> (f32, f32) {
     let (frac_row, frac_bin) = sync::refine(spec, c);
     let freq = ((spec.band().first_bin() + usize::from(c.base)) as f32 + frac_bin) * BIN_HZ;
     (freq, c.dt() + frac_row * sync::ROW_SECONDS)
 }
 
 /// Whether a candidate at `(freq, dt)` is on message `s`.
-fn on(s: &Sent, (freq, dt): (f32, f32)) -> bool {
+pub fn on(s: &Sent, (freq, dt): (f32, f32)) -> bool {
     (s.freq as f32 - freq).abs() <= ON_HZ && (s.dt as f32 - dt).abs() <= ON_S
 }
 
