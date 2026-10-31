@@ -97,9 +97,10 @@ fn hard_decide_first_form(values: &[f32; N], hard: &mut [u8; N]) -> bool {
 
 #[test]
 fn the_stopping_test_matches_its_first_form() {
-    // Codewords with a few bits flipped, erased (±0) or perturbed, so both
-    // outcomes and every check position of the first failure occur, and
-    // random states.
+    // Codewords with a few bits flipped or erased (±0), so both outcomes
+    // occur, and random states. Most first failures are at low checks
+    // here; `the_stopping_test_fails_first_at_every_check` covers every
+    // position.
     let (_, cw) = codeword("K1ABC W9XYZ RR73");
     let clean = channel(&cw, 2.0, 0.0, 1);
     let mut value = random_values(0x57_0b);
@@ -129,6 +130,113 @@ fn the_stopping_test_matches_its_first_form() {
         assert_eq!(hard, want, "state {state}");
     }
     assert!(held > 1_000, "{held}");
+}
+
+/// The first check that fails for hard decisions `hard`, if any.
+fn first_failing_check(hard: &[u8; N]) -> Option<usize> {
+    (0..M).find(|&c| {
+        let (v, n) = check(c);
+        v[..n]
+            .iter()
+            .fold(0u8, |acc, &i| acc ^ hard[usize::from(i)])
+            != 0
+    })
+}
+
+/// Bits to flip in a codeword so that exactly the checks of `syndrome`
+/// (bit c for check c) fail, by elimination over GF(2): the 83 checks are
+/// independent (91 = 174 − 83 message bits), so every syndrome has a
+/// solution.
+fn flips_for(syndrome: u128) -> std::vec::Vec<usize> {
+    type Bits = [u64; 3];
+    let flip = |b: &mut Bits, o: &Bits| b.iter_mut().zip(o).for_each(|(x, y)| *x ^= y);
+    // basis[p]: a set of bits whose syndrome's lowest check is p.
+    let mut basis: [Option<(u128, Bits)>; M] = [None; M];
+    for i in 0..N {
+        let mut s = 0u128;
+        for c in 0..M {
+            let (v, n) = check(c);
+            if v[..n].contains(&(i as u8)) {
+                s |= 1 << c;
+            }
+        }
+        let mut bits: Bits = [0; 3];
+        bits[i / 64] |= 1 << (i % 64);
+        while s != 0 {
+            let p = s.trailing_zeros() as usize;
+            match &basis[p] {
+                Some((bs, bb)) => {
+                    s ^= bs;
+                    flip(&mut bits, bb);
+                }
+                None => {
+                    basis[p] = Some((s, bits));
+                    break;
+                }
+            }
+        }
+    }
+    let (mut s, mut bits) = (syndrome, [0u64; 3]);
+    while s != 0 {
+        let (bs, bb) = basis[s.trailing_zeros() as usize].expect("full rank");
+        s ^= bs;
+        flip(&mut bits, &bb);
+    }
+    (0..N)
+        .filter(|&i| bits[i / 64] >> (i % 64) & 1 == 1)
+        .collect()
+}
+
+#[test]
+fn the_stopping_test_fails_first_at_every_check() {
+    // For every check c, codewords with bits flipped so that c is the
+    // first check to fail: c alone, and c with random later checks. Some
+    // states also erase bits to ±0 where the tie rule keeps the decision,
+    // or scale the values, so ties and magnitudes vary too.
+    let (_, cw) = codeword("K1ABC W9XYZ RR73");
+    let clean = channel(&cw, 2.0, 0.0, 1);
+    let mut word = 0x2545_f491_4f6c_dd1d_u64;
+    let mut next_word = move || {
+        word ^= word << 13;
+        word ^= word >> 7;
+        word ^= word << 17;
+        word
+    };
+    let mut seen = [0u32; M];
+    for c in 0..M {
+        let above = !0u128 << (c + 1) & ((1u128 << M) - 1);
+        for variant in 0..12 {
+            let later = if variant % 2 == 0 {
+                0
+            } else {
+                (u128::from(next_word()) << 64 | u128::from(next_word())) & above
+            };
+            let mut values = clean;
+            for i in flips_for(1 << c | later) {
+                values[i] = -values[i];
+            }
+            if variant >= 4 {
+                let scale = (next_word() % 1_000) as f32 / 100.0 + 0.01;
+                for (i, x) in values.iter_mut().enumerate() {
+                    let r = next_word();
+                    if r % 4 == 0 && u8::from(*x < 0.0) == (i % 2) as u8 {
+                        *x = if r & 16 == 0 { 0.0 } else { -0.0 };
+                    } else {
+                        *x *= scale;
+                    }
+                }
+            }
+            let mut want = [0u8; N];
+            let holds = hard_decide_first_form(&values, &mut want);
+            assert_eq!(first_failing_check(&want), Some(c), "check {c}");
+            assert!(!holds);
+            assert_eq!(checks_hold(&values), holds, "check {c}, variant {variant}");
+            seen[c] += 1;
+        }
+        // The codeword itself holds.
+        assert!(checks_hold(&clean));
+    }
+    assert!(seen.iter().all(|&n| n == 12), "{seen:?}");
 }
 
 #[test]
