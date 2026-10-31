@@ -1296,9 +1296,11 @@ impl Removal {
         // rather than one 64-bit value at a time: every index here is a
         // reference sample or a segment centre, below the waveform's
         // length, so the difference is exact in `i32`, and its `f32` is
-        // exact as well (below 2²⁴), the same as `(j − from) as f32`.
+        // exact as well (below 2²⁴), the same as `(j − from) as f32`. The
+        // bound is checked once per run, in release builds too, since the
+        // exactness rests on it.
         const _: () = assert!(WAVEFORM_SAMPLES < 1 << 24);
-        debug_assert!(j0 + xs.len() <= WAVEFORM_SAMPLES && from <= WAVEFORM_SAMPLES);
+        assert!(j0 + xs.len() <= WAVEFORM_SAMPLES && from <= WAVEFORM_SAMPLES);
         let (j0, from) = (j0 as i32, from as i32);
         for (i, (x, r)) in xs.iter_mut().zip(refs.chunks_exact(PAIR)).enumerate() {
             let (rc, rs) = get(r);
