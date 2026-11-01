@@ -1445,3 +1445,17 @@
 - Findings additions (crowded vs empty q_T by pass, assumed parts, n as
   a mean, the χ² grouping, shared host/small events); the gated round
   revised for host only (task plan), still proposed, not run.
+
+## Session: 2026-11-01 (OSD-1 pre-gate fixes; branch `osd1`)
+
+- ef2470e: `cat-ft8-decode --config ...,osd=C:T`. 8332aa5: `paired_bench
+  gains` (the gain bars' tool, ≤ −17 dB inclusive), `BLOCK` for
+  `slotcost` and `osdpath`, any new false decode fails with OSD on, the
+  origin join asserted.
+- Out of tree, hashed in the plan: `classify_osd.py` with (o) and (s)
+  classes and tests; the M33 harness manifest.
+- Gate text: WAV matching rules, R with OSD-triggered subtraction
+  (1.64 ms each on the A76), the slotcost command and "up by" pinned.
+- Smoke on `main` (used): pooled 0.0615 new decodes per slot (bar
+  0.026), 0.0170 at or below −17 dB (bar 0.010); no loss, no new false
+  decode; classifier 0 unexplained. Option off identical to 511bf32.

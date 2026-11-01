@@ -6208,7 +6208,10 @@ belief-propagation storage.
   outlier: the M33 counts below vary by ±10%); the refill on the next
   candidate −0.45 µs mean (not measurable here); the 20 accepted 21.8 µs
   (with the CRC pass, `unpack`, re-encoding and the SNR). The library
-  call alone (`osdlib host 200 5`, same session): 14.06 µs.
+  call alone (`osdlib host 200 5`, same session): 14.06 µs, on other
+  inputs (all 32 481 failed candidates of every rank on the same slots,
+  not the 1 669 top-10 runs), so the two are close but not like for
+  like.
 - **Cortex-M33** (emulated, out-of-tree image with the check program's
   build settings; `decode_candidate` on the first 12 candidates of each
   input, option on less option off): host (10, 21) on six inputs (slots
@@ -6230,8 +6233,10 @@ belief-propagation storage.
   µs**; the refill −0.51 µs (not measurable); accepted 29.43 µs.
   `osdlib host 200 5` (two runs): library 23.16 / 23.17 µs, the other
   form 37.08, the sizing's 30.81 / 30.94; result hashes equal x86-64's
-  (6fe3fb66…). Through the decoder OSD-1 costs what the library call
-  costs (e7e7f48's 23.17 µs).
+  (6fe3fb66…). The decoder-path figure and the library call are close
+  (22.79 and 23.16 µs; e7e7f48's library 23.17), but they are taken on
+  different inputs (the 1 669 top-10 runs against all 32 481 failed
+  candidates), so this is not a like-for-like comparison of the two.
 
 ### Findings additions
 
@@ -6297,3 +6302,82 @@ belief-propagation storage.
   more inputs than six pass inputs of two slots.
 - The deviation above (`OsdWork`) has not been tried on other compiler
   versions; the stack check catches a regression.
+
+## Pre-gate fixes (2026-11-01; option off, identical)
+
+On branch `osd1`. Commits ef2470e (`cat-ft8-decode` takes `osd=C:T`),
+8332aa5 (bench: `gains`, `BLOCK` for `slotcost` and `osdpath`, the
+stricter false rule, the join asserted). No gate run, no block named.
+
+### Changes
+
+- `cat-ft8-decode --config host|small[,passes=N][,osd=C:T]`: the option
+  on in the command, the output format unchanged; `osd=0:T` gives the
+  plain output byte for byte (tested), and without the key the output is
+  as before (below).
+- `paired_bench gains OLDDIR NEWDIR [SETS]`: gained and lost messages
+  per slot pooled over the sets, and at or below −17 dB (`sent.snr <=
+  -17.0`, inclusive); gains OSD-1 made itself; the new run's false
+  decodes the old run did not list in that slot. This is the committed
+  tool for the gain bars.
+- `compare`: with OSD-1 runs in the new run, any false decode the old
+  run did not list fails the set, marked or not.
+- `slotcost A B [SLOTS] [RUNS] [BLOCK]`, `osdpath CONFIG C:T [SLOTS]
+  [RUNS] [BLOCK]`: the crowded set's BLOCK (default `main`, output
+  unchanged for it).
+- The records' origin join: each pass's count of candidates (from their
+  `Refine` stage) is asserted equal to its kept candidates (an
+  `assert_eq!`, not a `debug_assert!`: the bench runs only in release
+  builds, where a debug assertion would never fire).
+- Out of tree, pinned by hash in the plan: the classifier
+  `classify_osd.py` (new file; the old `classify.py` unchanged) with the
+  (o) OSD-decode and (s) pass-sequence knock-on classes and its tests
+  (all pass); the M33 decoder-path harness (a manifest over its eight
+  inputs, source and scripts; rustc 1.93.0, unicorn 2.1.0).
+
+### Smoke runs (`main`, a used block: not evidence for the gate)
+
+x86-64, 8332aa5's code, `run host` against `run host,osd=10:21` on
+`crowded`, `wide` and `fading` `main` (2 000 slots), `paired_bench
+gains` and `compare --partial`:
+
+| set (main) | slots | gained (per slot) | ≤ −17 dB gained (per slot) | lost | gained through OSD-1 | OSD-1 runs / slot |
+|---|---|---|---|---|---|---|
+| crowded | 600 | 17 (0.0283) | 0 | 0 | 12 | 13.9 |
+| wide | 800 | 51 (0.0638) | 34 (0.0425) | 0 | 46 | 14.7 |
+| fading | 600 | 55 (0.0917) | 0 | 0 | 40 | 15.2 |
+| **pooled** | 2 000 | **123 (0.0615)** | **34 (0.0170)** | 0 | 98 | 14.6 |
+
+- Against the bars (0.026 per slot, 0.010 at or below −17 dB): pooled
+  0.0615 and 0.0170, about 2.4× and 1.7× the bars. The expected gain is
+  not near the bar on these slots, but `main` is the block the sizing
+  chose the subset and threshold on, so a fresh block may give less; the
+  ≤ −17 dB gains all come from `wide` (the only one of the three sets
+  with messages below −16 dB: down to −22 dB). Crowded alone (0.028) is near 0.026, which
+  is why the bar is on the pooled slots.
+- No loss, no false decode in either run that the other did not list;
+  every `compare` set passes. Classifier: 123 gains and 20 pass moves;
+  (o) 115, (m) 3, (r) 4, (k) 21, (s) 0, unexplained 0; 28 changes sit
+  within 50 Hz of an earlier marked decode.
+- Marked decodes (115) by pass: 10, 57 and 48; the 67 in passes 1 and 2
+  are subtracted before the next pass.
+
+### OSD-triggered subtraction, in R's numerator
+
+One subtraction on the A76 (2980198-al `slotcost host`, main): the
+`subtract` stage 56.62 ms per slot over 34.5 subtractions, **1.64 ms
+each**. On the smoke runs that adds 1.64 × 67 / 2 000 = 0.055 ms per slot
+to OSD-1's 22.8 µs × 14.62 = 0.333 ms: R = 0.388 / 0.0615 = **6.3 ms per
+new decode**, against pass 3's 11.06 ms (A76, `main`). The later passes'
+other extra work on the changed residual is not in R (it is inside the
+1.0 ms slot cap).
+
+### Identity with the option off (x86-64, 8332aa5 against 511bf32)
+
+- Records: 73 800 (host, host one-pass, small) equal to 511bf32's, stage
+  times aside; none carries an `osd` mark or `osd_runs`.
+- 800 WAV slots × 3 configurations × 3 modes (`--config host`, `small`,
+  `host,passes=1`; plain, `--raw`, `--profile`; 7 200 runs, 78 648 decode
+  lines): byte-identical to e7e7f48's output (511bf32's apart from the
+  three memory fields noted there). No option-on WAV output has been
+  made; the matching rule is in the plan first.

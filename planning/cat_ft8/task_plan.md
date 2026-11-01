@@ -2349,11 +2349,27 @@ option off, every decode output identical to the base (shown at
 **Origin.** The bench records mark every decode OSD-1 made (`"osd":true`,
 624c4de: from the `Stage::Osd` callback, joined on pass and candidate)
 and count its runs per slot (`"osd_runs"`);
-`compare` splits the new run's gains and false decodes by origin. The
-classifier reads the mark: an "OSD decode" is a marked decode; a
-"knock-on" is any other change (gain, loss or pass move) in a later
-pass within 50 Hz of a marked decode's frequency in an earlier pass of
-the same slot.
+`compare` splits the new run's gains and false decodes by origin.
+
+**Classifier** (out of tree, a new file beside the old one, which is
+unchanged): `classify_osd.py`, sha256 `cce1e9d0c91a77aa8354141d894ab537b6fcf6cf1422e42371e1bfc97b02296d`,
+derived from `classify.py` (sha256 `d1e131a0…`); its tests
+`classify_osd_test.py`, sha256 `df4e065c486fd1b46ab4665d81dccbb58ae7299e7eaca1a1593b76f5133aba1f`
+(the old cases unchanged plus OSD-1's; all pass). Classes, tried in this
+order: **(o) OSD decode** — a gain whose new decode is marked, or a pass
+move whose earlier decode is a marked new one; (m) marginal and (r)
+ranking as before; **(k) knock-on** — a change within 50 Hz of an
+earlier-pass changed message that itself resolves (now also to (o) or
+(s)); **(s) sequence knock-on** — a change in pass p of a slot whose new
+run holds a marked decode in a pass q < p (any frequency) and whose pass
+p search differs between the runs (ran in one only, or its
+`subtracted`, `candidates_found` or `candidates_kept` differ): the marked
+decode's subtraction changed the residual and so the later candidate
+list. The distance to the nearest earlier marked decode is printed for
+every change after one, and whether it is within 50 Hz is a reported
+figure, not a condition. Anything else is unexplained and fails the
+round. On the smoke runs (findings, "Pre-gate fixes"; `main`, a used block): 123 gains, 20
+moves, no loss; (o) 115, (m) 3, (r) 4, (k) 21, (s) 0, unexplained 0.
 
 **Blocks.** One block never used before for `crowded`, `wide`,
 `fading`, `sweep` and `edges`, named only in the gate commit and
@@ -2363,17 +2379,24 @@ The pooled gate slots are that block's `crowded`, `wide` and `fading`
 (2 000 slots).
 
 **Criteria, OSD on against OSD off, same commit, same run (host):**
-- **G2 False decodes, counted per configuration (host).** **0** OSD
-  false decodes (a marked decode that is CRC-passing, plausible and not
-  transmitted) in every record, pass and set of the gate block, on its
-  empty blocks and in the WAV output. Pooled with the calibration (0 in
+- **G2 False decodes, counted per configuration (host).** **0** false
+  decodes in the OSD-on run that the OSD-off run did not list in the
+  same slot, **marked or not** (a knock-on false decode fails as an OSD
+  one does), in every record, pass and set of the gate block, on its
+  empty blocks and in the WAV output. `compare` fails a set on one
+  whenever the new run has OSD-1 runs (8332aa5), and `paired_bench
+  gains` prints the count. Pooled with the calibration (0 in
   69.0 M host runs at T = 21), the 95% bound stays below the current
   rate (6.3 × 10⁻⁷ against 8.9 × 10⁻⁷ per slot at the mean n = 14.5;
   the factor estimate is reported, not used). One OSD false decode
   anywhere fails the round.
 - **Gain** (half the sizing's figure at T = 21, pooled gate slots): at
   least **0.026** new decodes per slot, at or below −17 dB at least
-  **0.010**; sweep 50% point not worse than the existing shift gate
+  **0.010**, computed by `paired_bench gains OFF ON crowded,wide,fading`
+  (committed in the bench; a message is at or below −17 dB when its
+  transmitted `sent.snr <= -17.0`, inclusive), and the per-set gates by
+  `paired_bench compare OFF ON --partial` (the gate block is not
+  `main`); sweep 50% point not worse than the existing shift gate
   (0.05 dB); `edges` no loss. A new decode is a transmitted message
   decoded with OSD on and not with it off, whatever its origin
   (knock-on gains count; losses are below).
@@ -2386,10 +2409,24 @@ The pooled gate slots are that block's `crowded`, `wide` and `fading`
   OSD decode, a knock-on, or an existing class) fails on its own.
   Every such message is classified by the out-of-tree classifier,
   pinned by SHA-256 in the gate commit.
-- **800 WAV slots** against the reference decoder (black box): option
-  off, every decode output byte-identical to the base; option on, no
-  slot loses a decode the base had, and every added decode is in the
-  reference decoder's output. **The reference is pinned** in the gate
+- **800 WAV slots** against the reference decoder (black box), with
+  `cat-ft8-decode FILE --config host,osd=10:21` (the option on) and
+  `--config host` (off), plain mode: option off, every decode output
+  byte-identical to the base; option on, no slot loses a decode the
+  base had, and every added decode is in the reference decoder's
+  output. **Matching, fixed here before any OSD-on WAV output exists:**
+  decodes are compared within one slot by message text, after trimming
+  and collapsing runs of spaces to one (no other normalisation). An
+  "added decode" is a message text in the option-on output and not in
+  the option-off output of the same slot; a "lost" one the reverse. An
+  added decode matches the reference when the reference's output for
+  that slot has a decode whose text is equal token by token, except
+  that a hashed-call token (`<...>` or `<CALL>`) in either matches any
+  hashed-call token in the other at the same position (the two decoders
+  keep different call tables); its frequency must be within 4 Hz and its
+  time within 0.12 s of ours (the pinned "on a message" tolerances; the
+  reference's printed resolution is within them). A text that matches
+  only through hashed-call tokens counts as matched. **The reference is pinned** in the gate
   commit, before any OSD-on output exists: one named reference build
   (its binary's SHA-256 recorded), at its deepest decoding depth with
   a-priori decoding off, run once on the 800 slots and its outputs
@@ -2401,33 +2438,45 @@ The pooled gate slots are that block's `crowded`, `wide` and `fading`
   throttle sampler once a second (any live bit 0–3 voids a run; the
   sticky 0x50000 is the bench's baseline since boot and is recorded,
   not a failure).
-  - **Cost per new decode (ratio):** R = (OSD-1's cost per run through
-    the decoder, `osdpath host 10:21 200 21` on the A76 in the same
-    session) × (OSD runs per slot on the pooled gate slots, the records'
-    `osd_runs`) ÷
-    (new decodes per slot on the pooled gate slots, as in Gain). **R
-    must be below the third pass's cost per new decode**, `slotcost
-    host` on the gate block's 200 crowded 40-message slots with OSD off
-    in the same session (not the 11.09 ms of `main`). Expected count:
+  - **Cost per new decode (ratio):** R = [(OSD-1's cost per run through
+    the decoder, `osdpath host 10:21 200 21 BLOCK` on the A76 in the
+    same session) × (OSD runs per slot on the pooled gate slots, the
+    records' `osd_runs`) + (one subtraction's cost, the `subtract` stage
+    per subtraction of the same session's `slotcost host` with OSD off)
+    × (marked decodes in passes 1 and 2 per slot on the pooled gate
+    slots: each is subtracted before the next pass)] ÷ (new decodes per
+    slot on the pooled gate slots, as in Gain). **R must be below the
+    third pass's cost per new decode**, `slotcost host` on the gate
+    block's 200 crowded 40-message slots with OSD off in the same
+    session (not the 11.09 ms of `main`). The later passes' extra work
+    on a changed residual (other than the subtraction) is not in R: it
+    is inside the 1.0 ms cap below. Expected count:
     about 104 new decodes on the 2 000 pooled slots (0.052 per slot;
     Poisson SD about 10), so the ratio's own noise is about ±10%.
-    Expected ratio from a7a9f6a's A76 cost (22.8 µs per run through the
-    decoder) at the sizing's 14.5 runs and 0.052 new decodes per slot:
-    about 6.4 ms, against pass 3's 11.06 ms on `main`'s slotcost slots
-    (same session). The 200
+    Expected R on `main` (the smoke runs, a used block; A76 costs
+    of a7a9f6a): 22.8 µs × 14.62 runs = 0.333 ms plus 1.64 ms × 67 / 2 000
+    subtracted marked decodes = 0.055 ms, over 0.0615 new decodes per
+    slot: about 6.3 ms, against pass 3's 11.06 ms. The 200
     `slotcost` slots carry only about 12 new decodes and are not used
     for the ratio.
-  - **Absolute caps:** `slotcost host` (three passes, one thread, the
-    gate block's 200 crowded 40-message slots) up by at most **1.0 ms**
-    per slot with OSD on; and OSD-1's own time at most **0.5 ms** per
-    slot, where 0.5 ms is the mean per slot of the `osd` stage in that
-    same `slotcost host` run with OSD on (the stage times OSD-1, its
+  - **Absolute caps**, from one A76 run of `paired_bench slotcost host
+    host,osd=10:21 200 5 BLOCK` (the gate block's 200 crowded
+    40-message slots, the two configurations interleaved in one binary,
+    RUNS = 5, one thread): "up by" is B's `mean` less A's (each the mean
+    over the 200 slots of a slot's median total over its 5 runs), at
+    most **1.0 ms**; and OSD-1's own time at most **0.5 ms** per slot,
+    the `osd` stage's mean of per-slot medians in B (the stage times OSD-1, its
     storage switch and its tests; the next candidate's storage refill is
     booked to belief propagation and is inside the 1.0 ms cap).
     Expected: 22.8 µs × 14.5 runs = 0.33 ms (A76, a7a9f6a, through the
-    decoder; the refill measured at 0, −0.5 µs).
+    decoder; the refill too small to measure: −0.5 µs).
 - **G4 Cortex-M33 (emulated) instructions per OSD run, through the
-  decoder** (`decode_candidate` with the option on less the same call
+  decoder** (the out-of-tree harness pinned by its manifest, sha256
+  `18e89405192b3e3dd04b56ebbbdb1933f86cfd829859cedf6c68cd8304c0d837`
+  over the image's source, linker script and build script, the build and
+  emulation scripts and the eight `osdinput` files; built with rustc
+  1.93.0 for thumbv8m.main-none-eabihf at `opt-level = "s"`, LTO;
+  emulated with unicorn 2.1.0) (`decode_candidate` with the option on less the same call
   with it off, the next candidate's storage refill included; the
   out-of-tree image fed the host configuration's inputs: the `crowded`
   `main` slots 400 and 401, the input of each of their three passes,
@@ -2441,8 +2490,10 @@ The pooled gate slots are that block's `crowded`, `wide` and `fading`
   `f64` helper; `check.sh --stack` passes (five images).
 - **G5 Flash (bytes, the check program's images, option on or off):**
   host image at most **102 400 B**, small image at most **90 700 B**
-  (measured at 05fe78f: 102 256 and 90 564 B; 511bf32 98 128 and
-  86 468 B).
+  (measured at 05fe78f, and unchanged since, the library not having
+  changed: 102 256 and 90 564 B; 511bf32 98 128 and 86 468 B). The
+  headroom is 144 and 136 B: any library change before the gate is
+  re-measured against these.
 - G3 (no origin marker) is fixed (above); G6 (small's ≤ −17 dB bar)
   no longer applies.
 - **Pinned definitions:** on a message = refined tone 0 within 4 Hz and
