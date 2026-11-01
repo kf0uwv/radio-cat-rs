@@ -1421,3 +1421,24 @@
   (6.9 M empty slots): T = 21 for host and small.
 - Gated round revised (task plan); proposed, not run.
 
+
+## Session: 2026-10-31 (OSD-1 fix round; branch `osd1`)
+
+- 923c393: `unpack` behind a generic shim over one `unpack_dyn`: flash
+  small 93 888 → 90 540, host 105 588 → 102 232, encoder alone +148 B;
+  `osd_decode` 488 → 264 B; `_start` +8 B. x86-64 decode instructions
+  ±0.0001%, `slotcost` and the encoder within noise.
+- 05fe78f: the round count in `Work::Osd(OsdWork { bp_rounds, osd })`
+  (a two-field variant put every `Work` value on the stack: 6 096 B
+  frame); `hard_errors` documented; `TABLE_BYTES` by `size_of`; `N <
+  256` asserted; check images at (10, 21) and (25, 21); two tests; the
+  API changes noted.
+- 624c4de, a7a9f6a: bench records mark OSD-1 decodes and count its runs;
+  `compare` by origin; `osdpath`, `osdinput`.
+- OSD-1 per run through the decoder: x86-64 13.59 µs mean (1 669 runs on
+  the slotcost slots' pass inputs); M33 199 731 instructions mean,
+  226 010 max (15 runs, six pass inputs). A76 pending.
+- Option off: records and 800 WAV slots identical to 511bf32's.
+- Findings additions (crowded vs empty q_T by pass, assumed parts, n as
+  a mean, the χ² grouping, shared host/small events); the gated round
+  revised for host only (task plan), still proposed, not run.

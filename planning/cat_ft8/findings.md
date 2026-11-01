@@ -6091,3 +6091,189 @@ small 1.7 × 10⁻⁶; small's point rate 8.7 × 10⁻⁷ is above its R0).
   crowded slot is not white). Empty slots carry no gain information, so
   T = 21's gain is the sizing's (host 0.052 per slot, ≤ −17 dB 0.020;
   small 0.050, 0.006) and unconfirmed on a new block.
+
+## OSD-1 follow-ups (2026-10-31; option off, identical)
+
+On branch `osd1`. Commits 923c393 (`unpack` compiled once), 05fe78f
+(storage, docs, checks, tests), 624c4de (bench: OSD-1 origin, `osdpath`,
+`osdinput`), a7a9f6a (bench: OSD-1 runs per slot).
+
+### Changes
+
+- **`unpack` compiled once.** The public `unpack<H: CallHashes + ?Sized>`
+  is a shim over one out-of-line `unpack_dyn(&Payload, &mut dyn
+  CallHashes)`, reached through a sized forwarding wrapper (so `H = dyn
+  CallHashes` still works; signature unchanged). The decoder's
+  plausibility test no longer has its own `unpack::<NoHashes>` instance.
+- **Belief propagation's round count** for an OSD-1 candidate lives in
+  `Work::Osd`'s payload and is passed to `osd_decode`; `OsdScratch` has
+  no `bp_rounds`. **Deviation from the requested form:** the payload is
+  one struct, `Work::Osd(OsdWork { bp_rounds, osd })`, not the two-field
+  variant `Work::Osd { bp_rounds, osd }`. With two variant fields (tuple
+  or struct, `u8` or `u32`, `repr(u32)`, constant or not, out-of-line
+  constructor) rustc 1.93 builds every `Work` value on the stack and
+  copies it, OSD's and belief propagation's alike: `decode_a_slot`'s
+  frame on the Cortex-M33 went from 2 512 to 6 096 B. With one field
+  both switches fill the storage in place, as before.
+- `Decode::hard_errors` documents the decoders' one difference (a soft
+  bit of exactly 0: belief propagation never counts it, OSD-1 decides it
+  0 and counts a codeword 1 there); `Decode::rounds` says an OSD-1
+  decode carries the failed belief propagation's rounds. No behaviour
+  change.
+- `TABLE_BYTES` takes the generator rows from their type
+  (`osd::ROWS_BYTES`, asserted 2 184 B); `N < 256` asserted for the radix
+  sort's `u8` counts and positions; the check program's OSD images use
+  (10, 21) host and (25, 21) small.
+- Tests: with the option on, every candidate of a busy slot decoded
+  right after a candidate OSD-1 ran on gives the result and round count
+  fresh storage gives; an OSD-1 decode after one round of belief
+  propagation (a −18 dB signal) carries `rounds = 1`.
+- **Origin marker** (bench only; no `Decode` field): a decode whose
+  candidate reported `Stage::Osd` is OSD-1's (it runs only after belief
+  propagation failed); multi-pass runs count candidates from each
+  `Refine` and join on the list entry's pass. Records save
+  `"osd":true` on those decodes only, and the slot's OSD-1 runs as
+  `"osd_runs"` when not 0; `compare` prints runs, gains and false
+  decodes by origin. On `crowded` `main` (600 slots, host, `osd=10:21`,
+  a smoke run on a used block, not evidence): 8 357 OSD-1 runs (13.9
+  per slot; the sizing's 14.5 pooled), 19 OSD-1 decodes, 12
+  messages gained through OSD-1 and 5 otherwise (knock-on), no false
+  decode. The `cat-ft8-decode` profile line is unchanged: the binary has
+  no OSD option, so its `osd_seconds` is always 0 and there is no decode
+  to mark.
+- Public API changes on the branch (043ee8a, noted in 05fe78f's
+  message): `Stage::ALL` 4 → 5 (`Stage::Osd`; `Stage::Snr.index()` 3 →
+  4), the `osd` stage in profile output and records (`osd_seconds`),
+  `DecodeConfig::osd`, `with_osd` and `OsdConfig` new, the
+  `profile`-only `bp_totals` returning an `Option`.
+
+### Sizes (Cortex-M33 check images; option on or off alike)
+
+| | 511bf32 | 2980198 | 923c393 (shim) | 05fe78f |
+|---|---|---|---|---|
+| flash, small | 86 468 | 93 888 | 90 540 | **90 564** |
+| flash, host | 98 128 | 105 588 | 102 232 | **102 256** |
+| flash, encoder alone | not measured | 35 528 | 35 676 | 35 676 |
+| static RAM small / host | 212 044 / 241 612 | 212 048 / 241 616 | same | same |
+| `osd_decode` frame | — | 488 | 264 | 272 |
+| `_start` (decoder images / encoder) | 4 096 / — | 4 096 / 4 208 | 4 104 / 4 016 | 4 104 / 4 016 |
+| `decode_a_slot` | 2 480 | 2 504 | 2 512 | 2 512 |
+| `unpack` (its one instance) | — | 456 (`CallTable`) | 464 (`unpack_dyn`) | 464 |
+| host `subtract_one` (largest) | 4 808 | 4 808 | 4 808 | 4 808 |
+
+The OSD option now costs +4 096 B (small) and +4 128 B (host) of flash
+against 511bf32 and 4 B of static RAM. The shim adds 8 B to `_start` and
+`decode_a_slot` (the wrapper's slot), so the small image's largest frame
+is 4 104 B, was 4 096 B.
+
+### CPU of the shim (x86-64, 2980198 against 923c393)
+
+- Decode instructions (`perf stat -e instructions:u`, `cat-ft8-decode`
+  on the first 200 of the 800 WAV slots, summed): host 85 871 688 622 →
+  85 871 584 480 (−0.0001%), small 22 296 547 181 → 22 296 556 416
+  (+0.00004%). The dyn call is in `finish` (once per decode) only.
+- `slotcost host` (one thread, 200 crowded 40-message slots, 5 runs,
+  two rounds, each binary's two configurations): mean 72.4 / 72.1 /
+  72.1 / 71.6 ms (base) against 72.1 / 72.6 / 72.2 / 72.3 ms (shim):
+  +0.25 ms mean (+0.35%) within the base's own 0.8 ms spread.
+  `slotcost` never unpacks, so this is placement, not the dyn call.
+- Encoder (`encode_bench 200 50`, 3 rounds): total 559 / 562 / 559 ns
+  per message against 559 / 543 / 567; no move beyond noise.
+
+### OSD-1's cost per candidate through the decoder (624c4de)
+
+Everything the option adds per OSD run: the storage switch and its
+zero-fill, OSD-1, its tests, and the next candidate's fresh
+belief-propagation storage.
+
+- **x86-64** (Threadripper 3970X, one thread, plain build):
+  `osdpath host 10:21 200 21` on the 600 pass inputs of the 200
+  `slotcost` slots (crowded `main` 400–599; each pass's input as the
+  decoder's own passes leave it, OSD off), 40 000 candidates; OSD-1 ran
+  on 1 669 (pass 1 19, pass 2 259, pass 3 1 391: 8.3 per slot) and
+  accepted 20. **Mean 13.59 µs per OSD run** (refill included); the
+  1 649 not accepted: mean 13.63, median 13.41, largest 35.2 µs (a timing
+  outlier: the M33 counts below vary by ±10%); the refill on the next
+  candidate −0.45 µs mean (not measurable here); the 20 accepted 21.8 µs
+  (with the CRC pass, `unpack`, re-encoding and the SNR). The library
+  call alone (`osdlib host 200 5`, same session): 14.06 µs.
+- **Cortex-M33** (emulated, out-of-tree image with the check program's
+  build settings; `decode_candidate` on the first 12 candidates of each
+  input, option on less option off): host (10, 21) on six inputs (slots
+  400 and 401, passes 1–3, `osdinput host`): 15 OSD runs, none accepted,
+  **mean 199 731 instructions per run (refill included), largest
+  226 010** (the call 224 591 + the refill 1 419); `osd_decode` alone
+  196 912 mean (181 624–221 772); the storage switch's zero-fill about
+  2 400 and the refill 1 416–1 419. Small (25, 21) on the same slots'
+  pass 1: 5 runs, mean 205 064, largest 213 535. `unpack` did not run
+  (no CRC passed); on an accept it adds about 2 800 (`unpack_dyn` 2 827
+  instructions on `CQ K1ABC FN42`). Candidates OSD did not run on differ
+  by 0–3 instructions between the two images (placement).
+- **A76: not measured** (pending; see below).
+
+### Findings additions
+
+- **q_T on crowded slots against empty, by pass** (the sizing's data:
+  host, each pass's top 10, failed candidates off every message, channel
+  soft bits; crowded/wide/fading × main/cap1/cap2 against the 21 empty
+  blocks):
+
+  | | runs | q_21 (count) | q_22 | q_24 |
+  |---|---|---|---|---|
+  | crowded, pass 1 | 1 588 | 0 (0) | 6.3e-4 (1) | 1.26e-3 (2) |
+  | crowded, pass 2 | 24 450 | 1.64e-4 (4) | 4.1e-4 (10) | 2.49e-3 (61) |
+  | crowded, pass 3 | 32 487 | 0.92e-4 (3) | 2.8e-4 (9) | 2.06e-3 (67) |
+  | crowded, all | 58 525 | 1.20e-4 (7) | 3.4e-4 (20) | 2.22e-3 (130) |
+  | empty (pass 1 only) | 483 000 | 0.95e-4 (46) | 2.9e-4 (141) | 2.28e-3 (1 103) |
+
+  Small (top 25, one pass): crowded 0.95e-4 (4 of 41 970) against empty
+  0.95e-4. The later passes' residual candidates sit no closer to a
+  non-zero codeword than empty slots' (each pass within Poisson noise of
+  the empty rate), which supports carrying the calibration's q_T, and so
+  its bound, to passes 2 and 3. The counts on crowded slots are small
+  (7 at T = 21), so this supports the carry-over, it does not prove it.
+- **Assumed, not measured, on crowded slots:** that a near codeword of a
+  pass 2 or 3 candidate passes the CRC at 2⁻¹⁴ and is plausible at
+  π ≈ 0.37 as on empty slots; and that the on-message candidates (about
+  4.75 per slot of the 14.5 failed top-10 candidates: 9.75 per slot are
+  off every message) give a wrong codeword at no more than the
+  off-message rate. Neither is counted; the gate's 0-false requirement
+  on a fresh block is the check.
+- **n = 14.5 is a mean.** Over three passes at most 30 candidates run
+  (10 a pass); on 40-signal slots n reaches about 30, where the same
+  calibration bound is 30 × 2.996 / 69.0 M = 1.30 × 10⁻⁶ per slot, above
+  the current 8.9 × 10⁻⁷. The rule as fixed uses the mean, and the rate
+  per slot averaged over a mix of slots is what it bounds.
+- **Syndrome χ² deviation.** The calibration plan fixed χ² of the
+  16 384 syndrome values against uniform; it was run over 256 groups of
+  64 values (255 degrees of freedom), because at dH ≤ 24 there are 9.4
+  codewords per value expected. Not deciding either way; declared here.
+- **Shared events, host and small.** The calibration ran both
+  configurations on the same slots, and some accepted codewords are the
+  same event (same block, slot and payload): at dH ≤ 24, host 3 and
+  small 6 events, 2 of them shared (7 distinct); at dH ≤ 22, 2 and 2,
+  1 shared (3 distinct). Statements per configuration stand; pooled
+  over both they count 7 (not 9) and 3 (not 4).
+
+### Identity with the option off (x86-64, against 511bf32)
+
+- **Records:** 73 800 (host, host one-pass and small × 24 600:
+  crowded/wide/fading × main/cap1/cap2, sweep/edges/empty main) equal
+  to 511bf32's (stage times aside), at 624c4de and at a7a9f6a; no
+  record carries an `osd` mark or `osd_runs`.
+- **800 WAV slots** × 3 configurations × 3 modes (7 200 runs, 95 448
+  lines, 78 648 decode lines): byte-identical to e7e7f48's output, so
+  equal to 511bf32's apart from the three memory fields noted there
+  (`candidate_scratch_bytes`, `peak_bytes`, `static_table_bytes`; the
+  scratch size is unchanged by `OsdWork`).
+
+### Not measured
+
+- A76: OSD-1's cost per run through the decoder (`osdpath host 10:21 200
+  21`, aligned build), `osdlib host 200 5` at 624c4de, `slotcost host`
+  2980198 against 923c393 (the shim's placement), and the records'
+  identity on the A76. The bench was off limits during this round.
+- The M33 cost on accepted candidates (none on the six inputs) and on
+  more inputs than six pass inputs of two slots.
+- The deviation above (`OsdWork`) has not been tried on other compiler
+  versions; the stack check catches a regression.
