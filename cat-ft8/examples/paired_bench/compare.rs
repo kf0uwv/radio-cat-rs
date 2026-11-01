@@ -152,13 +152,7 @@ fn sweep_shift(sweep: &Sweep<(bool, bool)>, gain: bool) -> bool {
                 interval(&mut b.new),
                 interval(&mut b.shift),
             );
-            // The shift and its whole interval within ±0.05 dB (false for
-            // NaN as well).
-            let within = |x: f64| (-SHIFT_LIMIT_DB..=SHIFT_LIMIT_DB).contains(&x);
-            let shift_ok = within(n - o) && within(dl) && within(dh);
-            // Not worse: the shift and its interval's upper end at most
-            // the limit (false for NaN).
-            let not_worse = n - o <= SHIFT_LIMIT_DB && dh <= SHIFT_LIMIT_DB;
+            let (shift_ok, gate) = shift_gate(n - o, dl, dh, gain);
             println!(
                 "  50% point: old {o:.3} dB [{ol:.3}, {oh:.3}], new {n:.3} dB [{nl:.3}, {nh:.3}], shift {:+.3} dB [{dl:+.3}, {dh:+.3}] ({} of 1 000 resamples without a 50% point): {}{}",
                 n - o,
@@ -167,17 +161,13 @@ fn sweep_shift(sweep: &Sweep<(bool, bool)>, gain: bool) -> bool {
                 if gain {
                     format!(
                         " (two-sided); gain round, not worse by more than {SHIFT_LIMIT_DB} dB: {}",
-                        if not_worse { "ok" } else { "WORSE" }
+                        if gate { "ok" } else { "WORSE" }
                     )
                 } else {
                     String::new()
                 }
             );
-            if gain {
-                not_worse
-            } else {
-                shift_ok
-            }
+            gate
         }
         _ => {
             println!("  50% point: MISSING (old {h_old:?}, new {h_new:?})");
@@ -232,21 +222,58 @@ struct Pair {
     new_only: u64,
     false_old: u64,
     false_new: u64,
+    /// The new run's false decodes the old run did not list in that slot.
+    false_absent: u64,
 }
 
 impl Pair {
     /// The per-point gates: (no loss beyond 3·√(b + c), false decodes —
-    /// none on `empty`, elsewhere no more than the old run's).
+    /// on `empty`, none the old run did not also list in that slot (the
+    /// absolute counts are printed beside it), elsewhere no more than the
+    /// old run's).
     fn verdict(&self, set: &str) -> (bool, bool) {
         let (bb, cc) = (self.old_only as f64, self.new_only as f64);
         let loss_ok = bb - cc <= 3.0 * (bb + cc).sqrt();
         let false_ok = if set == "empty" {
-            self.false_new == 0
+            self.false_absent == 0
         } else {
             self.false_new <= self.false_old
         };
         (loss_ok, false_ok)
     }
+}
+
+/// False decodes of `new` (payloads not in `sent`) that `old` does not
+/// list.
+fn false_absent(old: &[u128], new: &[u128], sent: &[u128]) -> u64 {
+    new.iter()
+        .filter(|d| !sent.contains(d) && !old.contains(d))
+        .count() as u64
+}
+
+/// The paired per-slot CRC gate: over slots, `up` sums the new run's CRC
+/// failures above the old run's in that slot, `down` the old's above the
+/// new's; it fails when up − down > 2·√(up + down) (a sign test on the
+/// slot differences, as the set loss gate). Returns (up, down, ok).
+fn crc_paired(old: &[u64], new: &[u64]) -> (u64, u64, bool) {
+    let (mut up, mut down) = (0u64, 0u64);
+    for (&a, &b) in old.iter().zip(new) {
+        up += b.saturating_sub(a);
+        down += a.saturating_sub(b);
+    }
+    let ok = up as f64 - down as f64 <= 2.0 * ((up + down) as f64).sqrt();
+    (up, down, ok)
+}
+
+/// The sweep shift gate on a shift and its interval (dB): two-sided, the
+/// shift and both ends within ±[`SHIFT_LIMIT_DB`]; one-sided with `gain`,
+/// the shift and the upper end at most +[`SHIFT_LIMIT_DB`] (false for NaN
+/// either way). Returns (two-sided, gate).
+fn shift_gate(shift: f64, lo: f64, hi: f64, gain: bool) -> (bool, bool) {
+    let within = |x: f64| (-SHIFT_LIMIT_DB..=SHIFT_LIMIT_DB).contains(&x);
+    let two = within(shift) && within(lo) && within(hi);
+    let not_worse = shift <= SHIFT_LIMIT_DB && hi <= SHIFT_LIMIT_DB;
+    (two, if gain { not_worse } else { two })
 }
 
 /// One side's work: candidates through BP, BP rounds, decodes truncated,
@@ -353,6 +380,7 @@ fn tally(set: &str, sa: &[SlotResult], sb: &[SlotResult]) -> Tally {
         }
         p.false_old += da.iter().filter(|d| !sent.contains(d)).count() as u64;
         p.false_new += db.iter().filter(|d| !sent.contains(d)).count() as u64;
+        p.false_absent += false_absent(&da, &db, &sent);
         t.work[0].add(x);
         t.work[1].add(y);
     }
@@ -410,12 +438,17 @@ fn print_misses(side: &str, run: &[SlotResult]) {
     );
 }
 
-/// A multi-pass run's per-pass counts: new decodes, false decodes and
-/// duplicates of earlier passes, list truncation and CRC failures; and the
-/// gates: no false decode in a further pass, no payload listed twice, and
-/// the expected false decodes from the CRC (summed over passes) at most
-/// the passes run × the single-pass run's. Returns the gates' verdict
-/// (true when the new run is single-pass).
+/// A multi-pass run's per-pass counts: new decodes, false decodes (and
+/// those the old run did not list in that slot) and duplicates of earlier
+/// passes, list truncation and CRC failures; and the gates: no false
+/// decode in a further pass that the old run did not also list in that
+/// slot, no payload listed twice, and the CRC failures — against a
+/// multi-pass old run, paired per slot over every pass each run ran
+/// ([`crc_paired`]), the absolute limit (expected false decodes summed
+/// over passes at most the passes × the old run's pass-1 expectation)
+/// printed beside it; against a single-pass old run, that absolute limit.
+/// The two runs' pass counts are printed when they differ. Returns the
+/// gates' verdict (true when the new run is single-pass).
 fn print_passes(sa: &[SlotResult], sb: &[SlotResult]) -> bool {
     if sb.iter().all(|r| r.passes.is_none()) {
         return true;
@@ -435,7 +468,8 @@ fn print_passes(sa: &[SlotResult], sb: &[SlotResult]) -> bool {
     for k in 0..most {
         let (mut ran, mut new, mut false_n, mut dup, mut earlier, mut trunc, mut crc) =
             (0, 0, 0, 0, 0, 0, 0);
-        for r in sb {
+        let mut absent = 0u64;
+        for (r, o) in sb.iter().zip(sa) {
             let Some(ps) = &r.passes else { continue };
             let Some(p) = ps.get(k) else { continue };
             ran += 1;
@@ -446,6 +480,10 @@ fn print_passes(sa: &[SlotResult], sb: &[SlotResult]) -> bool {
                 .iter()
                 .filter(|d| !r.sent.iter().any(|s| s.payload == d.payload))
                 .count();
+            let old: Vec<u128> = o.decodes.iter().map(|d| d.payload).collect();
+            let sent: Vec<u128> = r.sent.iter().map(|s| s.payload).collect();
+            let here: Vec<u128> = mine.iter().map(|d| d.payload).collect();
+            absent += false_absent(&old, &here, &sent);
             dup += p.duplicates;
             earlier += p.earlier;
             trunc += p.truncated;
@@ -453,7 +491,9 @@ fn print_passes(sa: &[SlotResult], sb: &[SlotResult]) -> bool {
         }
         let expected = crc as f64 / slots / 16_384.0;
         expected_total += expected;
-        let ok = k == 0 || false_n == 0;
+        // A later pass's false decode fails unless the old run listed it
+        // too in that slot (the absolute count is the `false` column).
+        let ok = k == 0 || absent == 0;
         pass_ok &= ok;
         println!(
             "          {:>4} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>10} {:>12.2e}{}",
@@ -466,7 +506,11 @@ fn print_passes(sa: &[SlotResult], sb: &[SlotResult]) -> bool {
             trunc,
             crc,
             expected,
-            if ok { "" } else { "  FALSE" }
+            if ok {
+                String::new()
+            } else {
+                format!("  FALSE ({absent} not in the old run)")
+            }
         );
     }
     let repeated = sb
@@ -491,23 +535,27 @@ fn print_passes(sa: &[SlotResult], sb: &[SlotResult]) -> bool {
         / sa.len().max(1) as f64
         / 16_384.0;
     let crc_ok = expected_total <= most as f64 * old_rate || expected_total == 0.0;
-    // When the old run is multi-pass too, the gate compares the two runs'
-    // CRC failures over the same passes: the new run's may exceed the
-    // old's by at most 3·√(old + new) (the counts' Poisson spread, as the
-    // loss gates), so a configuration is never failed against itself. The
-    // absolute limit above is still printed, for the record. A single-pass
-    // old run keeps the absolute limit as the gate.
+    // Against a multi-pass old run the gate is paired per slot: every
+    // pass each run ran, slot by slot ([`crc_paired`]); the absolute limit
+    // above is printed, for the record. A single-pass old run keeps the
+    // absolute limit as the gate.
     let old_multi = !sa.is_empty() && sa.iter().all(|r| r.passes.is_some());
-    let crc_sum = |run: &[SlotResult]| -> u64 {
+    let old_most = sa
+        .iter()
+        .filter_map(|r| r.passes.as_ref().map(|p| p.len()))
+        .max()
+        .unwrap_or(1);
+    let per_slot = |run: &[SlotResult]| -> Vec<u64> {
         run.iter()
-            .filter_map(|r| r.passes.as_ref())
-            .flat_map(|ps| ps.iter().take(most))
-            .map(|p| p.crc_failed)
-            .sum()
+            .map(|r| {
+                r.passes.as_ref().map_or(r.counts.crc_failed, |ps| {
+                    ps.iter().map(|p| p.crc_failed).sum()
+                })
+            })
+            .collect()
     };
-    let (crc_old, crc_new) = (crc_sum(sa), crc_sum(sb));
-    let margin = 3.0 * ((crc_old + crc_new) as f64).sqrt();
-    let rel_ok = crc_new as f64 - crc_old as f64 <= margin;
+    let (co, cn) = (per_slot(sa), per_slot(sb));
+    let (up, down, rel_ok) = crc_paired(&co, &cn);
     pass_ok &= (if old_multi { rel_ok } else { crc_ok }) && repeated == 0;
     println!(
         "  passes: expected false decodes {expected_total:.2e} per slot (limit {most} × {old_rate:.2e}): {}; slots listing a payload twice: {repeated}{}",
@@ -521,9 +569,16 @@ fn print_passes(sa: &[SlotResult], sb: &[SlotResult]) -> bool {
     );
     if old_multi {
         println!(
-            "  passes: CRC failures over passes 1–{most}: old {crc_old}, new {crc_new}, new − old {} (limit 3·√(old + new) = {margin:.1}): {}",
-            crc_new as i64 - crc_old as i64,
-            if rel_ok { "ok" } else { "CRC" }
+            "  passes: CRC failures, every pass, paired by slot: old {}, new {}; new above old {up}, old above new {down} (limit up − down ≤ 2·√(up + down) = {:.1}): {}{}",
+            co.iter().sum::<u64>(),
+            cn.iter().sum::<u64>(),
+            2.0 * ((up + down) as f64).sqrt(),
+            if rel_ok { "ok" } else { "CRC" },
+            if old_most == most {
+                String::new()
+            } else {
+                format!("; passes old {old_most}, new {most}")
+            }
         );
     }
     pass_ok
@@ -779,4 +834,49 @@ pub fn compare(old: &Path, new: &Path, partial: bool, gain: bool) -> Result<bool
     }
     println!("\noverall: {}", if all_pass { "PASS" } else { "FAIL" });
     Ok(all_pass)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn false_absent_counts_only_new_false_decodes_the_old_run_lacks() {
+        let sent = [1, 2];
+        assert_eq!(false_absent(&[1, 7], &[1, 2, 7, 8, 9], &sent), 2);
+        assert_eq!(false_absent(&[7, 8], &[7, 8], &sent), 0);
+        assert_eq!(false_absent(&[], &[1, 2], &sent), 0);
+    }
+
+    #[test]
+    fn crc_paired_passes_a_run_against_itself_and_fails_a_clear_excess() {
+        let old = [2, 0, 1, 3, 0];
+        assert_eq!(crc_paired(&old, &old), (0, 0, true));
+        // Up 9, down 0: 9 > 2·√9 = 6.
+        assert_eq!(crc_paired(&[0; 9], &[1; 9]), (9, 0, false));
+        // Up 4, down 0: 4 ≤ 2·√4 = 4.
+        assert_eq!(crc_paired(&[0; 4], &[1; 4]), (4, 0, true));
+        // Swaps between slots cancel: up 3, down 3.
+        assert_eq!(
+            crc_paired(&[1, 1, 1, 0, 0, 0], &[0, 0, 0, 1, 1, 1]),
+            (3, 3, true)
+        );
+        // Fewer CRC failures never fail.
+        assert_eq!(crc_paired(&[5, 5], &[0, 0]), (0, 10, true));
+    }
+
+    #[test]
+    fn shift_gate_is_two_sided_by_default_and_one_sided_for_gain() {
+        // The gosd1 sweep: better by 0.052 dB.
+        assert_eq!(shift_gate(-0.052, -0.070, -0.038, false), (false, false));
+        assert_eq!(shift_gate(-0.052, -0.070, -0.038, true), (false, true));
+        // Worse by more than the limit fails both ways.
+        assert_eq!(shift_gate(0.06, 0.04, 0.08, true), (false, false));
+        // The interval's upper end over the limit fails the one-sided gate.
+        assert_eq!(shift_gate(0.03, 0.01, 0.051, true), (false, false));
+        // Within ±0.05 passes both.
+        assert_eq!(shift_gate(0.01, -0.02, 0.04, false), (true, true));
+        assert_eq!(shift_gate(0.01, -0.02, 0.04, true), (true, true));
+        assert_eq!(shift_gate(f64::NAN, 0.0, 0.0, true), (false, false));
+    }
 }

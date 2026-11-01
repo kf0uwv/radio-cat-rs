@@ -78,6 +78,8 @@ required-features = ["profile"]
 [[example]]
 name = "paired_bench"
 required-features = ["profile"]
+# Its unit tests (the comparison gates) run with `cargo test --features profile`.
+test = true
 
 [[test]]
 name = "osd_differential"
