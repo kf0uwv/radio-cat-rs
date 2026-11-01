@@ -1459,3 +1459,14 @@
 - Smoke on `main` (used): pooled 0.0615 new decodes per slot (bar
   0.026), 0.0170 at or below −17 dB (bar 0.010); no loss, no new false
   decode; classifier 0 unexplained. Option off identical to 511bf32.
+
+## Session: 2026-11-01 (OSD-1 gated round named; branch `osd1`)
+
+- 4b64991: `gains` checks its inputs (seed, samples, messages; missing
+  set or block). Out of tree, hashed in the plan: `classify_osd_v2.py`
+  (wider (s)), the WAV matcher and the reference runner, the gate
+  scripts, the M33 manifest (with its `Cargo.toml`, `cargo +1.93.0`).
+- The reference decoder run once on the 800 WAV slots, its outputs
+  hashed; no option-on WAV output before it.
+- Gate commit: gain block `gosd1`, empty blocks `gosd1e01`–`gosd1e20`;
+  status running.

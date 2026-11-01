@@ -2308,11 +2308,12 @@ the findings additions, and the gate below revised (host only). With the
 option off, records and the 800 WAV slots must stay identical to
 511bf32's. Done: findings, "OSD-1 follow-ups".
 
-## OSD-1 on the best candidates: gated round (proposed; not yet run)
+## OSD-1 on the best candidates: gated round (running)
 
 Revised from the sizing's draft after the lean implementation (findings,
 "Lean OSD-1 in the library"), the counted calibration and the
-follow-ups (findings, "OSD-1 follow-ups"). Nothing here is run.
+follow-ups (findings, "OSD-1 follow-ups"). This commit names the blocks
+and pins every tool; the round is run once, as written, after it.
 The criteria are fixed in the commit that names the block, before any
 record of it exists, and applied mechanically: if any fails, nothing
 merges; no retune and no second block.
@@ -2351,11 +2352,15 @@ option off, every decode output identical to the base (shown at
 and count its runs per slot (`"osd_runs"`);
 `compare` splits the new run's gains and false decodes by origin.
 
-**Classifier** (out of tree, a new file beside the old one, which is
-unchanged): `classify_osd.py`, sha256 `cce1e9d0c91a77aa8354141d894ab537b6fcf6cf1422e42371e1bfc97b02296d`,
-derived from `classify.py` (sha256 `d1e131a0…`); its tests
-`classify_osd_test.py`, sha256 `df4e065c486fd1b46ab4665d81dccbb58ae7299e7eaca1a1593b76f5133aba1f`
-(the old cases unchanged plus OSD-1's; all pass). Classes, tried in this
+**Classifier** (out of tree, new files beside the old ones, which are
+unchanged): **`classify_osd_v2.py`, sha256
+`223de7e844830c7628a2b099a9830a8861fa64cb51baaadf4846dd0cf8740d63`**
+(from `classify_osd.py`, sha256 `cce1e9d0…`, itself from `classify.py`,
+sha256 `d1e131a0…`); its tests `classify_osd_v2_test.py`, sha256
+`1d633b86f8740e98b98a36c7df3630a9a87a42273a7a9481ba0077eafd8924b0`
+(the old cases plus OSD-1's; all pass). v2 widens (s): pass p's search
+differing **or** the decodes of some earlier pass differing (payload,
+candidate or frequency, in list order) both qualify. Classes, tried in this
 order: **(o) OSD decode** — a gain whose new decode is marked, or a pass
 move whose earlier decode is a marked new one; (m) marginal and (r)
 ranking as before; **(k) knock-on** — a change within 50 Hz of an
@@ -2363,7 +2368,8 @@ earlier-pass changed message that itself resolves (now also to (o) or
 (s)); **(s) sequence knock-on** — a change in pass p of a slot whose new
 run holds a marked decode in a pass q < p (any frequency) and whose pass
 p search differs between the runs (ran in one only, or its
-`subtracted`, `candidates_found` or `candidates_kept` differ): the marked
+`subtracted`, `candidates_found` or `candidates_kept` differ) or an
+earlier pass's decodes differ (v2): the marked
 decode's subtraction changed the residual and so the later candidate
 list. The distance to the nearest earlier marked decode is printed for
 every change after one, and whether it is within 50 Hz is a reported
@@ -2371,12 +2377,31 @@ figure, not a condition. Anything else is unexplained and fails the
 round. On the smoke runs (findings, "Pre-gate fixes"; `main`, a used block): 123 gains, 20
 moves, no loss; (o) 115, (m) 3, (r) 4, (k) 21, (s) 0, unexplained 0.
 
-**Blocks.** One block never used before for `crowded`, `wide`,
-`fading`, `sweep` and `edges`, named only in the gate commit and
-checked absent everywhere first; and at least 20 unused `empty` blocks
-(46 000 slots), named the same way, none of them `qv0000`–`qv2999`.
-The pooled gate slots are that block's `crowded`, `wide` and `fading`
-(2 000 slots).
+**Blocks (named here).** The gain block is **`gosd1`** for `crowded`,
+`wide`, `fading`, `sweep` and `edges`; the empty blocks are
+**`gosd1e01` … `gosd1e20`** (20 × 2 300 = 46 000 slots). Before this
+commit the string `gosd1` was checked absent from the repository's
+history (every branch, `git log --all -S`) and from every file of the
+local cache and the result tree (a recursive text search: no file holds
+it). The pooled gate slots are `gosd1`'s `crowded` (600), `wide` (800)
+and `fading` (600): 2 000 slots.
+
+**Run (once; the scripts are pinned by sha256 and live out of tree):**
+- x86-64 `gate_x86.sh` (`3fb01f4946b59691f43f8a3386ca82742d8181a8b30c33822cec002c92a40213`):
+  `paired_bench run host` and `run host,osd=10:21` on `crowded,wide,fading,sweep,edges gosd1` and on
+  `empty gosd1e01…20`; `compare OFF ON --partial`; `gains OFF ON crowded,wide,fading` (pooled bars) and
+  `gains OFF ON sweep,edges,empty`; `classify_osd_v2.py OFF ON`; `gate_counts.py ON`
+  (`db32c83111e99c51e416c4c002472c08fd71524e20e4e68a5f2084241a5c5aa7`: OSD-1 runs per slot, marked
+  decodes by pass); the 800 WAV slots with `cat-ft8-decode --config host` (OFF), `--config
+  host,osd=10:21` (ON) and the base binary (2980198's) `--config host`; `match_wav.py OFF ON REF`. The
+  binaries are built from this commit (`git archive`, one source path).
+- A76 `gate_pi.sh` (`1a571556776418f6eea7c46f345b78519757f47fa737e39f5e8c7c5487652450`): the aligned
+  build of this commit (`pipush-al.sh`, `ebdf59f0…`); one run each, alone on core 3, the throttle sampled
+  once a second (`pitime.sh`, `fc30de74…`; `livebits.py`, `b49c7761…`): `slotcost host host,osd=10:21
+  200 5 gosd1`, then `osdpath host 10:21 200 21 gosd1`.
+- M33 `gate_m33.sh` (`0379884bab447a8b0d2a5c7d3af04a0629d6d9a50cb6f772d9678744a648ea90`): the manifest
+  checked, the decoder-path images built from this commit with `cargo +1.93.0`, emulated, `m33sum.py`.
+- Embedded images: `check.sh --stack` at this commit.
 
 **Criteria, OSD on against OSD off, same commit, same run (host):**
 - **G2 False decodes, counted per configuration (host).** **0** false
@@ -2407,14 +2432,27 @@ The pooled gate slots are that block's `crowded`, `wide` and `fading`
   loss included) **fails**; with 10–19 gains one loss passes; an
   unexplained message (lost, gained or pass-moved, not classed as an
   OSD decode, a knock-on, or an existing class) fails on its own.
-  Every such message is classified by the out-of-tree classifier,
-  pinned by SHA-256 in the gate commit.
+  Every such message is classified by `classify_osd_v2.py` (above).
+  **G and L per set are read from the `gains` per-set lines** (`gains
+  OFF ON crowded,wide,fading` and `gains OFF ON sweep,edges,empty`), the
+  `compare` gates from `compare --partial`.
 - **800 WAV slots** against the reference decoder (black box), with
   `cat-ft8-decode FILE --config host,osd=10:21` (the option on) and
   `--config host` (off), plain mode: option off, every decode output
   byte-identical to the base; option on, no slot loses a decode the
   base had, and every added decode is in the reference decoder's
-  output. **Matching, fixed here before any OSD-on WAV output exists:**
+  output. **Reference, pinned:** WSJT-X 3.0.0-rc1's `jt9` (sha256
+  `2a70c26b7ecab80ed94f925b9cbb5c206b8687e300b642f9b125eb358dfd85e3`), run once before this commit by
+  `ref_run.sh` (`b05b106af4efdbf4941940302352c5d78f7495324f2064e1fd1a9d2b753823f7`) as `jt9 -8 -d 3 -L
+  100 -H 3100 WAV` (FT8, the deepest depth, the host band) on the 800 slots (their WAVs' combined sha256
+  `3cb4521f…`); its 800 outputs' combined sha256
+  `c9cba30ecc7abedd5eaa36f99d26f5f5845a981235e3bec215d50f484eb81856` (11 262 decode lines, 19 of them
+  a-priori-flagged). No option-on WAV output existed then. **The matcher** is `match_wav.py`
+  (`2e8759fcc79b7eb224df5ad350d87f7d7ceac4e6b6ad51d09d9dd208cff830ef`; tests `match_wav_test.py`,
+  `2fb85fc9…`, all pass), whose docstring is the rule: reference lines `HHMMSS SNR DT FREQ ~ MESSAGE
+  [FLAG]`, DT in seconds relative to the nominal 0.5 s start (our `dt`'s origin), FREQ integer Hz of
+  tone 0 (our `freq`); a line whose last token is `a<digits>` (a-priori) or `?` is not a reference
+  decode; "within" is ≤ 4.0 Hz and ≤ 0.12 s. **Matching, as fixed in the pre-gate commit:**
   decodes are compared within one slot by message text, after trimming
   and collapsing runs of spaces to one (no other normalisation). An
   "added decode" is a message text in the option-on output and not in
@@ -2446,9 +2484,12 @@ The pooled gate slots are that block's `crowded`, `wide` and `fading`
     × (marked decodes in passes 1 and 2 per slot on the pooled gate
     slots: each is subtracted before the next pass)] ÷ (new decodes per
     slot on the pooled gate slots, as in Gain). **R must be below the
-    third pass's cost per new decode**, `slotcost host` on the gate
-    block's 200 crowded 40-message slots with OSD off in the same
-    session (not the 11.09 ms of `main`). The later passes' extra work
+    third pass's cost per new decode.** Both the subtraction's cost and
+    pass 3's cost per new decode are **side A (OSD off) of the single
+    `slotcost host host,osd=10:21 200 5 gosd1` run** below: the
+    subtraction's is A's `subtract` mean of per-slot medians over A's
+    pass 2 + pass 3 subtractions per slot; pass 3's is A's printed "ms
+    per new decode" for pass 3. The later passes' extra work
     on a changed residual (other than the subtraction) is not in R: it
     is inside the 1.0 ms cap below. Expected count:
     about 104 new decodes on the 2 000 pooled slots (0.052 per slot;
@@ -2472,10 +2513,11 @@ The pooled gate slots are that block's `crowded`, `wide` and `fading`
     decoder; the refill too small to measure: −0.5 µs).
 - **G4 Cortex-M33 (emulated) instructions per OSD run, through the
   decoder** (the out-of-tree harness pinned by its manifest, sha256
-  `18e89405192b3e3dd04b56ebbbdb1933f86cfd829859cedf6c68cd8304c0d837`
-  over the image's source, linker script and build script, the build and
-  emulation scripts and the eight `osdinput` files; built with rustc
-  1.93.0 for thumbv8m.main-none-eabihf at `opt-level = "s"`, LTO;
+  `f678008d9be2dfb18d19ecabe7a2ab88e11554246e5ee377261c8dcb6c031c45`
+  over the image's `Cargo.toml` (`panic = "abort"`, `opt-level = "s"`,
+  LTO, one codegen unit), source, linker script and build script, the
+  build and emulation scripts and the eight `osdinput` files; built with
+  `cargo +1.93.0` (rustc 1.93.0, 254b59607) for thumbv8m.main-none-eabihf at `opt-level = "s"`, LTO;
   emulated with unicorn 2.1.0) (`decode_candidate` with the option on less the same call
   with it off, the next candidate's storage refill included; the
   out-of-tree image fed the host configuration's inputs: the `crowded`
