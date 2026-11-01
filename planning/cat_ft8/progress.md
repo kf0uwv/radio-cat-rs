@@ -1497,3 +1497,7 @@
   CODE 689a361), run once each (x86-64, A76 at 0x0, M33): every
   criterion passes; pooled gain 0.0645 per slot, 0.0190 at or below
   −17 dB; 0 new false decodes; 0 losses; R 6.02 ms. Verdict PASS.
+- 748f34d: OSD-1 on in HOST (10, 21), SMALL off; docs, README, ADR 0024
+  amendment, embedded-check. HOST records = the gates' OSD-on records;
+  SMALL and `host,osd=0:21` records and WAV output = 511bf32's. Release
+  decoder handed over for external acceptance (sha256 d7bba820…).

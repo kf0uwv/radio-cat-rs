@@ -6602,3 +6602,24 @@ fresh evidence is the `hosd2` records and the A76 runs on its slots; the
 WAV, M33, flash, RAM and stack criteria reproduce `gosd1`'s (no code
 changed). The `gosd1` FAIL stays recorded; this result is the one retry
 the user allowed.
+
+## OSD-1 in the HOST preset (2026-11-01, 748f34d)
+
+`DecodeConfig::HOST` sets `osd: Some(OsdConfig::new(10, 21))`, as gated;
+`SMALL` sets `osd: None`. Checks at 748f34d (x86-64, binaries built from
+the commit; release `cat-ft8-decode` sha256
+`d7bba820812acaa16c4881d44da7e0c6c58e003e71955c950e3f7b932571a434`):
+
+- `paired_bench run host` on the gate blocks equals each gate's OSD-on
+  (`host,osd=10:21`) records: `hosd2` and its 20 empty blocks, 64 300
+  records equal; `gosd1` and its 20, 64 300 equal (stage times aside).
+- `run small` on the identity sets (crowded/wide/fading × main/cap1/cap2,
+  sweep/edges/empty main): 24 600 records equal to 511bf32's;
+  `host,osd=0:21` and `host,passes=1,osd=0:21`: 24 600 each equal to
+  511bf32's host and one-pass records.
+- The 800 WAV slots: `--config small` and `--config host,osd=0:21`
+  against the base binary's `--config small` and `--config host`
+  (2980198's build, the output 511bf32's), plain, `--raw` and `--profile`
+  (timings removed): 4 800 runs, all byte-identical.
+- Full local CI passed before the commit; the check images' sizes are
+  unchanged (102 256 / 90 564 B).
