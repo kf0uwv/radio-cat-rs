@@ -131,9 +131,14 @@ fn decodes_print_one_json_object_each() {
             );
         }
     }
-    // OSD-1 on no candidate: the output is the plain configuration's, byte
-    // for byte.
-    for (plain, osd) in [("host", "host,osd=0:21"), ("small", "small,osd=0:255")] {
+    // The two spellings of "off" agree, `small` is off already, and `host`
+    // is OSD-1 at 10:21, byte for byte.
+    for (plain, osd) in [
+        ("host,osd=off", "host,osd=0:21"),
+        ("small", "small,osd=0:255"),
+        ("small", "small,osd=off"),
+        ("host", "host,osd=10:21"),
+    ] {
         let a = decode_cmd(&path, &["--raw", "--config", plain]);
         let b = decode_cmd(&path, &["--raw", "--config", osd]);
         assert!(a.status.success() && b.status.success());

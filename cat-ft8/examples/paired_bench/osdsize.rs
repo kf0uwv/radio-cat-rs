@@ -95,7 +95,10 @@ pub struct Pools {
 
 fn decode_k(slot: &Slot, setup: &Setup, k: u8) -> (Vec<u128>, u8, Vec<Failed>, usize) {
     let band = setup.band;
-    let config = setup.config.with_passes(k);
+    // The decoder's own OSD off whatever the setup says: these tools
+    // measure OSD outside the decoder, on belief propagation's failures
+    // (and its totals, which an OSD run would overwrite).
+    let config = setup.config.with_passes(k).with_osd(None);
     let mut front = Box::new(FrontEnd::new());
     let mut levels = vec![0u8; band.spectrogram_len()];
     let mut sync_buf = vec![0i32; Decoder::sync_scratch_len(band)];
@@ -542,7 +545,8 @@ pub fn osd_run(cfg: &str, out: &Path, sets: &str, blocks: &str) -> Result<(), St
     fs::create_dir_all(out).map_err(|e| e.to_string())?;
     fs::write(
         out.join("config.txt"),
-        format!("{cfg}\n{:?}\n{}", setup.config, provenance()),
+        // The configuration the decoder runs with: its own OSD off.
+        format!("{cfg}\n{:?}\n{}", setup.config.with_osd(None), provenance()),
     )
     .map_err(|e| e.to_string())?;
     for block in blocks.split(',') {

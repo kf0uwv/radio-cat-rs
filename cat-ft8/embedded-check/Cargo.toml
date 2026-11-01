@@ -20,12 +20,13 @@ cat-ft8 = { path = "..", default-features = false }
 # is the small configuration (Band::SMALL, DecodeConfig::SMALL, 64
 # decodes); `host` is Band::DEFAULT, DecodeConfig::HOST, 128 decodes;
 # `encoder-only` leaves the decoder out, as a baseline for its size;
-# `osd` flips ordered-statistics decoding from the preset's setting:
-# on at (25, 21) in the small image, off in the host image (HOST has it on).
+# `osd-on` turns ordered-statistics decoding on, at (25, 21), in the small
+# image; `osd-off` turns it off in the host image (HOST has it on).
 [features]
 host = []
 encoder-only = []
-osd = []
+osd-on = []
+osd-off = []
 
 [profile.dev]
 panic = "abort"

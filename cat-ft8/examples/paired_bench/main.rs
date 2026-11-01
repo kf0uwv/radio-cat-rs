@@ -74,7 +74,13 @@
 //! passes `passes=N` (1–3), `later=N` (candidates in every pass after the
 //! first), `seg=N` and `drift=0|1` (the subtraction), and `osd=C:T`
 //! (OSD-1 on each pass's first C candidates, accepting a codeword at
-//! most T bits from the hard decisions; off by default). Examples:
+//! most T bits from the hard decisions) or `osd=off`; `host` has it on at
+//! 10:21 (since 748f34d), `small` off, and `osd=0:T` means off too. So a
+//! `host` run, and a `compare` against one, includes OSD-1 from 748f34d
+//! on; earlier `host` records are OSD-1 off (`host,osd=off` now).
+//! The OSD measurement commands (`osd`, `osdcost`, `osdlib`, `osddump`,
+//! `osdcal`, `osdpath`'s inputs) always decode with the decoder's own OSD
+//! off, whatever CONFIG says. Examples:
 //! `host,candidates=100`, `host,passes=3,later=150,seg=2880`. With more
 //! than one pass, `run` decodes with `decode_passes` and saves the slot's
 //! totals over every pass as its report, and each pass's own counts
@@ -290,14 +296,16 @@ pub fn parse_config(spec: &str) -> Result<Setup, String> {
             "min_score" => s.config.with_min_score(num(v)? as i32),
             "passes" => s.config.with_passes(num(v)? as u8),
             "later" => s.config.with_later_candidates(num(v)? as usize),
+            "osd" if v == "off" => s.config.with_osd(None),
             "osd" => {
-                let (c, t) = v.split_once(':').ok_or("osd needs C:T")?;
-                let (c, t) = (num(c)?, num(t)?);
-                if !(0.0..=65_535.0).contains(&c) || !(0.0..=255.0).contains(&t) {
-                    return Err(format!("osd={v}: C 0–65 535, T 0–255"));
-                }
+                let (c, t) = v.split_once(':').ok_or("osd needs C:T or off")?;
+                let (c, t): (u16, u8) = match (c.parse(), t.parse()) {
+                    (Ok(c), Ok(t)) => (c, t),
+                    _ => return Err(format!("osd={v}: C 0–65 535, T 0–255, or off")),
+                };
+                // One representation of "off": zero candidates is None.
                 s.config
-                    .with_osd(Some(cat_ft8::decode::OsdConfig::new(c as u16, t as u8)))
+                    .with_osd((c > 0).then(|| cat_ft8::decode::OsdConfig::new(c, t)))
             }
             "seg" | "drift" => s
                 .config

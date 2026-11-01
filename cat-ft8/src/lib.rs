@@ -81,7 +81,7 @@
 //!
 //! # Decode command output (format version 0)
 //!
-//! `cat-ft8-decode FILE.wav [--config host|small[,passes=N][,osd=C:T]] [--raw] [--profile]`
+//! `cat-ft8-decode FILE.wav [--config host|small[,passes=N][,osd=C:T|off]] [--raw] [--profile]`
 //! reads a 12 kHz mono 16-bit PCM WAV file. Its first 15 s are the slot: a
 //! shorter file is decoded as a partial slot, and samples after 15 s are
 //! ignored (and not read). Other sample rates and channel counts are
@@ -95,7 +95,7 @@
 //! residual is decoded again (`decode::Decoder::decode_passes`).
 //! `,osd=C:T` sets the ordered-statistics decoding
 //! (`decode::DecodeConfig::with_osd` with `decode::OsdConfig::new(C, T)`;
-//! `osd=0:T` turns it off); the output format is the same.
+//! `osd=off` or `osd=0:T` turns it off); the output format is the same.
 //!
 //! Output is one JSON object per line, one per distinct decode whose
 //! payload unpacked, in the order found: pass by pass, and in candidate

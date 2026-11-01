@@ -15,7 +15,8 @@
 //! `osdcal CONFIG RANKS OUTFILE PREFIX FROM TO`: the false-decode
 //! calibration of OSD-1 on empty slots, counted rather than estimated.
 //! The `empty` set's blocks `PREFIX` followed by FROM..TO (four digits)
-//! are decoded with CONFIG (the decoder's OSD off); after every pass, the
+//! are decoded with CONFIG, the decoder's OSD always forced off (whatever
+//! CONFIG says: the tool measures OSD-1 outside the decoder); after every pass, the
 //! decoder's OSD-1 runs on the soft bits of each failed candidate of rank
 //! below each subset of RANKS (a comma list, e.g. `10` or `10,25`), and
 //! its least-D codeword is counted by Hamming distance dH from the hard
@@ -211,7 +212,8 @@ type Top = (u8, Vec<u128>, usize, Vec<(usize, [f32; N])>);
 /// pass's failed candidates of rank below `limit`.
 fn decode_top(samples: &[f32], skip: usize, setup: &Setup, passes: u8, limit: usize) -> Top {
     let band = setup.band;
-    let config = setup.config.with_passes(passes);
+    // The decoder's OSD off whatever the setup says (see `osd_cal`).
+    let config = setup.config.with_passes(passes).with_osd(None);
     let mut front = Box::new(FrontEnd::new());
     let mut levels = vec![0u8; band.spectrogram_len()];
     let mut sync_buf = vec![0i32; Decoder::sync_scratch_len(band)];
@@ -346,10 +348,9 @@ pub fn osd_cal(
     from: usize,
     to: usize,
 ) -> Result<(), String> {
-    let setup = parse_config(cfg)?;
-    if setup.config.osd.is_some() {
-        return Err("osdcal runs the decoder with its OSD off".into());
-    }
+    let mut setup = parse_config(cfg)?;
+    // The decoder's own OSD stays off: this tool runs OSD-1 itself.
+    setup.config = setup.config.with_osd(None);
     let ranks: Vec<usize> = ranks
         .split(',')
         .map(|r| r.parse().map_err(|e| format!("ranks: {e}")))

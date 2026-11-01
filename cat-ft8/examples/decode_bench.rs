@@ -33,9 +33,11 @@
 //! feed and one search): subtract a run with N = 0, or take the difference
 //! of two values of N.
 //!
-//! The decoder here is the single pass, with sub-grid refinement and no
-//! subtraction (the `grid` and `refine` modes compare it with soft bits
-//! taken on the coarse half-symbol, half-tone grid).
+//! The decoder here is the single pass, with sub-grid refinement, no
+//! subtraction and no OSD-1 (`HOST.with_osd(None)`: belief propagation's
+//! own rates; `cost` times the presets as they are, HOST with OSD-1) (the
+//! `grid` and `refine` modes compare it with soft bits taken on the coarse
+//! half-symbol, half-tone grid).
 //!
 //! Each slot holds one signal at a random off-grid frequency (200–2800 Hz)
 //! and time offset (−0.3…+0.7 s), from the encoder vector messages, with
@@ -515,7 +517,9 @@ fn main() {
     let mode = args.next().unwrap_or_else(|| "sweep".into());
     let n: u64 = args.next().and_then(|a| a.parse().ok()).unwrap_or(100);
     let msgs = messages();
-    let base = DecodeConfig::HOST;
+    // Belief propagation's own rates: OSD-1 off (HOST has it on since
+    // 748f34d; `cost` below times the presets as they are).
+    let base = DecodeConfig::HOST.with_osd(None);
     match mode.as_str() {
         "sweep" => {
             let rule = args.next().unwrap_or_else(|| "sp".into());

@@ -21,9 +21,9 @@
 //! is a host feature; the small image does not link it), with every
 //! buffer in statics: the small configuration by default, the host
 //! configuration with the `host` feature, none with `encoder-only` (a
-//! baseline for the decoder's size), and either decoder configuration
-//! with its ordered-statistics setting flipped with `osd` (the small
-//! image's turned on, the host image's, on in `HOST`, turned off);
+//! baseline for the decoder's size), the small configuration with
+//! ordered-statistics decoding turned on with `osd-on`, and the host
+//! configuration (on in `HOST`) with it turned off with `osd-off`;
 //! `check.sh` builds every image. The
 //! check-node rule is a run-time field of the configuration, so both
 //! rules are linked in either decoder image. Linking at all proves the
@@ -54,11 +54,12 @@ mod setup {
     use cat_ft8::decode::{Band, DecodeConfig, SMALL_DECODES};
     /// 200–2900 Hz: the band sized for this class of part.
     pub const BAND: Band = Band::SMALL;
-    #[cfg(not(feature = "osd"))]
+    /// The preset, ordered-statistics decoding off.
+    #[cfg(not(feature = "osd-on"))]
     pub const CONFIG: DecodeConfig = DecodeConfig::SMALL;
     /// With ordered-statistics decoding on, at the calibrated setting (the
     /// settings do not change the image's size).
-    #[cfg(feature = "osd")]
+    #[cfg(feature = "osd-on")]
     pub const CONFIG: DecodeConfig =
         DecodeConfig::SMALL.with_osd(Some(cat_ft8::decode::OsdConfig::new(25, 21)));
     pub const DECODES: usize = SMALL_DECODES;
@@ -69,11 +70,11 @@ mod setup {
     /// 100–3100 Hz.
     pub const BAND: Band = Band::DEFAULT;
     /// The preset, ordered-statistics decoding on at (10, 21).
-    #[cfg(not(feature = "osd"))]
+    #[cfg(not(feature = "osd-off"))]
     pub const CONFIG: DecodeConfig = DecodeConfig::HOST;
     /// With ordered-statistics decoding off (the setting does not change
     /// the image's size).
-    #[cfg(feature = "osd")]
+    #[cfg(feature = "osd-off")]
     pub const CONFIG: DecodeConfig = DecodeConfig::HOST.with_osd(None);
     pub const DECODES: usize = HOST_DECODES;
 }

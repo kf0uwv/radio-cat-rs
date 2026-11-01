@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `cat-ft8-decode FILE.wav [--config host|small[,passes=N][,osd=C:T]] [--raw] [--profile]`
+//! `cat-ft8-decode FILE.wav [--config host|small[,passes=N][,osd=C:T|off]] [--raw] [--profile]`
 //!
 //! Decodes one FT8 slot from a 12 kHz mono 16-bit WAV file and prints one
 //! JSON object per decode, in output format version 0 (see the crate docs,
@@ -25,8 +25,8 @@
 //! ordered-statistics decoding (`decode::OsdConfig::new(C, T)`: OSD-1 on
 //! each pass's first C candidates whose belief propagation failed,
 //! accepting a codeword at most T bits from the hard decisions): `host`
-//! has it on at 10:21, `small` off; `osd=0:T` turns it off (the output is
-//! then as without it). `--profile` adds per-pass keys when more than one
+//! has it on at 10:21, `small` off; `osd=off` (or `osd=0:T`) turns it
+//! off (the output is then as without it). `--profile` adds per-pass keys when more than one
 //! pass is configured.
 //! Exit status 0 on success (with or without decodes), 1 on an error, 2 on
 //! a usage error.
@@ -47,7 +47,7 @@ use cat_ft8::message::CallTable;
 use cat_ft8::{wav, SAMPLE_RATE, SLOT_SAMPLES};
 
 const USAGE: &str =
-    "usage: cat-ft8-decode FILE.wav [--config host|small[,passes=N][,osd=C:T]] [--raw] [--profile]";
+    "usage: cat-ft8-decode FILE.wav [--config host|small[,passes=N][,osd=C:T|off]] [--raw] [--profile]";
 
 /// Calls remembered for hashed-call messages within the file.
 const CALLS: usize = 64;
@@ -117,10 +117,10 @@ fn parse() -> Result<Parsed, String> {
 }
 
 /// `host` or `small`, optionally followed by `,passes=N` (1–3) and
-/// `,osd=C:T` (C 0–65 535 candidates, T 0–255 bits).
+/// `,osd=C:T` (C 0–65 535 candidates, T 0–255 bits) or `,osd=off`.
 fn parse_config(spec: Option<&str>) -> Result<Setup, String> {
     let bad =
-        || format!("--config needs host or small[,passes=N][,osd=C:T], not {spec:?}\n{USAGE}");
+        || format!("--config needs host or small[,passes=N][,osd=C:T|off], not {spec:?}\n{USAGE}");
     let mut parts = spec.ok_or_else(bad)?.split(',');
     let mut setup = match parts.next() {
         Some("host") => HOST,
@@ -139,13 +139,15 @@ fn parse_config(spec: Option<&str>) -> Result<Setup, String> {
                 }
                 setup.config = setup.config.with_passes(n);
             }
+            Some(("osd", "off")) => setup.config = setup.config.with_osd(None),
             Some(("osd", ct)) => {
                 let (c, t) = ct.split_once(':').ok_or_else(bad)?;
                 let (c, t): (u16, u8) = match (c.parse(), t.parse()) {
                     (Ok(c), Ok(t)) => (c, t),
                     _ => return Err(bad()),
                 };
-                setup.config = setup.config.with_osd(Some(OsdConfig::new(c, t)));
+                // One representation of "off": zero candidates is None.
+                setup.config = setup.config.with_osd((c > 0).then(|| OsdConfig::new(c, t)));
             }
             _ => return Err(bad()),
         }
@@ -515,7 +517,7 @@ fn main() -> ExitCode {
             println!("  --config host   100–3100 Hz, sum-product, three passes, OSD-1 10:21, 128 decodes (the default)");
             println!("  --config small  200–2900 Hz, min-sum, 64 decodes");
             println!("  ,passes=N       after either: decode in N passes (1–3), subtracting each pass's decodes");
-            println!("  ,osd=C:T        OSD-1 on each pass's first C failed candidates, at most T bits (0:T turns it off)");
+            println!("  ,osd=C:T|off    OSD-1 on each pass's first C failed candidates, at most T bits; off (or 0:T) turns it off");
             println!("  --raw           also print decodes whose payload did not unpack");
             println!("  --profile       add one line of timings, memory and counts");
             return ExitCode::SUCCESS;
