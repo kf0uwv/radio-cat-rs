@@ -6623,3 +6623,41 @@ the commit; release `cat-ft8-decode` sha256
   (timings removed): 4 800 runs, all byte-identical.
 - Full local CI passed before the commit; the check images' sizes are
   unchanged (102 256 / 90 564 B).
+
+## OSD-1 enable follow-ups (2026-11-01, 8303c71; no decoder change)
+
+- The OSD measurement tools force the decoder's own OSD off (HOST has it
+  on since 748f34d). Re-run with the old and new tools on a small check:
+  `osdcal host 10 … qv 0 1` (4 600 empty slots) gives the same JSON
+  (provenance and times aside; the old tool was the calibration's build,
+  e7e7f48); `osd host OUT crowded main` gives the same three output files
+  as 2980198's build.
+- `osd=off` in both CLIs; zero candidates parse to `None`.
+- The 800 WAV slots, found and checked: they are synthetic, written by a
+  small generator outside the repository that uses this crate's encoder
+  and `synthesize`: for slot i, 0 messages if i mod 8 = 0, 1 if 1 or 2,
+  5, 10, 20, then 40 for 6 and 7; standard messages (CQ with a grid, a
+  report, RR73) among twelve calls and eight grids; one-signal slots at
+  −24 to −12 dB, the others −16 to +6 dB; 200–2 900 Hz, start −1 to +1.5
+  s; white Gaussian noise of RMS 0.03 from a seeded generator; every 13th
+  slot cut to 150 000 samples; 12 kHz 16-bit mono. Re-running the
+  generator now reproduces all 800 files byte for byte (combined sha256
+  `3cb4521f…`, the gate's pin).
+- **Sparse-slot CPU, A76** (748f34d's `cat-ft8-decode`, aligned
+  measurement build, core 3, the throttle sampled once a second: 59
+  samples, every one 0x0, peak 50.5 °C): the 300 WAV slots with no signal
+  or one, `--config host` against `--config host,osd=0:21` alternating
+  per file, three rounds, the profile's in-process `total_seconds` (per
+  slot the median of three): **30.553 → 30.946 ms, +0.393 ms per slot
+  (+1.3%)**, median +0.283 ms; the OSD stage 0.325 ms per slot. Against
+  the crowded set's 40-signal slots (+0.2 ms on 107 ms, the gate) OSD-1
+  costs more on sparse slots, where more of the best candidates fail
+  belief propagation. The x86-64 figure on 19 off-air recordings is the
+  review's (+0.47 ms per slot, +1.4%, one core, alternating runs).
+- At 8303c71 (x86-64): `host,osd=off` and `host,passes=1,osd=off`
+  records on the identity sets equal 511bf32's host and one-pass records
+  (24 600 each); the 800 WAV slots with `--config host,osd=off` in plain,
+  `--raw` and `--profile` mode (timings removed) are byte-identical to
+  the base binary's `--config host` (2 400 runs). Release
+  `cat-ft8-decode` sha256
+  `e87c98c311ad0e6c8185172fab63c6d68b720dc7e59def9b1234bfcfad7a2d22`.

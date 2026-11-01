@@ -1501,3 +1501,7 @@
   amendment, embedded-check. HOST records = the gates' OSD-on records;
   SMALL and `host,osd=0:21` records and WAV output = 511bf32's. Release
   decoder handed over for external acceptance (sha256 d7bba820…).
+- 8303c71: enable follow-ups (tools force OSD off, `osd=off`, embedded
+  names, docs); ADR evidence called synthetic, the WAV slots described,
+  sparse CPU (A76 +0.39 ms per slot, valid at 0x0). `host,osd=off`
+  identical to 511bf32's host on records and WAV output.
