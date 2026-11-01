@@ -2560,7 +2560,25 @@ and `fading` (600): 2 000 slots.
 - Checks as in O13b (local CI with MSRV 1.75, thumbv7em, records on
   x86-64 and the A76, the encoder, the Pi release suite).
 
-## OSD-1 on the best candidates: second gated round (proposed; not yet run)
+## OSD-1 on the best candidates: second gated round (running)
+
+**Named in this commit (the gate commit), before any record of them
+exists.** Gain block **`hosd2`** (`crowded`, `wide`, `fading`, `sweep`,
+`edges`); empty blocks **`hosd2e01` … `hosd2e20`**. The string `hosd2`
+was checked absent first from the repository's history (every branch,
+`git log --all -S`) and from every file of the local cache and the
+result tree (a recursive text search and a file-name search: none).
+`CODE` = **`689a361696ddb23d16103ca9921cdc0b0132603c`** (the code
+commit; this branch's code is unchanged since). `gate2.env` sha256
+`0d5c019deb99776f36c5eb1f3384e33fda43e8b15be2e1d74cf296d1d40843f1`;
+`env.sha256` `a30d1bd292a5ee21609bc695b50008ecd8c6c9ed058313f5d82aa5aaae0bdef1`;
+`bin.sha256` `64712f372faed85b6d89a10ec5cb24f5de9eaf240d48403cf6707919d6e8b4eb`;
+binaries (built by `build.sh` from `CODE`): `pb-gate2`
+`07ab5217db4ea2b0bad3326d0b5a5ecfe9a29288f97647bb1a8d3689d529ade0`,
+`dec-gate2` `5400c744e70356b5b751218aad74298969b6fbb0a1f06a95abe8aad0b8236f30`,
+`dec-base` `88281a8450c14317a8563944e670a92d5cd896a658435f9f95d67046f1436b30`.
+The scripts and inputs are as pinned below; each is run once after this
+commit.
 
 **Why a second round.** The first gated round, run once on `gosd1` as
 written at 7408489, **failed** (findings, "OSD-1 gated round on
