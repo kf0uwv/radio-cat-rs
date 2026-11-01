@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `osdpath CONFIG C:T [SLOTS] [RUNS]`: OSD-1's cost per candidate through
+//! `osdpath CONFIG C:T [SLOTS] [RUNS] [BLOCK]`: OSD-1's cost per candidate through
 //! the decoder, everything the option adds included (the storage switch
 //! and its zero-fill, the next candidate's fresh belief-propagation
 //! storage, OSD-1 itself and its acceptance tests).
 //!
-//! Inputs: each pass's input on the slotcost slots (`crowded`, `main`,
-//! from index 400): pass 1 the slot, a later pass the residual the
+//! Inputs: each pass's input on the slotcost slots (`crowded`, BLOCK,
+//! `main` unless given, from index 400): pass 1 the slot, a later pass the residual the
 //! decoder's own passes leave (OSD off), searched as that pass searches.
 //! Two decoders on each input, OSD off and OSD on (`OsdConfig::new(C,
 //! T)`), hold the same candidates; one thread times every candidate's
@@ -128,7 +128,13 @@ fn median(v: &mut [f64]) -> f64 {
     v[v.len() / 2]
 }
 
-pub fn osd_path(cfg: &str, osd: &str, slots: usize, runs: usize) -> Result<(), String> {
+pub fn osd_path(
+    cfg: &str,
+    osd: &str,
+    slots: usize,
+    runs: usize,
+    block: &str,
+) -> Result<(), String> {
     let setup = parse_config(cfg)?;
     let osd = parse_osd(osd)?;
     let slots = slots.clamp(1, 200);
@@ -136,7 +142,7 @@ pub fn osd_path(cfg: &str, osd: &str, slots: usize, runs: usize) -> Result<(), S
     let passes = setup.config.passes;
     // Every (slot, pass) input, made in parallel; timed on one thread.
     let inputs: Vec<(u8, usize, Vec<f32>)> = par_map(slots, |k| {
-        let slot = build("crowded", "main", 400 + k);
+        let slot = build("crowded", block, 400 + k);
         (1..=passes)
             .filter_map(|p| pass_input(&setup, &slot, p).map(|a| (p, slot.skip, a)))
             .collect::<Vec<_>>()
@@ -209,7 +215,12 @@ pub fn osd_path(cfg: &str, osd: &str, slots: usize, runs: usize) -> Result<(), S
         accepted_n += ok.iter().filter(|&&a| a).count();
     }
     println!(
-        "{cfg} osd {osd:?}: {slots} slots, {} inputs, {candidates} candidates; OSD-1 ran on {ran_n} (pass 1 {}, 2 {}, 3 {}), accepted {accepted_n}",
+        "{cfg} osd {osd:?}: {slots} slots{}, {} inputs, {candidates} candidates; OSD-1 ran on {ran_n} (pass 1 {}, 2 {}, 3 {}), accepted {accepted_n}",
+        if block == "main" {
+            String::new()
+        } else {
+            format!(" ({block})")
+        },
         inputs.len(),
         by_pass[1],
         by_pass[2],

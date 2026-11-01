@@ -17,15 +17,16 @@
 //! ```text
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- run CONFIG OUTDIR [SETS] [BLOCK]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- compare OLDDIR NEWDIR [--partial]
+//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- gains OLDDIR NEWDIR [SETS]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- cost CONFIG_A CONFIG_B [SLOTS] [RUNS]
-//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- slotcost CONFIG_A CONFIG_B [SLOTS] [RUNS]
+//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- slotcost CONFIG_A CONFIG_B [SLOTS] [RUNS] [BLOCK]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- ceiling CONFIG [BLOCK] [SET]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- suppression CONFIG [GRID] [TRIALS]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- passes CONFIG [BLOCK] [SET] [GRID]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- subcost CONFIG [SUB] [SLOTS] [RUNS]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- osdlib CONFIG [SLOTS] [RUNS]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- osdcal CONFIG RANKS OUTFILE PREFIX FROM TO
-//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- osdpath CONFIG C:T [SLOTS] [RUNS]
+//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- osdpath CONFIG C:T [SLOTS] [RUNS] [BLOCK]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- osdinput CONFIG SLOT PASS FILE
 //! ```
 //!
@@ -114,7 +115,8 @@
 //! median.
 //!
 //! **slotcost** is the multi-pass cost statistic: every 40-message slot of
-//! the crowded set's main block (SLOTS, default and at most 200), each
+//! the crowded set's BLOCK (`main` unless given; SLOTS, default and at
+//! most 200), each
 //! decoded by A and B interleaved, one thread, RUNS times (at least 5);
 //! per slot the median of its runs' total; it prints the largest and the
 //! mean of those medians, each step's mean (summed over passes and per
@@ -337,7 +339,7 @@ pub fn provenance() -> String {
 
 // ----------------------------------------------------------------- main
 
-const USAGE: &str = "usage: paired_bench run CONFIG OUTDIR [SETS] [BLOCK] | compare OLDDIR NEWDIR [--partial] | cost A B [SLOTS] [RUNS] | slotcost A B [SLOTS] [RUNS] | ceiling CONFIG [BLOCK] [SET] | suppression CONFIG [GRID] [TRIALS] | passes CONFIG [BLOCK] [SET] [GRID] | subcost CONFIG [SUB] [SLOTS] [RUNS]";
+const USAGE: &str = "usage: paired_bench run CONFIG OUTDIR [SETS] [BLOCK] | compare OLDDIR NEWDIR [--partial] | gains OLDDIR NEWDIR [SETS] | cost A B [SLOTS] [RUNS] | slotcost A B [SLOTS] [RUNS] [BLOCK] | ceiling CONFIG [BLOCK] [SET] | suppression CONFIG [GRID] [TRIALS] | passes CONFIG [BLOCK] [SET] [GRID] | subcost CONFIG [SUB] [SLOTS] [RUNS]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -375,7 +377,9 @@ fn main() -> ExitCode {
             })
             .map(|()| true),
         (Some("slotcost"), Some(x), Some(y)) => num(3, 200)
-            .and_then(|s| num(4, 5).and_then(|r| cost::slot_cost(x, y, s, r)))
+            .and_then(|s| {
+                num(4, 5).and_then(|r| cost::slot_cost(x, y, s, r, arg(5).unwrap_or("main")))
+            })
             .map(|()| true),
         (Some("osd"), Some(c), Some(o)) => osdsize::osd_run(
             c,
@@ -403,8 +407,16 @@ fn main() -> ExitCode {
         (Some("osdlib"), Some(c), _) => num(2, 200)
             .and_then(|s| num(3, 5).and_then(|r| osdsize::osd_lib(c, s, r)))
             .map(|()| true),
+        (Some("gains"), Some(o), Some(n)) => compare::gains(
+            Path::new(o),
+            Path::new(n),
+            arg(3).unwrap_or("crowded,wide,fading"),
+        )
+        .map(|()| true),
         (Some("osdpath"), Some(c), Some(o)) => num(3, 200)
-            .and_then(|s| num(4, 5).and_then(|r| osdpath::osd_path(c, o, s, r)))
+            .and_then(|s| {
+                num(4, 5).and_then(|r| osdpath::osd_path(c, o, s, r, arg(5).unwrap_or("main")))
+            })
             .map(|()| true),
         (Some("osdinput"), Some(c), Some(k)) => {
             match (k.parse(), arg(3).and_then(|p| p.parse().ok()), arg(4)) {

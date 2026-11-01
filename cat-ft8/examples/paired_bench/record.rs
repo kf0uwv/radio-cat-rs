@@ -673,6 +673,15 @@ pub fn decode_passes_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &
             }
             PassEvent::Done(r) => {
                 let c = &r.report;
+                // The join's premise: every kept candidate of the pass began
+                // with one `Refine`. Checked in release builds too (the
+                // bench runs only in them).
+                assert_eq!(
+                    at.map_or(0, |i| usize::from(i) + 1),
+                    c.candidates_kept,
+                    "pass {}: candidates counted from Refine",
+                    r.pass
+                );
                 passes.push(PassRecord {
                     pass: u64::from(r.pass),
                     first: r.first as u64,

@@ -71,7 +71,7 @@ pub fn cost(spec_a: &str, spec_b: &str, slots: usize, runs: usize) -> Result<(),
 }
 
 /// The multi-pass cost statistic: every 40-message slot of the crowded
-/// set's main block (all 200, or the first SLOTS), decoded with A and B
+/// set's BLOCK (`main` unless given; all 200, or the first SLOTS), decoded with A and B
 /// interleaved (the order alternating by run), one thread, RUNS times (at
 /// least 5). Per slot the median of its runs' total decode time; reported:
 /// the largest and the mean of those medians, the slot that is largest,
@@ -80,12 +80,18 @@ pub fn cost(spec_a: &str, spec_b: &str, slots: usize, runs: usize) -> Result<(),
 /// candidates through belief propagation, rounds, subtractions and new
 /// decodes (list entries the pass added); then each pass's cost (its
 /// steps' means summed), new decodes and cost per new decode.
-pub fn slot_cost(spec_a: &str, spec_b: &str, slots: usize, runs: usize) -> Result<(), String> {
+pub fn slot_cost(
+    spec_a: &str,
+    spec_b: &str,
+    slots: usize,
+    runs: usize,
+    block: &str,
+) -> Result<(), String> {
     use crate::record::decode_input;
     let setups = [parse_config(spec_a)?, parse_config(spec_b)?];
     let slots = slots.clamp(1, 200);
     let input: Vec<Slot> = (0..slots)
-        .map(|k| build("crowded", "main", 400 + k))
+        .map(|k| build("crowded", block, 400 + k))
         .collect();
     let runs = runs.max(5);
     // [config][slot][run] -> step seconds.
@@ -137,7 +143,7 @@ pub fn slot_cost(spec_a: &str, spec_b: &str, slots: usize, runs: usize) -> Resul
         quantile(&v, 0.5).unwrap_or(f64::NAN)
     };
     println!(
-        "{slots} crowded 40-message slots (main), {runs} interleaved runs, one thread; per slot the median of its runs (ms):"
+        "{slots} crowded 40-message slots ({block}), {runs} interleaved runs, one thread; per slot the median of its runs (ms):"
     );
     for (which, spec) in [spec_a, spec_b].iter().enumerate() {
         let per: Vec<f64> = (0..slots)

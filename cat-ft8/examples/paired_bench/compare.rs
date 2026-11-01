@@ -280,6 +280,8 @@ struct Origin {
     gained_other: u64,
     false_osd: u64,
     false_other: u64,
+    /// The new run's false decodes the old run did not list in that slot.
+    false_absent: u64,
 }
 
 fn tally(set: &str, sa: &[SlotResult], sb: &[SlotResult]) -> Tally {
@@ -311,6 +313,7 @@ fn tally(set: &str, sa: &[SlotResult], sb: &[SlotResult]) -> Tally {
                 } else {
                     &mut o.false_other
                 } += 1;
+                o.false_absent += u64::from(!da.contains(&d.payload));
             } else if !da.contains(&d.payload) {
                 *if d.osd {
                     &mut o.gained_osd
@@ -517,9 +520,20 @@ fn compare_set(set: &str, block: &str, sa: &[SlotResult], sb: &[SlotResult]) -> 
     );
     let o = &t.origin;
     if o.osd_runs > 0 {
+        // With OSD-1 on, any false decode the old run did not list fails,
+        // marked or not (a knock-on false decode included).
+        let ok = o.false_absent == 0;
+        pass &= ok;
         println!(
-            "  origin (new run): OSD-1 runs {}, decodes {}; gained through OSD-1 {}, otherwise {}; false through OSD-1 {}, otherwise {}",
-            o.osd_runs, o.osd_decodes, o.gained_osd, o.gained_other, o.false_osd, o.false_other
+            "  origin (new run): OSD-1 runs {}, decodes {}; gained through OSD-1 {}, otherwise {}; false through OSD-1 {}, otherwise {}; false not in the old run {}{}",
+            o.osd_runs,
+            o.osd_decodes,
+            o.gained_osd,
+            o.gained_other,
+            o.false_osd,
+            o.false_other,
+            o.false_absent,
+            if ok { "" } else { "  FALSE" }
         );
     }
     pass &= print_passes(sa, sb);
@@ -554,6 +568,103 @@ fn compare_set(set: &str, block: &str, sa: &[SlotResult], sb: &[SlotResult]) -> 
     println!("{line}");
     println!("  verdict: {}", if pass { "PASS" } else { "FAIL" });
     pass
+}
+
+/// `gains OLDDIR NEWDIR [SETS]`: the gain pooled over SETS (comma
+/// separated; default `crowded,wide,fading`), every block both runs hold:
+/// slots, messages gained (decoded in the new run only) and lost, those
+/// whose transmitted SNR is at or below −17 dB (`sent.snr <= -17.0`,
+/// inclusive), per slot; the gains OSD-1 made itself (marked); and the new
+/// run's false decodes the old run did not list in that slot. One line per
+/// (set, block), then the pooled line.
+pub fn gains(old: &Path, new: &Path, sets: &str) -> Result<(), String> {
+    #[derive(Default)]
+    struct G {
+        slots: u64,
+        gained: u64,
+        lost: u64,
+        gained_low: u64,
+        lost_low: u64,
+        gained_osd: u64,
+        false_absent: u64,
+    }
+    impl G {
+        fn add(&mut self, g: &G) {
+            self.slots += g.slots;
+            self.gained += g.gained;
+            self.lost += g.lost;
+            self.gained_low += g.gained_low;
+            self.lost_low += g.lost_low;
+            self.gained_osd += g.gained_osd;
+            self.false_absent += g.false_absent;
+        }
+        fn print(&self, name: &str) {
+            let n = self.slots.max(1) as f64;
+            println!(
+                "{name}: {} slots; gained {} ({:.4} per slot), lost {} ({:.4}); at or below -17 dB gained {} ({:.4} per slot), lost {} ({:.4}); gained through OSD-1 {}; new false decodes not in the old run {}",
+                self.slots,
+                self.gained,
+                self.gained as f64 / n,
+                self.lost,
+                self.lost as f64 / n,
+                self.gained_low,
+                self.gained_low as f64 / n,
+                self.lost_low,
+                self.lost_low as f64 / n,
+                self.gained_osd,
+                self.false_absent
+            );
+        }
+    }
+    let (a, b) = (load(old)?, load(new)?);
+    let want: Vec<&str> = sets.split(',').collect();
+    let mut all = G::default();
+    for (key, sa) in &a {
+        if !want.contains(&key.0.as_str()) {
+            continue;
+        }
+        let Some(sb) = b.get(key) else { continue };
+        let mut g = G::default();
+        for (x, y) in sa.iter().zip(sb) {
+            if x.index != y.index || x.sample_hash != y.sample_hash || x.sent != y.sent {
+                return Err(format!(
+                    "{} ({}): inputs differ at slot {}",
+                    key.0, key.1, x.index
+                ));
+            }
+            g.slots += 1;
+            let da: Vec<u128> = x.decodes.iter().map(|d| d.payload).collect();
+            for s in &x.sent {
+                let low = s.snr <= -17.0;
+                match (
+                    da.contains(&s.payload),
+                    y.decodes.iter().find(|d| d.payload == s.payload),
+                ) {
+                    (false, Some(d)) => {
+                        g.gained += 1;
+                        g.gained_low += u64::from(low);
+                        g.gained_osd += u64::from(d.osd);
+                    }
+                    (true, None) => {
+                        g.lost += 1;
+                        g.lost_low += u64::from(low);
+                    }
+                    _ => {}
+                }
+            }
+            g.false_absent += y
+                .decodes
+                .iter()
+                .filter(|d| {
+                    !x.sent.iter().any(|s| s.payload == d.payload) && !da.contains(&d.payload)
+                })
+                .count() as u64;
+        }
+        g.print(&format!("{} ({})", key.0, key.1));
+        all.add(&g);
+    }
+    all.print("pooled");
+    Ok(())
 }
 
 pub fn compare(old: &Path, new: &Path, partial: bool) -> Result<bool, String> {
