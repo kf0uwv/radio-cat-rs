@@ -274,6 +274,7 @@ struct Tally {
 /// origin.
 #[derive(Default)]
 struct Origin {
+    osd_runs: u64,
     osd_decodes: u64,
     gained_osd: u64,
     gained_other: u64,
@@ -300,6 +301,7 @@ fn tally(set: &str, sa: &[SlotResult], sb: &[SlotResult]) -> Tally {
         let db: Vec<u128> = y.decodes.iter().map(|d| d.payload).collect();
         let sent: Vec<u128> = x.sent.iter().map(|s| s.payload).collect();
         let o = &mut t.origin;
+        o.osd_runs += y.osd_runs;
         for d in &y.decodes {
             let true_one = sent.contains(&d.payload);
             o.osd_decodes += u64::from(d.osd);
@@ -514,10 +516,10 @@ fn compare_set(set: &str, block: &str, sa: &[SlotResult], sb: &[SlotResult]) -> 
         }
     );
     let o = &t.origin;
-    if o.osd_decodes > 0 {
+    if o.osd_runs > 0 {
         println!(
-            "  origin (new run): OSD-1 decodes {}; gained through OSD-1 {}, otherwise {}; false through OSD-1 {}, otherwise {}",
-            o.osd_decodes, o.gained_osd, o.gained_other, o.false_osd, o.false_other
+            "  origin (new run): OSD-1 runs {}, decodes {}; gained through OSD-1 {}, otherwise {}; false through OSD-1 {}, otherwise {}",
+            o.osd_runs, o.osd_decodes, o.gained_osd, o.gained_other, o.false_osd, o.false_other
         );
     }
     pass &= print_passes(sa, sb);

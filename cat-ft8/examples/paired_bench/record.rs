@@ -167,6 +167,9 @@ pub struct SlotResult {
     /// Per pass, for multi-pass configurations only (single-pass records
     /// are unchanged).
     pub passes: Option<Vec<PassRecord>>,
+    /// Candidates OSD-1 ran on (`"osd_runs"`, saved only when not 0, so
+    /// records without the option are as before).
+    pub osd_runs: u64,
 }
 
 /// `s` as a JSON string.
@@ -253,6 +256,9 @@ impl SlotResult {
             }
             o.push(']');
         }
+        if self.osd_runs > 0 {
+            let _ = write!(o, ",\"osd_runs\":{}", self.osd_runs);
+        }
         o.push('}');
         o
     }
@@ -335,6 +341,7 @@ impl SlotResult {
                         .collect::<Option<_>>()?,
                 ),
             },
+            osd_runs: v.get("osd_runs").and_then(Value::as_u64).unwrap_or(0),
             passes: match v.get("passes") {
                 None => None,
                 Some(x) => Some(
@@ -497,6 +504,8 @@ pub struct Decoded {
     pub outcomes: Vec<Outcome>,
     /// Per pass (multi-pass configurations only).
     pub passes: Option<Vec<PassRecord>>,
+    /// Candidates OSD-1 ran on, over every pass.
+    pub osd_runs: u64,
 }
 
 /// Decodes `samples` after `skip` missing ones with `setup`, and classifies
@@ -571,6 +580,7 @@ pub fn decode_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &Setup) 
     Decoded {
         decodes,
         passes: None,
+        osd_runs: osd_ran.len() as u64,
         counts: Counts {
             found: rep.candidates_found as u64,
             kept: rep.candidates_kept as u64,
@@ -728,6 +738,7 @@ pub fn decode_passes_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &
         seconds: seconds.into_iter().collect(),
         outcomes,
         passes: Some(passes),
+        osd_runs: osd_ran.len() as u64,
     }
 }
 
@@ -807,6 +818,7 @@ pub fn decode_slot(set: &str, block: &str, index: usize, slot: &Slot, setup: &Se
         seconds: d.seconds,
         outcomes: Some(d.outcomes),
         passes: d.passes,
+        osd_runs: d.osd_runs,
     }
 }
 
