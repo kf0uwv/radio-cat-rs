@@ -2560,7 +2560,17 @@ and `fading` (600): 2 000 slots.
 - Checks as in O13b (local CI with MSRV 1.75, thumbv7em, records on
   x86-64 and the A76, the encoder, the Pi release suite).
 
-## OSD-1 on the best candidates: second gated round (running)
+## OSD-1 on the best candidates: second gated round (run once on hosd2: PASS)
+
+**Result (2026-11-01, findings "Second OSD-1 gated round on `hosd2`").**
+Run once as written. Every criterion passes: pooled gain 0.0645 new
+decodes per slot (bar 0.026), 0.0190 at or below −17 dB (0.010); 0 new
+false decodes (pooled with gosd1: 0); 0 losses; 0 unexplained; `compare
+--partial --gain` 25 of 25 sets PASS (sweep 0.075 dB better); WAV 12 of
+12 added decodes in the reference; R 6.02 ms against pass 3's 10.59 ms;
+slot +0.2 ms; OSD-1 0.19 ms per slot; both A76 runs valid at the 0x0
+baseline; M33 mean 199 731 and max 226 010; flash and RAM within.
+Applied mechanically: **PASS**.
 
 **Named in this commit (the gate commit), before any record of them
 exists.** Gain block **`hosd2`** (`crowded`, `wide`, `fading`, `sweep`,

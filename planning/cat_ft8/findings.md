@@ -6556,3 +6556,49 @@ other multi-pass logs compare against a single-pass old run, where the
 absolute limit still applies, unchanged.
 Every run directory against itself with the fixed tool: 280 PASS, the
 same 3 unreadable as before.
+
+## Second OSD-1 gated round on `hosd2` (2026-11-01): result
+
+Run once each, as written in the plan at 037ed44 (CODE 689a361; the
+scripts logged their own and every manifest's sha256, all equal to the
+pins; inputs, binaries, env and the 800 WAVs checked; A76 aligned
+`paired_bench` d91cb36a…). Host, `OsdConfig::new(10, 21)` against OSD
+off. Nothing retuned or re-run. Results verbatim.
+
+| criterion | measured | bar | result |
+|---|---|---|---|
+| G2 new-run false decodes the old run lacks (records: `hosd2` sets, 20 empty blocks; WAV) | 0 in every set and pass; WAV 0 unmatched | 0 | **pass** |
+| G2 pooled (gosd1 + hosd2 + the calibration) | 0 counted | ≤ current rate | **pass** |
+| Gain, pooled crowded/wide/fading (2 000 slots) | 129 new decodes, **0.0645 per slot** (crowded 10, 0.0167; wide 56, 0.0700; fading 63, 0.1050; 100 made by OSD-1 itself) | ≥ 0.026 | **pass** |
+| Gain at or below −17 dB, pooled | 38, **0.0190 per slot** (all from `wide`) | ≥ 0.010 | **pass** |
+| Sweep 50% point (`--gain`) | −19.096 → −19.171 dB, shift **−0.075 dB** [−0.103, −0.053]; two-sided SHIFT, one-sided ok | not worse by > 0.05 dB | **pass** |
+| `edges` no loss | 0 lost (12 gained) | 0 | **pass** |
+| G7 `compare` loss gates | b = 0 in every point and set | ≤ 3√ / ≤ 2√ | **pass** |
+| G7 losses per set (`gains` lines) | 0 in every set | ≤ ⌊0.1 G⌋ | **pass** |
+| G7 classifier v2 | 274 gains, 13 moves, 0 losses: (o) 256, (m) 0, (r) 3, (k) 28, (s) 0; **unexplained 0** | 0 | **pass** |
+| `compare --partial --gain` | **25 of 25 sets PASS**, overall PASS; paired CRC up/down 0/0 in every set but sweep (2/0, limit 2.8) | every set | **pass** |
+| WAV, option off | byte-identical to the base (800 slots) | identical | **pass** (reproduces gosd1) |
+| WAV, option on | 12 added, 12 matched, 0 lost | 0 unmatched, 0 lost | **pass** (reproduces gosd1) |
+| G1 R (A76, side A of the slotcost run) | (22.942 µs × 14.46 runs + 1.641 ms × 0.0345) per slot = 0.388 ms ÷ 0.0645 = **6.02 ms** | < pass 3's **10.59 ms** | **pass** |
+| G1 slot up by | A 106.9 → B 107.1 ms: **+0.2 ms** | ≤ 1.0 ms | **pass** |
+| G1 OSD-1's own time per slot (B's `osd` stage) | **0.19 ms** | ≤ 0.5 ms | **pass** |
+| G4 M33 per OSD run | mean **199 731**, max **226 010** | ≤ 0.21 M, ≤ 0.235 M | **pass** (reproduces gosd1) |
+| G4 RAM / frames / FMA / f64 / `check.sh --stack` | +4 B; 4 808 / 4 104 / `osd_decode` 272; no FMA; no f64; OK | as pinned | **pass** (reproduces gosd1) |
+| G5 flash | 102 256 / 90 564 B | ≤ 102 400 / ≤ 90 700 | **pass** (reproduces gosd1) |
+
+**A76 validity (0x0 baseline):** both runs valid. Pre-checks read 0x0
+before each; every throttle sample read 0x0 (slotcost 236 samples,
+osdpath 262; one slotcost sample at 1.6 GHz, the first, clock not being
+a criterion); peak 53.2 °C. Side A: `subtract` 56.45 ms over 23.8 + 10.6
+subtractions per slot (1.641 ms each); pass 3 32.89 ms, 3.1 new decodes,
+10.59 ms per new decode. `osdpath … hosd2`: 1 646 runs, 22.942 µs per
+run (not accepted mean 23.05, max 26.19 µs). Records, pooled: 28 920
+OSD-1 runs (14.46 per slot); marked decodes by pass 11, 58, 42 (69 in
+passes 1–2, 0.0345 per slot). 31 changes sit within 50 Hz of an earlier
+marked decode (reported).
+
+**Verdict, applied mechanically: PASS.** Every criterion passes. The
+fresh evidence is the `hosd2` records and the A76 runs on its slots; the
+WAV, M33, flash, RAM and stack criteria reproduce `gosd1`'s (no code
+changed). The `gosd1` FAIL stays recorded; this result is the one retry
+the user allowed.

@@ -1493,3 +1493,7 @@
   `gate2.env`, the base binary pinned, the WAV count checked, `env.sh`
   hashed, every script logs its and the manifests' sha256; the paired
   CRC gate's residual risk disclosed; the replay table corrected.
+- Second gated round, named at 037ed44 (`hosd2`, `hosd2e01`–`hosd2e20`,
+  CODE 689a361), run once each (x86-64, A76 at 0x0, M33): every
+  criterion passes; pooled gain 0.0645 per slot, 0.0190 at or below
+  −17 dB; 0 new false decodes; 0 losses; R 6.02 ms. Verdict PASS.
