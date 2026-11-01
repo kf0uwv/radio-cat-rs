@@ -2410,8 +2410,11 @@ The pooled gate slots are that block's `crowded`, `wide` and `fading`
     host` on the gate block's 200 crowded 40-message slots with OSD off
     in the same session (not the 11.09 ms of `main`). Expected count:
     about 104 new decodes on the 2 000 pooled slots (0.052 per slot;
-    Poisson SD about 10), so the ratio's own noise is about ±10%; the
-    sizing's 4.3 ms each is about 40% of pass 3's 11.09 ms. The 200
+    Poisson SD about 10), so the ratio's own noise is about ±10%.
+    Expected ratio from a7a9f6a's A76 cost (22.8 µs per run through the
+    decoder) at the sizing's 14.5 runs and 0.052 new decodes per slot:
+    about 6.4 ms, against pass 3's 11.06 ms on `main`'s slotcost slots
+    (same session). The 200
     `slotcost` slots carry only about 12 new decodes and are not used
     for the ratio.
   - **Absolute caps:** `slotcost host` (three passes, one thread, the
@@ -2420,8 +2423,9 @@ The pooled gate slots are that block's `crowded`, `wide` and `fading`
     slot, where 0.5 ms is the mean per slot of the `osd` stage in that
     same `slotcost host` run with OSD on (the stage times OSD-1, its
     storage switch and its tests; the next candidate's storage refill is
-    booked to belief propagation and is inside the 1.0 ms cap). Lean
-    estimate: 23.2 µs × 14.5 runs = 0.34 ms.
+    booked to belief propagation and is inside the 1.0 ms cap).
+    Expected: 22.8 µs × 14.5 runs = 0.33 ms (A76, a7a9f6a, through the
+    decoder; the refill measured at 0, −0.5 µs).
 - **G4 Cortex-M33 (emulated) instructions per OSD run, through the
   decoder** (`decode_candidate` with the option on less the same call
   with it off, the next candidate's storage refill included; the

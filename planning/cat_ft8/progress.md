@@ -1437,7 +1437,10 @@
   `compare` by origin; `osdpath`, `osdinput`.
 - OSD-1 per run through the decoder: x86-64 13.59 µs mean (1 669 runs on
   the slotcost slots' pass inputs); M33 199 731 instructions mean,
-  226 010 max (15 runs, six pass inputs). A76 pending.
+  226 010 max (15 runs, six pass inputs); A76 (2026-11-01) 22.79 µs
+  mean, 26.69 µs max (`osdlib` 23.16 µs).
+- A76 shim placement: `slotcost host` 2980198 vs 923c393 (same decode-path
+  code), −0.06 ms (−0.05%) on 107.11 ms. A76 records equal x86-64's.
 - Option off: records and 800 WAV slots identical to 511bf32's.
 - Findings additions (crowded vs empty q_T by pass, assumed parts, n as
   a mean, the χ² grouping, shared host/small events); the gated round

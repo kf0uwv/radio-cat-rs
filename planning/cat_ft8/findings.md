@@ -6179,6 +6179,18 @@ is 4 104 B, was 4 096 B.
   `slotcost` never unpacks, so this is placement, not the dyn call.
 - Encoder (`encode_bench 200 50`, 3 rounds): total 559 / 562 / 559 ns
   per message against 559 / 543 / 567; no move beyond noise.
+- **A76** (2026-11-01; aligned builds eed244c9… and 21151a8b…, run
+  2980198, 923c393, 923c393, 2980198, one `slotcost host host 200 5`
+  each, every run valid: sticky 0x50000, no live bit, one sample below
+  2.39 GHz in the first run, peak 55.4 °C). The two builds' decode-path
+  functions are identical (function by function, addresses and names
+  aside: 70 of `cat_ft8`'s identical, the 18 that differ are `unpack`,
+  its helpers and `osd_decode`), so the slotcost path is the same code
+  and the median over both builds is the baseline. Three-pass slot
+  (sum of the per-pass means): 2980198 107.11 / 107.11 / 107.17 /
+  107.18 ms, 923c393 107.11 / 107.10 / 107.06 / 107.05 ms; median of all
+  eight 107.11 ms; the shim's builds −0.06 ms (−0.05%) against the base's,
+  placement only. Pass 3: 11.05–11.06 ms per new decode.
 
 ### OSD-1's cost per candidate through the decoder (624c4de)
 
@@ -6209,7 +6221,17 @@ belief-propagation storage.
   (no CRC passed); on an accept it adds about 2 800 (`unpack_dyn` 2 827
   instructions on `CQ K1ABC FN42`). Candidates OSD did not run on differ
   by 0–3 instructions between the two images (placement).
-- **A76: not measured** (pending; see below).
+- **A76** (2026-11-01; a7a9f6a, 64-byte-aligned measurement build,
+  paired_bench sha256 f77b33c6…, core 3, the throttle sampled once a
+  second: sticky 0x50000 throughout, no live bit; one sample below
+  2.39 GHz, the first; peak 53.2 °C): `osdpath host 10:21 200 21` on the
+  same 1 669 runs as x86-64: **mean 22.79 µs per OSD run (refill
+  included)**; not accepted mean 22.87, median 22.91, **largest 26.69
+  µs**; the refill −0.51 µs (not measurable); accepted 29.43 µs.
+  `osdlib host 200 5` (two runs): library 23.16 / 23.17 µs, the other
+  form 37.08, the sizing's 30.81 / 30.94; result hashes equal x86-64's
+  (6fe3fb66…). Through the decoder OSD-1 costs what the library call
+  costs (e7e7f48's 23.17 µs).
 
 ### Findings additions
 
@@ -6261,6 +6283,8 @@ belief-propagation storage.
   crowded/wide/fading × main/cap1/cap2, sweep/edges/empty main) equal
   to 511bf32's (stage times aside), at 624c4de and at a7a9f6a; no
   record carries an `osd` mark or `osd_runs`.
+- **A76 records** (a7a9f6a, the aligned build, all cores; 2026-11-01):
+  the same 73 800 equal to x86-64's; throttle 0x50000 before and after.
 - **800 WAV slots** × 3 configurations × 3 modes (7 200 runs, 95 448
   lines, 78 648 decode lines): byte-identical to e7e7f48's output, so
   equal to 511bf32's apart from the three memory fields noted there
@@ -6269,10 +6293,6 @@ belief-propagation storage.
 
 ### Not measured
 
-- A76: OSD-1's cost per run through the decoder (`osdpath host 10:21 200
-  21`, aligned build), `osdlib host 200 5` at 624c4de, `slotcost host`
-  2980198 against 923c393 (the shim's placement), and the records'
-  identity on the A76. The bench was off limits during this round.
 - The M33 cost on accepted candidates (none on the six inputs) and on
   more inputs than six pass inputs of two slots.
 - The deviation above (`OsdWork`) has not been tried on other compiler
