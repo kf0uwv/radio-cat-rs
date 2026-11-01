@@ -6541,7 +6541,7 @@ with the fixed tool, the multi-pass rule exercised:
 
 | saved comparison | old run | new run |
 |---|---|---|
-| S3 acceptance | `s3/base` | `o1b/ident-c3f080f/host` (identical records to S3's candidate) |
+| S3 acceptance | `s3/base` | `o1b/ident-c3f080f/host` |
 | S3b acceptance | `s3/base` | `o1b/ident-c3f080f/host` |
 | O8 cap 50 | `o1b/ident-c3f080f/host` | `o8/accept/host` |
 | O8 single pass | `s3/base` | `o8/accept/host` |
