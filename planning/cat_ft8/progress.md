@@ -1480,3 +1480,10 @@
   sweep shift. On gosd1: off vs off now PASS (was FAIL); off vs on with
   `--gain` PASS. 56 replayed earlier comparisons and 280 self-comparisons
   unchanged. Second gated round drafted (proposed, not run).
+- 689a361: CRC gate paired per slot (2·√), false checks relative to the
+  old run, pass counts printed, gate unit tests. gosd1: off/off and on/on
+  PASS; off/on PASS with `--gain` (exploratory). 56 earlier comparisons,
+  re-paired by text, unchanged; 280 self-comparisons PASS.
+- Second round draft: the user's decision recorded (one retry; the OSD
+  code deleted if it fails), new hashed scripts and inputs (corpus copied
+  into the cache), the A76 baseline now 0x0 (any bit voids a run).

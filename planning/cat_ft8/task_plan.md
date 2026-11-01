@@ -2577,36 +2577,100 @@ set verdicts, both from checks that do not measure what the round asked:
   lower ([−0.070, −0.038]), an improvement, which the symmetric ±0.05 dB
   check rejects; the round's criterion was "not worse".
 
-Both checks are fixed in the tool on their own merits (7ccbd48): the
-CRC check compares the two runs' CRC failures over the same passes
-(the new run's at most 3·√(old + new) above the old's) when the old run
-is multi-pass, the absolute limit still printed; and `compare --gain`
-makes the shift check one-sided (not worse by more than 0.05 dB), the
-two-sided result still printed, the default (bit-identical rounds)
-unchanged. On the gosd1 records the fixed tool passes OSD-off against
-itself (the old tool failed crowded) and fails only sweep without
-`--gain`, nothing with it; replaying 56 saved comparisons of earlier
-rounds gives the same verdicts with both tools (findings, "The two
-compare checks fixed").
+**A second block: the user's decision (recorded).** The plan at
+7408489 said "no retune and no second block". On 2026-11-01 the user,
+asked directly whether that line may be superseded for one second gated
+round on a fresh block, chose **"Allow one retry"**, with the condition
+that **if this round fails, the OSD code is deleted**. This draft
+supersedes that line for this one round only, on that decision; the
+precedent is O8b, the later-pass cap re-gated on a new block after its
+first block's verdict stood (findings, "Later-pass cap 50 → 25,
+re-gate on a new block (O8b, 2026-10-30)"). The `gosd1` FAIL stays
+recorded as it is.
+
+**The tool fixes** (findings, "The two compare checks fixed" and
+"compare's gates relative to the old run"), on their own merits:
+7ccbd48 made the multi-pass CRC check relative to the old run when it is
+multi-pass and added `compare --gain` (the shift check one-sided, not
+worse by more than 0.05 dB; the two-sided result printed; the default,
+for bit-identical rounds, unchanged); 689a361 then made the CRC gate
+a paired per-slot sign test (up − down ≤ 2·√(up + down)), made both
+remaining absolute false-decode checks relative to the old run (on
+`empty`, and in a later pass: a new false decode the old run did not
+list in that slot fails; the absolute counts printed), prints both
+runs' pass counts when they differ, and added unit tests for the gates.
+On the gosd1 records the fixed tool passes OSD off against itself and OSD
+on against itself, fails OSD off against OSD on only on the sweep without
+`--gain`, and passes it with `--gain`; the saved comparisons of earlier
+rounds and every run directory against itself keep their verdicts.
 
 **This round.** Identical to the round at 7408489 in everything —
 `OsdConfig::new(10, 21)`, host only, the sets and their sizes, every bar
 and ceiling, the reference decoder and its pinned outputs, the WAV
 matcher, the classifier v2, `gains`, the M33 harness and manifest, the
 A76 commands and the R definition, the scripts' steps — except:
-1. `compare OFF ON --partial --gain` with the fixed `compare` (the two
-   checks above) in place of `compare OFF ON --partial`; the binaries
-   built from the new gate commit.
+1. `compare OFF ON --partial --gain` with the fixed `compare` (above)
+   in place of `compare OFF ON --partial`; new binaries (`pb-gate2`,
+   `dec-gate2`), built from the code commit and pinned by sha256 in the
+   gate commit; the first round's binaries and outputs are not touched.
 2. A new gain block and 20 new empty blocks, never used before, **named
    only in the gate commit** and checked absent from the history and
    every local file first (not `gosd1`, `gosd1e01`–`gosd1e20` or any
    block in the repository's or the cache's records).
-3. The gate scripts re-pinned by sha256 for those two changes only (the
-   `compare` flag, the block names and the output directory).
+3. The gate scripts, new files beside the first round's (pinned by
+   sha256 now; the gate commit adds `gate2.env`, the block names, and
+   the binaries' manifest, both hashed):
+   - `build.sh` (`d6cd68c1…`): builds `pb-gate2` and `dec-gate2` from the
+     code commit and writes `bin.sha256` (with the unchanged base
+     binary); refuses to rebuild.
+   - `gate2_x86.sh` (`8a8c9b16…`): as `gate_x86.sh` except: checks every
+     input first (`sha256sum -c` of `inputs.sha256`,
+     `2647893c03c557a9fab2fde9c54dd658e623ae818d38fb3e083d520327bcd516`:
+     the 800 WAVs copied into the cache from the scratch corpus (same
+     combined hash `3cb4521f…`), the 800 reference outputs, the matcher
+     and its tests, the reference runner, the classifier v2 and its
+     tests, `gate_counts.py`, the M33 manifest and the A76 tools,
+     `livebits0.py` among them), the
+     binaries (`bin.sha256`) and `gate2.env`; reads the blocks from
+     `gate2.env`; uses `pb-gate2`/`dec-gate2`; `compare … --gain`; reads
+     the WAVs from the cache copy; writes to a new output directory.
+   - `gate2_pi.sh` (`86c881ac…`): as `gate_pi.sh` except the input and
+     env checks, the block from `gate2.env`, the aligned build of the
+     code commit, a new output directory, and the validity check by
+     `livebits0.py` (`b9a50a4e…`, below).
+   - `gate2_m33.sh` (`95ac7b9e…`): as `gate_m33.sh` except the inputs
+     check and a new output directory.
+   - `gate_counts.py` copied unchanged (`db32c831…`).
+
+**A76 validity (new baseline).** The bench's power supply was replaced
+on 2026-11-01 (EXT5V 4.997 V; `get_throttled` 0x0 forty minutes after
+boot). The baseline is now **0x0**: a run is valid only if **every**
+throttle sample during it reads 0x0; **any** bit, the sticky bits 16–19
+included, voids it (`livebits0.py`). The first round's wording ("the
+sticky 0x50000 is the bench's baseline since boot … not a failure",
+live bits 0–3 void a run) no longer applies; the round-1 A76 numbers
+(`gosd1`, and the follow-ups' A76 measurements) were taken on the old
+supply and are valid under the old rule, as recorded.
+
+**What this round can and cannot add.** No library or decoder code
+changes between the two rounds, so the criteria that do not depend on
+the block **reproduce gosd1's** and are not fresh evidence: the 800 WAV
+slots (same corpus, same reference outputs, same code: 12 of 12 added
+decodes matched), the M33 counts (same six inputs: mean 199 731, max
+226 010), flash, static RAM and stack (102 256 / 90 564 B, +4 B, the
+same frames). The **fresh evidence** is everything measured on the new
+blocks: the gain and the ≤ −17 dB gain, the false-decode counts, losses
+and their classes, the sweep and `edges`, and the A76 cost (R, the slot
+and the OSD stage on the new block's slotcost slots). G2's count is
+**pooled over `gosd1` and the new blocks** (0 new false decodes on
+`gosd1`), with the calibration. The `gosd1` records read with the fixed
+tool (passing with `--gain`) are **exploratory**, not a result: the
+round's result there is the FAIL recorded above.
 
 No change to T, the candidate count, the bars, the ceilings, the
 definitions or anything else. Run once, as written; no retune and no
-third block on this subset.
+third block on this subset. **If it fails, the OSD code is deleted**
+(the user's condition above).
 
 ## Next: gated, result-changing rounds
 

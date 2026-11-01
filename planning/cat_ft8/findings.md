@@ -6497,3 +6497,58 @@ ok".
   change are the two kinds above (a configuration failing the absolute
   CRC limit against itself, and a sweep shift that is an improvement in
   a `--gain` comparison).
+
+## compare's gates relative to the old run (2026-11-01; tool only, no gate run)
+
+Commit 689a361, after a review of 7ccbd48. The `gosd1` result stands as
+FAIL.
+
+- **CRC gate, paired by slot.** Against a multi-pass old run: per slot,
+  the CRC failures over every pass each run ran; `up` sums the new run's
+  excess, `down` the old's; fail when up − down > 2·√(up + down). Stricter
+  than 7ccbd48's 3·√(old + new) on the totals (up + down ≤ old + new; a
+  run against itself has up = down = 0). The absolute limit is printed;
+  both runs' pass counts are printed when they differ, and each run's
+  own passes are all counted.
+- **False-decode checks relative to the old run.** On `empty` (per point)
+  and in a later pass (per pass), a new false decode fails only if the
+  old run did not list that payload in that slot; the absolute counts
+  stay in the tables. This is G2's rule; a configuration can no longer
+  fail against itself through them.
+- `print_passes`' doc corrected; unit tests for `false_absent`,
+  `crc_paired` and `shift_gate` (the bench's tests now run under `cargo
+  test --features profile`).
+
+**On `gosd1`** (fixed tool, `--partial`): OSD off vs off PASS; on vs on
+PASS; off vs on FAIL (sweep only, two-sided) and PASS with `--gain`.
+Crowded's line: "CRC failures, every pass, paired by slot: old 19, new 19;
+new above old 0, old above new 0 (limit 0.0): ok". This reading of
+`gosd1` is exploratory; the round's result there is its recorded FAIL.
+
+**Earlier data, re-paired.** The saved comparisons were re-paired by
+their text: a pair of run directories is accepted when the old tool
+(7408489) reproduces the log's set headers and per-point table rows
+exactly (the version-stable part; the multi-pass per-pass rows and
+stage times aside); candidates are the directories in the log's own tree
+whose decoded counts per (set, block, point) equal the log's `dec_old`
+and `dec_new` columns. 56 of the 57 logs pair and give the same per-set
+and overall verdicts under the fixed tool; 1 (`e0-176a49b`'s host vs
+small) does not pair (its records are in an early format neither tool
+reads). The earlier pairing (findings, "The two compare checks fixed")
+was looser and paired four of the six multi-pass comparisons wrongly;
+the corrected pairings of those six (old → new), all the same verdict
+with the fixed tool, the multi-pass rule exercised:
+
+| saved comparison | old run | new run |
+|---|---|---|
+| S3 acceptance | `s3/base` | `o1b/ident-c3f080f/host` (identical records to S3's candidate) |
+| S3b acceptance | `s3/base` | `o1b/ident-c3f080f/host` |
+| O8 cap 50 | `o1b/ident-c3f080f/host` | `o8/accept/host` |
+| O8 single pass | `s3/base` | `o8/accept/host` |
+| O3 `i16` prototype | `o1b/ident-c3f080f/host` | `o3/proto-i16/host` |
+| O9 | `o9/eff/bafed37/host` | `o9/eff/ec72aa0/host` |
+
+(Where several directories hold identical records, the first that
+reproduces the text is listed; any of them gives the same verdicts.)
+Every run directory against itself with the fixed tool: 280 PASS, the
+same 3 unreadable as before.
