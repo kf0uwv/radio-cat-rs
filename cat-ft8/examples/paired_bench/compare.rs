@@ -576,7 +576,9 @@ fn compare_set(set: &str, block: &str, sa: &[SlotResult], sb: &[SlotResult]) -> 
 /// whose transmitted SNR is at or below −17 dB (`sent.snr <= -17.0`,
 /// inclusive), per slot; the gains OSD-1 made itself (marked); and the new
 /// run's false decodes the old run did not list in that slot. One line per
-/// (set, block), then the pooled line.
+/// (set, block), then the pooled line. An error if a (set, block) of SETS
+/// is in one run only, if a set is in neither, or if any slot's seed,
+/// samples or messages differ between the runs.
 pub fn gains(old: &Path, new: &Path, sets: &str) -> Result<(), String> {
     #[derive(Default)]
     struct G {
@@ -618,15 +620,32 @@ pub fn gains(old: &Path, new: &Path, sets: &str) -> Result<(), String> {
     }
     let (a, b) = (load(old)?, load(new)?);
     let want: Vec<&str> = sets.split(',').collect();
+    for set in &want {
+        let in_a: BTreeSet<&String> = a.keys().filter(|k| k.0 == *set).map(|k| &k.1).collect();
+        let in_b: BTreeSet<&String> = b.keys().filter(|k| k.0 == *set).map(|k| &k.1).collect();
+        if in_a.is_empty() && in_b.is_empty() {
+            return Err(format!("{set}: in neither run"));
+        }
+        if let Some(block) = in_a.symmetric_difference(&in_b).next() {
+            return Err(format!("{set} ({block}): in one run only"));
+        }
+    }
     let mut all = G::default();
     for (key, sa) in &a {
         if !want.contains(&key.0.as_str()) {
             continue;
         }
-        let Some(sb) = b.get(key) else { continue };
+        let sb = &b[key];
+        if sa.len() != sb.len() {
+            return Err(format!("{} ({}): slot counts differ", key.0, key.1));
+        }
         let mut g = G::default();
         for (x, y) in sa.iter().zip(sb) {
-            if x.index != y.index || x.sample_hash != y.sample_hash || x.sent != y.sent {
+            if x.index != y.index
+                || x.seed != y.seed
+                || x.sample_hash != y.sample_hash
+                || x.sent != y.sent
+            {
                 return Err(format!(
                     "{} ({}): inputs differ at slot {}",
                     key.0, key.1, x.index
