@@ -6381,3 +6381,67 @@ other extra work on the changed residual is not in R (it is inside the
   lines): byte-identical to e7e7f48's output (511bf32's apart from the
   three memory fields noted there). No option-on WAV output has been
   made; the matching rule is in the plan first.
+
+## OSD-1 gated round on `gosd1` (2026-11-01): result
+
+Run once, as written in the plan at 7408489 (binaries built from that
+commit: x86-64 `paired_bench` 50cb78d9…, `cat-ft8-decode` debd2936…; A76
+aligned `paired_bench` 21a7c789…; the M33 harness manifest checked OK).
+Host, `OsdConfig::new(10, 21)` against OSD off, same commit, same run.
+Nothing was retuned or re-run. Results verbatim; the verdict is applied
+mechanically below.
+
+| criterion | measured | bar | result |
+|---|---|---|---|
+| G2 false decodes in the new run absent from the old (records: gain block, 20 empty blocks; WAV) | 0 (records, every set and pass); WAV: 0 unmatched added | 0 | **pass** |
+| G2 pooled bound | 0 counted in the calibration's 69.0 M runs and this round's | ≤ current rate | **pass** |
+| Gain, pooled crowded/wide/fading (2 000 slots, `gains`) | 124 new decodes, **0.0620 per slot** (crowded 18, 0.0300; wide 59, 0.0737; fading 47, 0.0783; 101 of the 124 made by OSD-1 itself) | ≥ 0.026 | **pass** |
+| Gain at or below −17 dB, pooled | 42, **0.0210 per slot** (all from `wide`) | ≥ 0.010 | **pass** |
+| Sweep 50% point | −19.150 → −19.202 dB, shift **−0.052 dB** [−0.070, −0.038] (better) | not worse than 0.05 dB | **pass** (criterion as worded) |
+| `edges` no loss | lost 0 (gained 17) | 0 | **pass** |
+| G7 `compare` no-loss gates (per point, per set) | b = 0 in every point and set | b − c ≤ 3√, ≤ 2√ | **pass** |
+| G7 losses per set (`gains` per-set lines) | 0 in every set (crowded, wide, fading, sweep, edges, 20 empty) | ≤ ⌊0.1 G⌋ | **pass** |
+| G7 classifier (`classify_osd_v2.py`) | 267 gains, 27 moves, 0 losses: (o) 270, (m) 1, (r) 2, (k) 21, (s) 0; **unexplained 0** | 0 | **pass** |
+| `compare --partial` per-set verdicts | 23 of 25 PASS; **crowded FAIL, sweep FAIL** (below) | every set | **FAIL** |
+| WAV, option off | the 800 slots' `--config host` output byte-identical to the base binary's | identical | **pass** |
+| WAV, option on | 12 added decodes, **12 matched** in the pinned reference output, 0 unmatched, 0 lost | 0 unmatched, 0 lost | **pass** |
+| G1 R, cost per new decode (A76) | (22.662 µs × 14.2765 runs + 1.640 ms × 0.0405 subtracted marked decodes) per slot = 0.390 ms ÷ 0.0620 = **6.29 ms** | < pass 3's **10.74 ms** (side A) | **pass** |
+| G1 slot up by (A76, `slotcost host host,osd=10:21 200 5 gosd1`) | A mean 107.1 ms, B 107.3 ms: **+0.2 ms** | ≤ 1.0 ms | **pass** |
+| G1 OSD-1's own time per slot (B's `osd` stage) | **0.20 ms** | ≤ 0.5 ms | **pass** |
+| G4 M33 instructions per OSD run (through the decoder) | mean **199 731**, max **226 010** (224 591 + 1 419) | ≤ 0.21 M, ≤ 0.235 M | **pass** |
+| G4 static RAM / frames / FMA / f64 / `check.sh --stack` | 212 048 and 241 616 B (+4); largest frames 4 808 (host `subtract_one`), `_start` 4 104, `osd_decode` 272; no FMA in the four decoder images; no `f64` helper; OK | +4 B; ≤ 4 808 / 4 104; ≤ 288; none; OK | **pass** |
+| G5 flash | host 102 256 B, small 90 564 B | ≤ 102 400, ≤ 90 700 | **pass** |
+
+Both A76 runs were valid (sticky 0x50000 throughout, no live bit, no
+sample below 2.39 GHz, peaks 52.7 and 53.2 °C). Side A's figures used
+in R: `subtract` 56.58 ms over 24.0 + 10.5 subtractions per slot (1.640
+ms each); pass 3 32.77 ms, 3.0 new decodes, 10.74 ms per new decode.
+`osdpath host 10:21 200 21 gosd1`: 1 648 OSD runs, 22.662 µs per run
+(not accepted 22.78 mean, 25.87 max). Records, pooled gate slots: 28 553
+OSD-1 runs (14.28 per slot); marked decodes by pass 16, 65, 46 (81 in
+passes 1–2, 0.0405 per slot). 24 changes sit within 50 Hz of an earlier
+marked decode (reported, not a condition).
+
+**The two `compare` failures, as the tool reports them (not adjudicated):**
+
+- **crowded:** the multi-pass CRC-expectation check (`passes: expected
+  false decodes 1.93e-6 per slot (limit 3 × 6.10e-7): CRC`). The two runs
+  have the same CRC failures (19, 0.0317 per slot) and the same
+  expectation (1.93 × 10⁻⁶): the check compares the new run's three
+  passes against three times the old run's pass-1 rate, which the OSD-off
+  run on this block exceeds by itself. OSD-1 did not change it.
+- **sweep:** the two-sided shift check (`shift -0.052 dB [-0.070,
+  -0.038]: SHIFT`, limit ±0.05 dB): the 50% point moved 0.052 dB
+  **lower** (OSD-1 decodes weaker signals). The plan's criterion is "not
+  worse than the existing shift gate (0.05 dB)"; the tool's check is
+  symmetric.
+
+**Verdict, applied mechanically: FAIL.** The plan names the per-set gates
+as `compare --partial`'s, and two of its 25 set verdicts are FAIL. Every
+other criterion passes, including every criterion stated as a number in
+the plan. Neither failing check is one the plan states separately (the
+plan's own false-decode criterion is the count, 0, and its sweep
+criterion is one-sided), so whether these two tool verdicts were meant
+to gate is a reading of the plan, not a measurement; it is left to the
+user. Nothing merges on this result; no code is deleted; no retune and
+no second block.

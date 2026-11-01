@@ -1470,3 +1470,8 @@
   hashed; no option-on WAV output before it.
 - Gate commit: gain block `gosd1`, empty blocks `gosd1e01`–`gosd1e20`;
   status running.
+- Gated round run once on `gosd1` (x86-64 records and WAV, A76, M33):
+  every numeric criterion passes; `compare` fails two of 25 sets
+  (crowded: its multi-pass CRC-expectation check, unchanged by OSD-1;
+  sweep: its two-sided shift check, the 50% point 0.052 dB better).
+  Applied mechanically: FAIL. Nothing merged, nothing deleted.

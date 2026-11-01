@@ -2308,12 +2308,24 @@ the findings additions, and the gate below revised (host only). With the
 option off, records and the 800 WAV slots must stay identical to
 511bf32's. Done: findings, "OSD-1 follow-ups".
 
-## OSD-1 on the best candidates: gated round (running)
+## OSD-1 on the best candidates: gated round (run once on gosd1: FAIL as written)
 
 Revised from the sizing's draft after the lean implementation (findings,
 "Lean OSD-1 in the library"), the counted calibration and the
 follow-ups (findings, "OSD-1 follow-ups"). This commit names the blocks
 and pins every tool; the round is run once, as written, after it.
+
+**Result (2026-11-01, findings "OSD-1 gated round on `gosd1`").** Run
+once as written. Every numeric criterion passes (pooled gain 0.0620 per
+slot, 0.0210 at or below −17 dB; 0 new false decodes; 0 losses; 0
+unexplained; WAV 12 of 12 added decodes in the reference; R 6.29 ms
+against 10.74; slot +0.2 ms; OSD 0.20 ms; M33 mean 199 731 and max
+226 010; flash and RAM within). `compare --partial` fails two of 25 sets:
+crowded (its multi-pass CRC-expectation check, the same in both runs)
+and sweep (its two-sided shift check; the 50% point moved 0.052 dB
+lower, an improvement). Applied mechanically: **FAIL**. Nothing merges;
+no retune, no second block; the reading of those two checks is the
+user's decision.
 The criteria are fixed in the commit that names the block, before any
 record of it exists, and applied mechanically: if any fails, nothing
 merges; no retune and no second block.
