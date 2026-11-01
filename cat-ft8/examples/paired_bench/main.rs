@@ -16,7 +16,7 @@
 //!
 //! ```text
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- run CONFIG OUTDIR [SETS] [BLOCK]
-//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- compare OLDDIR NEWDIR [--partial]
+//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- compare OLDDIR NEWDIR [--partial] [--gain]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- gains OLDDIR NEWDIR [SETS]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- cost CONFIG_A CONFIG_B [SLOTS] [RUNS]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- slotcost CONFIG_A CONFIG_B [SLOTS] [RUNS] [BLOCK]
@@ -105,9 +105,17 @@
 //! point. For `sweep`, the 50% point is the SNR where the decoded fraction
 //! first reaches ½ (linear interpolation between points); its 95% interval
 //! comes from a paired bootstrap — the same resampled slots for both runs,
-//! 1 000 times — and the shift gate fails if the point estimate is more
-//! than 0.05 dB worse or if a 50% point is missing. The interval is
-//! reported for judgement; real losses are caught by the sign tests.
+//! 1 000 times — and the shift gate fails if the point estimate or either
+//! end of its interval moves more than 0.05 dB either way, or if a 50%
+//! point is missing; with `--gain` (a round meant to change results) it
+//! fails only if the point estimate or the interval's upper end is more
+//! than 0.05 dB worse (the two-sided result still printed). Real losses
+//! are caught by the sign tests. **Multi-pass runs:** no false decode in a
+//! later pass, no payload listed twice, and the CRC failures over the
+//! passes: against a multi-pass old run, the new run's at most 3·√(old +
+//! new) above the old's (the absolute limit — passes × the old run's
+//! pass-1 expectation — printed beside it); against a single-pass old run,
+//! that absolute limit.
 //!
 //! **cost** times two configurations interleaved, one thread, on SLOTS
 //! crowded slots (default 42) taken evenly from the 10-, 20- and 40-message
@@ -339,7 +347,7 @@ pub fn provenance() -> String {
 
 // ----------------------------------------------------------------- main
 
-const USAGE: &str = "usage: paired_bench run CONFIG OUTDIR [SETS] [BLOCK] | compare OLDDIR NEWDIR [--partial] | gains OLDDIR NEWDIR [SETS] | cost A B [SLOTS] [RUNS] | slotcost A B [SLOTS] [RUNS] [BLOCK] | ceiling CONFIG [BLOCK] [SET] | suppression CONFIG [GRID] [TRIALS] | passes CONFIG [BLOCK] [SET] [GRID] | subcost CONFIG [SUB] [SLOTS] [RUNS]";
+const USAGE: &str = "usage: paired_bench run CONFIG OUTDIR [SETS] [BLOCK] | compare OLDDIR NEWDIR [--partial] [--gain] | gains OLDDIR NEWDIR [SETS] | cost A B [SLOTS] [RUNS] | slotcost A B [SLOTS] [RUNS] [BLOCK] | ceiling CONFIG [BLOCK] [SET] | suppression CONFIG [GRID] [TRIALS] | passes CONFIG [BLOCK] [SET] [GRID] | subcost CONFIG [SUB] [SLOTS] [RUNS]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -354,9 +362,12 @@ fn main() -> ExitCode {
             arg(4).unwrap_or("main"),
         )
         .map(|()| true),
-        (Some("compare"), Some(o), Some(n)) => {
-            compare::compare(Path::new(o), Path::new(n), arg(3) == Some("--partial"))
-        }
+        (Some("compare"), Some(o), Some(n)) => compare::compare(
+            Path::new(o),
+            Path::new(n),
+            (3..5).any(|i| arg(i) == Some("--partial")),
+            (3..5).any(|i| arg(i) == Some("--gain")),
+        ),
         (Some("ceiling"), Some(c), _) => {
             ceiling::ceiling(c, arg(2).unwrap_or("main"), arg(3).unwrap_or("crowded"))
                 .map(|()| true)

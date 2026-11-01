@@ -134,8 +134,12 @@ const SHIFT_LIMIT_DB: f64 = 0.05;
 
 /// The sweep's 50% points and their shift; prints them and returns the
 /// shift gate: the shift and its whole bootstrap interval within
-/// ±[`SHIFT_LIMIT_DB`] (false if a 50% point is missing).
-fn sweep_shift(sweep: &Sweep<(bool, bool)>) -> bool {
+/// ±[`SHIFT_LIMIT_DB`] (false if a 50% point is missing). With `gain` (a
+/// round meant to change results, `compare --gain`), the gate is one-sided:
+/// the shift and its interval's upper end at most +[`SHIFT_LIMIT_DB`] (not
+/// worse by more than the limit; a lower 50% point is better); the
+/// two-sided result is still printed.
+fn sweep_shift(sweep: &Sweep<(bool, bool)>, gain: bool) -> bool {
     let (h_old, h_new) = (
         curve_by(sweep, |p| p.0, None),
         curve_by(sweep, |p| p.1, None),
@@ -152,13 +156,28 @@ fn sweep_shift(sweep: &Sweep<(bool, bool)>) -> bool {
             // NaN as well).
             let within = |x: f64| (-SHIFT_LIMIT_DB..=SHIFT_LIMIT_DB).contains(&x);
             let shift_ok = within(n - o) && within(dl) && within(dh);
+            // Not worse: the shift and its interval's upper end at most
+            // the limit (false for NaN).
+            let not_worse = n - o <= SHIFT_LIMIT_DB && dh <= SHIFT_LIMIT_DB;
             println!(
-                "  50% point: old {o:.3} dB [{ol:.3}, {oh:.3}], new {n:.3} dB [{nl:.3}, {nh:.3}], shift {:+.3} dB [{dl:+.3}, {dh:+.3}] ({} of 1 000 resamples without a 50% point): {}",
+                "  50% point: old {o:.3} dB [{ol:.3}, {oh:.3}], new {n:.3} dB [{nl:.3}, {nh:.3}], shift {:+.3} dB [{dl:+.3}, {dh:+.3}] ({} of 1 000 resamples without a 50% point): {}{}",
                 n - o,
                 b.dropped,
-                if shift_ok { "ok" } else { "SHIFT" }
+                if shift_ok { "ok" } else { "SHIFT" },
+                if gain {
+                    format!(
+                        " (two-sided); gain round, not worse by more than {SHIFT_LIMIT_DB} dB: {}",
+                        if not_worse { "ok" } else { "WORSE" }
+                    )
+                } else {
+                    String::new()
+                }
             );
-            shift_ok
+            if gain {
+                not_worse
+            } else {
+                shift_ok
+            }
         }
         _ => {
             println!("  50% point: MISSING (old {h_old:?}, new {h_new:?})");
@@ -472,18 +491,47 @@ fn print_passes(sa: &[SlotResult], sb: &[SlotResult]) -> bool {
         / sa.len().max(1) as f64
         / 16_384.0;
     let crc_ok = expected_total <= most as f64 * old_rate || expected_total == 0.0;
-    pass_ok &= crc_ok && repeated == 0;
+    // When the old run is multi-pass too, the gate compares the two runs'
+    // CRC failures over the same passes: the new run's may exceed the
+    // old's by at most 3·√(old + new) (the counts' Poisson spread, as the
+    // loss gates), so a configuration is never failed against itself. The
+    // absolute limit above is still printed, for the record. A single-pass
+    // old run keeps the absolute limit as the gate.
+    let old_multi = !sa.is_empty() && sa.iter().all(|r| r.passes.is_some());
+    let crc_sum = |run: &[SlotResult]| -> u64 {
+        run.iter()
+            .filter_map(|r| r.passes.as_ref())
+            .flat_map(|ps| ps.iter().take(most))
+            .map(|p| p.crc_failed)
+            .sum()
+    };
+    let (crc_old, crc_new) = (crc_sum(sa), crc_sum(sb));
+    let margin = 3.0 * ((crc_old + crc_new) as f64).sqrt();
+    let rel_ok = crc_new as f64 - crc_old as f64 <= margin;
+    pass_ok &= (if old_multi { rel_ok } else { crc_ok }) && repeated == 0;
     println!(
         "  passes: expected false decodes {expected_total:.2e} per slot (limit {most} × {old_rate:.2e}): {}; slots listing a payload twice: {repeated}{}",
-        if crc_ok { "ok" } else { "CRC" },
+        match (old_multi, crc_ok) {
+            (false, true) => "ok",
+            (false, false) => "CRC",
+            (true, true) => "ok (reported)",
+            (true, false) => "over (reported; the gate is the next line)",
+        },
         if repeated == 0 { "" } else { " DUPLICATE" }
     );
+    if old_multi {
+        println!(
+            "  passes: CRC failures over passes 1–{most}: old {crc_old}, new {crc_new}, new − old {} (limit 3·√(old + new) = {margin:.1}): {}",
+            crc_new as i64 - crc_old as i64,
+            if rel_ok { "ok" } else { "CRC" }
+        );
+    }
     pass_ok
 }
 
 /// Compares one (set, block) of the two runs; prints it and returns its
 /// verdict.
-fn compare_set(set: &str, block: &str, sa: &[SlotResult], sb: &[SlotResult]) -> bool {
+fn compare_set(set: &str, block: &str, sa: &[SlotResult], sb: &[SlotResult], gain: bool) -> bool {
     if sa.len() != sb.len() {
         println!(
             "\n== {set} ({block}): different slot counts {} and {}",
@@ -538,7 +586,7 @@ fn compare_set(set: &str, block: &str, sa: &[SlotResult], sb: &[SlotResult]) -> 
     }
     pass &= print_passes(sa, sb);
     if set == "sweep" {
-        pass &= sweep_shift(&t.sweep);
+        pass &= sweep_shift(&t.sweep, gain);
     }
     let (ca, cb) = (&t.work[0].counts, &t.work[1].counts);
     println!(
@@ -686,7 +734,7 @@ pub fn gains(old: &Path, new: &Path, sets: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn compare(old: &Path, new: &Path, partial: bool) -> Result<bool, String> {
+pub fn compare(old: &Path, new: &Path, partial: bool, gain: bool) -> Result<bool, String> {
     let (a, b) = (load(old)?, load(new)?);
     let first = |d: &Path| {
         fs::read_to_string(d.join("config.txt"))
@@ -712,7 +760,7 @@ pub fn compare(old: &Path, new: &Path, partial: bool) -> Result<bool, String> {
             continue;
         };
         compared += 1;
-        all_pass &= compare_set(&key.0, &key.1, sa, sb);
+        all_pass &= compare_set(&key.0, &key.1, sa, sb, gain);
     }
     if compared == 0 {
         println!("\nnothing to compare");
