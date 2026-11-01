@@ -106,6 +106,8 @@ fn decodes_print_one_json_object_each() {
         &[][..],
         &["--config", "host"][..],
         &["--config", "small"][..],
+        &["--config", "host,osd=10:21"][..],
+        &["--config", "small,passes=1,osd=25:21"][..],
     ] {
         let mut got = lines(&decode_cmd(&path, config));
         got.sort_by(|a, b| a["freq"].as_f64().partial_cmp(&b["freq"].as_f64()).unwrap());
@@ -128,6 +130,14 @@ fn decodes_print_one_json_object_each() {
                     && v["score"].is_i64()
             );
         }
+    }
+    // OSD-1 on no candidate: the output is the plain configuration's, byte
+    // for byte.
+    for (plain, osd) in [("host", "host,osd=0:21"), ("small", "small,osd=0:255")] {
+        let a = decode_cmd(&path, &["--raw", "--config", plain]);
+        let b = decode_cmd(&path, &["--raw", "--config", osd]);
+        assert!(a.status.success() && b.status.success());
+        assert_eq!(a.stdout, b.stdout, "{osd}");
     }
     std::fs::remove_file(path).unwrap();
 }
@@ -435,6 +445,14 @@ fn unusable_files_and_arguments_are_errors() {
         2,
         "host or small",
     );
+    for bad in [
+        "host,osd=10",
+        "host,osd=x:21",
+        "host,osd=65536:21",
+        "host,osd=10:256",
+    ] {
+        fail(decode_cmd(&rate, &["--config", bad]), 2, "host or small");
+    }
     fail(decode_cmd(&rate, &["--bogus"]), 2, "unknown option");
     for p in [rate, stereo_path, text] {
         std::fs::remove_file(p).unwrap();

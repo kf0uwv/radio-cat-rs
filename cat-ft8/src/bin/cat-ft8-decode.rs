@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `cat-ft8-decode FILE.wav [--config host|small[,passes=N]] [--raw] [--profile]`
+//! `cat-ft8-decode FILE.wav [--config host|small[,passes=N][,osd=C:T]] [--raw] [--profile]`
 //!
 //! Decodes one FT8 slot from a 12 kHz mono 16-bit WAV file and prints one
 //! JSON object per decode, in output format version 0 (see the crate docs,
@@ -21,7 +21,11 @@
 //! The configuration's pass count is used (`passes=N` sets it, 1–3): after
 //! each pass but the last, its decodes are subtracted from the audio and
 //! the residual decoded again; the output lists every decode once, in the
-//! order found, with the pass that found it. `--profile` adds per-pass keys
+//! order found, with the pass that found it. `osd=C:T` turns on the
+//! experimental ordered-statistics decoding (`decode::OsdConfig::new(C,
+//! T)`: OSD-1 on each pass's first C candidates whose belief propagation
+//! failed, accepting a codeword at most T bits from the hard decisions);
+//! without it the output is as before. `--profile` adds per-pass keys
 //! when more than one pass is configured.
 //! Exit status 0 on success (with or without decodes), 1 on an error, 2 on
 //! a usage error.
@@ -35,14 +39,14 @@ use std::time::Instant;
 
 use cat_ft8::decode::{
     Band, Candidate, CandidateScratch, Decode, DecodeConfig, DecodeList, Decoder, FrontEnd,
-    PassEvent, PassReport, PassStep, PassesReport, Stage, CANDIDATES, HOST_DECODES, SMALL_DECODES,
-    TABLE_BYTES,
+    OsdConfig, PassEvent, PassReport, PassStep, PassesReport, Stage, CANDIDATES, HOST_DECODES,
+    SMALL_DECODES, TABLE_BYTES,
 };
 use cat_ft8::message::CallTable;
 use cat_ft8::{wav, SAMPLE_RATE, SLOT_SAMPLES};
 
 const USAGE: &str =
-    "usage: cat-ft8-decode FILE.wav [--config host|small[,passes=N]] [--raw] [--profile]";
+    "usage: cat-ft8-decode FILE.wav [--config host|small[,passes=N][,osd=C:T]] [--raw] [--profile]";
 
 /// Calls remembered for hashed-call messages within the file.
 const CALLS: usize = 64;
@@ -111,9 +115,11 @@ fn parse() -> Result<Parsed, String> {
     Ok(Parsed::Run(a))
 }
 
-/// `host` or `small`, optionally followed by `,passes=N` (1–3).
+/// `host` or `small`, optionally followed by `,passes=N` (1–3) and
+/// `,osd=C:T` (C 0–65 535 candidates, T 0–255 bits).
 fn parse_config(spec: Option<&str>) -> Result<Setup, String> {
-    let bad = || format!("--config needs host or small[,passes=N], not {spec:?}\n{USAGE}");
+    let bad =
+        || format!("--config needs host or small[,passes=N][,osd=C:T], not {spec:?}\n{USAGE}");
     let mut parts = spec.ok_or_else(bad)?.split(',');
     let mut setup = match parts.next() {
         Some("host") => HOST,
@@ -131,6 +137,14 @@ fn parse_config(spec: Option<&str>) -> Result<Setup, String> {
                     ));
                 }
                 setup.config = setup.config.with_passes(n);
+            }
+            Some(("osd", ct)) => {
+                let (c, t) = ct.split_once(':').ok_or_else(bad)?;
+                let (c, t): (u16, u8) = match (c.parse(), t.parse()) {
+                    (Ok(c), Ok(t)) => (c, t),
+                    _ => return Err(bad()),
+                };
+                setup.config = setup.config.with_osd(Some(OsdConfig::new(c, t)));
             }
             _ => return Err(bad()),
         }
@@ -500,6 +514,7 @@ fn main() -> ExitCode {
             println!("  --config host   100–3100 Hz, sum-product, 128 decodes (the default)");
             println!("  --config small  200–2900 Hz, min-sum, 64 decodes");
             println!("  ,passes=N       after either: decode in N passes (1–3), subtracting each pass's decodes");
+            println!("  ,osd=C:T        experimental: OSD-1 on each pass's first C failed candidates, at most T bits");
             println!("  --raw           also print decodes whose payload did not unpack");
             println!("  --profile       add one line of timings, memory and counts");
             return ExitCode::SUCCESS;
