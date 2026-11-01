@@ -15,7 +15,7 @@
 //! Decoding a slot, classifying what became of each transmitted message,
 //! and the per-slot record `run` writes and `compare` reads.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::Write as _;
@@ -45,6 +45,11 @@ pub struct DecodeRecord {
     pub candidate: u16,
     pub hard_errors: u8,
     pub rounds: u8,
+    /// Decoded by OSD-1 after belief propagation failed (the candidate's
+    /// `Stage::Osd` reported, joined on pass and candidate): saved as
+    /// `"osd":true`, and left out otherwise, so records without the
+    /// option are as before.
+    pub osd: bool,
 }
 
 /// The report counts saved per slot.
@@ -215,6 +220,10 @@ impl SlotResult {
                 "{}{{\"payload\":\"{:020x}\",\"freq\":{:?},\"dt\":{:?},\"snr\":{:?},\"score\":{},\"candidate\":{},\"hard_errors\":{},\"rounds\":{}}}",
                 if i > 0 { "," } else { "" }, d.payload, d.freq, d.dt, d.snr, d.score, d.candidate, d.hard_errors, d.rounds
             );
+            if d.osd {
+                o.truncate(o.len() - 1);
+                o.push_str(",\"osd\":true}");
+            }
         }
         let c = &self.counts;
         let _ = write!(
@@ -295,6 +304,7 @@ impl SlotResult {
                         candidate: u(&d["candidate"])? as u16,
                         hard_errors: u(&d["hard_errors"])? as u8,
                         rounds: u(&d["rounds"])? as u8,
+                        osd: d.get("osd").and_then(Value::as_bool).unwrap_or(false),
                     })
                 })
                 .collect::<Option<_>>()?,
@@ -524,13 +534,21 @@ pub fn decode_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &Setup) 
     let mut stages = [0.0f64; Stage::ALL.len()];
     let mut bp_rounds = 0u64;
     let mut failed: Vec<(usize, BpFailure)> = Vec::new();
+    // The candidates OSD-1 ran on (any decode of theirs is OSD-1's: it
+    // runs only after belief propagation failed).
+    let mut osd_ran: BTreeSet<(u8, u16)> = BTreeSet::new();
     for i in 0..kept {
         let mut last = Instant::now();
+        let mut ran = false;
         let r = dec.decode_candidate_staged(i, &mut scratch, |st| {
             let now = Instant::now();
             stages[st.index()] += (now - last).as_secs_f64();
+            ran |= st == Stage::Osd;
             last = now;
         });
+        if ran {
+            osd_ran.insert((1, i as u16));
+        }
         bp_rounds += u64::from(scratch.last_rounds());
         if let Some(r) = r {
             if let Err(f) = r {
@@ -547,16 +565,7 @@ pub fn decode_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &Setup) 
     let decodes: Vec<DecodeRecord> = list
         .finish_payloads()
         .iter()
-        .map(|d| DecodeRecord {
-            payload: d.payload.bits(),
-            freq: d.freq_hz,
-            dt: d.dt,
-            snr: d.snr_db,
-            score: d.score,
-            candidate: d.candidate,
-            hard_errors: d.hard_errors,
-            rounds: d.rounds,
-        })
+        .map(|d| record(d, osd_ran.contains(&(1, d.candidate))))
         .collect();
     let outcomes = classify(&dec, rep.candidates_found, sent, &decodes, &failed, setup);
     Decoded {
@@ -580,7 +589,8 @@ pub fn decode_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &Setup) 
     }
 }
 
-fn record(d: &Decode) -> DecodeRecord {
+/// A decode's record; `osd` its origin.
+fn record(d: &Decode, osd: bool) -> DecodeRecord {
     DecodeRecord {
         payload: d.payload.bits(),
         freq: d.freq_hz,
@@ -590,6 +600,7 @@ fn record(d: &Decode) -> DecodeRecord {
         candidate: d.candidate,
         hard_errors: d.hard_errors,
         rounds: d.rounds,
+        osd,
     }
 }
 
@@ -623,11 +634,23 @@ pub fn decode_passes_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &
     audio.extend_from_slice(samples);
     let mut seconds: BTreeMap<String, f64> = BTreeMap::new();
     let mut passes: Vec<PassRecord> = Vec::new();
+    // (pass, candidate) of every candidate OSD-1 ran on: a pass reports
+    // each candidate's stages in turn, each beginning with `Refine`.
+    let mut osd_ran: BTreeSet<(u8, u16)> = BTreeSet::new();
+    let mut at: Option<u16> = None;
     let mut last = Instant::now();
     let slot = dec.decode_passes_staged(&mut audio, skip, &mut scratch, &mut list, |e| {
         let now = Instant::now();
         match e {
             PassEvent::Step { pass, step } => {
+                match step {
+                    PassStep::Sync => at = None,
+                    PassStep::Candidate(Stage::Refine) => at = Some(at.map_or(0, |i| i + 1)),
+                    PassStep::Candidate(Stage::Osd) => {
+                        osd_ran.insert((pass, at.expect("a candidate's first stage")));
+                    }
+                    _ => {}
+                }
                 let t = (now - last).as_secs_f64();
                 let name = match step {
                     PassStep::Subtract => "subtract",
@@ -664,7 +687,20 @@ pub fn decode_passes_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &
     });
     // The slot's totals over every pass.
     let rep = slot.report;
-    let decodes: Vec<DecodeRecord> = list.finish_payloads().iter().map(record).collect();
+    // The pass of list entry `i`: the last pass that began at or before it.
+    let pass_of = |i: usize| {
+        passes
+            .iter()
+            .rev()
+            .find(|p| p.first as usize <= i)
+            .map_or(1, |p| p.pass as u8)
+    };
+    let decodes: Vec<DecodeRecord> = list
+        .finish_payloads()
+        .iter()
+        .enumerate()
+        .map(|(i, d)| record(d, osd_ran.contains(&(pass_of(i), d.candidate))))
+        .collect();
     // The last pass's failures, found again (deterministic, not timed).
     let mut failed: Vec<(usize, BpFailure)> = Vec::new();
     for i in 0..dec.candidates().len() {

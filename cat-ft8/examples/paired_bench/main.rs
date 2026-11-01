@@ -25,11 +25,14 @@
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- subcost CONFIG [SUB] [SLOTS] [RUNS]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- osdlib CONFIG [SLOTS] [RUNS]
 //! cargo run --release -p cat-ft8 --features profile --example paired_bench -- osdcal CONFIG RANKS OUTFILE PREFIX FROM TO
+//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- osdpath CONFIG C:T [SLOTS] [RUNS]
+//! cargo run --release -p cat-ft8 --features profile --example paired_bench -- osdinput CONFIG SLOT PASS FILE
 //! ```
 //!
 //! (`osd`, `osdcost`, `osdplaus`, `osdcheck` and `osddump` are the OSD
 //! sizing round's, in `osdsize.rs`; `osdlib` times the decoder's OSD-1
-//! there too, and `osdcal` is described in `osdcal.rs`.)
+//! there too, `osdcal` is described in `osdcal.rs`, and `osdpath` and
+//! `osdinput` in `osdpath.rs`.)
 //!
 //! **Sets** (encoder-made; each slot's seed comes from its set, block and
 //! index, and the noise from `libm`, so runs decode bit-identical input on
@@ -197,6 +200,7 @@ mod compare;
 mod cost;
 mod osd;
 mod osdcal;
+mod osdpath;
 mod osdsize;
 mod record;
 mod sets;
@@ -399,6 +403,17 @@ fn main() -> ExitCode {
         (Some("osdlib"), Some(c), _) => num(2, 200)
             .and_then(|s| num(3, 5).and_then(|r| osdsize::osd_lib(c, s, r)))
             .map(|()| true),
+        (Some("osdpath"), Some(c), Some(o)) => num(3, 200)
+            .and_then(|s| num(4, 5).and_then(|r| osdpath::osd_path(c, o, s, r)))
+            .map(|()| true),
+        (Some("osdinput"), Some(c), Some(k)) => {
+            match (k.parse(), arg(3).and_then(|p| p.parse().ok()), arg(4)) {
+                (Ok(k), Some(p), Some(f)) => {
+                    osdpath::osd_input(c, k, p, Path::new(f)).map(|()| true)
+                }
+                _ => Err("osdinput CONFIG SLOT PASS FILE".into()),
+            }
+        }
         (Some("cost"), Some(x), Some(y)) => num(3, 42)
             .and_then(|s| num(4, 5).and_then(|r| cost::cost(x, y, s, r)))
             .map(|()| true),
