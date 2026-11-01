@@ -2325,10 +2325,14 @@ crowded (its multi-pass CRC-expectation check, the same in both runs)
 and sweep (its two-sided shift check; the 50% point moved 0.052 dB
 lower, an improvement). Applied mechanically: **FAIL**. Nothing merges;
 no retune, no second block; the reading of those two checks is the
-user's decision.
+user's decision. (Forward pointer, added later: the user's recorded decision
+of 2026-11-01 allows one second gated round on a fresh block; see
+"OSD-1 on the best candidates: second gated round" below.)
 The criteria are fixed in the commit that names the block, before any
 record of it exists, and applied mechanically: if any fails, nothing
-merges; no retune and no second block.
+merges; no retune and no second block. (Forward pointer, added later: superseded for one
+round by the user's recorded decision; see the second gated round
+below.)
 
 **Status of the evidence.** The sizing's "supplement" verdict is
 **exploratory**: the sizing's rule as fixed (all failed candidates)
@@ -2617,30 +2621,51 @@ A76 commands and the R definition, the scripts' steps — except:
    only in the gate commit** and checked absent from the history and
    every local file first (not `gosd1`, `gosd1e01`–`gosd1e20` or any
    block in the repository's or the cache's records).
-3. The gate scripts, new files beside the first round's (pinned by
-   sha256 now; the gate commit adds `gate2.env`, the block names, and
-   the binaries' manifest, both hashed):
-   - `build.sh` (`d6cd68c1…`): builds `pb-gate2` and `dec-gate2` from the
-     code commit and writes `bin.sha256` (with the unchanged base
-     binary); refuses to rebuild.
-   - `gate2_x86.sh` (`8a8c9b16…`): as `gate_x86.sh` except: checks every
-     input first (`sha256sum -c` of `inputs.sha256`,
-     `2647893c03c557a9fab2fde9c54dd658e623ae818d38fb3e083d520327bcd516`:
-     the 800 WAVs copied into the cache from the scratch corpus (same
-     combined hash `3cb4521f…`), the 800 reference outputs, the matcher
-     and its tests, the reference runner, the classifier v2 and its
-     tests, `gate_counts.py`, the M33 manifest and the A76 tools,
-     `livebits0.py` among them), the
-     binaries (`bin.sha256`) and `gate2.env`; reads the blocks from
-     `gate2.env`; uses `pb-gate2`/`dec-gate2`; `compare … --gain`; reads
-     the WAVs from the cache copy; writes to a new output directory.
-   - `gate2_pi.sh` (`86c881ac…`): as `gate_pi.sh` except the input and
-     env checks, the block from `gate2.env`, the aligned build of the
-     code commit, a new output directory, and the validity check by
-     `livebits0.py` (`b9a50a4e…`, below).
-   - `gate2_m33.sh` (`95ac7b9e…`): as `gate_m33.sh` except the inputs
-     check and a new output directory.
+3. The gate scripts, new files beside the first round's, pinned by
+   sha256 now. Every script sources `common.sh`
+   (`037e070d9e1f1eef4974515303f8da065ad8b01a11fb9d26b13a6b84560bab7d`),
+   which logs the calling script's sha256 and the manifests' (inputs,
+   env, binaries, itself), checks `gate2.env` against `env.sha256`,
+   refuses unless its `CODE` is a full 40-character sha naming a commit
+   of the repository, checks `inputs.sha256`
+   (`8bb169c2f1b076e10bac3919f9a1f1c130007d3d035024622b82eefc4115d892`:
+   the 800 WAVs copied into the cache from the scratch corpus (combined
+   hash `3cb4521f…`), the 800 reference outputs, the matcher and its
+   tests, the reference runner, the classifier v2 and its tests,
+   `gate_counts.py`, the M33 manifest, the A76 tools (`pitime.sh`,
+   `pipush-al.sh`, `livebits0.py`), the build and M33 scripts
+   (`xbuild.sh`, `m33path.sh`, `m33sum.py`) and `env.sh`), and refuses
+   unless there are exactly 800 WAV files and 800 in the manifest.
+   - `build.sh` (`32d914f7a4822577617b889ce52a88003ecec24e506ec2aff871b0cb8b66809e`):
+     builds `pb-gate2` and `dec-gate2` from `gate2.env`'s `CODE`; refuses
+     unless the base binary is round 1's (`dec-base`, sha256
+     `88281a8450c14317a8563944e670a92d5cd896a658435f9f95d67046f1436b30`,
+     2980198's build); writes `bin.sha256`; refuses to rebuild.
+   - `gate2_x86.sh` (`c370291dfcb70b9328bbfd0172b5b7a4861470fc034d750266a464951bc53baa`):
+     as `gate_x86.sh` except: the checks above and the binaries'
+     (`bin.sha256`); the blocks from `gate2.env`; `pb-gate2`/`dec-gate2`;
+     `compare … --partial --gain`; the WAVs from the cache copy; a new
+     output directory (refuses to run twice).
+   - `gate2_pi.sh` (`bee314f4363b1a2cb4e51632c6cb09c68455e4a96dbfd0d66e8102bc4b47a0fe`):
+     as `gate_pi.sh` except: the checks above; the aligned build of
+     `CODE`; the block from `gate2.env`; **before each benchmark it
+     refuses to start unless `get_throttled` reads 0x0**; validity by
+     `livebits0.py` (`a275b20ca78263f2f2a6c358ca12f075137dd5bb929651d58bb2693d14ed14e5`;
+     a run with no samples is invalid too); a new output directory, or
+     with `retry` a second one (below); each refuses to run twice; on a
+     void it stops and says so.
+   - `gate2_m33.sh` (`dd173b2c534bb8df4db0cbefefb8ba41fc98b52d69f45acbd670a64ad043ee35`):
+     as `gate_m33.sh` except: the checks above; the library from `CODE`;
+     a new output directory.
    - `gate_counts.py` copied unchanged (`db32c831…`).
+
+   **Gate commit, in this order:** write `gate2.env` (`CODE` = the full
+   sha of the code commit, `BLK` = the gain block, `EMPTY` = the 20
+   empty blocks) and `env.sha256`; run `build.sh` (it reads `CODE`);
+   then commit the plan naming the blocks and recording `CODE`, the
+   sha256 of `gate2.env`, of `env.sha256` and of `bin.sha256`, and the
+   three binaries' sha256. The gate scripts are run only after that
+   commit.
 
 **A76 validity (new baseline).** The bench's power supply was replaced
 on 2026-11-01 (EXT5V 4.997 V; `get_throttled` 0x0 forty minutes after
@@ -2651,6 +2676,24 @@ sticky 0x50000 is the bench's baseline since boot … not a failure",
 live bits 0–3 void a run) no longer applies; the round-1 A76 numbers
 (`gosd1`, and the follow-ups' A76 measurements) were taken on the old
 supply and are valid under the old rule, as recorded.
+
+**A voided A76 run** (any throttle bit during it, or no samples) is
+**no result — not a fail.** It may be repeated **once**, into a new
+directory (`gate2_pi.sh retry`), after a reboot of the bench, with the
+void recorded in the findings. A reboot needs the user (no `sudo`
+here): on a void the run stops and is reported, and the user is asked.
+**A second void leaves the round incomplete**: reported, **no verdict**.
+`gate2_pi.sh` also refuses to start a benchmark while `get_throttled`
+reads anything but 0x0.
+
+**Residual risk of the paired CRC gate (disclosed).** Against OSD off,
+the CRC gate fails a set when the OSD-on run has at least 5 more CRC
+failures than OSD off, slot by slot (up − down > 2·√(up + down) with down
+= 0 needs up ≥ 5). OSD-1's own CRC trials are not counted (only belief
+propagation's failures are), but a marked decode changes the later
+passes' residual, so knock-on candidates can fail the CRC differently.
+On `gosd1` up and down were 0 in every set; a knock-on difference of 5 or
+more in one set would fail this round even with no false decode.
 
 **What this round can and cannot add.** No library or decoder code
 changes between the two rounds, so the criteria that do not depend on

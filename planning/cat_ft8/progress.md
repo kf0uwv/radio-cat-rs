@@ -1487,3 +1487,9 @@
 - Second round draft: the user's decision recorded (one retry; the OSD
   code deleted if it fails), new hashed scripts and inputs (corpus copied
   into the cache), the A76 baseline now 0x0 (any bit voids a run).
+- Gate 2 closure fixes (scripts out of tree, hashed in the plan): the
+  A76 0x0 pre-check, a voided run = no result (one repeat after a reboot
+  by the user; a second void = no verdict), `CODE` in the hashed
+  `gate2.env`, the base binary pinned, the WAV count checked, `env.sh`
+  hashed, every script logs its and the manifests' sha256; the paired
+  CRC gate's residual risk disclosed; the replay table corrected.

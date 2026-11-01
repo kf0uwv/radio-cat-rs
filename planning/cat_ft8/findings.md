@@ -6526,29 +6526,33 @@ new above old 0, old above new 0 (limit 0.0): ok". This reading of
 `gosd1` is exploratory; the round's result there is its recorded FAIL.
 
 **Earlier data, re-paired.** The saved comparisons were re-paired by
-their text: a pair of run directories is accepted when the old tool
-(7408489) reproduces the log's set headers and per-point table rows
-exactly (the version-stable part; the multi-pass per-pass rows and
-stage times aside); candidates are the directories in the log's own tree
-whose decoded counts per (set, block, point) equal the log's `dec_old`
-and `dec_new` columns. 56 of the 57 logs pair and give the same per-set
-and overall verdicts under the fixed tool; 1 (`e0-176a49b`'s host vs
-small) does not pair (its records are in an early format neither tool
-reads). The earlier pairing (findings, "The two compare checks fixed")
-was looser and paired four of the six multi-pass comparisons wrongly;
-the corrected pairings of those six (old → new), all the same verdict
-with the fixed tool, the multi-pass rule exercised:
+their text: a pair of run directories was accepted when the old tool
+(7408489) reproduced the log's set headers and per-point table rows
+(the version-stable part of the text; the older logs' set and per-pass
+lines were written by earlier versions of `compare`, so they are not
+compared), the candidates being directories in the log's own tree whose
+decoded counts per (set, block, point) equal the log's `dec_old` and
+`dec_new` columns. Where several directories hold identical records,
+that method cannot tell them apart, and for three multi-pass logs it
+picked the wrong old run; the pairings below are the true ones (checked
+by a full-text pairing in review, and re-run here: the old and fixed
+tools give the same verdicts, PASS, and the per-point rows match the
+saved logs). 56 of the 57 logs pair and keep every verdict under the
+fixed tool; 1 (`e0-176a49b`'s host vs small) does not pair (an early
+record format neither tool reads).
 
-| saved comparison | old run | new run |
-|---|---|---|
-| S3 acceptance | `s3/base` | `o1b/ident-c3f080f/host` |
-| S3b acceptance | `s3/base` | `o1b/ident-c3f080f/host` |
-| O8 cap 50 | `o1b/ident-c3f080f/host` | `o8/accept/host` |
-| O8 single pass | `s3/base` | `o8/accept/host` |
-| O3 `i16` prototype | `o1b/ident-c3f080f/host` | `o3/proto-i16/host` |
-| O9 | `o9/eff/bafed37/host` | `o9/eff/ec72aa0/host` |
+| saved comparison | old run | new run | both runs multi-pass |
+|---|---|---|---|
+| S3 acceptance | `s3/base` | `s3/accept` | no (old single-pass) |
+| S3b acceptance | `s3b/base` | `s3b/accept` | no (old single-pass) |
+| O8 single pass | `s3/base` | `o8/accept/host` | no (old single-pass) |
+| O8 cap 50 | `o1b/ident-c3f080f/host` | `o8/accept/host` | yes |
+| O3 `i16` prototype | `o3/ident-043e7d8/host` | `o3/proto-i16/host` | yes |
+| O9 | `o9/eff/bafed37/host` | `o9/eff/ec72aa0/host` | yes |
 
-(Where several directories hold identical records, the first that
-reproduces the text is listed; any of them gives the same verdicts.)
+So the paired CRC rule (both runs multi-pass) is exercised by three
+earlier comparisons only, O8 cap 50, O3 and O9, and passes on each; the
+other multi-pass logs compare against a single-pass old run, where the
+absolute limit still applies, unchanged.
 Every run directory against itself with the fixed tool: 280 PASS, the
 same 3 unreadable as before.
