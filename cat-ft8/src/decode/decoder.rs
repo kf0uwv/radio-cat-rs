@@ -157,15 +157,18 @@ pub struct DecodeConfig {
     /// and as reproducible.
     pub max_subtractions: Option<u16>,
     /// Ordered-statistics decoding of the candidates belief propagation
-    /// fails on ([`OsdConfig`]); `None`, the default and in both presets:
-    /// off, and the decoder's output is as without the option.
+    /// fails on ([`OsdConfig`]): `OsdConfig::new(10, 21)` in
+    /// [`DecodeConfig::HOST`], `None` (off) in [`DecodeConfig::SMALL`].
+    /// `None`, or zero candidates, gives the decoder's output without it.
     pub osd: Option<OsdConfig>,
 }
 
 /// Ordered-statistics decoding of order 1 (OSD-1) after belief propagation
-/// fails, for [`DecodeConfig::osd`]. **Experimental**: off by default and
-/// not yet validated for use (its false-decode rate is measured, not
-/// promised).
+/// fails, for [`DecodeConfig::osd`]. On in [`DecodeConfig::HOST`] as
+/// `OsdConfig::new(10, 21)`, the setting gated on fresh blocks (ADR 0024,
+/// "Ordered-statistics decoding"); off in [`DecodeConfig::SMALL`]. Other
+/// settings are not validated: its false-decode rate was counted at that
+/// setting only.
 ///
 /// On candidate `index < candidates` of a pass (the pass's best-scoring
 /// candidates, as the sync search lists them) whose belief propagation
@@ -213,6 +216,10 @@ impl DecodeConfig {
     /// [`DecodeConfig::with_candidates`] and
     /// [`DecodeConfig::with_later_candidates`]. [`Decoder::decode`] runs
     /// the first pass only.
+    ///
+    /// OSD-1 ([`OsdConfig::new(10, 21)`](OsdConfig::new)) runs on each
+    /// pass's 10 best-scoring candidates that belief propagation fails
+    /// on; `with_osd(None)` (or zero candidates) turns it off.
     pub const HOST: DecodeConfig = DecodeConfig {
         rule: CheckRule::SumProduct,
         max_rounds: 30,
@@ -223,13 +230,13 @@ impl DecodeConfig {
         later_candidates: 50,
         subtract: SubtractConfig::DEFAULT.with_segment(2 * crate::SAMPLES_PER_SYMBOL),
         max_subtractions: None,
-        osd: None,
+        osd: Some(OsdConfig::new(10, 21)),
     };
 
     /// Small targets: normalised min-sum, which costs about a third as
-    /// much per round as sum-product, 75 candidates and one pass (a small
-    /// target cannot hold the slot's residual); otherwise as
-    /// [`DecodeConfig::HOST`].
+    /// much per round as sum-product, 75 candidates, one pass (a small
+    /// target cannot hold the slot's residual) and no OSD-1 (not gated for
+    /// it); otherwise as [`DecodeConfig::HOST`].
     ///
     /// Fewer candidates trim the cost further for a small target's budget.
     /// Validated up to 40 signals per slot; for busier bands raise it with
@@ -239,6 +246,7 @@ impl DecodeConfig {
         rule: CheckRule::MinSum,
         candidates: 75,
         passes: 1,
+        osd: None,
         ..DecodeConfig::HOST
     };
 

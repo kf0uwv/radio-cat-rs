@@ -104,7 +104,9 @@ applications via git dependency:
   caller buffers; and a decoder (block-fed spectrogram, Costas sync
   search, sub-grid refinement, soft bits, belief propagation, CRC,
   frequency, time offset and local-noise SNR; on hosts up to three passes,
-  each decoded signal subtracted before the next) with a `cat-ft8-decode`
+  each decoded signal subtracted before the next, and ordered-statistics
+  decoding of order 1 on each pass's best candidates that belief
+  propagation misses) with a `cat-ft8-decode`
   command that prints JSON lines. The core is `no_std`, allocation-free,
   dependency-free and `f32`-only, so it runs on microcontrollers as well
   as hosts. Output is bit-identical on every platform with IEEE-754

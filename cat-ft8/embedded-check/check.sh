@@ -15,8 +15,8 @@
 #
 # Lints and formats the bare-metal check program, links it for
 # thumbv8m.main-none-eabihf in five images (the small decoder
-# configuration, the host configuration, each with ordered-statistics
-# decoding on, and the encoder alone), prints
+# configuration, the host configuration, each with its ordered-statistics
+# setting flipped (small on, host off), and the encoder alone), prints
 # each image's size (flash = .text + .rodata + .data; static RAM = .data +
 # .bss), and fails if an image's static RAM is above its ceiling (the
 # `ram_limit` setting below, the one place it is set: the RAM `link.x` maps

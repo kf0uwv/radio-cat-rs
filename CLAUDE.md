@@ -156,7 +156,8 @@ cat-morse            (NO local crate dependencies)
 cat-ft8              (NO dependencies at all)
   └── FT8 from the QEX 2020 protocol: message pack/unpack, CRC-14,
       LDPC (174,91), tones, GFSK waveform, decoder with up to three passes
-      (each pass's decodes subtracted before the next; ADR 0024)
+      (each pass's decodes subtracted before the next) and OSD-1 on each
+      pass's best failed candidates in the host preset (ADR 0024)
   └── `#![no_std]` core, no allocation, f32 only; `std` feature adds WAV
       input/output and the `cat-ft8-encode` / `cat-ft8-decode` binaries;
       `profile` builds the bench examples and exposes the decoder stages

@@ -137,6 +137,9 @@ fn configuration_and_buffer_sizes_are_checked() {
         [200, 150, 75]
     );
     assert_eq!(DecodeConfig::HOST.max_subtractions, None);
+    // OSD-1 as gated in HOST only.
+    assert_eq!(DecodeConfig::HOST.osd, Some(OsdConfig::new(10, 21)));
+    assert_eq!(DecodeConfig::SMALL.osd, None);
     assert_eq!(
         DecodeConfig::HOST
             .with_max_subtractions(Some(7))
@@ -198,6 +201,7 @@ fn configuration_and_buffer_sizes_are_checked() {
             .with_rule(CheckRule::MinSum)
             .with_candidates(75)
             .with_passes(1)
+            .with_osd(None)
     );
     assert_eq!(DecodeConfig::HOST.candidates, 100);
     let h = DecodeConfig::HOST;
@@ -598,6 +602,11 @@ fn staged_decoding_reports_its_stages_and_gives_the_same_result() {
     let mut dec = b.decoder(DecodeConfig::HOST);
     dec.feed(&busy_slot(4));
     let kept = dec.find_candidates().kept;
+    let mut b_off = Bufs::new(Band::DEFAULT);
+    let mut off = b_off.decoder(DecodeConfig::HOST.with_osd(None));
+    off.feed(&busy_slot(4));
+    assert_eq!(off.find_candidates().kept, kept);
+    let mut off_scratch = Box::new(CandidateScratch::new());
     let mut scratch = CandidateScratch::new();
     let mut decoded = 0;
     for i in 0..kept {
@@ -611,6 +620,11 @@ fn staged_decoding_reports_its_stages_and_gives_the_same_result() {
             "candidate {i}"
         );
         let mut want = vec![Stage::Refine, Stage::SoftBits, Stage::BeliefPropagation];
+        // HOST runs OSD-1 on the first 10 candidates belief propagation
+        // fails on (the same decoder with OSD off says which those are).
+        if i < 10 && matches!(off.decode_candidate(i, &mut off_scratch), Some(Err(_))) {
+            want.push(Stage::Osd);
+        }
         if staged.is_ok() {
             want.push(Stage::Snr);
             decoded += 1;
@@ -1235,7 +1249,7 @@ fn osd_recovers_what_belief_propagation_missed() {
         amplitude_for(-15.0),
     );
     add_noise(&mut s, NOISE_RMS, 31);
-    let base = DecodeConfig::HOST.with_max_rounds(0);
+    let base = DecodeConfig::HOST.with_max_rounds(0).with_osd(None);
     let run = |config: DecodeConfig| {
         let mut b = Bufs::new(Band::DEFAULT);
         let mut dec = b.decoder(config);

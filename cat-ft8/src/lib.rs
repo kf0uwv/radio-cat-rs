@@ -88,13 +88,14 @@
 //! errors (exit status 1; usage errors exit with 2; `--help` prints the
 //! usage on standard output and exits with 0). `--config host` (the
 //! default) is `decode::DecodeConfig::HOST` over 100–3100 Hz with 128
-//! decodes; `--config small` is `SMALL` over 200–2900 Hz with 64 decodes.
+//! decodes (three passes, OSD-1 at 10:21); `--config small` is `SMALL`
+//! over 200–2900 Hz with 64 decodes (one pass, no OSD-1).
 //! `,passes=N` (1–3) sets the configuration's pass count: after each pass
 //! but the last, its decodes are subtracted from the audio and the
 //! residual is decoded again (`decode::Decoder::decode_passes`).
-//! `,osd=C:T` turns on the experimental ordered-statistics decoding
-//! (`decode::DecodeConfig::with_osd` with `decode::OsdConfig::new(C, T)`);
-//! the output format is the same.
+//! `,osd=C:T` sets the ordered-statistics decoding
+//! (`decode::DecodeConfig::with_osd` with `decode::OsdConfig::new(C, T)`;
+//! `osd=0:T` turns it off); the output format is the same.
 //!
 //! Output is one JSON object per line, one per distinct decode whose
 //! payload unpacked, in the order found: pass by pass, and in candidate

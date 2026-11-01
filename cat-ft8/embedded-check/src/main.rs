@@ -22,8 +22,9 @@
 //! buffer in statics: the small configuration by default, the host
 //! configuration with the `host` feature, none with `encoder-only` (a
 //! baseline for the decoder's size), and either decoder configuration
-//! with ordered-statistics decoding on with `osd`; `check.sh` builds every
-//! image. The
+//! with its ordered-statistics setting flipped with `osd` (the small
+//! image's turned on, the host image's, on in `HOST`, turned off);
+//! `check.sh` builds every image. The
 //! check-node rule is a run-time field of the configuration, so both
 //! rules are linked in either decoder image. Linking at all proves the
 //! core needs neither an allocator nor `std`; `check.sh` then rejects any
@@ -67,13 +68,13 @@ mod setup {
     use cat_ft8::decode::{Band, DecodeConfig, HOST_DECODES};
     /// 100–3100 Hz.
     pub const BAND: Band = Band::DEFAULT;
+    /// The preset, ordered-statistics decoding on at (10, 21).
     #[cfg(not(feature = "osd"))]
     pub const CONFIG: DecodeConfig = DecodeConfig::HOST;
-    /// With ordered-statistics decoding on, at the calibrated setting (the
-    /// settings do not change the image's size).
+    /// With ordered-statistics decoding off (the setting does not change
+    /// the image's size).
     #[cfg(feature = "osd")]
-    pub const CONFIG: DecodeConfig =
-        DecodeConfig::HOST.with_osd(Some(cat_ft8::decode::OsdConfig::new(10, 21)));
+    pub const CONFIG: DecodeConfig = DecodeConfig::HOST.with_osd(None);
     pub const DECODES: usize = HOST_DECODES;
 }
 

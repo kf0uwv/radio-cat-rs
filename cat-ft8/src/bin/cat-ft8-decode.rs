@@ -21,12 +21,13 @@
 //! The configuration's pass count is used (`passes=N` sets it, 1–3): after
 //! each pass but the last, its decodes are subtracted from the audio and
 //! the residual decoded again; the output lists every decode once, in the
-//! order found, with the pass that found it. `osd=C:T` turns on the
-//! experimental ordered-statistics decoding (`decode::OsdConfig::new(C,
-//! T)`: OSD-1 on each pass's first C candidates whose belief propagation
-//! failed, accepting a codeword at most T bits from the hard decisions);
-//! without it the output is as before. `--profile` adds per-pass keys
-//! when more than one pass is configured.
+//! order found, with the pass that found it. `osd=C:T` sets the
+//! ordered-statistics decoding (`decode::OsdConfig::new(C, T)`: OSD-1 on
+//! each pass's first C candidates whose belief propagation failed,
+//! accepting a codeword at most T bits from the hard decisions): `host`
+//! has it on at 10:21, `small` off; `osd=0:T` turns it off (the output is
+//! then as without it). `--profile` adds per-pass keys when more than one
+//! pass is configured.
 //! Exit status 0 on success (with or without decodes), 1 on an error, 2 on
 //! a usage error.
 
@@ -511,10 +512,10 @@ fn main() -> ExitCode {
         Ok(Parsed::Run(a)) => a,
         Ok(Parsed::Help) => {
             println!("{USAGE}");
-            println!("  --config host   100–3100 Hz, sum-product, 128 decodes (the default)");
+            println!("  --config host   100–3100 Hz, sum-product, three passes, OSD-1 10:21, 128 decodes (the default)");
             println!("  --config small  200–2900 Hz, min-sum, 64 decodes");
             println!("  ,passes=N       after either: decode in N passes (1–3), subtracting each pass's decodes");
-            println!("  ,osd=C:T        experimental: OSD-1 on each pass's first C failed candidates, at most T bits");
+            println!("  ,osd=C:T        OSD-1 on each pass's first C failed candidates, at most T bits (0:T turns it off)");
             println!("  --raw           also print decodes whose payload did not unpack");
             println!("  --profile       add one line of timings, memory and counts");
             return ExitCode::SUCCESS;
