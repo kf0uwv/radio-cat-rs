@@ -6445,3 +6445,55 @@ criterion is one-sided), so whether these two tool verdicts were meant
 to gate is a reading of the plan, not a measurement; it is left to the
 user. Nothing merges on this result; no code is deleted; no retune and
 no second block.
+
+## The two compare checks fixed (2026-11-01; tool only, no gate run)
+
+Commit 7ccbd48 (`paired_bench compare`). The `gosd1` result above stands
+as FAIL; this is for the next round.
+
+- **Multi-pass CRC check.** Was: the new run's CRC expectation summed
+  over its passes at most (passes × the old run's pass-1 expectation).
+  On `gosd1`'s crowded set a three-pass run exceeds that against itself
+  (19 CRC failures, 1.93 × 10⁻⁶ against 3 × 6.10 × 10⁻⁷). Now, when the old
+  run is multi-pass, the gate is the two runs' CRC failures over the same
+  passes: the new run's at most 3·√(old + new) above the old's (the
+  counts' Poisson spread, as the loss gates); the absolute limit is still
+  printed, marked "reported". Against a single-pass old run the absolute
+  limit is still the gate and the output is unchanged.
+- **Sweep shift.** Was and still is by default: the shift and both ends
+  of its bootstrap interval within ±0.05 dB. With `compare --gain` (a
+  round meant to change results) the gate is one-sided: the shift and
+  the interval's upper end at most +0.05 dB; the two-sided result is
+  still printed. (The module docs had called the default one-sided; it
+  never was, and they now say so.)
+
+**On the `gosd1` records** (`compare … --partial`, x86-64):
+
+| pair | old tool (7408489) | fixed tool | fixed tool, `--gain` |
+|---|---|---|---|
+| OSD off vs OSD off | FAIL (crowded: CRC) | **PASS** | PASS |
+| OSD on vs OSD on | FAIL (crowded: CRC) | **PASS** | PASS |
+| OSD off vs OSD on | FAIL (crowded: CRC; sweep: SHIFT) | FAIL (sweep: SHIFT) | **PASS** |
+
+Crowded, fixed tool: "CRC failures over passes 1–3: old 19, new 19, new −
+old 0 (limit 18.5): ok"; sweep with `--gain`: "shift −0.052 dB [−0.070,
+−0.038]: SHIFT (two-sided); gain round, not worse by more than 0.05 dB:
+ok".
+
+**Earlier data.**
+- Every saved `compare` output of earlier rounds in the local cache (57
+  logs: the E1–E4, S0–S3b, O3, O8 and O9 comparisons) was replayed with
+  both tools. For 56 a pair of run directories reproduces the saved
+  per-set and overall verdicts with the old tool, and the fixed tool
+  gives the same verdicts for every one (no difference). One (E2's small
+  rule comparison) could not be matched to its directories and is not
+  replayed. (Most of these runs are single-pass, so the CRC change does
+  not apply to them; none was run with `--gain`.)
+- Every run directory in the cache against itself (283 directories,
+  `--partial`): 280 PASS with both tools, 3 unreadable by both (an early
+  record format). No earlier block shows the self-failure; `gosd1`'s
+  crowded set is the first.
+- So neither change alters an earlier verdict; the only verdicts they
+  change are the two kinds above (a configuration failing the absolute
+  CRC limit against itself, and a sweep shift that is an improvement in
+  a `--gain` comparison).

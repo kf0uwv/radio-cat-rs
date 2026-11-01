@@ -2556,6 +2556,58 @@ and `fading` (600): 2 000 slots.
 - Checks as in O13b (local CI with MSRV 1.75, thumbv7em, records on
   x86-64 and the A76, the encoder, the Pi release suite).
 
+## OSD-1 on the best candidates: second gated round (proposed; not yet run)
+
+**Why a second round.** The first gated round, run once on `gosd1` as
+written at 7408489, **failed** (findings, "OSD-1 gated round on
+`gosd1`"), and that result stands. Every criterion the plan states as a
+number passed: pooled gain 0.0620 new decodes per slot (bar 0.026),
+0.0210 at or below −17 dB (bar 0.010); 0 new false decodes; 0 losses;
+0 unexplained changes; the 12 added WAV decodes all in the reference;
+R 6.29 ms per new decode against pass 3's 10.74 ms; slot +0.2 ms;
+OSD-1 0.20 ms per slot; M33 mean 199 731 and max 226 010 instructions;
+flash 102 256 and 90 564 B. It failed on two of `compare --partial`'s 25
+set verdicts, both from checks that do not measure what the round asked:
+- **crowded**, the multi-pass CRC-expectation check: the limit (passes ×
+  the old run's pass-1 expectation, 3 × 6.10 × 10⁻⁷) is exceeded by the
+  OSD-off run on its own (both runs 19 CRC failures, 1.93 × 10⁻⁶ per
+  slot); the check fails any three-pass run on this block against
+  itself.
+- **sweep**, the two-sided shift check: the 50% point moved 0.052 dB
+  lower ([−0.070, −0.038]), an improvement, which the symmetric ±0.05 dB
+  check rejects; the round's criterion was "not worse".
+
+Both checks are fixed in the tool on their own merits (7ccbd48): the
+CRC check compares the two runs' CRC failures over the same passes
+(the new run's at most 3·√(old + new) above the old's) when the old run
+is multi-pass, the absolute limit still printed; and `compare --gain`
+makes the shift check one-sided (not worse by more than 0.05 dB), the
+two-sided result still printed, the default (bit-identical rounds)
+unchanged. On the gosd1 records the fixed tool passes OSD-off against
+itself (the old tool failed crowded) and fails only sweep without
+`--gain`, nothing with it; replaying 56 saved comparisons of earlier
+rounds gives the same verdicts with both tools (findings, "The two
+compare checks fixed").
+
+**This round.** Identical to the round at 7408489 in everything —
+`OsdConfig::new(10, 21)`, host only, the sets and their sizes, every bar
+and ceiling, the reference decoder and its pinned outputs, the WAV
+matcher, the classifier v2, `gains`, the M33 harness and manifest, the
+A76 commands and the R definition, the scripts' steps — except:
+1. `compare OFF ON --partial --gain` with the fixed `compare` (the two
+   checks above) in place of `compare OFF ON --partial`; the binaries
+   built from the new gate commit.
+2. A new gain block and 20 new empty blocks, never used before, **named
+   only in the gate commit** and checked absent from the history and
+   every local file first (not `gosd1`, `gosd1e01`–`gosd1e20` or any
+   block in the repository's or the cache's records).
+3. The gate scripts re-pinned by sha256 for those two changes only (the
+   `compare` flag, the block names and the output directory).
+
+No change to T, the candidate count, the bars, the ceilings, the
+definitions or anything else. Run once, as written; no retune and no
+third block on this subset.
+
 ## Next: gated, result-changing rounds
 
 Each changes results and needs its own acceptance (the run sets, the

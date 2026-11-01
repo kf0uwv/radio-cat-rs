@@ -1475,3 +1475,8 @@
   (crowded: its multi-pass CRC-expectation check, unchanged by OSD-1;
   sweep: its two-sided shift check, the 50% point 0.052 dB better).
   Applied mechanically: FAIL. Nothing merged, nothing deleted.
+- 7ccbd48: `compare`'s multi-pass CRC check against the old run's own
+  passes (3·√ margin; absolute limit reported), `--gain` for a one-sided
+  sweep shift. On gosd1: off vs off now PASS (was FAIL); off vs on with
+  `--gain` PASS. 56 replayed earlier comparisons and 280 self-comparisons
+  unchanged. Second gated round drafted (proposed, not run).
