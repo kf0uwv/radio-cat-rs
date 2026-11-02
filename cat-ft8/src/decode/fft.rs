@@ -116,6 +116,8 @@ const _: () = {
         let group = DIGIT_REV_TABLE[4 * SPREAD_BLOCKS * (b / SPREAD_BLOCKS)] as usize;
         let base = DIGIT_REV_TABLE[4 * b] as usize;
         assert!(base < N / 4);
+        // Redundant (base < N/4 and the equality below give it at
+        // b = 4c + 3); stated for the reader.
         assert!(group + (N / 16) * (SPREAD_BLOCKS - 1) < N / 4);
         assert!(base == group + (N / 16) * (b % SPREAD_BLOCKS));
         let mut m = 0;
@@ -133,11 +135,15 @@ const _: () = {
 struct Group<const G: usize>;
 
 impl<const G: usize> Group<G> {
-    const OK: () = assert!(G > 0 && SPREAD_BLOCKS % G == 0, "group size must divide 4");
+    const OK: () = assert!(
+        G > 0 && SPREAD_BLOCKS % G == 0,
+        "group size must divide SPREAD_BLOCKS"
+    );
 }
 
-/// Blocks per group in [`first_stage`]: four where the target has vectors,
-/// one on a Cortex-M, where four measured slower and larger.
+/// Blocks per group in [`first_stage`]: four where the target has SSE2 or
+/// NEON, one where it has neither (the Cortex-M33 measured slower and
+/// larger with four).
 const GROUP: usize = LANES;
 
 /// A complex value (the reference transform in the tests).
@@ -347,8 +353,10 @@ fn stage<const R: usize, const L: usize, const S: usize>(re: &mut [f32; N], im: 
 /// [`stage`]). The twiddle expression gives (re, im) for (m, q), each
 /// indexed by lane (an array); the store
 /// block takes output q as (`sr`, `si`). A macro rather than a function,
-/// so that each caller compiles as its own loops did (a function, even
-/// inlined, moved the transform's code on every target; rustc 1.93.0).
+/// so that each caller compiles as its own loops did: a function, even
+/// inlined, produced different code for the transform on every target
+/// (rustc 1.93.0). That code was not timed. Re-check after a toolchain
+/// change.
 macro_rules! radix_sums {
     ($r:expr, $l:expr, $ar:ident, $ai:ident, ($m:ident, $q:ident) => $w:expr,
      ($sr:ident, $si:ident) => $out:block) => {
