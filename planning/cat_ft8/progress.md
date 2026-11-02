@@ -1576,3 +1576,30 @@
   wording, the A76 form result restated, rustc version on the codegen
   claim, `round_small` pinned at its edges. Log files now carry the
   round in their names.
+
+## Session: 2026-11-01 (O16, the front end outside the butterflies)
+
+- Measured first (out-of-tree microbenchmark of the front end per row,
+  A76 and x86-64, ten variants checked bit for bit against the crate's
+  `feed`): the window fused into the first FFT stage is the larger part,
+  the block-level input checks the smaller; four blocks side by side
+  with one permutation entry per four is best on the A76 and ties the
+  natural-order form, which would have changed `TABLE_BYTES`.
+- 78b1755: the Hann window applied as the first radix-4 stage loads its
+  inputs (the same values and products in the same order; the table
+  layout checked at compile time), and `feed` checks each block of
+  samples as a whole before copying it (`feed_i16` needs no check).
+  A76 three-pass slot 104.40 → 101.40 ms (−2.9%), feed 22.23 → 19.13 ms
+  (−13.9%), 31× the largest untouched stage's shift; one pass 20.30 →
+  19.30 ms. M33 feed −3.9 to −4.0%, small slot −2.6%, host slot −0.95%;
+  flash +96 to +100 B, RAM and frames unchanged. x86-64 cycles −2.4%
+  (instructions −3.4%).
+- An out-of-line M33 measurement build split the feed: butterflies 80%
+  (159.7 M a pass), window and gather 10.6 M, input checks 4.9 M,
+  powers and levels 16.1 M. Not shipped (no better than the inlined
+  build).
+- Identity: x86-64 records (73 800) and 800 WAV slots × 3 × 3, encoder,
+  M33 dump images on seven slots and the residuals; A76 records
+  (73 800, 0 differ) and 800 WAV slots × 3 × 3. Local CI and the A76
+  test suite (193) pass. Every timed A76 run valid (8 `slotcost`, 8
+  microbenchmark runs, every sample 0x0).

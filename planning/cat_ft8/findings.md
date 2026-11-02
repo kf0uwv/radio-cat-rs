@@ -7552,3 +7552,266 @@ builds.
 - `round_small` is pinned at ±2²², ±(2²² − ½), ±½, ±1½, ±2½ and ±0
   against `libm::rintf` (O15c). Mutants that round negative ties the
   other way or use 2²³ as the constant fail it.
+
+## The front end outside the butterflies, sixteenth round (O16, bit-identical, 2026-11-01)
+
+Base: 641c599's code (the O15b record commits after it change no code).
+The target is the feed's work outside the FFT butterflies: the window,
+the input checks, the bounds arithmetic and the glue. That work was
+about 5% of the three-pass host slot sampled after OSD-1. Each candidate
+was chosen with an out-of-tree microbenchmark first. One code commit
+is kept (78b1755). Decodes, records, residuals and encoder output are
+identical, with no qualification.
+
+### Measured first: the front end per row
+
+The microbenchmark is a copy of `take` and `finish_row` built from the
+crate's own pieces (its internals made public in a scratch copy only).
+It runs over three crowded synthetic slots (30 signals each), on the A76
+core 3 after a 3 s warm-up in the program and a 5 s busy loop before it
+(run valid at 0x0), and on x86-64 core 5. Figures are ns per spectrogram
+row, medians of 15. Every variant's levels and counters were checked
+against the crate's `Spectrogram::feed` on the three slots and on a slot
+with NaN, infinite and out-of-range samples, for whole-slot,
+4 801-sample and 517-sample blocks.
+
+| part (alone, ns per row) | A76 | x86-64 |
+|---|---|---|
+| the crate's `feed` (the replica within 0.3%) | 41 089 | 22 908 |
+| the copy and checks into the window, and its shift | 2 222 | 1 316 |
+| the windowed, digit-reversed gather (with a 15 KB copy) | 5 849 | 2 954 |
+| the six stages (with a 30 KB copy) | 28 828 | 13 049 |
+| powers, `log2`, levels and the two counts | 5 614 | 6 166 |
+
+| variant (against the replica) | A76 | x86-64 |
+|---|---|---|
+| window in the first stage, scalar, `hann` as before | −9.2% | −3.8% |
+| the input checks for a block at once, then a copy | −3.2% | −4.4% |
+| both | −11.6% | −8.3% |
+| window in the first stage, its mirror point resolved per input | −10.7% | −6.9% |
+| that, and the block checks | −13.9% | −11.9% |
+| the same, four blocks side by side, one table entry per four (**kept**) | **−13.1%** | −8.4% |
+| that, and the block checks (**kept**) | **−16.0%** | **−12.8%** |
+| four blocks side by side, every input from the table and `hann` | −6.3% | +0.1% |
+| natural order, four inputs side by side (contiguous loads) and the block checks | −15.8% | −13.0% |
+| a 15 KB digit-reversed window table (measurement only) | −2.1% | −2.9% |
+
+- **The window and the first stage.** The first radix-4 stage stored
+  nothing new but read back all 3 840 windowed values the gather had
+  just stored, and `hann`'s `min` and bounds checks ran per value.
+  Fusing removes the store and reload. Resolving the mirror point per
+  input (a block's inputs are elements n₀ + 480m with n₀ < 480, so m = 0,
+  1 read `HANN_HALF` ascending and m = 2, 3 descending) removes the `min`
+  and lets one slice check cover a block.
+- **The natural-order form** ties the kept one but needs an inverse
+  table, and dropping `DIGIT_REV` would change `TABLE_BYTES` and with it
+  the `--profile` output's `static_table_bytes`. The kept form reads
+  every fourth (four lanes: sixteenth) entry of the existing table.
+- **The window table** gains least and costs 15 KB; not pursued.
+- The crate-level check (`feed` and `feed_i16` through the public API,
+  the two builds from one source path, alternated, two runs each; the
+  levels' checksum equal):
+
+| | A76 `feed` | A76 `feed_i16` | x86-64 `feed` | x86-64 `feed_i16` |
+|---|---|---|---|---|
+| 641c599's code | 39 981 / 39 986 | 40 057 / 40 067 | 24 676 / 22 981 | 23 453 / 23 025 |
+| 78b1755's code | 34 643 / 34 608 (−13.4%) | 34 527 / 34 497 (−13.9%) | 20 653 / 19 859 (−13.6%) | 20 703 / 19 878 (−13.6%) |
+
+### Changes (78b1755)
+
+1. **The window in the first stage** (`fft::first_stage`).
+   - Position p's input is element n = `DIGIT_REV[p]` windowed:
+     `samples[2n] · hann(2n)` and `samples[2n + 1] · hann(2n + 1)`. The
+     first stage now computes those as it loads them instead of reading
+     them back from the work buffer. Each value and each product is the
+     one the stored path computes, in the same order, so the output is
+     the same bit for bit; nothing is reassociated.
+   - Block b takes elements n₀ + 480m, and block 4c + j takes
+     n₀ = `DIGIT_REV[16c]` + 120j. A constant copy of the table
+     (`DIGIT_REV_TABLE`, the static's initialiser) is checked for this at
+     compile time. One table entry therefore places `LANES` adjacent
+     blocks (four on x86-64 and AArch64, one on the Cortex-M33), and the
+     window entry for each input is read directly from the half table.
+   - `hann` and the six-stage `fft` remain for the tests only. The later
+     five stages are `later_stages`, unchanged.
+   - Tables and `TABLE_BYTES` are unchanged.
+2. **Block checks in `feed`** (`frontend::checked_copy`).
+   - `take` hands its fill closure a whole destination block (up to the
+     window's free space). `feed` checks that every sample is finite and
+     within ±2¹⁶ (`abs(x) <= INPUT_LIMIT`, false for NaN and the
+     infinities, a fold with no early exit) and copies the block. Only
+     a block that fails is classified sample by sample. Where the check
+     passes, `classify` would have returned every sample unchanged and
+     counted nothing.
+   - `feed_i16`'s scaled samples are within ±1, so it no longer
+     classifies them; `skip` fills zeros.
+   - The samples before the row origin are still checked, through the
+     start of the empty window, so the counters cover the slot.
+3. **Tests.**
+   - `first_stage_equals_the_stored_window_and_stage_bit_for_bit`: one,
+     two and four lanes against the stored window and `stage::<4, 1, 1>`,
+     every bit including the sign of zero, and `spectrum` against the
+     stored path and the six stages. Inputs: noise to ±2¹⁶, signed zeros,
+     subnormals, the limit itself, and impulses at the mirror points and
+     the ends.
+   - `feed_equals_feeding_the_classified_samples`: ±2¹⁶, the next value
+     beyond, `f32::MAX`, infinities, NaNs, −0 and the smallest subnormal,
+     before the row origin, in and on the edges of blocks of 1 to 180 000
+     samples; levels and counters against feeding the classified samples.
+   - Mutants caught: a swapped mirrored window entry, a wrong block
+     spread, the products of a block summed in reverse order, `abs`
+     dropped from the check, the samples before the row origin not
+     checked. Swapping the two operands of one addition (exact in IEEE
+     arithmetic) survives, as it must.
+
+### A76 (Raspberry Pi 5; `slotcost host host,passes=1 200 5`, medians of 4 alternated runs)
+
+Aligned builds (`-align-loops=64 -align-all-functions=6`) from one
+source path, core 3, the throttle, clock and temperature sampled once a
+second from core 0, a 5 s busy loop on core 3 (sampled) before each run.
+The timed binaries were built from the commit before a comment-only
+amendment; their `.text` is byte-identical to 78b1755's for
+`paired_bench` and `cat-ft8-decode` on both hosts (only panic line
+numbers in the data differ).
+
+| build | slot (ms) | feed (spread) | subtract (spread) | BP | sync | one pass | one-pass feed |
+|---|---|---|---|---|---|---|---|
+| 641c599's code | 104.40 | 22.230 (0.020) | 53.575 (0.120) | 21.000 | 4.680 | 20.30 | 7.470 |
+| **78b1755** | **101.40 (−2.9%)** | **19.130 (0.010), −3.10 ms (−13.9%)** | 53.675 (0.130) | 21.010 | 4.680 | 19.30 (−4.9%) | 6.455 (−13.6%) |
+
+- **The feed is 1.03–1.04 ms faster in every pass** (7.41 → 6.37–6.38
+  ms). That is 31 times the largest untouched stage's shift (the
+  subtraction, +0.10 ms, within its spread of 0.12–0.13 ms; belief
+  propagation +0.01, sync 0, soft bits 0).
+- Per pass 20.20 / 52.13 / 32.05 → 19.18 / 51.17 / 31.05 ms; per new
+  decode 0.84 / 4.96 / 10.68 → 0.80 / 4.87 / 10.35 ms. Worst slot 111.8
+  → 108.8 ms.
+- The base matches O15b (104.40 ms, subtraction 53.565, feed 22.220).
+- **Every timed run is valid.** The 8 `slotcost` runs had 1 144 samples
+  during the runs and 40 during the warm-ups, every one 0x0, including
+  the start and end checks; no sample below 2.39 GHz during a run (one
+  warm-up sample was, the first of the first run); peak 55.4 °C. The 8
+  microbenchmark runs (4 of the variants, 4 of the crate-level check)
+  were all valid at 0x0 as well.
+
+### Cortex-M33 (emulated instructions; staged measurement images, s0086)
+
+| | small slot (one pass) | small feed | host slot (40 messages, three passes) | host feed (per pass) | subtraction | stack high water (small / host) |
+|---|---|---|---|---|---|---|
+| 641c599's code | 293.53 M | 199.95 M | 2 426.54 M | 605.54 M (201.85 M) | 1 332.26 M | 10 200 / 10 392 B |
+| 78b1755 | **285.89 M (−2.6%)** | **191.99 M (−4.0%)** | **2 403.40 M (−0.95%)** | **581.72 M (193.91 M), −3.9%** | 1 332.26 M | 10 200 / 10 392 B |
+
+- Same decodes (23 small, 40 host). Sync, belief propagation and the
+  subtraction are unchanged to within 0.01 M; soft bits (+0.14 / +0.37 M)
+  and SNR (+0.18 / +0.31 M) moved in code the change does not touch,
+  inlined differently into `Decoder::pass` at `opt-level = "s"`
+  (rustc 1.93.0), as in O15 and O15b.
+- This round's base reading of the host slot is 2 426.54 M; O15b read
+  2 427.73 M for the same code built at another path (layout).
+- The two commits' images differ in a few instructions apart from the
+  front end (a scheduling swap and a field offset), so the counts above
+  were taken on 78b1755's own images. They equal those of the timed
+  commit's images instruction for instruction.
+
+**The feed split (measurement images only).** The feed is inlined into
+`Decoder::pass` at `opt-level = "s"`, so measurement copies of the two
+commits marked `take`, `checked_copy`, `spectrum`, the transform's
+stages, `bin_powers` and `finish_row` `#[inline(never)]` (out of tree).
+Per pass, small image, s0086, 184 rows:
+
+| part | 641c599's code | 78b1755 |
+|---|---|---|
+| butterflies, first stage | 24.08 M (by difference) | in the next row |
+| window (and, with the change, the first stage) | 10.60 M (the gather) | 28.68 M |
+| butterflies, stages 2–6 | 135.62 M (159.70 M with the first) | 135.62 M |
+| input copy and checks | 4.87 M | 2.40 M (`checked_copy` 1.80 M, its copy 0.59 M) |
+| window shift (`memmove`) | 2.44 M | 2.44 M |
+| powers (`bin_powers`) | 6.49 M | 6.49 M |
+| `log2`, levels and counts (`finish_row`) | 9.61 M | 9.61 M |
+| **feed** | **200.70 M** | **192.22 M** |
+
+- On the M33 the butterflies are 80% of the feed (159.7 M a pass, 0.87 M
+  a row), 54% of the small one-pass slot. The window with the first
+  stage fell 34.68 → 28.68 M and the input checks 4.87 → 2.40 M.
+- The out-of-line images are not better: 200.70 against 199.95 M
+  (base) and 192.22 against 191.99 M (change), 10 448–10 480 B of stack
+  against 10 200. Not shipped.
+
+### x86-64 (Threadripper 3970X, core 5, `perf stat` user counters over the whole `slotcost` program)
+
+Four alternated runs per build, aligned builds from one source path.
+The stage times carry the virtual machine's clock bias (`acpi_pm`, about
+6.7 µs a read); the cycle counts are the measure.
+
+| build | cycles (median, range) | instructions | feed, three passes (ms) | subtract (ms) |
+|---|---|---|---|---|
+| 641c599's code | 360.97 G (360.23–361.17) | 1 030.63 G | 12.655 | 31.315 |
+| 78b1755 | **352.34 G (352.28–353.59), −2.4%** | 995.45 G (−3.4%) | 11.085 (−12.4%) | 31.350 |
+
+- The ranges do not overlap. O15b read 362.76 G for the same code, with
+  the same 1 030.63 G instructions.
+- `perf record` of the three-pass program: `power_bins` (the transform
+  and powers, inlined) 15.76% → 14.71% of user cycles, and
+  `Spectrogram::feed`'s own share (the input checks) 0.94% → below 0.3%.
+
+### Sizes and stack (`check.sh --stack`, thumbv8m)
+
+| image | flash 641c599 → 78b1755 (B) | static RAM |
+|---|---|---|
+| small | 89 634 → 89 734 (+100) | 212 048 (unchanged) |
+| host | 101 334 → 101 430 (+96) | 241 616 (unchanged) |
+| small, OSD on | 89 634 → 89 734 | 212 048 |
+| host, OSD off | 101 334 → 101 430 | 241 616 |
+| encoder only | 34 766 (unchanged) | 0 |
+
+Every recorded frame is unchanged (`_start` 4 104, `decode_a_slot`
+2 512, host `subtract_one` 4 808, the subtraction's closure 2 872,
+`osd_decode` 272 B). No fused multiply-add (`vmla` 75 / 146 / 13,
+unchanged) and no `f64` helper in any image; thumbv7em builds. The
+tables and `TABLE_BYTES` are unchanged.
+
+### Identity (78b1755)
+
+- **Records, x86-64:** the 73 800 `paired_bench run` records equal
+  b93516e's (0 differ).
+- **800 WAV slots** × `host`, `small`, `host,passes=1` × plain, `--raw`,
+  `--profile` (7 200 runs, 78 690 decode lines): byte-identical to
+  b93516e's, `--profile` metadata included.
+- **Encoder:** the 45 `cat-ft8-encode` WAV files are identical.
+- **Cortex-M33 (emulated):** the small and host images' decodes and
+  statics on seven slots (14 of 14), and the multi-pass residuals on
+  s0086 and s0407, are byte-identical to 68634cc's.
+- **A76:** the 73 800 records of 78b1755's AArch64 `paired_bench` equal
+  x86-64's at 78b1755 and at b93516e (0 differ); the 800 WAV slots × 3 × 3
+  with its AArch64 `cat-ft8-decode` are byte-identical to x86-64
+  b93516e's (7 200 runs, 78 690 decode lines). Not timed; 0x0 before and
+  after each part.
+- The x86-64 and M33 identity above was also run on the timed commit
+  before the comment-only amendment, with the same results.
+
+### Checks
+
+Local CI passes (fmt; clippy `-D warnings` on the workspace, all targets
+and features, thumbv8m; workspace, profile, no-std and release tests
+with the ignored ones; the bulk run; MSRV 1.75; docs with and without
+`std`; `check.sh --stack`), on the timed commit and again on 78b1755.
+Raspberry Pi 5: the release library tests with the ignored ones pass
+(193; the one test that reads the source tree skipped), 0x0 before and
+after.
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instructions only); the M33 on any slot
+  but s0086.
+- A76 hardware counters (no `perf` on the Raspberry Pi 5).
+- The variants not kept were measured in the microbenchmark only, not
+  in the decoder.
+- The front end's remaining parts outside the butterflies: the window
+  shift (`copy_within`, 2 880 values a row; 2.44 M a pass on the M33)
+  and the powers and levels (5.6 µs a row on the A76, 16.1 M a pass on
+  the M33) were not changed.
+- **Next on the M33:** the butterflies, 80% of its feed. A reference
+  count of a 3 840-point real FFT for the part has not been made.
+- Whether the four-lane first stage is held in vector registers on
+  AArch64 and x86-64 was not read from the disassembly; only its time
+  was measured (rustc 1.93.0).
