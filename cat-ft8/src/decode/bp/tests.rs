@@ -847,6 +847,41 @@ fn the_min_sum_round_matches_its_first_form_bit_for_bit() {
     }
 }
 
+/// The inputs' form: the totals, the messages, the edges' variables.
+type Inputs = fn(&[f32; N], &mut [f32; EDGES], &[u8; EDGES]);
+
+#[test]
+fn the_inputs_are_the_same_in_blocks_of_any_size() {
+    let mut value = random_values(0x1a_b10c);
+    for state in 0..2_000 {
+        let mut total = [0.0f32; N];
+        let mut msg = [0.0f32; EDGES];
+        total.iter_mut().for_each(|x| *x = value());
+        msg.iter_mut().for_each(|x| *x = value());
+        let edge_vars = tables_for(if state % 2 == 0 { 1 } else { 4 }).0;
+        let mut want = msg;
+        for (m, &i) in want.iter_mut().zip(edge_vars) {
+            *m = total[usize::from(i)] - *m;
+        }
+        let blocks: [Inputs; 5] = [
+            inputs::<1>,
+            inputs::<3>,
+            inputs::<8>,
+            inputs::<16>,
+            inputs::<INPUT_BLOCK>,
+        ];
+        for (k, f) in blocks.iter().enumerate() {
+            let mut got = msg;
+            f(&total, &mut got, edge_vars);
+            assert_eq!(
+                got.map(f32::to_bits),
+                want.map(f32::to_bits),
+                "state {state}, block form {k}"
+            );
+        }
+    }
+}
+
 #[test]
 fn each_value_gives_the_same_bits_at_any_lane_count() {
     let mut seed = 0x1a9e_u64;

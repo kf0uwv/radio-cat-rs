@@ -414,8 +414,12 @@ fn sum_product_round<const V: bool, const W: usize, const G: usize>(
     msg: &mut [f32; EDGES],
 ) {
     let (edge_vars, var_edges) = tables::<G>();
-    for (m, &i) in msg.iter_mut().zip(edge_vars) {
-        *m = total[usize::from(i)] - *m;
+    if INPUT_BLOCK == 1 {
+        for (m, &i) in msg.iter_mut().zip(edge_vars) {
+            *m = total[usize::from(i)] - *m;
+        }
+    } else {
+        inputs::<INPUT_BLOCK>(total, msg, edge_vars);
     }
     each_value::<W>(msg, tanh_half::<V>);
     let (t6, t7) = msg.split_at_mut(LOW_EDGES);
@@ -423,6 +427,34 @@ fn sum_product_round<const V: bool, const W: usize, const G: usize>(
     products::<7, G>(t7);
     each_value::<W>(msg, twice_atanh);
     sums(llr, next, msg, var_edges);
+}
+
+/// Edges whose inputs [`inputs`] takes together: eight on AArch64, one
+/// elsewhere. The gather is a scalar loop; on the Cortex-A76 it is bound
+/// by the instructions it issues, and in blocks of eight, with one count
+/// and branch per block, it took about a quarter less time (rustc 1.93.0).
+/// On x86-64 blocks gained nothing measurable, so it keeps the plain
+/// loop.
+const INPUT_BLOCK: usize = if cfg!(target_arch = "aarch64") { 8 } else { 1 };
+
+/// The inputs: each edge's message replaced by its variable's total
+/// (`edge_vars`) less the message, `U` edges at a time, then the rest.
+/// Each edge's subtraction is the same at any `U`; where `INPUT_BLOCK` is
+/// one, the round has the plain loop instead.
+#[inline(always)]
+fn inputs<const U: usize>(total: &[f32; N], msg: &mut [f32; EDGES], edge_vars: &[u8; EDGES]) {
+    let mut blocks = msg.chunks_exact_mut(U);
+    let mut vars = edge_vars.chunks_exact(U);
+    for (block, v) in (&mut blocks).zip(&mut vars) {
+        let block: &mut [f32; U] = block.try_into().unwrap();
+        let v: &[u8; U] = v.try_into().unwrap();
+        for k in 0..U {
+            block[k] = total[usize::from(v[k])] - block[k];
+        }
+    }
+    for (m, &i) in blocks.into_remainder().iter_mut().zip(vars.remainder()) {
+        *m = total[usize::from(i)] - *m;
+    }
 }
 
 /// The products over the edges of one degree's checks in the layout of
