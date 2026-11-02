@@ -40,7 +40,8 @@ nm="$bin_dir/llvm-nm"; size="$bin_dir/llvm-size"; readobj="$bin_dir/llvm-readobj
 target_dir="${CARGO_TARGET_DIR:-$here/../../target/embedded-check}"
 # The Cortex-M33's `f32` `max` and `min` are instructions: the decoder's
 # branch-free input clamp (see `INPUT_SELECT` in decode/subtract.rs).
-flags="--cfg cat_ft8_minmaxnm"
+cfg="--cfg cat_ft8_minmaxnm"
+flags="$cfg"
 stack=0
 if [ "${1:-}" = "--stack" ]; then
   stack=1
@@ -68,9 +69,11 @@ for variant in small host small-osd-on host-osd-off encoder-only; do
   stack_budget=16384
   ram_limit=$((262144 - stack_budget))
   echo "==== image: $variant"
+  # Linted with the cfg the image is built with, in its own target
+  # directory (other RUSTFLAGS than the build's would rebuild each time).
   # shellcheck disable=SC2086 # $features is deliberately split
-  cargo clippy --quiet --manifest-path "$here/Cargo.toml" --target "$target" \
-    --target-dir "$target_dir/$variant" $features -- -D warnings
+  RUSTFLAGS="$cfg" cargo clippy --quiet --manifest-path "$here/Cargo.toml" --target "$target" \
+    --target-dir "$target_dir/$variant-clippy" $features -- -D warnings
   # shellcheck disable=SC2086
   RUSTFLAGS="$flags" cargo build --quiet --release --manifest-path "$here/Cargo.toml" \
     --target "$target" --target-dir "$target_dir/$variant" $features
