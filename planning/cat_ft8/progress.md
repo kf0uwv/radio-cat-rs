@@ -1826,3 +1826,26 @@
 - Ranked next: (A) the M33 butterflies' overhead, the subtraction,
   buffer sharing, the Costas sums, min-sum on the M33; (B) the pass-skip
   rule, BP on failing candidates, an `i16` residual.
+
+## Session: 2026-11-02 (O20 the butterflies on the Cortex-M33)
+
+- 698d859: with one lane the later stages are written out butterfly by
+  butterfly; a35a698: the first stage likewise; e9bb614: the twiddle
+  index by a conditional subtraction, whose gain over `% N` depends on
+  the surrounding code and was measured in each position. 39476a4: a
+  code-generation check at opt-level "s"; 55ec0d8: a comment.
+- M33 (emulated, s0086; s0407 agrees): small slot 285.89 → 182.49 M
+  (−36.2%), host 2 262.45 → 1 951.93 M (−13.7%), feed −53.9% and −53.4%;
+  `later_stages` −59.4%, `spectrum` −59.6%. Per decode, small 12.43 →
+  7.93 M, host 56.56 → 48.80 M.
+- Flash +1 692 B on the M33 and about +1 710 B on the M4, all code; static
+  RAM and every frame but `finish_row` (+24 B) unchanged; high water
+  unchanged; no table added; the M4 gains no library call.
+- x86-64 and AArch64 `.text` and `.rodata` byte-identical at every code
+  commit, so no A76 timing.
+- Identity: records on x86-64 and the A76, WAVs × 3 × 3, encoder, M33
+  dumps and residuals. Local CI passes. One A76 identity run void (the
+  script's own `wait` hung), discarded and rerun.
+- What bounds it now: the first four stages are at their arithmetic and
+  loads and stores; the radix-5 stage holds the remaining 11.8 M a pass,
+  in addressing (not built: about 1.5–3% of the small slot for 3.5–9 KB).

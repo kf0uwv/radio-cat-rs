@@ -9940,3 +9940,257 @@ others found). **Dominated by OSD-1:** nothing (0.2–1.2% of any slot,
   was read from the code, not built. No microbenchmark was run this
   round.
 - Energy and power.
+
+## The butterflies' overhead on the Cortex-M33, twentieth round (O20, bit-identical, 2026-11-02)
+
+Base: 70be604. The target is the first candidate of the profile above:
+with one lane, the butterflies were 57.5% of the small slot and only a
+fifth of their instructions were floating-point arithmetic. Three code
+commits, one optimisation each: 698d859, a35a698, e9bb614; then 39476a4
+(the code-generation check) and 55ec0d8 (a comment). Decodes, records,
+residuals and encoder output are identical, with no qualification.
+**x86-64 and AArch64 `.text` and `.rodata` are byte-identical at every
+code commit**, so nothing changes on the A76 and it was not timed.
+
+### Changes
+
+Only the one-lane paths change. They are selected by the existing const
+parameters (`L` = 1, `G` = 1), which `LANES` and `GROUP` set to 1 on
+targets without SSE2 or NEON, so the tests run them on any host.
+
+1. **698d859: the later stages written out.** With one lane the
+   side-by-side form copied the inputs to stack arrays and ran rolled
+   loops over q and m (opt-level "s" does not unroll them), reading each
+   twiddle back from a zeroed array. `straight_butterfly` now writes each
+   butterfly out term by term from token lists: the inputs load into
+   locals and output q is a[0] plus the products of m = 1.., added in the
+   order of m. The operations, their values and their order are those of
+   `radix_sums`. A stage's twiddles are read once per k into an array
+   built from the same lists, which needs no zero fill. The last stage
+   reads each butterfly's twiddles where it uses them.
+2. **a35a698: the first stage written out** the same way for a group of
+   one, with the same window products.
+3. **e9bb614: the twiddle index by a conditional subtraction** in place
+   of `% N` (see "The index form").
+
+No table was added or moved, so per-stage twiddle tables cost nothing:
+`.rodata` of the check images is 53 354 B before and after. The last
+stage's alone would be 61 440 B (384 × 20 × 8), and it was not pursued.
+
+### Cortex-M33 (emulated instructions; staged images as built, rustc 1.93.0, `--cfg cat_ft8_minmaxnm`)
+
+Setup (about 9.36 M instructions) excluded. Same decodes in every row.
+
+| slot, image | 70be604 | 698d859 | a35a698 | e9bb614 | change |
+|---|---|---|---|---|---|
+| s0086 small, slot | 285 888 808 | 198 036 498 | 183 674 197 | **182 492 733** | **−36.2%** |
+| s0086 small, feed | 191 985 903 | 104 133 619 | 89 771 131 | **88 589 667** | −53.9% |
+| s0407 small, slot | 278 709 226 | 190 856 960 | 176 494 671 | **175 313 207** | **−37.1%** |
+| s0086 host, slot | 2 262 451 610 | 1 998 624 096 | 1 955 479 134 | **1 951 934 742** | **−13.7%** |
+| s0086 host, feed | 581 717 209 | 317 889 877 | 274 744 453 | **271 200 061** | −53.4% |
+| s0407 host, slot | 2 258 505 554 | 1 994 678 047 | 1 951 533 085 | **1 947 988 693** | **−13.8%** |
+
+- Per decode: s0086 small (23) 12.43 → 7.93 M, host (40) 56.56 → 48.80 M;
+  s0407 small (30) 9.29 → 5.84 M, host (38) 59.43 → 51.26 M.
+- Only the feed moves, by the same amount on both slots (the transform
+  has no data-dependent path). Sync, soft bits, belief propagation and
+  the subtraction are unchanged to within 0.001 M.
+- The profile estimated −25 to −45% of `later_stages`; it fell 59.4%.
+
+**Per function, as built, s0086:**
+
+| function | small 70be604 | small e9bb614 | host 70be604 | host e9bb614 |
+|---|---|---|---|---|
+| `Decoder::pass` (the feed, inlined) | 194 791 077 | 97 475 282 | 584 176 348 | 291 900 320 |
+| `__aeabi_memclr4` | 6 333 462 | 253 182 | 19 450 424 | 1 209 584 |
+| every other function | unchanged to 0.001 M | | unchanged to 0.001 M | |
+
+**The feed split (measurement images only, the front end out of line,
+s0086; totals are the three passes on the host image):**
+
+| part | small 70be604 | small e9bb614 | host 70be604 | host e9bb614 |
+|---|---|---|---|---|
+| `later_stages` | 135 621 984 | 55 103 584 (−59.4%) | 406 865 952 | 165 310 752 |
+| `spectrum` (window and first stage) | 28 683 024 | 11 574 520 (−59.6%) | 86 049 072 | 34 723 560 |
+| `__aeabi_memclr4` | 7 392 375 | 253 175 | 22 627 163 | 1 209 563 |
+| `finish_row`, `bin_powers`, `memmove`, `checked_copy` | unchanged | unchanged | unchanged | unchanged |
+| **feed** | 192 221 790 | 87 455 686 | 581 923 654 | 267 625 342 |
+
+The butterflies are now 36.8% of the small slot (66.68 M of 181.16 M in
+those images; 57.5% before) and 10.3% of the host's (200.03 M of
+1 948.00 M; 21.8% before).
+
+### The index form
+
+The sign of this change depends on the code around it, so it was
+measured in each position. Slot instructions, s0086:
+
+| images | small, `% N` | small, subtraction | host, `% N` | host, subtraction |
+|---|---|---|---|---|
+| later stages written out only, as built | 198 036 498 | 199 394 445 (+1 357 947) | 1 998 624 096 | 2 002 672 026 (+4 047 930) |
+| **every stage written out, as built** | **183 674 197** | **182 492 733 (−1 181 464)** | **1 955 479 134** | **1 951 934 742 (−3 544 392)** |
+| every stage written out, front end out of line | 180 143 570 | 181 160 354 (+1 016 784) | 1 944 952 921 | 1 948 003 273 (+3 050 352) |
+
+- In the first row the compiler bounds k and reduces `% N` without a
+  division and without bounds checks: `Decoder::pass` has 16 `bhs` and
+  49 `it` against the subtraction's 21 and 54 (small, static counts).
+- Only the second row ships, so the subtraction is kept: 1 181 464 fewer
+  instructions small (0.6%), 3 544 392 fewer host (0.2%), 12 B less
+  flash. Its gain is a matter of register allocation and is small. A
+  compiler change could reverse it, and `% N` would then be the simpler
+  form. Re-measure both after a toolchain change.
+- Commit order: the subtraction comes after the first stage, where its
+  gain is measured.
+
+### What bounds the butterflies now
+
+Per block counts of `later_stages`, small image, 184 rows, s0086. The
+reference is the arithmetic plus one load of every input and twiddle
+and one store of every output, with no loop control.
+
+| stage | butterflies a pass | instructions a pass | a butterfly | reference |
+|---|---|---|---|---|
+| radix 4, l = 4 | 88 320 | 9 154 184 | 103.6 | 112 |
+| radix 4, l = 16 | 88 320 | 9 318 496 | 105.5 | 112 |
+| radix 2, l = 64 | 176 640 | 4 617 480 | 26.1 | 24 |
+| radix 3, l = 128 | 117 760 | 7 491 376 | 63.6 | 60 |
+| radix 5, l = 384 | 70 656 | 24 522 048 | 347.1 | 180 |
+| **total** | | **55 103 584** | | 43 806 720 |
+
+- **The first four stages are at the reference.** The radix-4 stages are
+  below it because each butterfly loads 17 of its 24 twiddle values; the
+  other 7 stay in registers across blocks. The arithmetic
+  and the loads and stores are the bound there, and they cannot fall
+  with the same operations in the same order.
+- **The last stage holds all the remaining overhead:** 167 instructions
+  a butterfly, 11.8 M a pass (6.5% of the small slot, 1.8% of the host's).
+  Each butterfly addresses 10 inputs 1 536 B apart and 20 twiddles
+  3 072 B apart, beyond `vldr`'s reach of 1 020 B, so each needs an
+  address in an integer register, and those spill. Its wrap tests are
+  also there.
+- Mix of `later_stages` (the same count, 55 103 584): floating-point
+  arithmetic 47.4%, `vldr`/`vstr` 24.2%, integer add and subtract 12.0%,
+  integer loads and stores 6.5%, compares and branches 5.4%, other 4.3%.
+  (Before: arithmetic 20.3%.)
+- **Not built, estimates only:** k split into its six wrap-free ranges
+  (breakpoints 96, 128, 192, 256, 288; about +3.5 KB of code) or a
+  twiddle table extended by 1 149 entries (+9.2 KB of flash) would remove
+  the wrap tests but not the addressing. Estimated gain 1.5–3% of the
+  small slot.
+- The first stage is at its reference too: 131 instructions a block
+  against 128.
+
+### Sizes and stack (Cortex-M33, `check.sh --stack`)
+
+| image | flash 70be604 → e9bb614 (B) | static RAM |
+|---|---|---|
+| small | 90 274 → 91 966 (+1 692) | 212 048 (unchanged) |
+| host | 102 570 → 104 262 (+1 692) | 241 616 (unchanged) |
+| small, OSD on | 90 274 → 91 966 | 212 048 |
+| host, OSD off | 102 570 → 104 262 | 241 616 |
+| encoder only | 35 286 (unchanged) | 0 |
+
+- `.text` by commit (check images, small and host alike): +1 632, +72,
+  −12 B. `.rodata` unchanged. The flash cost is code, not tables.
+- Frames: `finish_row` 464 → 488 B; every other recorded frame is
+  unchanged (`_start` 4 104, `decode_a_slot` 2 512, host `subtract_one`
+  4 808, the subtraction's closure 2 864, `osd_decode` 272).
+- Measured high water, as built: small 10 192 B, host 10 308 B, both
+  unchanged; within the 16 KB stack budget.
+- No fused multiply-add in any image. `vmla` 79 → 128 (small), 162 → 211
+  (host); it is the non-fused form, which rounds the product first. No
+  `f64` helper. Heap-free, MSRV 1.75.
+
+### Cortex-M4F (thumbv7em, embedded-check images, no cfg)
+
+| image | flash 70be604 → e9bb614 (B) | static RAM | `fmaxf`/`fminf` call sites | `__aeabi_memclr4` call sites |
+|---|---|---|---|---|
+| small | 90 628 → 92 340 (+1 712) | 212 048 | 10 → 10 | 33 → 26 |
+| host | 103 096 → 104 804 (+1 708) | 241 616 | 14 → 14 | 48 → 41 |
+
+- The written-out transform adds no library call. The `fmaxf`/`fminf`
+  calls were there before and are outside the transform: on host,
+  `decode_a_slot` 6, `subtract_one` 4, `finish_row` 2,
+  `sum_product_round` 2. The code-generation check's M4 ceilings look at
+  other functions, in the library at the release profile, so they pass.
+- No `f64` helper and no fused multiply-add. The M4 takes the same
+  one-lane paths; its instruction counts were not measured.
+
+### Code-generation check (39476a4)
+
+A thumbv8m.main build of the library at opt-level "s", where the
+transform is inlined into `finish_row`:
+
+| source | `f32` multiplies (floor 200) | divisions (ceiling 0) | zero-fill calls (ceiling 1) | result |
+|---|---|---|---|---|
+| head | 237 | 0 | 1 | passes |
+| 70be604 | 71 | 5 | 8 | all three fire (the script run on that tree) |
+| first stage still as loops | 243 | 1 | 2 | the two ceilings fire (counted on that build) |
+
+At the release profile's opt-level the loops are unrolled anyway (329
+multiplies against 313), so only this build separates the forms.
+
+### Identity
+
+The decoder runs used e9bb614's source (`cat-ft8/src` tree identical).
+Later commits change a comment and a check script; all eight binaries'
+`.text` and `.rodata` at the head are byte-identical to it.
+
+- **Records, x86-64:** the 73 800 `paired_bench run` records equal
+  b93516e's (host, one pass, small: 24 600 each, 0 differ).
+- **800 WAV slots** × 3 configurations × 3 modes (7 200 runs, 78 690
+  decode lines): byte-identical to b93516e's.
+- **A76:** the 73 800 records from its AArch64 `paired_bench` equal
+  x86-64 b93516e's (0 differ); the 800 WAV slots × 3 × 3 with its AArch64
+  `cat-ft8-decode` are byte-identical to them. One benchmark at a time;
+  314 throttle samples, start and end included 0x0, none non-zero. Not
+  timed. A first run was void and discarded: only its first block ran
+  and its configurations ran concurrently, and the script then hung
+  because its `wait` also waited on the throttle sampler. Nothing from
+  it was compared.
+- **Encoder:** the 45 WAV files are identical to 70be604's and 7e388d3's.
+- **Cortex-M33 (emulated):** the small and host images' decodes and
+  statics on seven slots (14 of 14), and the multi-pass residuals on
+  s0086 and s0407, are byte-identical to 68634cc's.
+- The same M33 identity also holds for the `% N` form (a35a698 with one
+  comment changed; `.text` and `.rodata` of the eight binaries as
+  a35a698).
+
+### Tests and checks
+
+- New: `straight_stages_equal_the_side_by_side_stages_bit_for_bit`
+  (every bit, the sign of zero included) and
+  `twiddle_index_equals_the_stage_index` (every k, m, q of every stage).
+  The first stage's group of one is covered by the existing test against
+  the stored window and stage.
+- Mutants caught: the sums' order of m reversed in each of radix 4
+  (both), radix 3 and radix 5 with loads and twiddles left in order
+  (a control with the same rewrite passes); the first stage's sum order,
+  a swapped mirrored window entry and a wrong window entry; the index's
+  reduction dropped, and q alone in its product; a product's sign.
+  Swapping the operands of one addition, which is exact, survives as it
+  must. Reversing a stage's whole token list also passes: it reverses
+  the loads and twiddle rows with the sums, so the order is unchanged.
+- Local CI passes at the head: fmt; clippy `-D warnings` (workspace, all
+  targets and features, thumbv8m); workspace, profile, no-std and release
+  tests with the ignored ones (203); the group-one cfg step (195 run,
+  8 ignored); the bulk run; MSRV 1.75; docs with and without `std`;
+  `check.sh --stack`; the code-generation check.
+- The A76 library tests were not run: AArch64 code is unchanged.
+
+### Not measured
+
+- Cortex-M33 and M4 cycles and any run on hardware: every figure is
+  emulated instructions, which count a `vldr`, an `add` and a
+  `vmul` alike. Flash wait states and cache behaviour on a transform
+  1.7 KB larger are unknown, so the cycle saving may differ from the
+  instruction saving.
+- Any M33 slot but s0086 and s0407. The transform's count is the same on
+  both.
+- M4 instruction counts, stack and `check.sh`-style frames.
+- A76 and x86-64 timing: their `.text` is identical, so none was taken
+  and no placement check was needed.
+- The two last-stage forms above were not built; their gains are
+  estimates.
+- Decoder identity at 698d859 alone. All of it ran on e9bb614's source,
+  and the M33 part also on the `% N` form above.
