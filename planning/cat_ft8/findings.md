@@ -8857,7 +8857,13 @@ identity carry over unchanged.
      embedded check builds with it, and the crate declares the cfg for
      `unexpected_cfgs` (the `[lints]` table; MSRV 1.75 builds it without
      warnings). **A thumbv8m.main build without the cfg takes the branch
-     form: not the code O18 measured on the M33**, and not measured.
+     form in the subtraction: the host image is then not the code O18
+     measured on the M33** (its `.text` 48 464 → 48 544 B, in
+     `Fit4::add_all`, `Removal::refs` and one closure of `run`), and not
+     measured; the small check image, which has no subtraction, is
+     identical (corrected in O18c; the staged measurement images, which
+     both link the subtraction, differ: 48 824 → 48 900 and 50 052 →
+     50 128 B).
 2. **a6feb13: one clamp, `input`, chosen per target.** The branch form
    is `input_branch`; `input` is `input_select` or `input_branch` by
    `INPUT_SELECT`. Both stay in the build because the choice is per
@@ -8903,8 +8909,8 @@ by a count the way the clamp's is.
 
 - **x86-64 records (O18).** The O18 log's nine record comparisons named
   an empty reference directory and all failed; O18's result (0 differ)
-  came from a comparison repeated by hand. `x86id.sh` now makes the
-  comparisons itself against b93516e's records and WAV output, and was
+  came from a comparison repeated by hand. The identity script now makes
+  the comparisons itself against b93516e's records and WAV output, and was
   rerun at 26f66ad and at 85ba626: the 73 800 records equal b93516e's
   (0 differ, each of `host`, `host,passes=1` and `small`), and the 800
   WAV slots × 3 × 3 are byte-identical (7 200 runs, 78 690 decode lines),
@@ -8925,3 +8931,70 @@ by a count the way the clamp's is.
 - `Synth::envelope_is_one` (or the like): `blocks` and
   `Synth::fill_phase` each know where the ramps are; one place should
   say it. Deferred to the next change to that code.
+
+## Closure follow-ups (O18c, 2026-11-02; no code generation change)
+
+On top of O18b (e1b7e8b), one change per commit: 1d53ad8, 795bb7e,
+0d7f951, c4fa1ae, eb0cbfc and 38aec91, then this record. The two that
+touch a `.rs` file (0d7f951, 38aec91; documentation only) leave the
+`.text` and `.rodata` of all eight binaries byte-identical to 513fd17's
+(x86-64 and AArch64 `cat-ft8-decode` and `paired_bench`; thumbv8m check
+and staged images built with `--cfg cat_ft8_minmaxnm`; one scratch path,
+rustc 1.93.0). The others change scripts and the CI workflow only.
+
+### Changes
+
+- **1d53ad8: the code-generation check fails on a missing function.** A
+  label not found printed 0, which a ceiling passed; it now prints
+  "function not found" and fails, whatever the metric, and an unknown
+  metric fails. Forced (logged): a misspelt segment and an unknown metric
+  each fail.
+- **795bb7e: the check covers the clamp on the microcontrollers.** It
+  also emits the no-std library's assembly (one codegen unit, nothing
+  linked) for two targets, counts with rustc 1.93.0:
+
+| build | check | head | forced | result forced |
+|---|---|---|---|---|
+| thumbv8m.main, `--cfg cat_ft8_minmaxnm` | `vmaxnm`/`vminnm` in `Removal::refs`, floor 8 | 20 | without the cfg: 0 | fails |
+| thumbv7em | `fmaxf`/`fminf` calls in `Removal::refs`, `symbol_correlations`, `Fit4::add_all`, ceiling 0 | 0, 0, 0 | with the cfg: 20, 6, 8 | all three fail |
+
+  The aarch64 CI job, which runs the check, now installs both targets.
+- **0d7f951: the crate docs' `no_std` section documents the cfg**: the
+  target-scoped `.cargo/config.toml` entry
+  (`[target.thumbv8m.main-none-eabihf] rustflags = ["--cfg",
+  "cat_ft8_minmaxnm"]`), that without it thumbv8m.main takes the branch
+  form (the same results; its speed on the Cortex-M33 not measured), and
+  that a `RUSTFLAGS` environment variable replaces the configuration's
+  rustflags.
+- **c4fa1ae: the embedded check prints stack frames only with
+  `--stack`** (a `stack` variable; since O18b's cfg `flags` was never
+  empty, so every run printed empty headings).
+- **eb0cbfc: the embedded check lints with the cfg it builds with**, in a
+  target directory of its own (the build's RUSTFLAGS differ under
+  `--stack`, and a shared directory would rebuild each time).
+  `check.sh` and `check.sh --stack` pass; sizes as before (flash 89 534 /
+  101 810 / 34 566 B).
+- **38aec91: wording.** `INPUT_SELECT`'s doc and the Cargo.toml comment
+  said `max` and `min` are single instructions where the branch-free
+  clamp is chosen; on x86-64 they are `maxss` with a compare and blend.
+  Both now say: not library calls, and measured faster.
+- **Records corrected in place:** O18b names the identity script rather
+  than its file; without the cfg only the M33 host image differs among
+  the check images (above, in O18b).
+
+### Follow-ups, not done
+
+- **The fit's edge samples** take `input_branch` by name. Measure
+  `input` there (it changed code on every measured target in O18b, not
+  timed), then unify or keep it with the measurement.
+- **No host test runs the branch form's loops end to end**
+  (`INPUT_SELECT` false): x86-64 and AArch64 both take the branch-free
+  form, and the equivalence rests on the exhaustive scalar test of the
+  two forms. An i686 test run would cover them.
+- From O18b: `Synth::envelope_is_one`.
+
+### Checks
+
+Local CI passes at 38aec91, including the extended code-generation check
+(AArch64 696 / 15 / 156 / 6 / 8 / 0; thumbv8m 20; thumbv7em 0 / 0 / 0)
+and `check.sh --stack`.

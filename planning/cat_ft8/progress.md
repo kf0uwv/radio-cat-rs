@@ -1738,3 +1738,17 @@
 - Every commit's eight binaries byte-identical to 513fd17's; x86-64
   record comparison fixed in the script and rerun; findings corrected
   (x86-64 records log, the M33 +632 B).
+
+## Session: 2026-11-02 (O18c closure follow-ups)
+
+- 1d53ad8: the code-generation check fails on a missing function or an
+  unknown metric.
+- 795bb7e: it also checks the clamp on thumbv8m (with the cfg,
+  `vmaxnm`/`vminnm` floor) and thumbv7em (no `fmaxf`/`fminf` calls);
+  both shown to fire; the aarch64 CI job installs the targets.
+- 0d7f951: the crate docs document `--cfg cat_ft8_minmaxnm` with a
+  target-scoped config entry. c4fa1ae, eb0cbfc: the embedded check's
+  stack headings and clippy with the cfg. 38aec91: wording.
+- `.text`/`.rodata` byte-identical to 513fd17's at the `.rs` commits;
+  local CI passes. Follow-ups recorded: the fit's edge samples, an i686
+  run for the branch form, `Synth::envelope_is_one`.
