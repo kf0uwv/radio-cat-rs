@@ -423,11 +423,18 @@ fn butterflies<const R: usize, const L: usize, const S: usize>(
 
 /// Index into `TWIDDLES` of W_span^(m·(k + q·l)) for a radix-`R` stage over
 /// sub-transforms of length l (span = l·`R`, `k` < l, m < `R`, q < `R`):
-/// the index `stage` reads, m·(k + q·l)·(N/span) mod N, as l·(N/span) is
-/// N/`R`. `k_step` is k·(N/span).
+/// the index `stage` reads, m·(k + q·l)·(N/span) mod N, without a
+/// division. m·k·(N/span) < N, and m·q·l·(N/span) is (N/`R`)·(m·q) ≡
+/// (N/`R`)·(m·q mod `R`) (mod N), so the sum of the two is below 2N and
+/// one conditional subtraction reduces it. `k_step` is k·(N/span).
 #[inline(always)]
 fn twiddle_index<const R: usize>(m: usize, q: usize, k_step: usize) -> usize {
-    (m * k_step + (N / R) * (m * q)) % N
+    let t = m * k_step + (N / R) * ((m * q) % R);
+    if t >= N {
+        t - N
+    } else {
+        t
+    }
 }
 
 /// One radix-R butterfly written out term by term: inputs m = 0 .. R at
