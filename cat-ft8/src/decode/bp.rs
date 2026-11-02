@@ -445,7 +445,10 @@ const INPUT_BLOCK: usize = if cfg!(target_arch = "aarch64") { 8 } else { 1 };
 /// The inputs: each edge's message replaced by its variable's total
 /// (`edge_vars`) less the message, `U` edges at a time, then the rest.
 /// Each edge's subtraction is the same at any `U`; where `INPUT_BLOCK` is
-/// one, the round has the plain loop instead.
+/// one, the round has the plain loop instead. `INPUT_BLOCK` is not a
+/// parameter of the round, so the round with blocked inputs is tested
+/// only where it is built, on AArch64; elsewhere the tests compare
+/// `inputs` itself at several block sizes with the plain loop.
 #[inline(always)]
 fn inputs<const U: usize>(total: &[f32; N], msg: &mut [f32; EDGES], edge_vars: &[u8; EDGES]) {
     let mut blocks = msg.chunks_exact_mut(U);
