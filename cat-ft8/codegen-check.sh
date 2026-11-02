@@ -36,7 +36,10 @@ target_dir="${CARGO_TARGET_DIR:-$here/../target/codegen-check}"
 # Each function, and its floor of `.4s` instructions.
 floors=("sum_product_round 500" "min_sum_round 100")
 
-rm -f "$target_dir/$target/release/deps/"cat_ft8-*.s
+# Clean the library first: cargo would otherwise see it as fresh, run no
+# compiler and write no assembly.
+CARGO_TARGET_DIR="$target_dir" cargo clean -q --release -p cat-ft8 --target "$target" \
+  --manifest-path "$here/Cargo.toml"
 CARGO_TARGET_DIR="$target_dir" cargo rustc -q --release -p cat-ft8 --lib --target "$target" \
   --manifest-path "$here/Cargo.toml" -- --emit=asm -C codegen-units=1
 asm=$(ls "$target_dir/$target/release/deps/"cat_ft8-*.s)
