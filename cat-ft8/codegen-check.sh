@@ -48,9 +48,12 @@ fail=0
 for entry in "${floors[@]}"; do
   set -- $entry
   name=$1 floor=$2
-  # The function's body: from its mangled label to the next function's.
-  n=$(awk -v f="${#name}$name" '/^_ZN.*:$/ { p = index($0, f) > 0 } p' "$asm" \
-    | grep -cP '^\t[a-z][^\t]*\t.*\.4s' || true)
+  # The function's body runs from its mangled label to the next
+  # function's; count its instructions with a `.4s` operand.
+  n=$(awk -v f="${#name}$name" '
+    /^_ZN.*:$/ { p = index($0, f) > 0; next }
+    p && /^\t[a-z][^\t]*\t.*\.4s/ { n++ }
+    END { print n + 0 }' "$asm")
   if [ "$n" -ge "$floor" ]; then
     echo "ok   $name: $n .4s instructions (floor $floor)"
   else
