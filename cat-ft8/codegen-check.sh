@@ -24,7 +24,8 @@
 # - four-lane `.4s` instructions, a floor: with rustc 1.93
 #   sum_product_round has 696 and min_sum_round 156; forms that lost the
 #   gain counted 115-452 (passes of 4 to 32 values, 32 not unrolled) and
-#   29 (min-sum check by check);
+#   29 (min-sum check by check). The margin under the passes of 4 values
+#   is thin: 452 against the floor of 500;
 # - single-lane moves in sum_product_round, a ceiling: 15 with rustc
 #   1.93; 46 with the group products written in place row by row, 38
 #   with the products check by check.
