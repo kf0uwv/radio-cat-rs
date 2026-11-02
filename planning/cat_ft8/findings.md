@@ -7194,13 +7194,13 @@ builds.
   `DECODES_LIST` statics) byte-identical, 14 of 14; the multi-pass host
   image's residual after the further passes on s0086 and s0407
   (180 000 `f32` each) identical, and equal to O13's.
-- **A76: not checked.** The record run was started on the A76, but the
-  Raspberry Pi 5 dropped off the network before it finished and before
-  the records were copied back, and the release test suite could not be
-  started. The A76 `slotcost` runs report the same decode and
-  subtraction counts per pass for every build (24.1 / 10.5 / 3.0 new
-  decodes, 24.1 and 10.5 subtractions), which is consistent with
-  identity but is not a bit-for-bit check.
+- **A76** (after the Raspberry Pi 5 came back; the interrupted run's
+  output discarded and the run repeated from scratch): the 73 800 records
+  of 68634cc's AArch64 `paired_bench` equal x86-64's at 68634cc and at
+  b93516e (0 differ); the 800 WAV slots × 3 × 3 with its AArch64
+  `cat-ft8-decode` (7 200 runs, 78 690 decode lines) byte-identical to
+  x86-64 b93516e's. Not timed, so not held to the throttle rule; 0x0
+  before and after each part.
 - The blocked sum (bf73225) was checked by its tests and the per-sample
   generator test on x86-64 only; it is not on the branch.
 
@@ -7210,6 +7210,10 @@ Local CI: fmt; clippy `-D warnings` on the workspace, cat-ft8 with all
 targets and features, and the thumbv8m library; workspace, profile,
 no-std and release tests with the ignored ones; MSRV 1.75; docs with
 and without `std`; `check.sh --stack`.
+
+Raspberry Pi 5: the release library tests with the ignored ones pass
+(189; the one test that reads the source tree skipped, as the binary
+runs without it).
 
 ### Not measured
 
@@ -7223,5 +7227,3 @@ and without `std`; `check.sh --stack`.
   symbol, their setup and scalar tails per 240-sample block) and, on
   x86-64, the two-step conversion of `increment`.
 - The blocked sum on the M33 and on other cores.
-- The A76 record identity and the release test suite on the A76 at
-  68634cc (above).

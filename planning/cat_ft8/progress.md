@@ -1523,5 +1523,7 @@
   3 × 3, encoder, the emulated small and host images on seven slots,
   the multi-pass residuals on s0086 and s0407. Local CI passes.
 - Every timed A76 run valid (24 runs, every sample 0x0). The A76
-  record run and test suite did not complete: the Raspberry Pi 5 went
-  off the network during the record run; not repeated.
+  record run was interrupted when the Raspberry Pi 5 went off the
+  network; after it came back, rerun from scratch: records equal to
+  x86-64's (73 800, 0 differ), the 800 WAV slots × 3 × 3 identical, the
+  release library tests with the ignored ones pass (189).
