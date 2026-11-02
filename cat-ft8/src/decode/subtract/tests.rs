@@ -937,16 +937,20 @@ fn time_search_lanes_follow_the_sample_index_at_any_start() {
             blocks(&synth, end, core, |j0, phase, _| {
                 let (mut re, mut im) = ([0.0f32; LANES], [0.0f32; LANES]);
                 let mut any = false;
-                for (i, &q) in phase.iter().enumerate() {
-                    let s = start + (j0 + i) as i64;
-                    if s < usable.lo || s >= usable.hi {
-                        continue;
+                // Lane by lane, each in sample order (not a store indexed by
+                // `i % LANES`: see `fit_sums_follow_the_sample_index_bit_for_bit`).
+                for l in 0..LANES {
+                    for i in (l..phase.len()).step_by(LANES) {
+                        let s = start + (j0 + i) as i64;
+                        if s < usable.lo || s >= usable.hi {
+                            continue;
+                        }
+                        let w = input_branch(audio[s as usize]);
+                        let (c, sn) = cos_sin_turns(phase[i]);
+                        re[l] += w * c;
+                        im[l] += w * sn;
+                        any = true;
                     }
-                    let w = input_branch(audio[s as usize]);
-                    let (c, sn) = cos_sin_turns(q);
-                    re[i % LANES] += w * c;
-                    im[i % LANES] += w * sn;
-                    any = true;
                 }
                 if any {
                     want[j0 / T].0 += sum_lanes(re);
@@ -1414,14 +1418,21 @@ fn fit_sums_follow_the_sample_index_bit_for_bit() {
             }
             let mut want = got;
             got.add_all(i0, &xs, &refs, k0);
-            for (k, &x) in xs.iter().enumerate() {
-                let (c, s) = get(&refs, k0 + k);
-                let (w, l) = (input_branch(x), (i0 + k) % LANES);
-                want.xc[l] += w * c;
-                want.xs[l] += w * s;
-                want.cc[l] += c * c;
-                want.cs[l] += c * s;
-                want.ss[l] += s * s;
+            // Lane by lane, each in sample order. (Not a store indexed by
+            // `(i0 + k) % LANES` in one loop over the samples: the loop
+            // vectoriser of LLVM 20 and 21 miscompiled that form here;
+            // findings O19b.)
+            for l in 0..LANES {
+                let first = (l + LANES - i0 % LANES) % LANES;
+                for k in (first..xs.len()).step_by(LANES) {
+                    let (c, s) = get(&refs, k0 + k);
+                    let w = input_branch(xs[k]);
+                    want.xc[l] += w * c;
+                    want.xs[l] += w * s;
+                    want.cc[l] += c * c;
+                    want.cs[l] += c * s;
+                    want.ss[l] += s * s;
+                }
             }
             assert_eq!(
                 fit4_bits(&got),
