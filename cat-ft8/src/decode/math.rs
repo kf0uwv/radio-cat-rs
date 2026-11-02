@@ -543,6 +543,23 @@ mod tests {
         floor_small_matches(9_973);
     }
 
+    /// `round_small` at the ends of its domain, the half-integer ties and
+    /// both zeros, against `libm::rintf` (round to nearest, ties to even;
+    /// `f32::round_ties_even` is newer than the MSRV): the integer, and its
+    /// `f32` equal to the rounded value (the sign of a zero aside).
+    #[test]
+    fn round_small_is_round_ties_even_at_the_edges() {
+        let edge = 4_194_304.0f32; // 2²²
+        for y in [edge, edge - 0.5, 0.5, 1.5, 2.5, 0.0] {
+            for y in [y, -y] {
+                let want = libm::rintf(y);
+                let (r, rounded) = round_small(y);
+                assert_eq!(r, want as i32, "{y}");
+                assert_eq!(rounded, want, "{y}");
+            }
+        }
+    }
+
     /// Every `f32` in −126…0 (about 1.1·10⁹ values; run in release).
     #[test]
     #[ignore]

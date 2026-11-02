@@ -408,12 +408,12 @@ const GROUPED_SUM: bool = cfg!(target_arch = "aarch64");
 /// sample); returns `p` plus all of them (the phase after the last).
 /// Integer addition modulo 2³² is associative, so any grouping gives the
 /// same sums. With `GROUPED`, four entries at a time. On AArch64 the
-/// compiler emits a four-times unrolled loop with paired loads and stores
-/// and three dependent adds per four entries (the first two entries'
-/// sum is taken off the carried chain), where the plain loop has one
-/// load, one store and one dependent add per entry. The written form
-/// below is what gives that code: the same sums written serially are
-/// compiled to four dependent adds.
+/// compiler (rustc 1.93) emits a four-times unrolled loop with paired
+/// loads and stores and three dependent adds per four entries (the first
+/// two entries' sum is taken off the carried chain), where the plain
+/// loop has one load, one store and one dependent add per entry. The
+/// written form below is what gives that code: the same sums written
+/// serially are compiled to four dependent adds.
 #[inline(always)]
 fn running_sum<const GROUPED: bool>(p: u32, xs: &mut [u32]) -> u32 {
     let mut p = p;
