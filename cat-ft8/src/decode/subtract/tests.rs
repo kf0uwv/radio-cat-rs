@@ -1296,3 +1296,15 @@ fn fit_sums_follow_the_sample_index_bit_for_bit() {
     }
     assert_eq!(checked, (2 * LANES + 1) * 16);
 }
+
+#[test]
+fn step_phase_is_the_64_bit_quotient() {
+    // Every tone step and every start error of the time search (and
+    // beyond), against the 64-bit division it replaced.
+    for m in -7..=7 {
+        for e in -(T as i32)..=T as i32 {
+            let r = (m * e).rem_euclid(T as i32) as u64;
+            assert_eq!(step_phase(m, e), ((r << 32) / T as u64) as u32, "{m} {e}");
+        }
+    }
+}

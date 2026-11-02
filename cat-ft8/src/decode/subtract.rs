@@ -84,7 +84,7 @@
 use super::decoder::Decode;
 use super::frontend::INPUT_LIMIT;
 use super::math::{atan2_turns, cos_sin_turns, log2_power, LANES, VECTOR};
-use crate::waveform::{cos_turns, sin_turns, Placement, Synth, RAMP_SAMPLES};
+use crate::waveform::{cos_turns, phase_of_ratio, sin_turns, Placement, Synth, RAMP_SAMPLES};
 use crate::{
     encode_payload, Error, SAMPLES_PER_SYMBOL, SAMPLE_RATE, SYMBOL_COUNT, WAVEFORM_SAMPLES,
 };
@@ -548,8 +548,7 @@ fn phase_of_turns(turns: f32) -> u32 {
 
 /// The phase of `m · e / 1920` turns for whole samples `e`, exactly.
 fn step_phase(m: i32, e: i32) -> u32 {
-    let r = (m * e).rem_euclid(T as i32) as u64;
-    ((r << 32) / T as u64) as u32
+    phase_of_ratio((m * e).rem_euclid(T as i32) as u32, T as u32)
 }
 
 /// Pairs of adjacent symbols.

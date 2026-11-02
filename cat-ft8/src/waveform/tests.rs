@@ -637,3 +637,34 @@ fn increment_matches_truncation() {
 fn increment_matches_truncation_everywhere() {
     increment_matches(1);
 }
+
+#[test]
+fn phase_of_ratio_is_the_64_bit_quotient() {
+    // Every r < d for every d up to 2 048 (the ramp's 480 and the
+    // subtraction's 1 920 among them), and the largest d.
+    let want = |r: u32, d: u32| ((u64::from(r) << 32) / u64::from(d)) as u32;
+    for d in 1..=2_048u32 {
+        for r in 0..d {
+            assert_eq!(phase_of_ratio(r, d), want(r, d), "{r} / {d}");
+        }
+    }
+    let d = u16::MAX as u32;
+    for r in (0..d).step_by(7).chain([d - 1]) {
+        assert_eq!(phase_of_ratio(r, d), want(r, d), "{r} / {d}");
+    }
+}
+
+#[test]
+fn envelope_is_the_64_bit_form() {
+    // The ramps' phase as it was taken before, through a 64-bit division.
+    for j in 0..WAVEFORM_SAMPLES {
+        let r = j.min(WAVEFORM_SAMPLES - 1 - j);
+        let want = if r >= RAMP_SAMPLES {
+            1.0
+        } else {
+            let phase = ((r as u64) << 32) / (2 * RAMP_SAMPLES as u64);
+            0.5 * (1.0 - cos_turns(phase as u32))
+        };
+        assert_eq!(envelope(j).to_bits(), want.to_bits(), "sample {j}");
+    }
+}

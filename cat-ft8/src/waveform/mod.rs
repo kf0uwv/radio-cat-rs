@@ -173,8 +173,20 @@ pub fn envelope(j: usize) -> f32 {
         return 1.0;
     }
     // cos(π r / 240) = cos of r/480 of a turn; exact integer phase.
-    let phase = ((r as u64) << 32) / (2 * RAMP_SAMPLES as u64);
-    0.5 * (1.0 - cos_turns(phase as u32))
+    0.5 * (1.0 - cos_turns(phase_of_ratio(r as u32, 2 * RAMP_SAMPLES as u32)))
+}
+
+/// The phase of `r / d` of a turn, ⌊r · 2³² / d⌋, for `r < d < 2¹⁶`, in
+/// 32-bit arithmetic: with 2³² = q·d + m (0 < m ≤ d), it is
+/// r·q + ⌊r·m / d⌋ exactly, since r·q is whole. No step overflows: r·m is
+/// below d², and the result below 2³². (The 64-bit form is a library
+/// division on 32-bit targets.)
+#[inline]
+pub(crate) fn phase_of_ratio(r: u32, d: u32) -> u32 {
+    debug_assert!(r < d && d < 1 << 16);
+    let q = u32::MAX / d;
+    let m = 0u32.wrapping_sub(q.wrapping_mul(d));
+    r * q + r * m / d
 }
 
 /// A resumable FT8 waveform generator: phase and position persist between
