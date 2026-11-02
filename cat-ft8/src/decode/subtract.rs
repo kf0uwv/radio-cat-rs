@@ -384,12 +384,14 @@ impl Usable {
 
 /// Runs the reference generator from its first sample in blocks, calling
 /// `f(j0, phase, envelope)` for the blocks where `want(j0)` holds (the
-/// others are skipped, phase advancing), until `end` samples.
+/// others are skipped, phase advancing), until `end` samples. The envelope
+/// is `None` where it is exactly 1.0 throughout the block (every block
+/// clear of the ramps), and is then not filled.
 fn blocks(
     synth: &Synth,
     end: usize,
     want: impl Fn(usize) -> bool,
-    mut f: impl FnMut(usize, &mut [u32], &[f32]),
+    mut f: impl FnMut(usize, &mut [u32], Option<&[f32]>),
 ) {
     let mut s = synth.clone();
     let mut phase = [0u32; BLOCK];
@@ -397,11 +399,16 @@ fn blocks(
     let mut j0 = 0;
     while j0 < end {
         if want(j0) {
-            let n = s.fill_phase(&mut phase, &mut env);
+            let ramp = j0 < RAMP_SAMPLES || j0 + BLOCK > WAVEFORM_SAMPLES - RAMP_SAMPLES;
+            let n = if ramp {
+                s.fill_phase(&mut phase, &mut env)
+            } else {
+                s.fill_phase_only(&mut phase)
+            };
             if n == 0 {
                 break;
             }
-            f(j0, &mut phase[..n], &env[..n]);
+            f(j0, &mut phase[..n], ramp.then_some(&env[..n]));
             j0 += n;
         } else {
             let n = s.skip_with(&mut phase);
@@ -433,7 +440,7 @@ fn symbol_correlations(
     let core = |j0: usize| (CORE_START..CORE_END).contains(&(j0 % T));
     blocks(synth, end, core, |j0, phase, env| {
         // The middles are clear of the ramps: the envelope is 1.0 there.
-        debug_assert!(env.iter().all(|&e| e == 1.0));
+        debug_assert!(env.is_none());
         let (a, b) = usable.range(start, j0, phase.len());
         if a == b {
             return;
@@ -443,7 +450,7 @@ fn symbol_correlations(
         // The products sample by sample (a loop that vectorises), then
         // their sums by lane.
         let products = &mut work[..(b - a) * PAIR];
-        scaled_cos_sin::<CHAINS>(products, &phase[a..b], xs, input_select);
+        scaled_cos_sin::<CHAINS, _>(products, &phase[a..b], xs, input_select);
         let (re, im) = lane_sums(a, products);
         let k = j0 / T;
         // The conjugate's sine part: the sum's sign turned.
@@ -980,7 +987,7 @@ fn run(
                             let h = (j0 + i) % ring;
                             let stop = b.min(i + (ring - h));
                             let refs = &mut held[h * PAIR..(h + stop - i) * PAIR];
-                            reference(refs, &phase[i..stop], &env[i..stop]);
+                            reference(refs, &phase[i..stop], env.map(|e| &e[i..stop]));
                             f.add_all(i, &xs[i - a..stop - a], refs);
                             i = stop;
                         }
@@ -989,7 +996,7 @@ fn run(
                         // Through the start of `held`: nothing held is
                         // needed once the fit is not fused.
                         let refs = &mut held[..(b - a) * PAIR];
-                        reference(refs, &phase[a..b], &env[a..b]);
+                        reference(refs, &phase[a..b], env.map(|e| &e[a..b]));
                         f.add_all(a, xs, refs);
                     }
                     c.skip(n - b);
@@ -1052,7 +1059,7 @@ fn run(
                 let mut c = corr;
                 c.apply(&mut phase[a..b]);
                 let refs = &mut held[..(b - a) * PAIR];
-                reference(refs, &phase[a..b], &env[a..b]);
+                reference(refs, &phase[a..b], env.map(|e| &e[a..b]));
                 corr = c;
                 let refs = &held[..(b - a) * PAIR];
                 r.refs(&amp, segments, refs, audio, start, j0 + a);
@@ -1097,10 +1104,15 @@ fn get(d: &[u8]) -> (f32, f32) {
 }
 
 /// The reference of samples with (frequency-corrected) phases `phase` and
-/// envelope `env`, stored in `refs` ([`PAIR`] bytes each) by [`put`].
+/// envelope `env` (`None` where it is 1.0 throughout), stored in `refs`
+/// ([`PAIR`] bytes each) by [`put`]. A cosine or sine times 1.0 is itself,
+/// so without an envelope the products are not taken.
 #[inline(always)]
-fn reference(refs: &mut [u8], phase: &[u32], env: &[f32]) {
-    scaled_cos_sin::<CHAINS>(refs, phase, env, |w| w);
+fn reference(refs: &mut [u8], phase: &[u32], env: Option<&[f32]>) {
+    match env {
+        Some(env) => scaled_cos_sin::<CHAINS, _>(refs, phase, env, |w| w),
+        None => scaled_cos_sin::<CHAINS, _>(refs, phase, phase, |_| 1.0),
+    }
 }
 
 /// Samples [`scaled_cos_sin`] takes together: several whole vectors where
@@ -1120,11 +1132,11 @@ const CHAINS: usize = if VECTOR { 16 } else { 1 };
 /// `W` samples at a time, then the rest one by one, over the shortest of
 /// the three. With `W` 1 this is the plain loop.
 #[inline(always)]
-fn scaled_cos_sin<const W: usize>(
+fn scaled_cos_sin<const W: usize, X: Copy>(
     out: &mut [u8],
     phase: &[u32],
-    xs: &[f32],
-    weight: impl Fn(f32) -> f32,
+    xs: &[X],
+    weight: impl Fn(X) -> f32,
 ) {
     let n = (out.len() / PAIR).min(phase.len()).min(xs.len());
     let whole = if W > 1 { n - n % W } else { 0 };
@@ -1134,7 +1146,7 @@ fn scaled_cos_sin<const W: usize>(
             .zip(phase[..whole].chunks_exact(W))
             .zip(xs[..whole].chunks_exact(W));
         for ((d, q), x) in blocks {
-            let (q, x): (&[u32; W], &[f32; W]) = (q.try_into().unwrap(), x.try_into().unwrap());
+            let (q, x): (&[u32; W], &[X; W]) = (q.try_into().unwrap(), x.try_into().unwrap());
             let mut v = [(0.0f32, 0.0f32); W];
             for ((v, &q), &x) in v.iter_mut().zip(q).zip(x) {
                 let w = weight(x);

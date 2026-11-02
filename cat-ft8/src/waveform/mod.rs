@@ -280,14 +280,10 @@ impl Synth {
     /// (for example `cos_turns`/`sin_turns` of it, to subtract a decoded
     /// signal). Returns how many; at most the shorter slice's length.
     pub fn fill_phase(&mut self, phase: &mut [u32], envelope: &mut [f32]) -> usize {
-        let n = phase.len().min(envelope.len()).min(self.remaining());
-        let (phase, envelope) = (&mut phase[..n], &mut envelope[..n]);
+        let n = phase.len().min(envelope.len());
         let pos = self.pos;
-        // The increments first, then their running sum (the phase before
-        // each sample).
-        self.increments(pos, phase);
-        self.phase = running_sum::<GROUPED_SUM>(self.phase, phase);
-        self.pos = pos + n;
+        let n = self.fill_phase_only(&mut phase[..n]);
+        let envelope = &mut envelope[..n];
         // `envelope(j)` on the ramps, exactly 1.0 elsewhere.
         envelope.fill(1.0);
         let ramps = [
@@ -299,6 +295,21 @@ impl Synth {
                 envelope[j - pos] = self::envelope(j);
             }
         }
+        n
+    }
+
+    /// [`fill_phase`](Self::fill_phase) without the envelope: the next
+    /// samples' phase into `phase`; returns how many.
+    #[inline]
+    pub(crate) fn fill_phase_only(&mut self, phase: &mut [u32]) -> usize {
+        let n = phase.len().min(self.remaining());
+        let phase = &mut phase[..n];
+        let pos = self.pos;
+        // The increments first, then their running sum (the phase before
+        // each sample).
+        self.increments(pos, phase);
+        self.phase = running_sum::<GROUPED_SUM>(self.phase, phase);
+        self.pos = pos + n;
         n
     }
 

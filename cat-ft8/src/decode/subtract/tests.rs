@@ -1072,7 +1072,7 @@ fn scaled_cos_sin_matches<const W: usize>(seed: u64) -> usize {
                 let weigh = |x: f32| if clamp { input(x) } else { finite_reference(x) };
                 let mut got = std::vec![0xa5u8; (no + 1) * PAIR];
                 let mut want = got.clone();
-                scaled_cos_sin::<W>(&mut got[..no * PAIR], &phase[..np], &xs[..nx], weigh);
+                scaled_cos_sin::<W, _>(&mut got[..no * PAIR], &phase[..np], &xs[..nx], weigh);
                 scaled_cos_sin_first(&mut want[..no * PAIR], &phase[..np], &xs[..nx], weigh);
                 assert_eq!(got, want, "W {W} lengths {no} {np} {nx} clamp {clamp}");
                 checked += 1;
@@ -1094,6 +1094,68 @@ fn scaled_cos_sin_is_its_first_form_bit_for_bit() {
     checked += scaled_cos_sin_matches::<CHAINS>(4);
     checked += scaled_cos_sin_matches::<24>(5);
     assert!(checked > 1_000, "{checked}");
+}
+
+/// The reference without an envelope against the reference with an
+/// envelope of 1.0, byte for byte: every length up to three blocks of
+/// [`CHAINS`] and beyond, random and edge phases.
+#[test]
+fn reference_without_an_envelope_is_the_reference_times_one() {
+    let mut n = Noise(13);
+    let mut checked = 0;
+    for len in (0..=3 * CHAINS + 5).chain([BLOCK - 1, BLOCK]) {
+        let phase = test_phases(&mut n, len);
+        let ones = std::vec![1.0f32; len];
+        let mut got = std::vec![0xa5u8; (len + 1) * PAIR];
+        let mut want = got.clone();
+        reference(&mut got[..len * PAIR], &phase, None);
+        reference(&mut want[..len * PAIR], &phase, Some(&ones));
+        assert_eq!(got, want, "{len}");
+        checked += 1;
+    }
+    assert_eq!(checked, 3 * CHAINS + 8);
+}
+
+/// `blocks` passes no envelope exactly for the blocks where it is 1.0 at
+/// every sample, the envelope where it is not, and the generator's phase
+/// either way: against `Synth::fill_phase` over the whole waveform.
+#[test]
+fn blocks_leave_out_only_an_envelope_of_one() {
+    let tones = encode_payload(&decode_near(1_234.5, 0.31).payload);
+    let synth = Synth::new(&tones, 1_234.5, 1.0).unwrap();
+    let mut phase = std::vec![0u32; WAVEFORM_SAMPLES];
+    let mut env = std::vec![0.0f32; WAVEFORM_SAMPLES];
+    assert_eq!(
+        synth.clone().fill_phase(&mut phase, &mut env),
+        WAVEFORM_SAMPLES
+    );
+    let (mut seen, mut without) = (0, 0);
+    blocks(
+        &synth,
+        WAVEFORM_SAMPLES,
+        |_| true,
+        |j0, p, e| {
+            assert_eq!(p, &phase[j0..j0 + p.len()], "{j0}");
+            let want = &env[j0..j0 + p.len()];
+            match e {
+                Some(e) => {
+                    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                    assert_eq!(bits(e), bits(want), "{j0}");
+                    assert!(want.iter().any(|&w| w != 1.0), "{j0}");
+                }
+                None => {
+                    assert!(
+                        want.iter().all(|&w| w.to_bits() == 1.0f32.to_bits()),
+                        "{j0}"
+                    );
+                    without += 1;
+                }
+            }
+            seen += p.len();
+        },
+    );
+    assert_eq!(seen, WAVEFORM_SAMPLES);
+    assert_eq!(without, WAVEFORM_SAMPLES / BLOCK - 2);
 }
 
 /// [`input_select`] against [`input`] bit for bit at every `stride`-th
