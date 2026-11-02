@@ -54,7 +54,8 @@ target_dir="${CARGO_TARGET_DIR:-$here/../target/codegen-check}"
 # counts moves into or out of single lanes (`mov`, `ins`, `dup`, `ld1`,
 # `st1` on a `.s[i]` element), at most the bound; `minmax` counts
 # four-lane `fmaxnm` and `fminnm`, at least the bound; `selects` counts
-# `fcmgt`, `bsl`, `bit` and `bif`, at most the bound.
+# `fcmgt`, `bsl`, `bit` and `bif`, at most the bound. A function whose
+# label is not found, or an unknown metric, fails.
 checks=("sum_product_round vec4 500" "sum_product_round lanes 25" "min_sum_round vec4 100"
   "7Removal4refs minmax 2" "symbol_correlations minmax 2"
   "7Removal4refs selects 2")
@@ -74,19 +75,26 @@ for entry in "${checks[@]}"; do
   # The function's body runs from its mangled label to the next
   # function's; count its instructions of the metric's kind.
   case "$name" in [0-9]*) seg=$name ;; *) seg="${#name}$name" ;; esac
+  # Prints the count, or "missing" if no function's label holds `seg`.
   n=$(awk -v f="$seg" -v metric="$metric" '
-    /^_ZN.*:$/ { p = index($0, f) > 0; next }
+    /^_ZN.*:$/ { p = index($0, f) > 0; if (p) found = 1; next }
     !p { next }
     metric == "vec4" && /^\t[a-z][^\t]*\t.*\.4s/ { n++ }
     metric == "lanes" && /^\t(mov|ins|dup|ld1|st1)\t.*\.s\[/ { n++ }
     metric == "minmax" && /^\t(fmaxnm|fminnm)\t.*\.4s/ { n++ }
     metric == "selects" && /^\t(fcmgt|bsl|bit|bif)\t/ { n++ }
-    END { print n + 0 }' "$asm")
+    END { if (found) print n + 0; else print "missing" }' "$asm")
+  if [ "$n" = missing ]; then
+    echo "FAIL $name: function not found"
+    fail=1
+    continue
+  fi
   case "$metric" in
     vec4) what=".4s instructions (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     lanes) what="single-lane moves (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     minmax) what="four-lane fmaxnm/fminnm (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     selects) what="compares and selects (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    *) what="unknown metric $metric"; ok=0 ;;
   esac
   if [ $ok = 1 ]; then
     echo "ok   $name: $n $what"
