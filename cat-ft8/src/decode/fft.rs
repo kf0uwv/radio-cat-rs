@@ -236,7 +236,7 @@ impl<const L: usize> Lanes<L> {
 }
 
 /// Butterflies computed side by side: four where the target has 128-bit
-/// vectors of `f32`, else one (a Cortex-M then runs the plain loops). The
+/// vectors of `f32`, else one (a Cortex-M then runs `straight_stages`). The
 /// result is the same for any value: lanes are independent butterflies.
 const LANES: usize = if cfg!(any(target_feature = "sse2", target_feature = "neon")) {
     4
