@@ -439,34 +439,34 @@ fn twiddle_index<const R: usize>(m: usize, q: usize, k_step: usize) -> usize {
 /// result is the same bit for bit. Written out so that the inputs stay in
 /// registers and no loop counter or index is kept per term.
 macro_rules! straight_butterfly {
-    ($r:ident, $i:ident, $s:expr, $ms:tt, $qs:tt, ($m:ident, $qq:ident) => $w:expr) => {{
-        let ar = straight_butterfly!(@load $r, $s, $ms);
-        let ai = straight_butterfly!(@load $i, $s, $ms);
-        straight_butterfly!(@store ar, ai, $r, $i, $s, $ms, $qs, ($m, $qq) => $w);
+    ($re:ident, $im:ident, $stride:expr, $ms:tt, $qs:tt, ($m_name:ident, $q_name:ident) => $w:expr) => {{
+        let ar = straight_butterfly!(@load $re, $stride, $ms);
+        let ai = straight_butterfly!(@load $im, $stride, $ms);
+        straight_butterfly!(@store ar, ai, $re, $im, $stride, $ms, $qs, ($m_name, $q_name) => $w);
     }};
-    // Outputs q in `$qs` of inputs `$ar`, `$ai`, stored at `$r[q·s]`,
-    // `$i[q·s]`.
-    (@store $ar:ident, $ai:ident, $r:ident, $i:ident, $s:expr, $ms:tt, [$($q:tt)*],
-     ($m:ident, $qq:ident) => $w:expr) => {
+    // Outputs q in `$qs` of inputs `$ar`, `$ai`, stored at `$re[q·stride]`,
+    // `$im[q·stride]`.
+    (@store $ar:ident, $ai:ident, $re:ident, $im:ident, $stride:expr, $ms:tt, [$($q:tt)*],
+     ($m_name:ident, $q_name:ident) => $w:expr) => {
         $(
-            let (sr, si) = straight_butterfly!(@sum $ar, $ai, $q, $ms, ($m, $qq) => $w);
-            $r[$q * $s] = sr;
-            $i[$q * $s] = si;
+            let (sr, si) = straight_butterfly!(@sum $ar, $ai, $q, $ms, ($m_name, $q_name) => $w);
+            $re[$q * $stride] = sr;
+            $im[$q * $stride] = si;
         )*
     };
-    (@load $x:ident, $s:expr, [$($m:tt)*]) => {
-        [$x[0] $(, $x[$m * $s])*]
+    (@load $x:ident, $stride:expr, [$($m:tt)*]) => {
+        [$x[0] $(, $x[$m * $stride])*]
     };
-    (@sum $ar:ident, $ai:ident, $q:tt, [$($mv:tt)*], ($m:ident, $qq:ident) => $w:expr) => {{
+    (@sum $ar:ident, $ai:ident, $q:tt, [$($m:tt)*], ($m_name:ident, $q_name:ident) => $w:expr) => {{
         let mut sr = $ar[0];
         let mut si = $ai[0];
         $(
             let [wr, wi] = {
-                let ($m, $qq): (usize, usize) = ($mv, $q);
+                let ($m_name, $q_name): (usize, usize) = ($m, $q);
                 $w
             };
-            let pr = $ar[$mv] * wr - $ai[$mv] * wi;
-            let pi = $ar[$mv] * wi + $ai[$mv] * wr;
+            let pr = $ar[$m] * wr - $ai[$m] * wi;
+            let pi = $ar[$m] * wi + $ai[$m] * wr;
             sr += pr;
             si += pi;
         )*
@@ -474,11 +474,11 @@ macro_rules! straight_butterfly {
     }};
     // The twiddles of (m, q) for m in `$ms`, q in `$qs` (one row per m),
     // from `TWIDDLES`.
-    (@twiddles $rad:literal, $k_step:expr, [$($mv:tt)*], $qs:tt) => {
-        [$(straight_butterfly!(@row $rad, $k_step, $mv, $qs)),*]
+    (@twiddles $radix:literal, $k_step:expr, [$($m:tt)*], $qs:tt) => {
+        [$(straight_butterfly!(@row $radix, $k_step, $m, $qs)),*]
     };
-    (@row $rad:literal, $k_step:expr, $mv:tt, [$($q:tt)*]) => {
-        [$(TWIDDLES[twiddle_index::<$rad>($mv, $q, $k_step)]),*]
+    (@row $radix:literal, $k_step:expr, $m:tt, [$($q:tt)*]) => {
+        [$(TWIDDLES[twiddle_index::<$radix>($m, $q, $k_step)]),*]
     };
 }
 
