@@ -1845,7 +1845,25 @@
   commit, so no A76 timing.
 - Identity: records on x86-64 and the A76, WAVs × 3 × 3, encoder, M33
   dumps and residuals. Local CI passes. One A76 identity run void (the
-  script's own `wait` hung), discarded and rerun.
+  `wait` in the run's driver script hung), discarded and rerun.
 - What bounds it now: the first four stages are at their arithmetic and
   loads and stores; the radix-5 stage holds the remaining 11.8 M a pass,
   in addressing (not built: about 1.5–3% of the small slot for 3.5–9 KB).
+
+## Session: 2026-11-02 (O20b review follow-ups)
+
+- e79e439: the conditional subtraction removed, for `% N`; its sign flips
+  with the surrounding code and no mechanism is established. O20's text
+  corrected. Head's M33 images byte-identical to a35a698's.
+- M33 (emulated, s0086; s0407 in the findings): small 285.89 → 183.67 M
+  (−35.8%), host 2 262.45 → 1 955.48 M (−13.6%). Flash +1 704 B on the M33;
+  frames and stack paint as at 70be604.
+- 1fa49d2 one lane-count decision, in `spectrum`, with a direct test of
+  `straight_first_stage`; 3a31751, 0b7442a, d37c5db, 3fd8dfc, cd9ab7c,
+  1ff84ef, 80ff84c, 6b83c9f: tidying, no image change and no trim dropped.
+- 0ad1e3f: the guard's floor 200 → 230; radix 2 alone as loops still
+  passes, and the header says so.
+- Corrections: identity's reach stated; radix-4 reference 104 (merged
+  m = 2 terms); stack paint attributed; radix 5's mutant run and logged.
+- x86-64 and AArch64 sections as at 70be604. M33 14 of 14 and both
+  residuals identical on the final tree; local CI passes.
