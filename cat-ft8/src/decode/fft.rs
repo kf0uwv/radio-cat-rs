@@ -439,10 +439,10 @@ fn twiddle_index<const R: usize>(m: usize, q: usize, k_step: usize) -> usize {
 /// result is the same bit for bit. Written out so that the inputs stay in
 /// registers and no loop counter or index is kept per term.
 macro_rules! straight_butterfly {
-    ($r:ident, $i:ident, $s:expr, $ms:tt, [$($q:tt)*], ($m:ident, $qq:ident) => $w:expr) => {{
+    ($r:ident, $i:ident, $s:expr, $ms:tt, $qs:tt, ($m:ident, $qq:ident) => $w:expr) => {{
         let ar = straight_butterfly!(@load $r, $s, $ms);
         let ai = straight_butterfly!(@load $i, $s, $ms);
-        straight_butterfly!(@store ar, ai, $r, $i, $s, $ms, [$($q)*], ($m, $qq) => $w);
+        straight_butterfly!(@store ar, ai, $r, $i, $s, $ms, $qs, ($m, $qq) => $w);
     }};
     // Outputs q in `$qs` of inputs `$ar`, `$ai`, stored at `$r[q·s]`,
     // `$i[q·s]`.
