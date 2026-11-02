@@ -668,3 +668,47 @@ fn envelope_is_the_64_bit_form() {
         assert_eq!(envelope(j).to_bits(), want.to_bits(), "sample {j}");
     }
 }
+
+#[test]
+fn running_sum_grouped_matches_the_plain_sum() {
+    // Both forms against a sum entry by entry: every length up to four
+    // groups and either side of the subtraction's block, from random and
+    // wrapping starts and entries.
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 32) as u32
+    };
+    for len in (0..=19).chain(239..=241) {
+        for case in 0..4 {
+            let p = if case == 0 { u32::MAX } else { next() };
+            let xs: Vec<u32> = (0..len)
+                .map(|k| {
+                    if case == 1 {
+                        u32::MAX - k as u32
+                    } else {
+                        next()
+                    }
+                })
+                .collect();
+            let mut want = xs.clone();
+            let mut q = p;
+            for x in &mut want {
+                let step = *x;
+                *x = q;
+                q = q.wrapping_add(step);
+            }
+            for grouped in [false, true] {
+                let mut got = xs.clone();
+                let end = if grouped {
+                    running_sum::<true>(p, &mut got)
+                } else {
+                    running_sum::<false>(p, &mut got)
+                };
+                assert_eq!((&got, end), (&want, q), "length {len} grouped {grouped}");
+            }
+        }
+    }
+}

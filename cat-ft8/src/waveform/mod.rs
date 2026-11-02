@@ -74,6 +74,7 @@
 
 mod tables;
 
+use crate::decode::math::VECTOR;
 use crate::{
     Error, NOMINAL_START_S, SAMPLES_PER_SYMBOL, SAMPLE_RATE, SYMBOL_COUNT, TONE_SPACING_HZ,
     WAVEFORM_SAMPLES,
@@ -293,13 +294,7 @@ impl Synth {
         // The increments first, then their running sum (the phase before
         // each sample).
         self.increments(pos, phase);
-        let mut p = self.phase;
-        for x in phase.iter_mut() {
-            let step = *x;
-            *x = p;
-            p = p.wrapping_add(step);
-        }
-        self.phase = p;
+        self.phase = running_sum::<VECTOR>(self.phase, phase);
         self.pos = pos + n;
         // `envelope(j)` on the ramps, exactly 1.0 elsewhere.
         envelope.fill(1.0);
@@ -415,6 +410,55 @@ impl Synth {
         }
         n
     }
+}
+
+/// The running sum of `xs` from `p`, in place: each entry becomes `p`
+/// plus the entries before it (from increments, the phase before each
+/// sample); returns `p` plus all of them (the phase after the last).
+/// Integer addition modulo 2³² is associative, so any grouping gives the
+/// same sums. With `GROUPED`, four entries at a time: their sums within
+/// the group first (two shifted adds), then the group's start added to
+/// each, so that one add per four entries is carried from group to group
+/// rather than one per entry. The compiler keeps this in scalar registers
+/// with paired loads and stores; on the Cortex-A76 it takes about one
+/// cycle an entry against two for the plain loop. (A form with each lane
+/// its own running sum, read through overlapping vector loads, was no
+/// faster there and slower on x86-64.)
+#[inline(always)]
+fn running_sum<const GROUPED: bool>(p: u32, xs: &mut [u32]) -> u32 {
+    let mut p = p;
+    let mut rest = xs;
+    if GROUPED {
+        let mut groups = rest.chunks_exact_mut(4);
+        for g in &mut groups {
+            let x = [g[0], g[1], g[2], g[3]];
+            // Inclusive sums within the group: by one entry, then by two.
+            let s1 = [
+                x[0],
+                x[1].wrapping_add(x[0]),
+                x[2].wrapping_add(x[1]),
+                x[3].wrapping_add(x[2]),
+            ];
+            let s2 = [
+                s1[0],
+                s1[1],
+                s1[2].wrapping_add(s1[0]),
+                s1[3].wrapping_add(s1[1]),
+            ];
+            // The sums before each entry: the inclusive ones less it.
+            for (y, (&s, &x)) in g.iter_mut().zip(s2.iter().zip(&x)) {
+                *y = p.wrapping_add(s.wrapping_sub(x));
+            }
+            p = p.wrapping_add(s2[3]);
+        }
+        rest = groups.into_remainder();
+    }
+    for x in rest {
+        let step = *x;
+        *x = p;
+        p = p.wrapping_add(step);
+    }
+    p
 }
 
 /// Samples per chunk in [`Synth::fill`], [`Synth::mix`] and
