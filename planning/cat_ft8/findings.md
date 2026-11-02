@@ -7315,8 +7315,8 @@ plain sum):
 2. **81cb159: the running phase in groups of four.**
    - On x86-64 and AArch64 (`VECTOR`), four increments are taken at a
      time. Their sums within the group come first, by two shifted adds.
-     The group's start phase is then added to each, so one add per four
-     samples is carried from group to group.
+     The group's start phase is then added to each. (As compiled, three
+     dependent adds per four samples are carried, not one: see O15b.)
    - The compiler keeps this in scalar registers, with paired loads and
      stores. In the crate's build, 12 AArch64 instructions cover four
      samples, with three dependent adds.
@@ -7464,16 +7464,18 @@ Measurement setup:
 | (c) plain in groups | 104.65 | 53.965 (0.10) | 22.100 | 361.20 G | 1 030.84 G | 36.467 M (+1.3%) | 2 444.74 M | 89 686 / 101 386 / 34 794 |
 
 The plain loop's A76 and x86-64 figures come from O15's runs, not this
-round's alternation.
+round's alternation. Its M33 figures are 81cb159's, the code the three
+variants were built from; against 641c599's host slot (2 427.73 M, the
+layout effect below) the forms' host slots read 1.29 M lower, (b)'s
+−18.73 M rather than −17.44 M.
 
 **Decision.**
 
 - **A76.** (b) and (c) are 0.33–0.35 ms slower than (a) on the
-  subtraction, about three times (a)'s spread, and 0.2 ms slower on the
-  slot. Neither is within spread of (a), so (a) stays.
-  - (a)'s feed reads 0.125 ms higher with no change to the feed. That
-    is placement, and of the same size as the difference, so the
-    margin between the forms is small.
+  subtraction and about 0.2 ms slower on the slot (0.2%), at the edge of
+  code-placement noise: the untouched feed moved 0.125 ms, about a third
+  of the subtraction gap. On these runs neither is within spread of (a),
+  so (a) stays.
 - **M33.** (a) is not neutral there: +4.3% per subtraction and +108 B
   of flash per image.
 - **x86-64.** The forms are within 0.3% of each other on x86-64.
@@ -7482,7 +7484,9 @@ round's alternation.
   loop, which is the M33's O15 code. The const parameter stays, so the
   test still runs both forms on every host.
 - **A lead for later.** (b) would cut the M33's subtraction by 1.4%
-  (+52 B of flash). It is not taken here.
+  (+52 B of flash). It is not taken here; if it is later taken on the
+  M33, (b) on every target should be reconsidered, given how small the
+  A76 margin is.
 
 ### The final commit (641c599)
 
@@ -7529,7 +7533,13 @@ builds.
 - **M33 (emulated):** the small and host images' decodes and statics on
   seven slots are byte-identical to 68634cc's (14 of 14), as are the
   multi-pass residuals on s0086 and s0407. The subtraction is
-  36.007 M instructions a call, unchanged.
+  36.007 M instructions a call, unchanged, and the `check.sh` sizes are
+  unchanged. The staged image's host slot is not quite: 2 427.73 M
+  against 2 426.44 M at 81cb159 (+1.29 M, +0.05%), all of it in
+  `Decoder::pass`, where each of the three feeds costs 429 824 more
+  (every other function's count identical). The staged image's text is
+  16 B larger. No code in the feed changed; it is a layout and inlining
+  effect at `opt-level = "s"`, as O15's −0.10 M was.
 
 **Checks:**
 
@@ -7539,3 +7549,6 @@ builds.
   source-tree test is skipped).
 - A mutant that offsets `round_small`'s returned value fails
   `floor_small`'s and belief propagation's pinned tests.
+- `round_small` is pinned at ±2²², ±(2²² − ½), ±½, ±1½, ±2½ and ±0
+  against `libm::rintf` (O15c). Mutants that round negative ties the
+  other way or use 2²³ as the constant fail it.

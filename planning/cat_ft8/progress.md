@@ -1552,15 +1552,27 @@
 
 - Three running-sum forms measured on every target (variants not on the
   branch): the grouped form is the only one faster on the A76 (b and c
-  0.33–0.35 ms slower on the subtraction, about three times the spread);
+  0.33–0.35 ms slower on the subtraction, about 0.2 ms (0.2%) on the
+  slot, at the edge of placement noise);
   it costs the M33 +4.3% per subtraction and +108 B, x86-64 neutral.
 - 641c599: the grouped sum on AArch64 only (`GROUPED_SUM`), its comment
   on the emitted code; `round_small` shared by `floor_small` and the
   x86-64 increment; `phase_of_ratio` in `decode::math`; docs re-wrapped.
-  A76 and M33 unchanged (104.40 against 104.35 ms; 36.007 M per
-  subtraction); x86-64 within spread.
+  A76 within spread (104.40 against 104.35 ms); M33 subtraction
+  unchanged (36.007 M per call) and `check.sh` sizes unchanged, the host
+  slot +1.29 M (+0.05%, `Decoder::pass` feed, layout and inlining);
+  x86-64 within spread.
 - Findings fixes from review (logged per-pass medians, the
   microbenchmarks' low-clock samples, local-only hashes, wording).
 - Identity: records x86-64 and A76, 800 WAV slots × 3 × 3 on both,
   encoder, M33 dump images and residuals. Local CI and the A76 suite
   pass. All 20 timed A76 runs valid (2 900 samples, all 0x0).
+
+## Session: 2026-11-01 (O15c closure fixes; branch `o15c` from `o15b`)
+
+- Records and a test only: the M33 claim narrowed (subtraction and
+  sizes unchanged; host slot +1.29 M from inlining in `Decoder::pass`,
+  confirmed from the emulator's per-function counts), O15's carried-add
+  wording, the A76 form result restated, rustc version on the codegen
+  claim, `round_small` pinned at its edges. Log files now carry the
+  round in their names.
