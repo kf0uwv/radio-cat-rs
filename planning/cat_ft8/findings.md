@@ -7227,3 +7227,196 @@ runs without it).
   symbol, their setup and scalar tails per 240-sample block) and, on
   x86-64, the two-step conversion of `increment`.
 - The blocked sum on the M33 and on other cores.
+
+## The generator's per-sample step, fifteenth round (O15, bit-identical, 2026-11-01)
+
+On the local branch `o15` from `o14` (2fca9a9, the code of 68634cc).
+The candidates are the generator's per-sample work: the phase increment
+(`increments`, its four runs per symbol and its conversion on x86-64)
+and the running sum after it. Each was chosen with an out-of-tree
+microbenchmark first. Two commits are kept: b18ded6 (x86-64) and
+81cb159 (x86-64 and AArch64). Decodes, records, residuals and encoder
+output are identical, with no qualification.
+
+### Measured first: where the generator's time goes
+
+The microbenchmark is a copy of `increments` and the running sum, run
+as the subtraction calls them: whole waveforms in 240-sample blocks,
+three messages and bases. Each variant is checked bit for bit against
+`Synth::fill_phase`. Figures are ns per sample, medians of 9. A76 runs
+are on core 3, all valid at 0x0.
+
+| | A76 | x86-64 |
+|---|---|---|
+| `increments` alone | 0.785 | 1.128 |
+| `increments` and the plain running sum | 1.578 | 1.383 |
+| the plain running sum alone | 0.793 | 0.290 |
+| `increments` alone, blocks of 240 / 480 / 960 / 1 920 | 0.781 / 0.737 / 0.716 / 0.710 | 1.121 / 1.082 / 1.052 / 1.041 |
+
+- **Correction to O14.** On the A76 the plain running sum is half the
+  generator. It runs at 1.9 cycles a sample (its loop, one load, one
+  store and one dependent add per sample, issues at half a sample a
+  cycle). O14 read the sum as a small part only because its sliding
+  form gained little. That form reads each entry four times, through
+  overlapping vector loads, and costs 0.677 ns a sample alone.
+- `increments` has a fixed cost per call: its runs' setup and the
+  scalar tails where a run ends inside a block. That cost is about 9%
+  of `increments` on the A76 and 7% on x86-64, measured against
+  whole-symbol calls. The subtraction's blocks are 240 samples, the
+  size of its working storage, so the most a change to the runs'
+  structure could save is about 0.07 ns a sample on the A76. That is
+  about 0.8 ms of the 107 ms crowded slot. No such change was made.
+- On x86-64, `increments` itself is the larger part: the vector
+  float-to-integer conversion is two floors (below).
+
+**Running-sum forms** (`increments` with the form, and the form alone):
+
+| form | A76 | A76 alone | x86-64 | x86-64 alone |
+|---|---|---|---|---|
+| plain loop | 1.578 | 0.793 | 1.407 | 0.290 |
+| **groups of four, carried add per group** | **1.187** | **0.394** | 1.403 | 0.326 |
+| O14's sliding sums (each lane its own sum) | 1.529 | 0.677 | 1.442 | 0.388 |
+| pairs | 1.281 | 0.426 | 1.382 | 0.290 |
+| groups of eight | 1.203 | 0.433 | 1.380 | 0.285 |
+| fused into `increments` (four at a time) | 2.313 | — | 3.823 | — |
+
+In the fused form the compiler converted each lane separately, so it
+is slower everywhere.
+
+**Increment conversions on x86-64** (`increments` alone; with the
+plain sum):
+
+| form | alone | with the sum |
+|---|---|---|
+| two floors (before) | 1.128 | 1.383 |
+| **one rounding, one floor** | **0.850** | **1.105** |
+| clamped, then `as i32` | 1.469 | 1.739 |
+
+### Changes
+
+1. **b18ded6: the x86-64 phase increment with one rounding and one
+   floor.**
+   - `increment(x)` for x in [0, 2³¹) took ⌊x / 2¹⁶⌋ and then the floor
+     of the rest. Each floor is a rounding (adding 1.5·2²³) and a
+     correction.
+   - Now r = x / 2¹⁶ is rounded to the nearest integer, with no
+     correction. The rest d = x − 2¹⁶·r satisfies |d| ≤ 2¹⁵ and is
+     floored once, so ⌊x⌋ = 2¹⁶·r + ⌊d⌋.
+   - Each step is exact. The scalings are by 2¹⁶. r·2¹⁶ fits, since
+     r ≤ 2¹⁵. d is x itself below 2¹⁵, where r = 0. Otherwise d is a
+     multiple of x's spacing, fewer than 2²⁴ of them.
+   - This is x86-64 only (`cfg`). Other targets are unchanged. Their
+     AArch64 decoder binary is byte-identical to the base's; their
+     `paired_bench` differs only in panic-location line numbers.
+   - Test: the existing `increment_matches_truncation_everywhere`
+     (every `f32` in [0, 2³¹)) and its strided form pass. A mutant that
+     truncates the rest instead of flooring it fails the strided test
+     and the per-sample generator test.
+2. **81cb159: the running phase in groups of four.**
+   - On x86-64 and AArch64 (`VECTOR`), four increments are taken at a
+     time. Their sums within the group come first, by two shifted adds.
+     The group's start phase is then added to each, so one add per four
+     samples is carried from group to group.
+   - The compiler keeps this in scalar registers, with paired loads and
+     stores. In the crate's build, 12 AArch64 instructions cover four
+     samples, with three dependent adds.
+   - Addition modulo 2³² is associative, so the phases are the same.
+     The Cortex-M33 keeps the plain loop; its subtraction's count is
+     unchanged.
+   - Test: both forms against the plain sum, at every length up to four
+     groups and at 239–241, from random and wrapping inputs. A mutant
+     that adds the wrong lane fails it and four pinned subtraction
+     tests.
+
+### A76 (Raspberry Pi 5; `slotcost host host,passes=1 200 5`, medians of 4 alternated runs)
+
+The builds are aligned, from one source path, run on core 3, with the
+throttle sampled once a second from core 0.
+
+| build | slot (ms) | subtract | feed | BP | one pass |
+|---|---|---|---|---|---|
+| 2fca9a9 (base, 68634cc's code; `paired_bench` byte-identical) | 107.50 | 56.775 | 22.100 | 21.020 | 20.20 |
+| b18ded6 (x86-64 increment) | 107.35 | 56.695 | 22.095 | 21.010 | 20.20 |
+| **81cb159 (grouped sum)** | **104.40 (−2.9%)** | **53.550 (−5.7%)** | 22.230 | 20.995 | 20.30 |
+
+- **The grouped sum takes 3.2 ms from the subtraction.** That is 13
+  times the largest run-to-run spread of the stage (0.25 ms). The
+  untouched stages move by at most 0.13 ms (feed, placement).
+- By pass: pass 2 is 54.32 → 52.11 ms, pass 3 is 32.98 → 32.03 ms, and
+  the cost per new decode is 0.84 / 4.96 / 10.68 ms.
+- b18ded6 does not change AArch64 code. Its −0.08 ms is inside the
+  spread.
+- **Every timed run is valid.** The 12 `slotcost` runs had 1 764
+  samples, every one 0x0, including the start and end checks; one
+  sample below 2.39 GHz, in the first second of the first run; peak
+  56.0 °C. The 11 microbenchmark runs were also all 0x0.
+
+### x86-64 (Threadripper 3970X, core 5, `perf stat` user counters over the whole `slotcost` program)
+
+| build | cycles (median) | instructions | subtract (ms) | `increments` share |
+|---|---|---|---|---|
+| round 1: 18198d7 (base code) | 374.03 G | 1 045.82 G | 34.19 | 17.2% |
+| ce9c5fe (= b18ded6's tree) | **361.30 G (−3.4%)** | 1 030.63 G (−1.45%) | 31.28 | 13.6% |
+| round 2: b18ded6 (the same binary) | 362.13 G | 1 030.63 G | 31.45 | 13.6% |
+| 81cb159 | 361.79 G (−0.1%) | 1 036.26 G (+0.55%) | 31.52 | 13.5% |
+
+- The stage times carry the clock bias of the virtual machine
+  (`acpi_pm`). The cycle counts are the measure.
+- On x86-64 the grouped sum is neutral, as in the microbenchmark.
+
+### Cortex-M33 (emulated instructions, staged measurement image, s0086)
+
+| | host slot | subtraction per call (37 calls) | `increments` | `fill_phase` | stack high water |
+|---|---|---|---|---|---|
+| 68634cc (O14) | 2 426.54 M | 36.007 M | 163.68 M | 73.29 M | 10 392 B |
+| 81cb159 | 2 426.44 M | 36.007 M | 163.68 M | 73.29 M | 10 392 B |
+
+- The subtraction is unchanged instruction for instruction, since the
+  M33 takes neither change.
+- The slot differs by −0.10 M (and the small slot by −34 k), in code
+  outside the generator that the compiler inlines differently between
+  builds (as in O13).
+
+### Sizes and stack (`check.sh --stack`, thumbv8m)
+
+- Flash is unchanged from 2fca9a9 at both commits: small 89 634 B,
+  host 101 334 B, the OSD variants the same, encoder only 34 766 B.
+- Static RAM is unchanged (212 048 / 241 616 / 0 B).
+- Every recorded frame is unchanged.
+- No fused multiply-add (`vmla` 75 / 146 / 13) and no `f64` helper.
+- thumbv7em builds.
+
+### Identity (81cb159)
+
+- **Records, x86-64:** the 73 800 `paired_bench run` records equal
+  b93516e's (0 differ).
+- **800 WAV slots** × 3 configurations × 3 modes: byte-identical to
+  b93516e's.
+- **Encoder:** the 45 WAV files are identical.
+- **Cortex-M33 in the emulator:** the small and host images' decodes
+  and statics on seven slots (14 of 14), and the multi-pass residuals
+  on s0086 and s0407, are byte-identical to 68634cc's.
+- **A76:** the 73 800 records of 81cb159's AArch64 `paired_bench`
+  equal x86-64's at 81cb159 and at b93516e (0 differ); the 800 WAV
+  slots × 3 × 3 with its AArch64 `cat-ft8-decode` byte-identical to
+  x86-64 b93516e's (7 200 runs, 78 690 decode lines). 0x0 before and
+  after each part.
+
+### Checks
+
+Local CI at 81cb159 passes: fmt; clippy `-D warnings` (workspace, all
+targets and features, thumbv8m); workspace, profile, no-std and release
+tests with the ignored ones (including `increment_matches_truncation_everywhere`
+on x86-64); the bulk run; MSRV 1.75; docs; `check.sh --stack`.
+Raspberry Pi 5: the release library tests with the ignored ones pass
+(190, the grouped-sum test among them; the source-tree test skipped).
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instructions only).
+- The grouped sum on the M33. The plain loop is kept there by
+  construction, and the grouped form was not counted.
+- The microbenchmark was not run on other cores.
+- After a toolchain change, check that the grouped sum still compiles to
+  paired loads and stores on AArch64 (12 instructions per four samples
+  in `fill_phase`, rustc 1.93.0).

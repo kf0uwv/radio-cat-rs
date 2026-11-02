@@ -1527,3 +1527,23 @@
   network; after it came back, rerun from scratch: records equal to
   x86-64's (73 800, 0 differ), the 800 WAV slots × 3 × 3 identical, the
   release library tests with the ignored ones pass (189).
+
+## Session: 2026-11-01 (O15, the generator's per-sample step; branch `o15` from `o14`)
+
+- Measured first (out-of-tree microbenchmark, A76 and x86-64): on the
+  A76 the plain running sum is half the generator (1.9 cycles a
+  sample), which corrects O14's reading; `increments`' per-call cost is
+  about 9% of it (ceiling about 0.8 ms a crowded slot, not pursued); on
+  x86-64 `increments`' two-floor conversion dominates.
+- b18ded6: x86-64 increment with one rounding and one floor (exact for
+  [0, 2³¹), every `f32` tested). x86-64 cycles −3.4%, `increments`
+  17.2% → 13.6% of the slot; AArch64 and M33 code unchanged.
+- 81cb159: the running sum in groups of four (scalar, paired loads and
+  stores) on x86-64 and AArch64. A76 three-pass slot 107.50 → 104.40 ms
+  (−2.9%), subtraction 56.78 → 53.55 ms (−5.7%), 13× the spread;
+  x86-64 neutral; M33 unchanged (plain loop kept).
+- Identity at 81cb159: x86-64 and A76 records (73 800 each, 0 differ),
+  800 WAV slots × 3 × 3 on both, encoder, the emulated small and host
+  images on seven slots and the residuals. Local CI and the A76 test
+  suite pass. Every timed A76 run valid (12 `slotcost`, 11
+  microbenchmark runs, every sample 0x0). Sizes and frames unchanged.
