@@ -36,6 +36,8 @@
 //! The twiddle, real-split and window tables are static data generated
 //! with `libm` and checked bit-for-bit by a test (`tables.rs`).
 
+use core::ops::Index;
+
 use super::tables::{HANN_HALF, SPLIT_TWIDDLES, TWIDDLES};
 
 /// Samples in one analysis window (two symbols at 12 kHz).
@@ -313,6 +315,35 @@ fn stage<const R: usize, const L: usize, const S: usize>(re: &mut [f32; N], im: 
     }
 }
 
+/// The sums of `L` radix-`R` butterflies side by side, from their inputs
+/// `ar`, `ai` (`[[f32; L]; R]`: m = 0..R, lane j): output q is
+/// a[0] + Σ_{m ≥ 1} a[m] · w(m, q)[j], the products added in the order of
+/// m, each lane on its own. The m = 0 product is not computed (see
+/// [`stage`]). The twiddle expression gives (re, im) for (m, q), each
+/// indexed by lane (an array, or a [`Same`] for every lane); the store
+/// block takes output q as (`sr`, `si`). A macro rather than a function,
+/// so that each caller compiles as its own loops did (a function, even
+/// inlined, moved the transform's code on every target; rustc 1.93.0).
+macro_rules! radix_sums {
+    ($r:expr, $l:expr, $ar:ident, $ai:ident, ($m:ident, $q:ident) => $w:expr,
+     ($sr:ident, $si:ident) => $out:block) => {
+        for $q in 0..$r {
+            let mut $sr = $ar[0];
+            let mut $si = $ai[0];
+            for $m in 1..$r {
+                let (wr, wi) = $w;
+                for j in 0..$l {
+                    let pr = $ar[$m][j] * wr[j] - $ai[$m][j] * wi[j];
+                    let pi = $ar[$m][j] * wi[j] + $ai[$m][j] * wr[j];
+                    $sr[j] += pr;
+                    $si[j] += pi;
+                }
+            }
+            $out
+        }
+    };
+}
+
 /// `L` radix-`R` butterflies side by side, at `k` = `base` + j of a block
 /// (inputs at `base + m · S`), with the twiddles of (m, q) from `w`, called
 /// for m = 1.. within q = 0.. in order.
@@ -334,22 +365,23 @@ fn butterflies<const R: usize, const L: usize, const S: usize>(
             ai[m][j] = i[m * l + j];
         }
     }
-    for q in 0..R {
-        let mut sr = ar[0];
-        let mut si = ai[0];
-        for m in 1..R {
-            let (wr, wi) = w(m, q);
-            for j in 0..L {
-                let pr = ar[m][j] * wr[j] - ai[m][j] * wi[j];
-                let pi = ar[m][j] * wi[j] + ai[m][j] * wr[j];
-                sr[j] += pr;
-                si[j] += pi;
-            }
-        }
+    radix_sums!(R, L, ar, ai, (m, q) => w(m, q), (sr, si) => {
         for j in 0..L {
             r[q * l + j] = sr[j];
             i[q * l + j] = si[j];
         }
+    });
+}
+
+/// One twiddle for every lane.
+#[derive(Clone, Copy)]
+struct Same(f32);
+
+impl Index<usize> for Same {
+    type Output = f32;
+    #[inline(always)]
+    fn index(&self, _lane: usize) -> &f32 {
+        &self.0
     }
 }
 
@@ -446,25 +478,13 @@ fn first_stage<const L: usize>(samples: &[f32; WINDOW], re: &mut [f32; N], im: &
             ar[3][j] = x[o + 2880] * high[g + 1];
             ai[3][j] = x[o + 2881] * high[g];
         }
-        // Each block's butterfly as `stage::<4, 1, 1>` computes it, the
-        // m = 0 product not computed (see `stage`).
-        for q in 0..4 {
-            let mut sr = ar[0];
-            let mut si = ai[0];
-            for m in 1..4 {
-                let [wr, wi] = w[m][q];
-                for j in 0..L {
-                    let pr = ar[m][j] * wr - ai[m][j] * wi;
-                    let pi = ar[m][j] * wi + ai[m][j] * wr;
-                    sr[j] += pr;
-                    si[j] += pi;
-                }
-            }
+        // Each block's butterfly as `stage::<4, 1, 1>` computes it.
+        radix_sums!(4, L, ar, ai, (m, q) => (Same(w[m][q][0]), Same(w[m][q][1])), (sr, si) => {
             for j in 0..L {
                 r[4 * j + q] = sr[j];
                 i[4 * j + q] = si[j];
             }
-        }
+        });
     }
 }
 
