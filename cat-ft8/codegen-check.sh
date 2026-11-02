@@ -16,16 +16,15 @@
 # Checks that the belief-propagation rounds, the subtraction's input
 # clamp and its reference's loads and stores are still vectorised on
 # AArch64, and that the clamp keeps its form on the microcontroller
-# targets. Their speed depends on code
-# generation that no test sees: the sum-product round's tanh and atanh
-# passes 24 values at a time (`PASS_LANES`), its products over four
-# checks in the lanes of one vector (`group_products`), min-sum likewise
-# (`group_min_sum`), and the clamp of the removal and the time search's
-# products as four-lane `fmaxnm`/`fminnm` rather than compares and
-# selects (`input_select`), and the reference stored in groups of four
-# (`GROUP`) loaded and stored as whole vectors, without interleaving
-# loads and stores or shuffles. A compiler change can lose any of them with
-# every test passing. On thumbv8m.main built with `--cfg cat_ft8_minmaxnm`
+# targets. Their speed depends on code generation that no test sees: the
+# sum-product round's tanh and atanh passes 24 values at a time
+# (`PASS_LANES`), its products over four checks in the lanes of one
+# vector (`group_products`), min-sum likewise (`group_min_sum`), the
+# clamp of the removal and the time search's products as four-lane
+# `fmaxnm`/`fminnm` rather than compares and selects (`input_select`),
+# and the reference stored in groups of four (`GROUP`) loaded and stored
+# as whole vectors, without interleaving loads and stores or shuffles. A
+# compiler change can lose any of them with every test passing. On thumbv8m.main built with `--cfg cat_ft8_minmaxnm`
 # (the Cortex-M33 measured) the clamp is `vmaxnm`/`vminnm`; on thumbv7em
 # (no such cfg) it must not call `fmaxf`/`fminf`, the library's `max` and
 # `min`. This emits the release library's assembly (one codegen unit; no
@@ -55,6 +54,13 @@
 # - shuffles (`zip`, `uzp`, `trn`) in `blocks` (the reference's block
 #   of 16 samples), a ceiling of 12: 3 with rustc 1.93; with the parts
 #   interleaved 19, and with each sample stored by itself 75;
+# - a ceiling counts only the code in its function, so it would pass if
+#   the loop it guards moved out (into a function of its own, or inlined
+#   elsewhere): each function with a ceiling also has a floor on its
+#   vector instructions. `Removal::refs` has its `fmaxnm`/`fminnm` floor;
+#   `Fit4::add_all` a floor of 12 `.4s` instructions (18 with rustc
+#   1.93; 8 with its four-lane step `add4` out of line) and `blocks` 400
+#   (549; 0 with `scaled_cos_sin` out of line).
 # - thumbv8m.main with the cfg: `vmaxnm`/`vminnm` in the removal, a
 #   floor: 20 with rustc 1.93, 0 without the cfg;
 # - thumbv7em: calls of `fmaxf`/`fminf` in the removal,
@@ -94,7 +100,8 @@ checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 7Removal4refs minmax 2" "a64 symbol_correlations minmax 2"
   "a64 7Removal4refs selects 2"
   "a64 7Removal4refs interleaved 0" "a64 4Fit47add_all interleaved 0"
-  "a64 whole_lane_sums vec4 2" "a64 6blocks shuffles 12"
+  "a64 4Fit47add_all vec4 12" "a64 whole_lane_sums vec4 2"
+  "a64 6blocks shuffles 12" "a64 6blocks vec4 400"
   "m33 7Removal4refs vminmax 8"
   "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit47add_all libcalls 0")
 
