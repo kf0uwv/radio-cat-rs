@@ -1679,3 +1679,19 @@
 - Every commit's eight binaries are byte-identical to aec6a07's. The nine
   O17 mutants were rerun with logs (all caught); local CI passes; the A76
   library tests were rerun at the head with the source commit recorded.
+
+## Session: 2026-11-02 (O17c closure follow-ups)
+
+- The code-generation check: cleans the library before building (a
+  second run failed), counts in awk (no `grep -P`), and has a ceiling of
+  25 single-lane moves in `sum_product_round` (15 at the head; 46 with
+  the group products in place, which the A76 timed at BP +0.99 ms; 38
+  with groups of one). The thin margin under passes of 4 values (452 for
+  a floor of 500) is noted. An intermediate products form still passes.
+- A test comment on comparing NaN bits; the NaN-only mutant in the
+  mutant script, with logs.
+- Records corrected: the toolchain re-check points at the check, two
+  O17b rejections become follow-ups, and the mutant-count note is
+  reworded.
+- `.text` and `.rodata` byte-identical to aec6a07's on all eight
+  binaries; local CI passes.

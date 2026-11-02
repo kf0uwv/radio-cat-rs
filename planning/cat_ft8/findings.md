@@ -8296,10 +8296,13 @@ code (byte-identical `.text`).
 - x86-64 stage times carry the virtual machine's clock bias.
 - **After a toolchain change**, the group forms depend on the compiler
   keeping a group's four lanes in one vector (rustc 1.93.0). A change
-  can lose that with every test passing. Re-run the A76 `slotcost` in
-  both configurations, or check the AArch64 release `paired_bench`:
-  `sum_product_round` 1 552 and `min_sum_round` 1 934 instructions at
-  37ec493.
+  can lose that with every test passing. Run `cat-ft8/codegen-check.sh`
+  (O17b, O17c), and re-run the A76 `slotcost` in both configurations if
+  it fails. The check counts the release library's AArch64 assembly (one
+  codegen unit): `sum_product_round` 1 457 instructions, 696 of them
+  `.4s`, and `min_sum_round` 1 273 and 156. (The 1 552 and 1 934 given
+  here before were counted in the aligned, linked `paired_bench`, a
+  different build; use the check's counts.)
 
 ## Review follow-ups (O17b, bit-identical, 2026-11-02)
 
@@ -8323,10 +8326,10 @@ over unchanged, and none was rerun.
   these findings (O17).
 - **eb9f723: `group_products`' scratch has exactly D rows** (`[[f32; K];
   D]`, no `.take(D)`). Byte-identical everywhere.
-  - Not kept: the same change in `group_min_sum`. It changed
+  - Not taken this round: the same change in `group_min_sum`. It changed
     `min_sum_round` on both hosts (x86-64 1 447 → 1 414 instructions,
-    AArch64 rescheduled at equal length), so it would need its own
-    identity and timing.
+    AArch64 rescheduled at equal length). A follow-up to measure in its
+    own commit, with identity and timing.
 - **508fc10: `inputs`' doc says the blocked round is tested only on
   AArch64.** `INPUT_BLOCK` is not a parameter of the round; elsewhere the
   tests compare `inputs` itself at several block sizes.
@@ -8364,7 +8367,8 @@ over unchanged, and none was rerun.
     products on their own. Groups of one leave the round's count at 709.
     The products' vector form is guarded only by the A76 timing.
 
-**Tried and not kept: the layout's tables as associated constants**
+**Tried, a follow-up to measure: the layout's tables as associated
+constants**
 (`Layout<G>`, in place of `tables<G>()`'s `#[cfg(test)]` hook into the
 tests' copies).
 - Constant promotion works on Rust 1.75. The tests pass, and the x86-64
@@ -8372,15 +8376,16 @@ tests' copies).
 - The thumbv8m images are not. Their functions are identical once
   addresses are normalised, but `.rodata` is 4 B smaller and `.text`
   differs (the tables are placed differently).
-- By the rule for this round (byte identity on every target), the
-  current form stays: `tables<G>()` returns the statics for `GROUP` and,
-  in the tests only, the tests' copies for the other size.
+- This round required byte identity on every target, so the current
+  form stays for now: `tables<G>()` returns the statics for `GROUP` and,
+  in the tests only, the tests' copies for the other size. Taking the
+  associated constants is a follow-up for a measured round: the M33
+  images' identity and counts, since only placement changed there.
 
 ### Evidence record corrected
 
 - **Mutants.** O17 ran nine, as its section lists (4 for 6bc283f, 1 for
-  63d8dd6, 4 for 37ec493). A count of 13 given outside these findings
-  was wrong. All nine were rerun against the commits they were written
+  63d8dd6, 4 for 37ec493). An earlier count of 13 was wrong. All nine were rerun against the commits they were written
   for, one log each, and all are caught. The NaN mutant above makes ten.
 - **The A76 library tests.** O17's run (194 passed) logged the binary's
   hash (d5ccf172…) but not its source commit. The run at this round's
@@ -8405,3 +8410,79 @@ tests' copies).
   round.
 - The series keeps 6bc283f's measured small-configuration regression
   (fixed by 37ec493); O17 records it.
+
+## Closure follow-ups (O17c, 2026-11-02; no code generation change)
+
+On top of O17b (8503bc9), one change per commit:
+- ae3d080, c0c265b, cec2739 and 1620c52 change only the code-generation
+  check;
+- 6827dd9 changes a test comment.
+
+The `.text` and `.rodata` of all eight binaries are byte-identical to
+aec6a07's at c0c265b and at 6827dd9 (one scratch path, rustc 1.93.0).
+The commits between them change no `.rs` file.
+
+### The code-generation check
+
+- **ae3d080: it cleans the library first.** On a second run cargo saw
+  the library as fresh, ran no compiler and wrote no assembly, so the
+  check stopped with an error. It never passed falsely. It now runs
+  `cargo clean` for the package and target before building. Two runs back
+  to back both pass (logged, before and after).
+- **c0c265b: it counts in awk.** `grep -P` is GNU only. The counts are
+  unchanged (696, 156) with mawk (this machine's awk) and busybox awk;
+  GNU awk was not available to try.
+- **cec2739: a ceiling on single-lane moves in `sum_product_round`.**
+  - The metric is `mov`, `ins`, `dup`, `ld1` and `st1` on a `.s[i]`
+    element, counted with a ceiling of 25.
+  - The `.4s` floor did not see the group products; this does. Each check
+    is a function, a metric and a bound. The forced changes (logged, each
+    reverted):
+
+| forced change | `.4s`, sum-product (floor 500) | single-lane moves, sum-product (ceiling 25) | `.4s`, min-sum (floor 100) | result |
+|---|---|---|---|---|
+| none (the head) | 696 | 15 | 156 | pass |
+| group products in place, row by row (O17's 1.71 cycles per edge form) | 695 | **46** | 156 | fails |
+| group products loaded first, stored row by row (O17's 1.27 form) | 771 | 15 | 156 | **passes** |
+| `GROUP` one on every target | 709 | **38** | **29** | fails |
+| `PASS_LANES` 4 / 8 / 16 / 32 | **452 / 177 / 301 / 115** | 15 | 156 | fails |
+
+  - **The in-place form, timed** (Raspberry Pi 5, `slotcost host
+    host,passes=1 200 5`, aligned builds, two alternated runs each).
+    Belief propagation costs 0.99 ms more, against untouched stages that
+    moved at most 0.10 ms:
+
+| build | slot (ms) | BP | feed | subtract | one pass | one-pass BP |
+|---|---|---|---|---|---|---|
+| the head (c0c265b; the same code as aec6a07) | 99.60 | 19.050 | 19.390 | 53.575 | 18.40 | 8.940 |
+| the head with in-place group products | 100.65 | 20.040 (+5.2%) | 19.370 | 53.675 | 18.90 | 9.410 |
+
+  - All four runs are valid: 555 samples during the runs and 20 in the
+    warm-ups, every one 0x0, start and end included. No sample was below
+    2.39 GHz. Peak 54.3 °C.
+  - **Limit.** The intermediate form, about half the in-place form's
+    loss in the O17 microbenchmark (1.27 against 0.82 cycles per edge, or
+    roughly 2% of the round), passes every bound. Neither metric
+    separates it.
+- **1620c52:** the script's comment notes the thin margin, 452 for
+  passes of 4 values against the floor of 500.
+
+### Other changes
+
+- **6827dd9:** the min-sum round test says why comparing NaN bits is
+  sound: a NaN is never one of the two smallest magnitudes, and a NaN
+  sum comes from the same additions in every form.
+- **Mutants.** The NaN-only mutant's diff is now in the mutant script, as
+  mutant ten. It survives the test before the special values (37ec493)
+  and is caught by the test with them (3fe54a0), with one log each.
+- **Records.** Three corrections, made in place:
+  - O17's toolchain re-check now points at the code-generation check and
+    its library counts (1 457 / 1 273 instructions, `.4s` 696 / 156).
+  - O17b's associated-constant tables and sized min-sum scratch are
+    recorded as follow-ups to measure, not as final rejections.
+  - The mutant-count note now reads "An earlier count of 13 was wrong."
+
+### Checks
+
+Local CI passes at the head, including the code-generation check and
+`check.sh --stack` (flash 89 734 / 101 430 / 34 766 B, unchanged).
