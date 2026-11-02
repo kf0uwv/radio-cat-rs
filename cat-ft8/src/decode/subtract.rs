@@ -885,8 +885,11 @@ fn run(
 ) -> Result<Subtraction, Error> {
     config.validate()?;
     // The held reference's ring, in pairs, rounded down to a multiple of
-    // LANES for speed only (no lane wraps); results do not depend on it.
+    // LANES. Required: sample j is held at slot j % ring, and the fit
+    // (`Fit4::add_all`) takes whole lanes only if the two are equal modulo
+    // LANES; it also keeps every group of slots whole.
     let ring = (held.len() / PAIR).min(HELD) / LANES * LANES;
+    assert_eq!(ring % LANES, 0);
     if ring < BLOCK {
         return Err(Error::BufferTooSmall);
     }
