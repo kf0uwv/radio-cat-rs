@@ -14,15 +14,20 @@
 # limitations under the License.
 #
 # Checks that the belief-propagation rounds and the subtraction's input
-# clamp are still vectorised on AArch64. Their speed depends on code
+# clamp are still vectorised on AArch64, and that the clamp keeps its
+# form on the microcontroller targets. Their speed depends on code
 # generation that no test sees: the sum-product round's tanh and atanh
 # passes 24 values at a time (`PASS_LANES`), its products over four
 # checks in the lanes of one vector (`group_products`), min-sum likewise
 # (`group_min_sum`), and the clamp of the removal and the time search's
 # products as four-lane `fmaxnm`/`fminnm` rather than compares and
 # selects (`input_select`). A compiler change can lose any of them with
-# every test passing. This emits the release library's AArch64 assembly
-# (one codegen unit) and fails if a function's count is past its bound:
+# every test passing. On thumbv8m.main built with `--cfg cat_ft8_minmaxnm`
+# (the Cortex-M33 measured) the clamp is `vmaxnm`/`vminnm`; on thumbv7em
+# (no such cfg) it must not call `fmaxf`/`fminf`, the library's `max` and
+# `min`. This emits the release library's assembly (one codegen unit; no
+# std for the microcontrollers) for each target and fails if a
+# function's count is past its bound:
 # - four-lane `.4s` instructions, a floor: with rustc 1.93
 #   sum_product_round has 696 and min_sum_round 156; forms that lost the
 #   gain counted 115-452 (passes of 4 to 32 values, 32 not unrolled) and
@@ -35,43 +40,66 @@
 #   symbol_correlations, a floor, and compares and selects (`fcmgt`,
 #   `bsl`, `bit`, `bif`) in the removal, a ceiling: with rustc 1.93 the
 #   removal has 6 and 0, symbol_correlations 8; with the branch form of
-#   the clamp 0, 18 and 0.
+#   the clamp 0, 18 and 0;
+# - thumbv8m.main with the cfg: `vmaxnm`/`vminnm` in the removal, a
+#   floor: 20 with rustc 1.93, 0 without the cfg;
+# - thumbv7em: calls of `fmaxf`/`fminf` in the removal,
+#   symbol_correlations and `Fit4::add_all`, a ceiling of 0: with the cfg
+#   (wrongly set) they are 20, 6 and 8.
 # The multiplication by an envelope of 1.0 that the reference leaves out
 # (the weight folded by the compiler) is not checked: findings O18b.
 # A bound that fails means: re-measure on the Cortex-A76 (planning/
 # cat_ft8, findings O12, O17, O17c and O18) before changing it.
 #
-# Needs: rustup target aarch64-unknown-linux-gnu (assembly only; nothing
-# is linked).
+# Needs: rustup targets aarch64-unknown-linux-gnu, thumbv8m.main-none-eabihf
+# and thumbv7em-none-eabihf (assembly only; nothing is linked).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-target=aarch64-unknown-linux-gnu
 target_dir="${CARGO_TARGET_DIR:-$here/../target/codegen-check}"
-# Each check: the function, what is counted, and its bound. The function
+# The builds: a name, the target, cargo's features option and a `--cfg`
+# for rustc (`-` for none).
+builds=("a64 aarch64-unknown-linux-gnu - -"
+  "m33 thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm"
+  "m4 thumbv7em-none-eabihf --no-default-features -")
+# Each check: the build, the function, what is counted, and its bound. The function
 # is a name, or a mangled path segment as it appears in the symbol (its
 # length first) where the name alone is ambiguous. `vec4` counts
 # instructions with a four-lane `.4s` operand, at least the bound; `lanes`
 # counts moves into or out of single lanes (`mov`, `ins`, `dup`, `ld1`,
 # `st1` on a `.s[i]` element), at most the bound; `minmax` counts
 # four-lane `fmaxnm` and `fminnm`, at least the bound; `selects` counts
-# `fcmgt`, `bsl`, `bit` and `bif`, at most the bound. A function whose
-# label is not found, or an unknown metric, fails.
-checks=("sum_product_round vec4 500" "sum_product_round lanes 25" "min_sum_round vec4 100"
-  "7Removal4refs minmax 2" "symbol_correlations minmax 2"
-  "7Removal4refs selects 2")
+# `fcmgt`, `bsl`, `bit` and `bif`, at most the bound; `vminmax` counts
+# `vmaxnm` and `vminnm`, at least the bound; `libcalls` counts calls of
+# `fmaxf` and `fminf`, at most the bound. A function whose label is not
+# found, or an unknown metric, fails.
+checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
+  "a64 min_sum_round vec4 100"
+  "a64 7Removal4refs minmax 2" "a64 symbol_correlations minmax 2"
+  "a64 7Removal4refs selects 2"
+  "m33 7Removal4refs vminmax 8"
+  "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit47add_all libcalls 0")
 
-# Clean the library first: cargo would otherwise see it as fresh, run no
-# compiler and write no assembly.
-CARGO_TARGET_DIR="$target_dir" cargo clean -q --release -p cat-ft8 --target "$target" \
-  --manifest-path "$here/Cargo.toml"
-CARGO_TARGET_DIR="$target_dir" cargo rustc -q --release -p cat-ft8 --lib --target "$target" \
-  --manifest-path "$here/Cargo.toml" -- --emit=asm -C codegen-units=1
-asm=$(ls "$target_dir/$target/release/deps/"cat_ft8-*.s)
+declare -A asm
+for b in "${builds[@]}"; do
+  set -- $b
+  key=$1 target=$2 cargo_opt=$3 rustc_opt=""
+  [ "$cargo_opt" = - ] && cargo_opt=""
+  [ "$4" = - ] || rustc_opt="--cfg $4"
+  dir="$target_dir/$key"
+  # Clean the library first: cargo would otherwise see it as fresh, run
+  # no compiler and write no assembly.
+  CARGO_TARGET_DIR="$dir" cargo clean -q --release -p cat-ft8 --target "$target" \
+    --manifest-path "$here/Cargo.toml"
+  # shellcheck disable=SC2086 # the options are deliberately split
+  CARGO_TARGET_DIR="$dir" cargo rustc -q --release -p cat-ft8 --lib --target "$target" \
+    $cargo_opt --manifest-path "$here/Cargo.toml" -- --emit=asm -C codegen-units=1 $rustc_opt
+  asm[$key]=$(ls "$dir/$target/release/deps/"cat_ft8-*.s)
+done
 
 fail=0
 for entry in "${checks[@]}"; do
   set -- $entry
-  name=$1 metric=$2 bound=$3
+  key=$1 name=$2 metric=$3 bound=$4
   # The function's body runs from its mangled label to the next
   # function's; count its instructions of the metric's kind.
   case "$name" in [0-9]*) seg=$name ;; *) seg="${#name}$name" ;; esac
@@ -83,9 +111,11 @@ for entry in "${checks[@]}"; do
     metric == "lanes" && /^\t(mov|ins|dup|ld1|st1)\t.*\.s\[/ { n++ }
     metric == "minmax" && /^\t(fmaxnm|fminnm)\t.*\.4s/ { n++ }
     metric == "selects" && /^\t(fcmgt|bsl|bit|bif)\t/ { n++ }
-    END { if (found) print n + 0; else print "missing" }' "$asm")
+    metric == "vminmax" && /^\t(vmaxnm|vminnm)/ { n++ }
+    metric == "libcalls" && /^\tbl\t(fmaxf|fminf)$/ { n++ }
+    END { if (found) print n + 0; else print "missing" }' "${asm[$key]}")
   if [ "$n" = missing ]; then
-    echo "FAIL $name: function not found"
+    echo "FAIL $key $name: function not found"
     fail=1
     continue
   fi
@@ -94,12 +124,14 @@ for entry in "${checks[@]}"; do
     lanes) what="single-lane moves (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     minmax) what="four-lane fmaxnm/fminnm (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     selects) what="compares and selects (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    vminmax) what="vmaxnm/vminnm (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
+    libcalls) what="fmaxf/fminf calls (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     *) what="unknown metric $metric"; ok=0 ;;
   esac
   if [ $ok = 1 ]; then
-    echo "ok   $name: $n $what"
+    echo "ok   $key $name: $n $what"
   else
-    echo "FAIL $name: $n $what"
+    echo "FAIL $key $name: $n $what"
     fail=1
   fi
 done
