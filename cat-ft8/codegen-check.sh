@@ -63,7 +63,7 @@
 # The multiplication by an envelope of 1.0 that the reference leaves out
 # (the weight folded by the compiler) is not checked: findings O18b.
 # A bound that fails means: re-measure on the Cortex-A76 (planning/
-# cat_ft8, findings O12, O17, O17c and O18) before changing it.
+# cat_ft8, findings O12, O17, O17c, O18 and O19) before changing it.
 #
 # Needs: rustup targets aarch64-unknown-linux-gnu, thumbv8m.main-none-eabihf
 # and thumbv7em-none-eabihf (assembly only; nothing is linked).

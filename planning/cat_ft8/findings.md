@@ -8998,3 +8998,374 @@ rustc 1.93.0). The others change scripts and the CI workflow only.
 Local CI passes at 38aec91, including the extended code-generation check
 (AArch64 696 / 15 / 156 / 6 / 8 / 0; thumbv8m 20; thumbv7em 0 / 0 / 0)
 and `check.sh --stack`.
+
+## The subtraction, nineteenth round (O19, bit-identical, 2026-11-02)
+
+Base: 3ec5266 (the code of O18c). The target is still the signal
+subtraction, 48.1 ms of the A76's 94.0 ms crowded three-pass host slot.
+Two code commits are kept, one optimisation each: 0286ee8 (the
+generator's phase in closed form where the pulse is alone) and 7e388d3
+(the subtraction's reference in groups of four lanes). Decodes,
+records, residuals and encoder output are identical, with no
+qualification. The subtraction falls 48.10 → 43.77 ms (−9.0%) and the
+slot 94.00 → 89.70 ms (the base and 7e388d3 were timed in two
+sequences, linked by 0286ee8, which read the same in both).
+
+### Measured first
+
+O18's microbenchmark (same workload, A76 core 3, cycles per waveform
+sample, medians of six: two runs of three rounds, alternated, all valid
+at 0x0) at the base and at each step:
+
+| part | 3ec5266 | 0286ee8 | 0286ee8 (2nd pair) | grouped, first form | grouped, final form |
+|---|---|---|---|---|---|
+| **the subtraction** | **22.04** | 21.68 | 21.69 | 21.21 | **20.03** |
+| the subtraction, reported (`subtract`) | | | 29.20 | 29.50 | 28.34 |
+| time search: generator (per core sample) | 4.42 | 4.08 | 4.08 | | 4.12 |
+| time search: correlations (per core sample) | 11.06 | 10.76 | 10.77 | 11.03 | 10.58 |
+| fit path: generator | 2.59 | 2.40 | 2.40 | | 2.42 |
+| + correction + reference | 9.20 | 9.00 | 9.00 | 9.79 | 9.03 |
+| + fit (fused) | 12.62 | 12.47 | 12.45 | | 11.40 |
+| the fit loop alone | 3.19 | 3.19 | 3.19 | 2.47 | 2.47 |
+
+(The "grouped" columns are work-tree forms measured on the way to
+7e388d3; the final form's figures are of 7e388d3 itself.)
+
+What the counts and the code showed:
+
+- **The running sum still runs where every increment is the same.** O18
+  stored one increment, `step(cur)`, at each of the 509 samples per
+  symbol where the current pulse is alone, and the running sum then
+  added them one by one. The phase there is the run's first phase plus
+  k increments: integer arithmetic modulo 2³², so a product is exact
+  and the same as the sum. (The round's brief asked whether a closed
+  form could reproduce an `f32` running sum: it need not; the phase is
+  a `u32`.)
+- **The fit loaded the sines twice.** `Fit4::add_all`'s four-lane loop
+  was 27 AArch64 instructions per four samples: an `ld2` of the four
+  pairs, and then the four sines again by `ldur` and three `ld1` lane
+  inserts, only for their squares. Reordering the sums, reading the
+  pairs as eight floats, `|s|·|s|` and a copy of the sines all left the
+  same 27; removing one sum changed the loop altogether (259
+  instructions). The pairs' interleaved layout was the cause: the
+  removal also loaded them with `ld2` and the reference and products
+  were stored with `st2`.
+
+### Changes
+
+1. **0286ee8: the generator's phase in closed form where the pulse is
+   alone.**
+   - `Synth::increments` becomes `Synth::phases<SUM_ONLY>`: each symbol
+     in its three runs. In the two where pulses overlap the increments
+     are stored and then summed (the running sum, or with `SUM_ONLY`
+     for `skip_with` their total); in the run where the pulse is alone
+     the phase is written as the run's first phase plus k increments (a
+     loop the compiler vectorises: 8 samples in 6 AArch64 instructions)
+     and the run's total is one product.
+   - Integer addition modulo 2³² is associative, so the phases are the
+     same. Mutants caught (one log each): the run's total one increment
+     short (27 tests fail), its first phase one increment on (7), and
+     `skip_with` without the run (7).
+   - On the M33, `increments` was one function shared by `skip` and
+     `fill_phase`; the two instances of `phases` are each inlined: the
+     small check image's `.text` +736 B (+740 B of flash as `check.sh`
+     counts it, below).
+   - **Not kept: `SUM_ONLY` as a runtime argument.** One shared copy on
+     the M33 (`.text` +196 B instead of +736 B), but other code on the
+     hosts:
+     A76 subtraction 47.315 ms against 47.260 (the second sequence),
+     x86-64 335.10 G cycles against 334.48 G (within the base's range),
+     M33 32.386 M instructions a call against 32.344 M.
+2. **7e388d3: the subtraction's reference in groups of four lanes.**
+   - The held reference and the time search's products are stored by
+     slot in groups of `GROUP` samples: the group's cosines, then its
+     sines. `GROUP` is `LANES` (four) where the target has a vector
+     unit and one elsewhere, where the layout is the pair as before.
+     Every caller keeps a sample's slot equal to its index modulo the
+     lanes (the ring and the blocks are whole groups), so whole lanes
+     are whole groups and each part loads and stores as one vector.
+   - AArch64 (the aligned `paired_bench`): the fit's loop is 20
+     instructions per four samples (27), one `ldp` for the group; the
+     removal's 21 (22), `ldp` for `ld2`; no `ld2`, `st2`, `ld4` or
+     `st4` is left in the subtraction.
+   - Three code-generation hazards were met and are worked around in
+     the source:
+     - **The removal.** Written over whole groups, its loop was taken
+       four groups at a time by the loop vectoriser, with `ld4`/`st4`
+       and shuffles (117 instructions per 16 samples, against 24 per
+       four for the SLP form it left as the epilogue). Each lane's ramp
+       index is now carried as an `f32` (an integer below 2²⁴, so it
+       and each step of four are exact, and the clamp at 0 gives
+       `ramp_index`'s value): a floating-point recurrence that the loop
+       vectoriser does not take, and the ramp becomes one `fadd` and
+       one `fmaxnm` per four samples.
+     - **The reference's block of 16.** Stored sample by sample through
+       `put`, the polynomial was rebuilt with `zip`/`uzp` shuffles (159
+       instructions per 16 samples; 136 before); computed into a cosine
+       array and a sine array and stored a group's part at a time, it
+       is 127.
+     - **The time search's lane sums.** Inside `lane_sums` the compiler
+       kept the eight sums as scalars (15 instructions per four
+       samples, against 9 with the pairs as two-lane vectors); in a
+       function of their own (`whole_lane_sums`, not inlined, one call
+       per block) the loop is five instructions: `ldp`, two `fadd`.
+   - **The M33.** The first grouped form ran the writer's and the
+     removal's per-sample steps through closures that the M33 build
+     (`opt-level = "s"`) did not inline: 41.410 M instructions a call
+     (+28%). Where a group is one sample the writer and the removal now
+     keep their sample-by-sample loops, and the removal's step is an
+     `#[inline(always)]` function (`remove_one`); the M33 count is then
+     32.198 M (−0.45% on 0286ee8). The hosts' code is unchanged by
+     that (the branches fold away), except the removal's, which
+     changed shape with `remove_one` (its main loop 21 instructions as
+     before).
+   - Tests: the writer against the plain loop from every first slot
+     modulo a group (`GROUP + 2` slots) and every length up to three
+     blocks of `W`; the reference without an envelope from every slot;
+     the removal against its first form with the reference at slots
+     not equal to its sample index modulo a group; the fit with its
+     reference from slot `i0` and a lane on.
+   - Mutants caught (one log each): the sine part stored beside the
+     cosine (8 tests fail), the writer's single samples before the
+     first whole group miscounted (3), the removal's carried index one
+     on (4), the lane sums' sines subtracted (11), and the removal's
+     slot not advanced between runs (13).
+   - **The code-generation check** (`codegen-check.sh`, rustc 1.93.0)
+     now also fails on interleaving loads or stores (`ld2`–`ld4`,
+     `st2`–`st4`) in `Removal::refs` and `Fit4::add_all` (ceiling 0),
+     on shuffles in `blocks` (ceiling 12), and on `whole_lane_sums`
+     having fewer than two four-lane instructions or not being found.
+     Each was shown to fire on a forced form (one log each):
+
+| forced form | `Removal::refs` interleaved | `Fit4::add_all` interleaved | `blocks` shuffles | `whole_lane_sums` |
+|---|---|---|---|---|
+| 7e388d3 | 0 | 0 | 3 | 2 |
+| a group of one on every target | **3** | **1** | **19** | 2 |
+| the removal's index as an integer | **2** | 0 | 3 | 2 |
+| each sample of the block stored by itself | 0 | 0 | **75** | 2 |
+| `whole_lane_sums` inlined | 0 | 0 | 3 | **not found** |
+
+     The removal's four-lane `fmaxnm`/`fminnm` count is 5 (it was 6);
+     its floor is 2.
+
+### A76 (Raspberry Pi 5; `slotcost host host,passes=1 200 5`, medians of 4 alternated runs)
+
+Aligned builds (`-align-loops=64 -align-all-functions=6`) from one
+scratch path, core 3, the throttle, clock and temperature sampled once a
+second from core 0, a 5 s busy loop on core 3 (sampled) before each
+run. Two sequences of three builds, each alternated (forward, then
+reversed); 0286ee8 is in both. The second sequence's last build is the
+work tree that became 7e388d3: its eight binaries' `.text` and
+`.rodata` are byte-identical to 7e388d3's (the commit added only a
+comment). "Grouped, first form" is the grouped layout before the M33
+changes; "runtime argument" is the form of 0286ee8 not kept.
+
+| build | slot (ms) | subtract (spread) | pass 2 / pass 3 subtract | feed | BP | sync | one pass |
+|---|---|---|---|---|---|---|---|
+| 3ec5266 (base) | 94.00 | 48.100 (0.020) | 33.505 / 14.590 | 19.290 | 19.050 | 4.680 | 18.40 |
+| 0286ee8 | 93.00 | 47.255 (0.020), −0.845 | 32.920 / 14.340 | 19.075 | 19.050 | 4.680 | 18.30 |
+| grouped, first form | 89.65 | 43.730 (0.080) | 30.465 / 13.265 | 19.295 | 19.050 | 4.680 | 18.40 |
+| *second sequence* | | | | | | | |
+| 0286ee8 | 93.00 | 47.260 (0.030) | 32.920 / 14.335 | 19.080 | 19.050 | 4.680 | 18.30 |
+| runtime argument (not kept) | 93.20 | 47.315 (0.030) | 32.960 / 14.355 | 19.285 | 19.050 | 4.680 | 18.40 |
+| **7e388d3** | **89.70** | **43.765 (0.110), −3.495; −4.335 (−9.0%) on the base** | 30.485 / 13.275 | 19.295 | 19.050 | 4.670 | 18.40 |
+
+- **Placement check.** Compared function by function (AArch64
+  `paired_bench`, addresses and branch offsets normalised): between
+  3ec5266 and 0286ee8 only the generator and its callers differ
+  (`fill_phase`, `fill_phase_only`, `skip_with`, `increments` gone,
+  `synthesize`, `blocks`, `symbol_correlations`), plus `soft_bits_at`
+  in its addressing only (`adr` for `adrp`); between 0286ee8 and
+  7e388d3 the subtraction's functions, plus `soft_bits_at` (628 → 611
+  instructions; its stage, soft bits, is 2.380 ms in both),
+  `reliability_order` and three `paired_bench` functions in addressing
+  only.
+- The feed's code is the same in all four builds, yet it reads 19.075–
+  19.080 ms in 0286ee8's binary and 19.285–19.295 ms in the others
+  (0.215 ms): placement. It is the largest untouched move. 0286ee8's
+  gain (0.845 ms, reproduced at 47.255 and 47.260 in the two
+  sequences) is 3.9 times it and 42 times the stage's spread; 7e388d3's
+  (3.495 ms) 16 times it. Sync, soft bits and belief propagation move
+  by at most 0.010 ms.
+- By pass: 18.31 / 46.86 / 28.84 → 18.31 / 43.84 / 27.52 ms; per new
+  decode 0.76 / 4.46 / 9.61 → 0.76 / 4.17 / 9.17 ms. The one-pass slot
+  runs no subtraction (18.40 → 18.40; 18.30 in 0286ee8's binary, with
+  its feed). Worst slot 100.7 → 95.8 ms.
+- The base agrees with O18's 513fd17 (94.00, subtraction 48.115).
+- **Validity.** All 24 timed runs are valid: every sample during the
+  runs and in the warm-ups 0x0, start and end checks included. No
+  sample during a run was below 2.4 GHz; one warm-up sample in each
+  sequence was (1.5 and 1.7 GHz, the first sample of its first warm-up).
+  3 123 samples during the runs and 120 in the warm-ups. Peak 54.9 °C. The 20
+  microbenchmark runs (12 while choosing, 8 of the final pair) were
+  valid at 0x0 as well, start and end included.
+
+### x86-64 (Threadripper 3970X, core 5, `perf stat` user counters over the whole `slotcost` program)
+
+Four alternated runs per build (forward, then reversed), aligned builds
+from one scratch path, on an otherwise idle machine. Cycles are the
+measure (the virtual machine's clock biases its stage times).
+
+| build | cycles (median, range) | instructions |
+|---|---|---|
+| 3ec5266 | 335.71 G (334.81–336.58) | 949.67 G |
+| 0286ee8 | 334.05 G (333.15–334.68), −0.49% | 952.18 G (+0.26%) |
+| 7e388d3 | **327.84 G (327.00–329.29), −1.86%; −2.34% in all** | 925.28 G (−2.57%) |
+
+- 0286ee8's range clears the base's by 0.13 G only; an earlier
+  sequence (four builds, during part of which other builds ran on the
+  machine) gave 335.92 → 334.48 G, ranges touching at 334.99. Its gain
+  on x86-64 is small and only just separated. It adds instructions
+  (the closed-form loop is vectorised in place of the plain running
+  sum, which runs scalar on x86-64).
+- The runtime-argument form of 0286ee8 (not kept) read 335.10 G
+  (334.47–335.24) in that earlier sequence, within the base's range.
+- 7e388d3 is separated from both (it read 328.05 G in the earlier
+  sequence).
+
+### Cortex-M33 (emulated instructions; staged measurement images, s0086)
+
+| | host slot | subtraction (37 calls) | per call | generator | the subtraction's closure | stack high water (host / small) |
+|---|---|---|---|---|---|---|
+| 3ec5266 | 2 280.45 M | 1 199.85 M | 32.428 M | 148.25 M | 202.23 M | 10 316 / 10 192 B |
+| 0286ee8 | 2 277.24 M | 1 196.74 M | 32.344 M (−0.26%) | 182.87 M | 193.58 M | 10 316 / 10 192 B |
+| **7e388d3** | **2 271.81 M (−0.38%)** | 1 191.31 M | **32.198 M (−0.45%; −0.71% in all)** | 182.87 M | 144.46 M + 43.60 M (`whole_lane_sums`) | 10 308 / 10 192 B |
+| (grouped, first form) | 2 612.68 M | 1 532.18 M | 41.410 M (+28%) | | | 10 308 / 10 184 B |
+| (runtime argument, not kept) | 2 278.79 M | 1 198.28 M | 32.386 M | 184.03 M | 193.72 M | 10 304 / 10 200 B |
+
+- Same decodes (40 host, 23 small). The generator column is
+  `increments` + `skip_with` at the base and `fill_phase_only` +
+  `skip_with` after (the shared `increments` was inlined into its two
+  callers); at 0286ee8 `blocks` falls 391.38 → 363.09 M with it.
+- The small slot (no subtraction) falls 295 352 059 → 295 247 228
+  instructions, all in its setup (the encoder checks, −104 829).
+- No M33 count rises at either commit.
+
+### Sizes and stack (`check.sh --stack`, thumbv8m)
+
+| image | 3ec5266 | 0286ee8 | 7e388d3 |
+|---|---|---|---|
+| small (and small, OSD on) | 89 534 B | 90 274 B (+740) | 90 274 B |
+| host (and host, OSD off) | 101 810 B | 102 402 B (+592) | 102 570 B (+168) |
+| encoder only | 34 566 B | 35 286 B (+720) | 35 286 B |
+
+- Static RAM is unchanged (212 048 / 241 616 / 0 B).
+- Frames: `Synth::skip` 296 → 352 B and `Synth::fill_phase` 80 → 120 B
+  at 0286ee8 (the generator inlined into each); host `subtract_one`
+  4 816 → 4 808 B; the subtraction's closure 2 872 → 2 880 → 2 864 B.
+  The others are unchanged (`_start` 4 104, `decode_a_slot` 2 512 B).
+  The measured high water does not rise (table above).
+- The flash growth is the generator inlined twice at 0286ee8 (the
+  runtime-argument form that kept one copy was slower on the hosts,
+  above) and, at 7e388d3, `whole_lane_sums` (+126 B) and
+  `subtract_one` (+272 B) less the subtraction's closure (−166 B).
+- No fused multiply-add (0 `vfma`/`vfms`/`vfnma`/`vfnms`; `vmla` 74 /
+  157 / 12 → 79 / 162 / 17) and no `f64` helper in any image; thumbv7em
+  builds.
+
+### Identity
+
+- **Records, x86-64:** the 73 800 `paired_bench run` records of 0286ee8
+  and 7e388d3 equal b93516e's (0 differ, each of `host`, `host,passes=1`
+  and `small`), compared by the identity script and logged.
+- **800 WAV slots** × `host`, `small`, `host,passes=1` × plain, `--raw`,
+  `--profile` (7 200 runs, 78 690 decode lines): byte-identical to
+  b93516e's at both commits.
+- **Encoder:** the 45 `cat-ft8-encode` WAV files of both commits are
+  identical to 3ec5266's (and those to 513fd17's).
+- **Cortex-M33 (emulated):** the small and host dump images' decodes and
+  statics on seven slots (14 of 14), and the multi-pass residuals on
+  s0086 and s0407, are byte-identical to 68634cc's at both commits
+  (images built with `--cfg cat_ft8_minmaxnm`).
+- **A76:** the 73 800 records of 0286ee8's and 7e388d3's AArch64
+  `paired_bench` equal x86-64 b93516e's (0 differ, each configuration);
+  the 800 WAV slots × 3 × 3 with 7e388d3's AArch64 `cat-ft8-decode` are
+  byte-identical to x86-64 b93516e's (7 200 runs, 78 690 decode lines).
+  Not timed; 0x0 before and after each part.
+- **A group of one on x86-64** (`GROUP` forced to 1, not a shipped
+  configuration; the M33's layout): the release library tests with the
+  ignored ones pass except one, `fit_sums_follow_the_sample_index_bit_
+  for_bit`, at one case (`i0` 1, 239 samples, slot 1), in lane 0 only.
+  There, in the same binary, `add_all` returned 473.9071, the test's
+  own sum 0.0, and a plain trace of the same inputs 0.6571188. The
+  failure goes away in a debug build, with `-C codegen-units=1`, with
+  `-C llvm-args=-vectorize-loops=false` (not with `-vectorize-slp=
+  false`), and when the test's loop is given a print (then `add_all`
+  and the test both give 0.6571188). The cause was not found. The
+  shipped M33 code is covered by the emulated identity above.
+
+### Checks
+
+- Local CI passes at 7e388d3: fmt; clippy `-D warnings` (workspace, all
+  targets and features, thumbv8m); workspace, profile, no-std and
+  release tests with the ignored ones; the bulk run; MSRV 1.75; docs with
+  and without `std`; `check.sh --stack`; the code-generation check
+  (AArch64 696 / 15 / 156 / 5 / 8 / 0 / 0 / 0 / 2 / 3; thumbv8m 20;
+  thumbv7em 0 / 0 / 0).
+- Raspberry Pi 5: the release library tests with the ignored ones pass
+  at both commits (199 each; the one test that reads the source tree
+  skipped), 0x0 before and after. Built from 7e388d3 (`cat-ft8` tree
+  1593ebf8…, rustc 1.93.0), sha256 a9eec928…, and from 0286ee8 (tree
+  e701cd7a…), sha256 ad023014…, the same hashes on the Raspberry Pi 5.
+
+### After the round: what bounds the subtraction now
+
+The microbenchmark at 7e388d3 (A76, cycles per waveform sample, medians
+of six; the time search's figures per core sample):
+
+| part | 0286ee8 | 7e388d3 | instructions | vector ops | ÷ floor |
+|---|---|---|---|---|---|
+| **the subtraction** | **21.69** | **20.03 (−7.6%)** | 48.13 → 45.19 | 25.22 → 23.66 | 1.72 → 1.69 |
+| time search: generator | 4.08 | 4.12 | 10.22 | 3.67 | 1.61 |
+| time search: + products and lane sums | 10.78 | 10.58 | 23.66 → 22.45 | 14.31 → 13.20 | 1.51 → 1.60 |
+| fit path: generator | 2.40 | 2.42 | 6.34 | 1.70 | 1.53 |
+| + correction + reference | 9.00 | 9.03 | 21.12 → 21.29 | 9.36 → 9.37 | 1.70 |
+| + fit (fused) | 12.46 | 11.40 | 29.14 → 26.27 | 13.44 → 12.44 | 1.71 → 1.74 |
+| the fit loop alone | 3.19 | 2.47 | 7.30 → 5.53 | 3.76 → 3.76 | 1.70 → 1.31 |
+
+(The floor is the larger of instructions ÷ 4 and vector operations ÷ 2.
+The microbenchmark's own removal row is not shown: called from the test,
+`Removal::refs` is inlined there and compiled without vector operations
+(8.69 cycles a sample, 0.01 vector operations). The decoder's binaries
+keep one `Removal::refs` with the vectorised loop, called from `run`,
+`blocks` and `held`; a scalar copy would fail the code-generation
+check's `fmaxnm`/`fminnm` floor.)
+
+At 7e388d3 the subtraction is 45.2 instructions and 23.7 vector
+operations a sample, a floor of 11.8 cycles against the measured 20.0
+(1.69×). Its parts, per waveform sample (one time-search step):
+
+- the polynomial passes, the reference (4.82) and the time search's
+  products (2.89), 38%;
+- the generator, 4.48 (22%): 2.42 in the fit path and 2.06 in the time
+  search, where half of it skips the non-core samples (about 0.9);
+- the removal and the rest, about 2.7 (13%, by difference: 3.2 at
+  0286ee8);
+- the fit, 2.37 (12%), its loop at 1.31× its floor;
+- the correction, 1.79 (9%); the step sums and alignment, 0.68 (3%).
+
+Memory traffic and branches are still not the bound (L1D refills 0.07 a
+sample, branch misses 0.003). The polynomial passes and the generator
+are each at 1.5–1.7× their floors, with dependent chains per sample.
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instructions only), and the M33 on any
+  slot but s0086 for counts (seven slots for identity).
+- The microbenchmark ran on A76 core 3 only; on x86-64 only the whole
+  program's counters were read.
+- How the gain varies with slot content: the timed slots are the
+  crowded 40-message `main` block.
+- Candidate (c) of O18, keeping each symbol core's starting phase when
+  the time search takes a second step, was not tried: the
+  microbenchmark's workload takes one step per subtraction, and its
+  share (about 0.2 steps a subtraction, each step's skipped half of the
+  generator about 0.9 cycles a sample) is near 1% at most. A cache of
+  the skipped spans' increment sums by tone pair (64 entries) would
+  serve the first step too; not tried.
+- The reported subtraction (`subtract`, used outside the decoder's
+  passes) was measured only in the microbenchmark.
+- **After a toolchain change**: the gains depend on the code generation
+  the extended check guards (above), and on the closed-form loop being
+  vectorised (not checked: losing it costs a serial add per sample over
+  a quarter of the samples, not a cliff).

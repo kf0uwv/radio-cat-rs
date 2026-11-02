@@ -1752,3 +1752,27 @@
 - `.text`/`.rodata` byte-identical to 513fd17's at the `.rs` commits;
   local CI passes. Follow-ups recorded: the fit's edge samples, an i686
   run for the branch form, `Synth::envelope_is_one`.
+
+## Session: 2026-11-02 (O19 subtraction)
+
+- 0286ee8: the generator's phase in closed form where the pulse is
+  alone (`Synth::phases`): the run's first phase plus k increments,
+  exact in `u32`. A76 subtraction 48.10 → 47.26 ms (reproduced in two
+  sequences); M33 32.428 → 32.344 M instructions a call; flash +592 to
+  +740 B (the generator inlined into `skip` and `fill_phase`). A
+  runtime-argument form that kept one copy was slower on the hosts: not
+  kept.
+- 7e388d3: the subtraction's reference in groups of four lanes (`GROUP`;
+  one on targets without a vector unit). No `ld2`/`st2` left; the fit's
+  loop 27 → 20 AArch64 instructions per four samples. A76 subtraction
+  47.26 → 43.77 ms, slot 93.0 → 89.7 ms; M33 32.198 M a call. The
+  code-generation check covers interleaving loads and stores, the
+  reference block's shuffles and `whole_lane_sums`; each shown to fire.
+- In all: A76 subtraction −9.0%, slot 94.0 → 89.7 ms; x86-64 cycles −2.34%; M33
+  −0.71% a call.
+- Identity: records on x86-64 and the A76, WAVs × 3 × 3, encoder, M33
+  dumps and residuals, at both commits; local CI and the A76 library
+  tests pass; eight mutants caught.
+- Open: with `GROUP` forced to 1 on x86-64 (not shipped), one release
+  test case fails in a way that disappears with one codegen unit, with
+  the loop vectoriser off, in debug or with a print; cause not found.
