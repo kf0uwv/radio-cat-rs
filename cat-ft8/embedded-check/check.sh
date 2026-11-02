@@ -38,10 +38,12 @@ nm="$bin_dir/llvm-nm"; size="$bin_dir/llvm-size"; readobj="$bin_dir/llvm-readobj
 
 # Default: the repository's target directory, never inside the sources.
 target_dir="${CARGO_TARGET_DIR:-$here/../../target/embedded-check}"
-flags=""
+# The Cortex-M33's `f32` `max` and `min` are instructions: the decoder's
+# branch-free input clamp (see `INPUT_SELECT` in decode/subtract.rs).
+flags="--cfg cat_ft8_minmaxnm"
 if [ "${1:-}" = "--stack" ]; then
   export RUSTC_BOOTSTRAP=1
-  flags="-Z emit-stack-sizes"
+  flags="$flags -Z emit-stack-sizes"
   target_dir="$target_dir/stack-sizes"
 fi
 echo "== fmt (check program)"

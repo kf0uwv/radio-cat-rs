@@ -26,6 +26,12 @@ description = "FT8 from the published protocol: message packing, CRC-14, LDPC (1
 # is a dev-dependency only (ADR 0024).
 [dependencies]
 
+# `cat_ft8_minmaxnm`: set with `--cfg` (RUSTFLAGS) on targets other than
+# x86-64 and AArch64 whose `f32` `max` and `min` are single instructions,
+# such as thumbv8m.main with its FPU; see `decode::subtract`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(cat_ft8_minmaxnm)"] }
+
 [features]
 # `std` (default) adds conveniences only: `std::error::Error`, WAV input
 # and output, and the `cat-ft8-encode` and `cat-ft8-decode` binaries. The

@@ -450,7 +450,7 @@ fn symbol_correlations(
         // The products sample by sample (a loop that vectorises), then
         // their sums by lane.
         let products = &mut work[..(b - a) * PAIR];
-        scaled_cos_sin::<CHAINS, _>(products, &phase[a..b], xs, input_select);
+        scaled_cos_sin::<CHAINS, _>(products, &phase[a..b], xs, input_loop);
         let (re, im) = lane_sums(a, products);
         let k = j0 / T;
         // The conjugate's sine part: the sum's sign turned.
@@ -1182,13 +1182,41 @@ fn input_select(x: f32) -> f32 {
     f32::from_bits(v.to_bits() & 0u32.wrapping_sub(u32::from(finite)))
 }
 
-/// [`input_select`] of four samples.
+/// Whether the loops over samples clamp with [`input_select`] rather than
+/// [`input`] (the same values): where `f32` `max` and `min` are single
+/// instructions and the form was measured faster (O18). That is x86-64
+/// and AArch64, and, with `--cfg cat_ft8_minmaxnm`, other targets that
+/// declare it, such as thumbv8m.main with its FPU (VMAXNM, VMINNM; the
+/// embedded check builds it so). Elsewhere, for example on thumbv7em, `max`
+/// and `min` are library calls, and the branch stays. The cfg is set by
+/// hand because stable Rust exposes no ARM target feature that tells
+/// thumbv8m.main from thumbv7em, and a build script that read the target
+/// name would change the code generated for every target (its presence
+/// alone moved code on all three measured targets).
+const INPUT_SELECT: bool = cfg!(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    cat_ft8_minmaxnm
+));
+
+/// The clamp of the loops over samples: [`input_select`] or [`input`],
+/// by [`INPUT_SELECT`].
+#[inline(always)]
+fn input_loop(x: f32) -> f32 {
+    if INPUT_SELECT {
+        input_select(x)
+    } else {
+        input(x)
+    }
+}
+
+/// [`input_loop`] of four samples.
 #[inline(always)]
 #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
 fn input4(x: [f32; LANES]) -> [f32; LANES] {
     let mut out = [0.0f32; LANES];
     for l in 0..LANES {
-        out[l] = input_select(x[l]);
+        out[l] = input_loop(x[l]);
     }
     out
 }
@@ -1326,7 +1354,7 @@ impl Removal {
             let t = if d > 0 { d as f32 } else { 0.0 };
             let (ra, rb) = (base.0 + t * slope.0, base.1 + t * slope.1);
             let est = ra * rc + rb * rs;
-            *x = input_select(*x) - est;
+            *x = input_loop(*x) - est;
             if REPORT {
                 energy += est * est;
                 sums.add(*x, rc, rs);
