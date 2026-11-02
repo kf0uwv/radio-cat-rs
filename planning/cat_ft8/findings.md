@@ -9609,3 +9609,334 @@ in each build record; one scratch path, fresh tree, rustc 1.93.0).
   included; the code-generation check's counts as in O19b).
 - No measured code changed, so O19's timings, counts and identity
   stand; nothing was rerun on the A76 or the M33.
+
+## Profile after O16–O19 (prof19, 2026-11-02; measurement only)
+
+At 7f02b12 (the code of 7e388d3; every later commit changes no measured
+code). No decoder change; every tool is out of tree. Purpose: where the
+CPU and memory per decoded signal go after O16–O19, on crowded, sparse
+and empty slots, and what to cut next.
+
+### Method
+
+- **One build.** Aligned host builds (`-align-loops=64
+  -align-all-functions=6`), thumbv8m check and staged images (`--cfg
+  cat_ft8_minmaxnm`), from one fresh scratch tree of 7f02b12, rustc
+  1.93.0. The scratch path differs from O19's, so the binaries' hashes
+  are not comparable with O19's (path strings), but their `.text` and
+  `.rodata` sizes are the same, the M33 counts equal 7e388d3's to the
+  instruction (2 271.81 M, 32.198 M a subtraction) and the A76 slot
+  reads O19's 89.70 ms in two of four runs (89.60 in the others).
+- **A76** (Raspberry Pi 5): one benchmark at a time on core 3, the
+  throttle, clock and temperature sampled once a second from core 0, a
+  5 s sampled busy loop on core 3 before each run, a run started only on
+  0x0. Four cycles of: `slotcost host host,passes=1 200 5`, `slotcost
+  small small 200 5`, `paired_bench run host DIR edges,empty`,
+  `paired_bench run small DIR edges,empty` (one core, so one thread).
+  Stage figures are medians over the four runs (per slot for `run`, then
+  the mean over slots). Then one `paired_bench run host DIR
+  crowded,wide,fading` for the later passes by yield (one run; its
+  decode counts are exact, its times single samples).
+  - **Every run is valid:** 17 runs, 2 333 samples during the runs, all
+    0x0, start and end checks included; the 85 warm-up samples all 0x0.
+    No sample during a run below 2.40 GHz; the warm-up minimum was
+    2.40 GHz in the 16 runs of the cycles and 1.5 GHz in the last run's
+    first warm-up sample. Peak 54.3 °C.
+  - Run-to-run spread: the slot means of each configuration agree within
+    0.10 ms (`slotcost`) and 0.01 ms (`run`, per set).
+  - No sampler this round: inside a stage, the A76 splits come from O19's
+    microbenchmark (the subtraction) and prof14's samples (the feed),
+    and are marked as such.
+- **Sparse and empty slots.** The synthetic `edges` set is the sparse
+  slot: one signal at −18 dB per slot (1 300 slots, near the decode
+  threshold; starts, band edges, a cut and a late input). The `empty`
+  set is the empty slot (2 300): its `noise` point (1 000 slots of
+  noise only) is quoted beside the whole set (carriers, clipped,
+  floored, impulsive and strong-carrier noise included). No
+  synthetic set has two or three signals per slot; none was made.
+- **Cortex-M33** (emulated instructions, unicorn; staged measurement
+  images as in O13–O19, s0086, 40 messages): host (three passes) and
+  small (one pass), per function and per stage. A second pair of images
+  with the front end's parts `#[inline(never)]` (as in O16) splits the
+  feed; their stage totals are within 0.3 M of the inlined images'. On
+  that small image, a dynamic count by mnemonic of each function over
+  1 M instructions.
+- **x86-64** (Threadripper 3970X, core 5): `perf record -e cycles:u` of
+  `slotcost host host 200 5` and `slotcost small small 200 5`, symbol
+  shares; the bench's own slot synthesis (`Synth::mix`, `fill_phase`,
+  the Gaussian noise, `sqrt`, copies, kernel) removed, 7.0% of host and
+  28.7% of small samples.
+- **Memory:** `check.sh --stack` (static RAM, sizes, frames), `llvm-nm`
+  sizes of the statics, the CLI's `--profile` buffer accounting, and the
+  out-of-tree counting-allocator and painted-stack probe of prof14
+  rebuilt at 7f02b12 (x86-64; s0080, s0081, s0084, s0086, s0087; host,
+  host OSD off, small).
+
+### A76: crowded 40-message slots (`main`, `slotcost`, medians of four runs)
+
+| stage (ms per slot) | host, three passes | share | pass 1 | pass 2 | pass 3 | host, one pass | share | small | share |
+|---|---|---|---|---|---|---|---|---|---|
+| feed | 19.29 | 21.5% | 6.43 | 6.43 | 6.43 | 6.51 | 35.4% | 6.35 | 49.6% |
+| sync | 4.67 | 5.2% | 1.54 | 1.56 | 1.57 | 1.54 | 8.4% | 1.38 | 10.8% |
+| refine | 0.09 | 0.1% | 0.04 | 0.02 | 0.02 | 0.04 | 0.2% | 0.03 | 0.2% |
+| soft bits | 2.38 | 2.7% | 1.19 | 0.59 | 0.59 | 1.19 | 6.5% | 0.89 | 7.0% |
+| belief propagation | 19.06 | 21.3% | 8.95 | 4.65 | 5.46 | 8.94 | 48.6% | 4.02 | 31.4% |
+| OSD-1 | 0.20 | 0.2% | 0.00 | 0.03 | 0.16 | — | — | — | — |
+| SNR | 0.24 | 0.3% | 0.15 | 0.07 | 0.02 | 0.15 | 0.8% | 0.15 | 1.2% |
+| subtract | 43.74 | 48.8% | — | 30.47 | 13.27 | — | — | — | — |
+| **slot** | **89.65** | | **18.31** | **43.81** | **27.52** | **18.40** | | **12.80** | |
+| new decodes | 37.6 | | 24.1 | 10.5 | 3.0 | 24.1 | | 24.0 | |
+| **ms per new decode** | **2.38** | | **0.76** | **4.17** | **9.17** | **0.76** | | **0.53** | |
+| candidates through BP | 200 | | 100 | 50 | 50 | 100 | | 75 | |
+
+- Worst slot 95.8 ms (three passes), 19.0 (one pass), 13.2 (small).
+  Spreads over the four runs at most 0.06 ms a stage.
+- Against prof14 (107.4 ms): the subtraction 56.70 → 43.74 ms (O18,
+  O19), the feed 22.10 → 19.29 (O16), belief propagation 21.00 → 19.06
+  (O17); small 15.35 → 12.80 ms. Per new decode 0.84 / 5.17 / 10.98 →
+  0.76 / 4.17 / 9.17 ms a pass.
+- **Inside the subtraction** (O19's microbenchmark at 7e388d3, the same
+  code; not re-measured): 20.0 cycles a waveform sample at 1.69× its
+  issue floor; the polynomial passes (reference and the time search's
+  products) 38%, the generator 22%, the removal 13%, the fit 12%, the
+  frequency correction 9%.
+- **Inside the feed** (not re-measured on the A76): prof14 sampled the
+  butterflies at about half the feed before O16 took the window into
+  the first stage; about 3 ms a pass is the estimate used below.
+
+### A76: sparse and empty slots (`paired_bench run`, one thread, medians of four runs)
+
+| stage (ms per slot) | host, `edges` (1 signal) | share | host, `empty` | share | (`noise` only) | small, `edges` | share | small, `empty` | share |
+|---|---|---|---|---|---|---|---|---|---|
+| feed | 12.44 | 34.6% | 6.41 | 30.8% | 6.41 | 6.23 | 43.8% | 6.28 | 44.2% |
+| sync | 3.09 | 8.6% | 1.59 | 7.6% | 1.60 | 1.43 | 10.1% | 1.43 | 10.1% |
+| refine | 0.06 | 0.2% | 0.04 | 0.2% | 0.04 | 0.03 | 0.2% | 0.03 | 0.2% |
+| soft bits | 1.75 | 4.9% | 1.18 | 5.7% | 1.18 | 0.89 | 6.3% | 0.89 | 6.3% |
+| belief propagation | 16.97 | 47.2% | 11.38 | 54.6% | 11.54 | 5.63 | 39.6% | 5.59 | 39.3% |
+| OSD-1 | 0.44 | 1.2% | 0.24 | 1.2% | 0.24 | — | — | — | — |
+| SNR | 0.01 | 0.0% | 0.00 | — | 0.00 | 0.01 | 0.1% | 0.00 | — |
+| subtract | 1.20 | 3.3% | — | — | — | — | — | — | — |
+| **slot** | **35.96** | | **20.84** | | **21.01** | **14.21** | | **14.22** | |
+| decoded per slot | 0.96 | | 0 | | 0 | 0.80 | | 0 | |
+| ms per decode | 37.5 | | — | | — | 17.8 | | — | |
+
+- **Host `edges` by pass:** pass 1 20.86 ms, 0.957 decodes; pass 2 ran
+  in 1 244 of 1 300 slots (after its one subtraction) at 15.78 ms a run
+  and **added no decode in any slot**; pass 3 never ran. Pass 2 is 42%
+  of a one-signal slot. (prof14: 40.0 ms, pass 2 17.7 ms.)
+- An empty host slot is pass 1 alone: 100 candidates that all fail
+  after 30 rounds, 0.114 ms each (small: 75, 0.075 ms each).
+- Small `edges` decodes 0.80 a slot: the `f100` and `f3090` points are
+  outside its 200–2 900 Hz band.
+- Against prof14: host `edges` 40.0 → 35.96 ms, `empty` 23.0 → 20.84,
+  small `empty` 17.38 → 14.22.
+
+### A76: later passes by the previous pass's yield (host, crowded + wide + fading `main`, one run)
+
+2 000 slots, 72.33 ms and 21.28 decodes a slot (crowded 73.22, fading
+71.12, wide 72.57 ms). The decode counts are those of prof14 (the
+decoder's results are unchanged); the times are this round's.
+
+| | previous pass's new decodes | slots | cost when run (ms) | new decodes when run | ms per new decode | ms per pooled slot | new decodes per pooled slot |
+|---|---|---|---|---|---|---|---|
+| pass 3 | 1 | 326 | 15.85 | 0.080 | 199 | 2.58 | 0.013 |
+| pass 3 | 2 | 263 | 17.09 | 0.228 | 75 | 2.25 | 0.030 |
+| pass 3 | 3–5 | 525 | 19.35 | 0.596 | 32 | 5.08 | 0.157 |
+| pass 3 | 6–10 | 573 | 24.68 | 2.09 | 11.8 | 7.07 | 0.600 |
+| pass 3 | > 10 | 163 | 29.28 | 2.82 | 10.4 | 2.39 | 0.230 |
+| pass 2 | 3–5 | 7 | 20.75 | 1.86 | 11.2 | 0.07 | 0.007 |
+| pass 2 | 6–10 | 601 | 25.02 | 1.12 | 22.3 | 7.52 | 0.337 |
+| pass 2 | > 10 | 1 392 | 37.54 | 6.30 | 6.0 | 26.13 | 4.38 |
+
+Over the 2 000 slots, belief propagation's rounds on candidates that
+decoded are 0.31–0.52% of all rounds by set (`edges` 0.09%, `empty`
+0); a failing candidate runs 30 rounds (29.6 on average on `empty`);
+97.7–98.9% of decodes need under 10 rounds.
+
+### Cortex-M33 (emulated instructions, s0086; setup 9.36 M excluded)
+
+| stage | host, three passes | share | small, one pass | share |
+|---|---|---|---|---|
+| feed | 581.72 M (193.91 M a pass) | 25.7% | 191.99 M | 67.2% |
+| of which the butterflies (with the window, fused into their first stage) | 492.92 M | 21.8% | 164.30 M | 57.5% |
+| sync | 91.96 M | 4.1% | 27.47 M | 9.6% |
+| soft bits | 24.50 M | 1.1% | 9.21 M | 3.2% |
+| belief propagation | 365.41 M | 16.2% | 54.27 M | 19.0% |
+| OSD-1, SNR, refine, finish | 7.55 M | 0.3% | 2.95 M | 1.0% |
+| subtract (37 calls, 32.198 M each) | 1 191.31 M | 52.7% | — | — |
+| **slot** | **2 262.45 M** | | **285.89 M** | |
+| decoded | 40 | | 23 | |
+| **per decode** | **56.6 M** | | **12.4 M** | |
+
+(Host by pass: 415.94 / 1 056.71 / 789.66 M with 23 / 14 / 3 new
+decodes: 18.1 / 75.5 / 263 M per new decode.)
+
+**Top 15 functions** (share of all instructions, setup included:
+2 271.81 M host, 295.25 M small; inlined images):
+
+| host | M | share | small | M | share |
+|---|---|---|---|---|---|
+| `Decoder::pass` (the feed, inlined) | 584.18 | 25.7% | `Decoder::pass` (the feed, inlined) | 194.79 | 66.0% |
+| `subtract::blocks` | 363.09 | 16.0% | `bp::min_sum_round` | 52.25 | 17.7% |
+| `bp::sum_product_round` | 360.16 | 15.9% | `sync::select` closure | 22.71 | 7.7% |
+| `Fit4::add_all` | 291.00 | 12.8% | `__aeabi_memclr4` | 6.33 | 2.1% |
+| `Removal::refs` | 145.63 | 6.4% | `_start` (setup) | 4.49 | 1.5% |
+| `subtract::run` closure | 144.46 | 6.4% | `Decoder::search` | 4.48 | 1.5% |
+| `Synth::fill_phase_only` | 129.09 | 5.7% | `Synth::fill_phase_only` (setup) | 2.77 | 0.9% |
+| `sync::select` closure | 75.67 | 3.3% | `memmove` | 2.43 | 0.8% |
+| `Synth::skip_with` | 53.78 | 2.4% | `Spectrogram::row` | 1.65 | 0.6% |
+| `whole_lane_sums` | 43.60 | 1.9% | `decode_a_slot` | 1.26 | 0.4% |
+| `__aeabi_memclr4` | 19.45 | 0.9% | `Synth::fill_phase` (setup) | 0.71 | 0.2% |
+| `Decoder::search` | 15.48 | 0.7% | `__aeabi_memcpy4` | 0.63 | 0.2% |
+| `subtract::aligned` | 7.90 | 0.3% | `sync::costas_score` | 0.48 | 0.2% |
+| `memmove` | 7.30 | 0.3% | `encode_payload` (setup) | 0.11 | 0.0% |
+| `subtract::score` | 6.34 | 0.3% | `memcpy` | 0.04 | 0.0% |
+
+**The feed split** (front end out of line; per pass, small image; the
+host image's three feeds are three times these, to within 0.1 M):
+
+| part | M a pass | share of the feed | instruction mix (dynamic) |
+|---|---|---|---|
+| butterflies, stages 2–6 (`later_stages`) | 135.62 | 70.6% | floating-point arithmetic 20.3%, `vldr`/`vstr` 17.0%, integer `add` 24.3%, `cmp` and branches 12.4%, integer loads and stores 9.9% |
+| window and first stage (`spectrum`) | 28.68 | 14.9% | floating-point arithmetic 24.6%, `vldr`/`vstr` 24.0% |
+| `log2`, levels and counts (`finish_row`) | 9.61 | 5.0% | floating-point 32.0% (`vmov`, `vmrs` and conditional execution beside it) |
+| powers (`bin_powers`) | 6.49 | 3.4% | floating-point 37.4% |
+| window shift (`memmove`), input checks and copy, rows, zero fills, glue | 11.8 | 6.1% | |
+
+- **The butterflies are 57.5% of the small slot and 21.8% of the
+  host's**, and only a fifth of their instructions are floating-point
+  arithmetic: a quarter are integer adds (index and address
+  arithmetic), an eighth loop control. The twiddles for each block are
+  gathered with a `% N` index and `__aeabi_memclr4` is called five times
+  from `later_stages` (the per-block twiddle arrays). The
+  floating-point work and its loads and stores are 50.6 M of the 135.6 M
+  a pass.
+- `min_sum_round` (small): floating-point 12.0%, with `vcmp`/`vmrs`/`it`
+  and branches beside it (compare-and-select by flags).
+- `sync::select`'s closure (the Costas sums): integer only, 41% byte and
+  word loads.
+
+### x86-64 (`perf` user cycles, slot synthesis removed)
+
+| | host share | A76 host share | small share | A76 small share |
+|---|---|---|---|---|
+| subtraction | 42.1% | 48.8% | — | — |
+| belief propagation | 29.4% | 21.3% | 18.1% | 31.4% |
+| feed | 18.0% | 21.5% | 40.9% | 49.6% |
+| sync (refine included) | 6.3% | 5.3% | 31.9% | 11.0% |
+| soft bits | 3.6% | 2.7% | 7.9% | 7.0% |
+| OSD-1, SNR | 0.3%, 0.3% | 0.2%, 0.3% | —, 1.1% | —, 1.2% |
+
+Top symbols, host (share of the decoder's samples): `sum_product_round`
+28.3%, `fft::power_bins` (the feed, inlined) 17.3%, `subtract::run`
+11.9%, `Synth::fill_phase_only` 11.0%, `symbol_correlations` 5.6%,
+`skip_with` 4.0%, `Removal::refs` 3.9%, `soft_bits_at` 3.6%,
+`sync::select` closure 3.6%, `Fit4::add_all` 3.2%, `find_candidates`
+2.5%. Small: `power_bins` 39.2%, `min_sum_round` 15.3%, the
+`sync::select` closure 13.6%, `find_candidates` 9.5%, `costas_score`
+8.1%, `soft_bits_at` 7.9%. **The sync search is a third of the small
+decoder's x86-64 cycles** (baseline x86-64, no AArch64 byte-vector
+forms); on the A76 it is 11%.
+
+### Memory
+
+**Heap: zero** inside `decode_passes_staged` and `finish` (host, host
+OSD off, small; 0 to 40 messages). **Nothing scales with the number of
+signals.**
+
+| buffer | host (CLI) | small (CLI) | M33 host image | M33 small image | what for | live |
+|---|---|---|---|---|---|---|
+| residual (the slot as `f32`) | **720 000** | — | 8 192 (check buffer) | — | the audio each later pass feeds; the subtraction writes it | the whole multi-pass decode |
+| spectrogram levels (`u8`) | 179 584 | 161 920 | 179 584 | 162 944 | every pass's sync, refine, soft bits, SNR; idle during a subtraction, which uses it as working storage (46 080 B) | whole decode |
+| front end (window 15 360 + FFT 15 360) | 30 720 | 30 720 | 30 720 | 30 720 | the feed | **the feed only** |
+| sync scratch (3 rows of scores, `i32`) | 11 532 | 10 380 | 11 532 | 10 380 | the candidate search | **the search only** |
+| decode list | 6 144 | 3 072 | 5 120 | 2 560 | the decodes | whole decode |
+| candidate scratch (BP or OSD-1) | 4 872 | 4 872 | 4 868 | 4 868 | one candidate at a time | **BP and OSD-1 only** |
+| candidates (200) | 1 600 | 1 600 | 1 600 | 1 600 | a pass's candidates | a pass |
+| call table | 1 552 | 1 552 | — | — | the CLI's hashed calls | whole decode |
+| **total** | **956 004** | **214 116** | **241 616** static | **212 048** static | | |
+| constant tables (flash / rodata) | 39 429 | 39 429 | | | | |
+
+- **The residual is 75.3% of the host decoder's memory.**
+- **Three buffers are never live at once:** the front end (the feed),
+  the sync scratch (the search, after the feed) and the candidate
+  scratch (belief propagation and OSD-1, after the search; the next
+  pass's feed starts after the last candidate). Holding the other two
+  in the front end's 30 720 B saves 16 404 B (host CLI 956 004 →
+  939 600, −1.7%; small 214 116 → 197 712, −7.7%; M33 host image
+  saves 16 400 B: 241 616 → 225 216 B static, its headroom under the
+  245 760 B ceiling 4 144 → 20 544 B). From reading the code; not
+  built. It holds as long as a caller never runs one slot's candidates
+  while feeding the next.
+- **Stack, x86-64 (painted):** 2 768 B (a pass, no OSD-1 run), 4 800 B
+  (OSD-1 ran), 9 104 B (a subtraction ran) (prof14: 2 752 / 4 800 /
+  8 992).
+- **Stack, M33:** frames from `check.sh --stack`: host `subtract_one`
+  4 808, `_start` 4 104, the subtraction's closure 2 864,
+  `decode_a_slot` 2 512, `Synth::fill` and `Synth::mix` 584,
+  `finish_row` and `unpack_dyn` 464, `Synth::skip` 352, `osd_decode`
+  272 B. Measured high water of the staged images: host 10 308 B,
+  small 10 192 B (10 440 B with the front end out of line); within the
+  16 KB stack budget.
+- Flash: small 90 274 B, host 102 570 B, encoder only 35 286 B; static
+  RAM 212 048 / 241 616 / 0 B (unchanged since prof14).
+
+### Next candidates, ranked
+
+Savings are estimates from this profile unless marked measured.
+"Pooled" is crowded + wide + fading `main` (72.33 ms, 21.28 decodes a
+slot, host).
+
+**(A) Bit-identical (an O-round):**
+
+| rank | candidate | measured cost now | estimated gain | effort / risk |
+|---|---|---|---|---|
+| 1 | **M33 butterflies' overhead**: per-stage twiddle strides in place of `% N` gathers and zeroed per-block arrays, pointer-stepped loops, for the groups-of-one (M33) path only; the same operations in the same order | 135.6 M + part of 28.7 M a pass; 57.5% of the small slot, 21.8% of host (measured) | −25 to −45% of `later_stages`: small −34 to −61 M (−12 to −21%), host −102 to −183 M (−4.5 to −8%). A76 and x86-64: none (their path has four lanes) | medium; low risk (M33 emulated identity and the group-of-one tests guard it); flash may grow |
+| 2 | **The subtraction, again**: the polynomial passes (38%) and the generator (22%), each 1.5–1.7× its floor; on the M33 `blocks` 363 M and `Fit4::add_all` 291 M (7.9 M a call), the groups-of-one path | A76 43.74 ms (48.8% crowded, ≈ 25.7 ms pooled); M33 1 191 M (52.7%) | A76 −5 to −10% of it: −2.2 to −4.4 ms crowded (−2.4 to −4.9%), −1.3 to −2.6 ms pooled; M33 −10 to −20% of it: −5 to −10% host | high (seven rounds on it already); low risk |
+| 3 | **One storage for the front end, sync scratch and candidate scratch** (never live together) | 47 124 B in three buffers | **−16 404 B**: small −7.7%, host −1.7% of decoder memory; M33 host image headroom ×5 | low–medium (an API change to the buffers `Decoder::new` takes); no CPU change expected |
+| 4 | **The Costas sums**: each eight-tone sum is recomputed for 21 start rows; a sliding sum along the bins, or shared sums across start rows within the scratch | A76 1.54 ms a pass (5.2% crowded, 10.8% small, 8.6% one-signal); M33 27.5 M small (9.6%), 92 M host; x86-64 small 32% | M33 −30 to −45% of `select`: small −7 to −10 M (−2.5 to −3.5%); A76 0 to −30% of sync (the byte vectors are already wide): small 0 to −0.4 ms (0 to −3%); x86-64 small more | low–medium; integer, exact |
+| 5 | **Min-sum's compare-and-select on the M33** (`vcmp`/`vmrs`/`it` and branches) | 52.25 M, 17.7% of small (measured) | −15 to −30% of it: −8 to −16 M small (−3 to −5.5%) | low; NaN and signed-zero cases must keep their results |
+| 6 | **Soft bits** | A76 2.38 ms crowded (2.7%), 0.89 ms small (7.0%); M33 9.2 M small (3.2%) | −20 to −40% of it: small −0.2 to −0.35 ms (−1.4 to −2.8%) | low–medium; not profiled inside |
+| 7 | **The feed's remainder on the M33** (`finish_row`'s `log2` and levels, powers, window shift, zero fills) | ≈ 28 M a pass (9.7% of small) | −20 to −30% of it: −2 to −3% small | low–medium |
+| 8 | **Sum-product's scheduling on the A76** (`log2`, `exp2_neg`) | 19.06 ms (21.3% crowded; 47–55% sparse and empty, almost all on failing candidates) | −3 to −8% of it: −0.6 to −1.5 ms crowded; O17's lever is spent | medium; uncertain |
+
+By per-signal CPU on the embedded target, 1 dominates (the small
+decoder is 12.4 M instructions a decode, the butterflies 7.1 M of it);
+on the A76 host, 2 is the only bit-identical candidate above 2%;
+3 is the only bit-identical memory saving found.
+
+**(B) Results-changing (a gated round):**
+
+| rank | candidate | measured cost now | estimated gain | what it risks |
+|---|---|---|---|---|
+| 1 | **Skip a later pass after a thin pass.** (a) Pass 2 after a pass 1 of one decode; (b) pass 3 after a pass 2 of ≤ 2 (or 1) | (a) 15.78 ms a run, 0 decodes in 1 244 `edges` slots (measured; prof14: 0 in 10 125); (b) measured per pooled slot below | (a) **−42% of a one-signal slot** (35.96 → ≈ 20.9 ms; 37.5 → ≈ 21.8 ms a decode). (b) ≤ 2: **−4.83 ms a pooled slot (−6.7%)** for 0.043 decodes (0.20%; 112 ms per decode lost against pass 3's 9.17); ≤ 1: −2.58 ms (−3.6%) for 0.013 (0.06%) | the synthetic sets have nothing for pass 2 to unmask behind one signal; needs mixtures of a strong signal over weaker ones (and off-air slots) before a rule is chosen |
+| 2 | **Belief propagation on candidates that will fail**: a screen before it (unsatisfied checks of the hard decisions, soft-bit magnitude), or a stall rule that continues while the unsatisfied count is low | every failing candidate runs 30 rounds; > 99.5% of rounds; 19.06 ms crowded (21.3%), 16.97 one-signal (47.2%), 11.38 empty (54.6%), small empty 5.59 (39.3%); M33 host 365 M (16.2%), small 54 M (19.0%) | ceiling at half of belief propagation: crowded −9.5 ms (−10.6%), one-signal −8.5 ms (−24%), empty −5.7 ms (−27%), small empty −2.8 ms (−20%); M33 −8% host, −9.5% small | E1's stall rule lost decodes (slow convergers plateau 15+ rounds) |
+| 3 | **An `i16` residual** | 720 000 B, 75.3% of host memory | **−360 000 B (−37.7% of the host decoder)**; CPU about neutral (`feed_i16` exists; the removal writes it) | rounding and saturation of the residual change later passes' input; needs the crowded and sparse gates |
+| 4 | **Fewer pass-1 candidates on quiet slots** (a limit from the sync score distribution) | an empty slot runs all 100 (75) | overlaps 2; ceiling the empty slot's 11.38 ms (5.59 small) | losses near threshold |
+| 5 | **A different FFT on the M33** (radix, twiddle order), beyond (A) 1 | as (A) 1 | a further −10 to −20% of the butterflies (not estimated from a reference count) | float rounding of every level |
+| 6 | **The later passes' feed from the subtracted estimates** | 12.86 ms crowded (14.3%), 6.4 ms of a one-signal slot (17.8%); M33 388 M host (17.1%) | up to those figures | changes rounding and needs more storage: last on the memory goal |
+
+By per-signal CPU and memory together: B1 is the largest saving on
+quiet and sparse bands and the cheapest; B2 the largest on crowded
+slots; B3 the largest memory saving anywhere (with (A) 3 the only
+others found). **Dominated by OSD-1:** nothing (0.2–1.2% of any slot,
+0.1% of M33 instructions).
+
+### Not measured
+
+- A76 inside the stages this round (no sampler, no `perf` on the
+  Raspberry Pi 5): the subtraction's split is O19's microbenchmark, the
+  feed's butterfly share prof14's sample before O16.
+- Slots with two or three signals (no such synthetic set); off-air
+  recordings; a strong signal over weaker ones (needed before (B) 1).
+- The `sweep` set (15 000 one-signal slots; `edges` stands for it) and
+  the later-pass yield table on more than one A76 run (its times are
+  single samples; its counts are exact).
+- M33 cycles (emulated instructions only), the M33 on any slot but
+  s0086, and the dynamic instruction mix on the host image or outside
+  the small image's front end, min-sum and sync.
+- x86-64 stage times (only `perf` shares are given).
+- Every gain in the rankings is an estimate. The buffer sharing in (A) 3
+  was read from the code, not built. No microbenchmark was run this
+  round.
+- Energy and power.

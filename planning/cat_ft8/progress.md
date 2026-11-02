@@ -1809,3 +1809,20 @@
   changed host code: not kept.
 - `.text`/`.rodata` byte-identical to 7e388d3's at every `.rs` commit;
   O19b records corrected (the 296.09 M closure, the filtered test).
+
+## Session: 2026-11-02 (prof19 profile after O16–O19)
+
+- Measurement only at 7f02b12; no code change. A76: 17 runs, all valid
+  at 0x0. Crowded three-pass host 89.65 ms (subtract 48.8%, feed 21.5%,
+  BP 21.3%), one pass 18.40, small 12.80; 0.76 / 4.17 / 9.17 ms per new
+  decode by pass. One-signal host slot 35.96 ms (pass 2 15.78 ms, no
+  decode), empty 20.84 (BP 55%), small empty 14.22.
+- M33 (s0086): host 2 262 M (subtract 52.7%), small 286 M; the
+  butterflies are 57.5% of the small slot, only a fifth of their
+  instructions floating-point arithmetic.
+- x86-64 `perf`: the sync search is a third of the small decoder.
+- Memory unchanged (host 956 004 B, residual 75%); front end, sync
+  scratch and candidate scratch are never live together (−16 404 B).
+- Ranked next: (A) the M33 butterflies' overhead, the subtraction,
+  buffer sharing, the Costas sums, min-sum on the M33; (B) the pass-skip
+  rule, BP on failing candidates, an `i16` residual.
