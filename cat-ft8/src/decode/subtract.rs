@@ -83,8 +83,8 @@
 
 use super::decoder::Decode;
 use super::frontend::INPUT_LIMIT;
-use super::math::{atan2_turns, cos_sin_turns, log2_power, LANES, VECTOR};
-use crate::waveform::{cos_turns, phase_of_ratio, sin_turns, Placement, Synth, RAMP_SAMPLES};
+use super::math::{atan2_turns, cos_sin_turns, log2_power, phase_of_ratio, LANES, VECTOR};
+use crate::waveform::{cos_turns, sin_turns, Placement, Synth, RAMP_SAMPLES};
 use crate::{
     encode_payload, Error, SAMPLES_PER_SYMBOL, SAMPLE_RATE, SYMBOL_COUNT, WAVEFORM_SAMPLES,
 };

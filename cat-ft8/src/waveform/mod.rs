@@ -74,7 +74,7 @@
 
 mod tables;
 
-use crate::decode::math::VECTOR;
+use crate::decode::math::phase_of_ratio;
 use crate::{
     Error, NOMINAL_START_S, SAMPLES_PER_SYMBOL, SAMPLE_RATE, SYMBOL_COUNT, TONE_SPACING_HZ,
     WAVEFORM_SAMPLES,
@@ -175,19 +175,6 @@ pub fn envelope(j: usize) -> f32 {
     }
     // cos(π r / 240) = cos of r/480 of a turn; exact integer phase.
     0.5 * (1.0 - cos_turns(phase_of_ratio(r as u32, 2 * RAMP_SAMPLES as u32)))
-}
-
-/// The phase of `r / d` of a turn, ⌊r · 2³² / d⌋, for `r < d < 2¹⁶`, in
-/// 32-bit arithmetic: with 2³² = q·d + m (0 < m ≤ d), it is
-/// r·q + ⌊r·m / d⌋ exactly, since r·q is whole. No step overflows: r·m is
-/// below d², and the result below 2³². (The 64-bit form is a library
-/// division on 32-bit targets.)
-#[inline]
-pub(crate) fn phase_of_ratio(r: u32, d: u32) -> u32 {
-    debug_assert!(r < d && d < 1 << 16);
-    let q = u32::MAX / d;
-    let m = 0u32.wrapping_sub(q.wrapping_mul(d));
-    r * q + r * m / d
 }
 
 /// A resumable FT8 waveform generator: phase and position persist between
@@ -294,7 +281,7 @@ impl Synth {
         // The increments first, then their running sum (the phase before
         // each sample).
         self.increments(pos, phase);
-        self.phase = running_sum::<VECTOR>(self.phase, phase);
+        self.phase = running_sum::<GROUPED_SUM>(self.phase, phase);
         self.pos = pos + n;
         // `envelope(j)` on the ramps, exactly 1.0 elsewhere.
         envelope.fill(1.0);
@@ -412,18 +399,21 @@ impl Synth {
     }
 }
 
+/// Whether [`running_sum`] takes four entries at a time: measured faster
+/// on the Cortex-A76, neutral on x86-64, more instructions on the M33.
+const GROUPED_SUM: bool = cfg!(target_arch = "aarch64");
+
 /// The running sum of `xs` from `p`, in place: each entry becomes `p`
 /// plus the entries before it (from increments, the phase before each
 /// sample); returns `p` plus all of them (the phase after the last).
 /// Integer addition modulo 2³² is associative, so any grouping gives the
-/// same sums. With `GROUPED`, four entries at a time: their sums within
-/// the group first (two shifted adds), then the group's start added to
-/// each, so that one add per four entries is carried from group to group
-/// rather than one per entry. The compiler keeps this in scalar registers
-/// with paired loads and stores; on the Cortex-A76 it takes about one
-/// cycle an entry against two for the plain loop. (A form with each lane
-/// its own running sum, read through overlapping vector loads, was no
-/// faster there and slower on x86-64.)
+/// same sums. With `GROUPED`, four entries at a time. On AArch64 the
+/// compiler emits a four-times unrolled loop with paired loads and stores
+/// and three dependent adds per four entries (the first two entries'
+/// sum is taken off the carried chain), where the plain loop has one
+/// load, one store and one dependent add per entry. The written form
+/// below is what gives that code: the same sums written serially are
+/// compiled to four dependent adds.
 #[inline(always)]
 fn running_sum<const GROUPED: bool>(p: u32, xs: &mut [u32]) -> u32 {
     let mut p = p;
@@ -432,7 +422,7 @@ fn running_sum<const GROUPED: bool>(p: u32, xs: &mut [u32]) -> u32 {
         let mut groups = rest.chunks_exact_mut(4);
         for g in &mut groups {
             let x = [g[0], g[1], g[2], g[3]];
-            // Inclusive sums within the group: by one entry, then by two.
+            // Inclusive sums within the group, then less each entry.
             let s1 = [
                 x[0],
                 x[1].wrapping_add(x[0]),
@@ -445,7 +435,6 @@ fn running_sum<const GROUPED: bool>(p: u32, xs: &mut [u32]) -> u32 {
                 s1[2].wrapping_add(s1[0]),
                 s1[3].wrapping_add(s1[1]),
             ];
-            // The sums before each entry: the inclusive ones less it.
             for (y, (&s, &x)) in g.iter_mut().zip(s2.iter().zip(&x)) {
                 *y = p.wrapping_add(s.wrapping_sub(x));
             }
@@ -472,15 +461,13 @@ const CHUNK: usize = 64;
 ///
 /// On x86-64, where the saturating `as` conversion of a vectorised loop
 /// goes a lane at a time (SSE2), without a float-to-integer conversion:
-/// x = 2¹⁶·r + d with r = x / 2¹⁶ rounded to the nearest integer (by
-/// adding 1.5·2²³, as in [`floor_small`](crate::decode::math::floor_small),
-/// without its correction) and |d| ≤ 2¹⁵, so ⌊x⌋ = 2¹⁶·r + ⌊d⌋. Each step
-/// is exact: the scalings by 2¹⁶; r·2¹⁶ (r ≤ 2¹⁵); and the difference d,
-/// which is x itself below 2¹⁵ (r is 0 there) and otherwise a multiple of
-/// x's spacing, fewer than 2²⁴ of them as |d| ≤ 2¹⁵ ≤ x. One rounding and
-/// one floor, where flooring both parts took two corrections. Elsewhere through `i32`: one
-/// instruction on AArch64 (lanes at once) and on Cortex-M, where `i64`
-/// would be a library call.
+/// x = 2¹⁶·r + d with r = x / 2¹⁶ rounded to the nearest integer
+/// ([`round_small`](crate::decode::math::round_small)) and |d| ≤ 2¹⁵, so
+/// ⌊x⌋ = 2¹⁶·r + ⌊d⌋. Each step is exact: the scalings by 2¹⁶; r·2¹⁶
+/// (r ≤ 2¹⁵); and the difference d, which is x itself below 2¹⁵ (r is 0
+/// there) and otherwise a multiple of x's spacing, fewer than 2²⁴ of them
+/// as |d| ≤ 2¹⁵ ≤ x. Elsewhere through `i32`: one instruction on AArch64
+/// (lanes at once) and on Cortex-M, where `i64` would be a library call.
 #[inline(always)]
 fn increment(x: f32) -> u32 {
     // The `as` forms agree only below 2³¹: at 2³¹ `as i32` saturates to
@@ -495,12 +482,10 @@ fn increment(x: f32) -> u32 {
     );
     #[cfg(target_arch = "x86_64")]
     {
-        use crate::decode::math::floor_small;
-        const MAGIC: f32 = 12_582_912.0; // 1.5·2²³
-        let big = x * (1.0 / 65_536.0) + MAGIC;
-        let hi = big.to_bits().wrapping_sub(MAGIC.to_bits());
-        let lo = floor_small(x - (big - MAGIC) * 65_536.0);
-        (hi << 16).wrapping_add(lo as u32)
+        use crate::decode::math::{floor_small, round_small};
+        let (hi, rounded) = round_small(x * (1.0 / 65_536.0));
+        let lo = floor_small(x - rounded * 65_536.0);
+        ((hi as u32) << 16).wrapping_add(lo as u32)
     }
     #[cfg(not(target_arch = "x86_64"))]
     {

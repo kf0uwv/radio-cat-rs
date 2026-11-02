@@ -115,37 +115,62 @@ fn floor_by_truncation(y: f32) -> i32 {
     }
 }
 
-/// [`floor_by_truncation`] with no float-to-integer conversion (Rust's
-/// saturating `as i32` does not vectorise on x86-64 SSE2, which converted
-/// each lane separately in `exp2_neg`'s loop; elsewhere the conversion is
-/// one instruction, saturating in hardware, and is kept). Adding 1.5·2²³
-/// lands in [2²³, 2²⁴), where the spacing is 1, so the sum is y rounded
-/// to an integer r, and r is the sum's low mantissa bits; one less if
-/// that rounded up. Every operation is exact but the rounding to r, and r
-/// is then corrected to ⌊y⌋, so the result equals truncating and
-/// correcting (`y as i32`, minus one if that is above y).
+/// y rounded to the nearest integer (ties to even), as the integer and
+/// as its `f32`, with no float-to-integer conversion (Rust's saturating
+/// `as i32` does not vectorise on x86-64 SSE2, which converted each lane
+/// separately in `exp2_neg`'s loop; elsewhere the conversion is one
+/// instruction, saturating in hardware, and is kept). Adding 1.5·2²³
+/// lands in [2²³, 2²⁴], where the spacing is 1, so the sum is y rounded to
+/// an integer r, and r is the sum's low mantissa bits; the sum less
+/// 1.5·2²³ is r exactly.
 ///
 /// Domain: y in [−2²², 2²²] (not NaN), where the sum lies in [2²³, 2²⁴]
 /// and r in its bits is exact (at 2²⁴ the carry into the exponent still
-/// gives 2²²); outside it the result is wrong. Callers: `exp2_neg`
-/// (clamped to [−126, 0]) and the waveform's phase increment (in
-/// [−2¹⁵, 2¹⁵]). Relies on round-to-nearest without excess precision (SSE2
-/// on x86-64, where it is used).
+/// gives 2²²); outside it the result is wrong. Relies on round-to-nearest
+/// without excess precision (SSE2 on x86-64, where it is used). Callers:
+/// [`floor_small`], and the waveform's phase increment (y in [0, 2¹⁵]).
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 #[inline(always)]
-pub(crate) fn floor_small(y: f32) -> i32 {
+pub(crate) fn round_small(y: f32) -> (i32, f32) {
     debug_assert!(
         (-4_194_304.0..=4_194_304.0).contains(&y),
-        "floor_small: {y} outside [-2^22, 2^22]"
+        "round_small: {y} outside [-2^22, 2^22]"
     );
     const MAGIC: f32 = 12_582_912.0; // 1.5·2²³
     let big = y + MAGIC;
     let r = (big.to_bits() as i32).wrapping_sub(MAGIC.to_bits() as i32);
-    if big - MAGIC > y {
+    (r, big - MAGIC)
+}
+
+/// [`floor_by_truncation`] through [`round_small`] (its domain, y in
+/// [−2²², 2²²]): the rounded r, one less if that rounded up. Every
+/// operation is exact but the rounding to r, so the result equals
+/// truncating and correcting (`y as i32`, minus one if that is above y).
+/// Callers: `exp2_neg` (clamped to [−126, 0]) and the waveform's phase
+/// increment (in [−2¹⁵, 2¹⁵]).
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+#[inline(always)]
+pub(crate) fn floor_small(y: f32) -> i32 {
+    let (r, rounded) = round_small(y);
+    if rounded > y {
         r - 1
     } else {
         r
     }
+}
+
+/// The phase of `r / d` of a turn, ⌊r · 2³² / d⌋, in 32-bit arithmetic.
+/// Domain: `r < d < 2¹⁶` (checked in debug builds). With 2³² = q·d + m
+/// (0 < m ≤ d), it is r·q + ⌊r·m / d⌋ exactly, since r·q is whole. No step
+/// overflows: r·m is below d², and the result below 2³². (The 64-bit form
+/// is a library division on 32-bit targets.) Callers: the waveform's ramp
+/// (d = 480) and the subtraction's step phases (d = 1 920).
+#[inline]
+pub(crate) fn phase_of_ratio(r: u32, d: u32) -> u32 {
+    debug_assert!(r < d && d < 1 << 16, "phase_of_ratio: {r} / {d}");
+    let q = u32::MAX / d;
+    let m = 0u32.wrapping_sub(q.wrapping_mul(d));
+    r * q + r * m / d
 }
 
 // A six-term odd polynomial for atan(z) on [−1, 1]: a1 … a11 =
@@ -523,5 +548,21 @@ mod tests {
     #[ignore]
     fn floor_small_matches_truncation_everywhere() {
         floor_small_matches(1);
+    }
+
+    #[test]
+    fn phase_of_ratio_is_the_64_bit_quotient() {
+        // Every r < d for every d up to 2 048 (the ramp's 480 and the
+        // subtraction's 1 920 among them), and the largest d.
+        let want = |r: u32, d: u32| ((u64::from(r) << 32) / u64::from(d)) as u32;
+        for d in 1..=2_048u32 {
+            for r in 0..d {
+                assert_eq!(phase_of_ratio(r, d), want(r, d), "{r} / {d}");
+            }
+        }
+        let d = u16::MAX as u32;
+        for r in (0..d).step_by(7).chain([d - 1]) {
+            assert_eq!(phase_of_ratio(r, d), want(r, d), "{r} / {d}");
+        }
     }
 }
