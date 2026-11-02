@@ -584,7 +584,7 @@ fn the_scratch_records_the_rounds_run() {
 }
 
 #[test]
-fn the_edge_layout_uses_every_edge_once_in_aligned_blocks() {
+fn the_edge_layout_places_every_edge_once_for_both_group_sizes() {
     assert_eq!((LOW_CHECKS, LOW_EDGES, EDGES), (59, 354, 522));
     assert_eq!(tables_for(GROUP), (&EDGE_VARS, &VAR_EDGES));
     assert!(core::ptr::eq(tables::<GROUP>().0, &EDGE_VARS));
@@ -810,6 +810,29 @@ fn the_min_sum_round_matches_its_first_form_bit_for_bit() {
         if state % 4 == 0 {
             msg.iter_mut().step_by(3).for_each(|x| *x = 0.0);
             total.iter_mut().step_by(2).for_each(|x| *x = 1.5);
+        }
+        // Special values: NaNs of both signs, infinities, −0 and the
+        // largest finite values, in the totals, the messages and the soft
+        // bits, so that the selects meet comparisons that are all false.
+        if state % 4 == 1 {
+            let special = [
+                f32::NAN,
+                -f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                -0.0,
+                f32::MAX,
+                -f32::MAX,
+            ];
+            let mut k = state;
+            for x in total.iter_mut().step_by(5).chain(msg.iter_mut().step_by(7)) {
+                *x = special[k % special.len()];
+                k += 3;
+            }
+            next.iter_mut().step_by(11).for_each(|x| {
+                *x = special[k % special.len()];
+                k += 1;
+            });
         }
         let given = rows_of::<GROUP>(&msg);
         let (mut want_next, mut want_rows) = (next, given);
