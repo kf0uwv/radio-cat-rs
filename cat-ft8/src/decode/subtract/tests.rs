@@ -469,6 +469,16 @@ fn stack_storage_is_bounded() {
     assert_eq!(STACK_BYTES, 4_656);
 }
 
+/// The reference's group: four lanes where the target has a vector unit,
+/// one elsewhere and in the tests built with `--cfg
+/// cat_ft8_test_group_one` (which then run the layout of targets without
+/// one).
+#[test]
+fn the_group_follows_the_target_and_the_test_cfg() {
+    let one = !VECTOR || cfg!(cat_ft8_test_group_one);
+    assert_eq!(GROUP, if one { 1 } else { LANES });
+}
+
 /// Scratch of `len` bytes holding NaN `f32` patterns.
 fn nan_scratch(len: usize) -> Vec<u8> {
     let nan = f32::NAN.to_ne_bytes();
@@ -1290,7 +1300,7 @@ fn removal_ramp_is_its_first_form_bit_for_bit() {
             for len in [0usize, 1, 3, 4, 5, 8, 31, 240, 961] {
                 let j0 = from.saturating_add_signed(off).min(WAVEFORM_SAMPLES);
                 let len = len.min(WAVEFORM_SAMPLES - j0);
-                let k0 = (j0 + len) % GROUP;
+                let k0 = in_group(j0 + len);
                 let mut xs = test_weights(&mut n, len);
                 let refs: Vec<u8> = test_weights(&mut n, 2 * (k0 + len + GROUP))
                     .iter()
@@ -1342,7 +1352,7 @@ fn removal_ramp_is_plus_zero_at_and_before_the_centre() {
     for j0 in from - 9..=from {
         for len in [1usize, 4, 5, 9, 17] {
             let xs = std::vec![-0.0f32; len];
-            let k0 = (j0 + 2 * len) % GROUP;
+            let k0 = in_group(j0 + 2 * len);
             let refs: Vec<u8> = (0..2 * (k0 + len + GROUP))
                 .map(|k| 0.25 + k as f32 / 64.0)
                 .flat_map(|x| x.to_ne_bytes())

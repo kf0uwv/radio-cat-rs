@@ -29,8 +29,14 @@ description = "FT8 from the published protocol: message packing, CRC-14, LDPC (1
 # `cat_ft8_minmaxnm`: set with `--cfg` (RUSTFLAGS) on targets other than
 # x86-64 and AArch64 whose `f32` `max` and `min` are not library calls,
 # such as thumbv8m.main with its FPU; see the crate docs' `no_std` section.
+# `cat_ft8_test_group_one`: tests only; the subtraction's reference in
+# groups of one sample on every target (`GROUP` in decode/subtract.rs),
+# so that a host runs the layout of targets without a vector unit.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(cat_ft8_minmaxnm)"] }
+unexpected_cfgs = { level = "warn", check-cfg = [
+    "cfg(cat_ft8_minmaxnm)",
+    "cfg(cat_ft8_test_group_one)",
+] }
 
 [features]
 # `std` (default) adds conveniences only: `std::error::Error`, WAV input

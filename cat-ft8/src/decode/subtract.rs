@@ -1109,8 +1109,14 @@ const PAIR: usize = 8;
 /// Reference samples stored together: a group's cosine parts in slot
 /// order, then its sine parts ([`slot`]). [`LANES`] where the target has a
 /// vector unit, so that each part of a group of lanes loads and stores as
-/// one vector; one elsewhere (a sample's two parts side by side).
-const GROUP: usize = if VECTOR { LANES } else { 1 };
+/// one vector; one elsewhere (a sample's two parts side by side). The
+/// tests built with `--cfg cat_ft8_test_group_one` take one on every
+/// target, so that a host runs the layout of the targets without one.
+const GROUP: usize = if VECTOR && !cfg!(all(test, cat_ft8_test_group_one)) {
+    LANES
+} else {
+    1
+};
 // Whole lanes and whole blocks are whole groups.
 #[allow(clippy::modulo_one)] // GROUP is 1 on some targets
 const _: () = assert!(LANES % GROUP == 0 && BLOCK % LANES == 0);
