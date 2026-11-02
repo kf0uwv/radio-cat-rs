@@ -56,8 +56,9 @@
 #   interleaved 19, and with each sample stored by itself 75;
 # - a ceiling counts only the code in its function, so it would pass if
 #   the loop it guards moved out (into a function of its own, or inlined
-#   elsewhere): each function with a ceiling also has a floor on its
-#   vector instructions. `Removal::refs` has its `fmaxnm`/`fminnm` floor;
+#   elsewhere): on AArch64 each function with a ceiling also has a floor
+#   on its vector instructions (the thumbv7em `fmaxf`/`fminf` ceilings
+#   have none). `Removal::refs` has its `fmaxnm`/`fminnm` floor;
 #   `Fit4::add_all` a floor of 12 `.4s` instructions (18 with rustc
 #   1.93; 8 with its four-lane step `add4` out of line) and `blocks` 400
 #   (549; 0 with `scaled_cos_sin` out of line).
