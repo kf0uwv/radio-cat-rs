@@ -36,8 +36,6 @@
 //! The twiddle, real-split and window tables are static data generated
 //! with `libm` and checked bit-for-bit by a test (`tables.rs`).
 
-use core::ops::Index;
-
 use super::tables::{HANN_HALF, SPLIT_TWIDDLES, TWIDDLES};
 
 /// Samples in one analysis window (two symbols at 12 kHz).
@@ -347,7 +345,7 @@ fn stage<const R: usize, const L: usize, const S: usize>(re: &mut [f32; N], im: 
 /// a[0] + Σ_{m ≥ 1} a[m] · w(m, q)[j], the products added in the order of
 /// m, each lane on its own. The m = 0 product is not computed (see
 /// [`stage`]). The twiddle expression gives (re, im) for (m, q), each
-/// indexed by lane (an array, or a [`Same`] for every lane); the store
+/// indexed by lane (an array); the store
 /// block takes output q as (`sr`, `si`). A macro rather than a function,
 /// so that each caller compiles as its own loops did (a function, even
 /// inlined, moved the transform's code on every target; rustc 1.93.0).
@@ -398,18 +396,6 @@ fn butterflies<const R: usize, const L: usize, const S: usize>(
             i[q * l + j] = si[j];
         }
     });
-}
-
-/// One twiddle for every lane.
-#[derive(Clone, Copy)]
-struct Same(f32);
-
-impl Index<usize> for Same {
-    type Output = f32;
-    #[inline(always)]
-    fn index(&self, _lane: usize) -> &f32 {
-        &self.0
-    }
 }
 
 /// The transform as first written (every product, `% N` per twiddle): the
@@ -516,7 +502,7 @@ fn first_stage<const G: usize>(samples: &[f32; WINDOW], re: &mut [f32; N], im: &
             ai[3][j] = x[o + 3 * INPUT_STEP + 1] * high[g];
         }
         // Each block's butterfly as `stage::<4, 1, 1>` computes it.
-        radix_sums!(4, G, ar, ai, (m, q) => (Same(w[m][q][0]), Same(w[m][q][1])), (sr, si) => {
+        radix_sums!(4, G, ar, ai, (m, q) => ([w[m][q][0]; G], [w[m][q][1]; G]), (sr, si) => {
             for j in 0..G {
                 r[4 * j + q] = sr[j];
                 i[4 * j + q] = si[j];
