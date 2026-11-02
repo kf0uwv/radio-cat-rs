@@ -8300,3 +8300,108 @@ code (byte-identical `.text`).
   both configurations, or check the AArch64 release `paired_bench`:
   `sum_product_round` 1 552 and `min_sum_round` 1 934 instructions at
   37ec493.
+
+## Review follow-ups (O17b, bit-identical, 2026-11-02)
+
+On top of O17 (aec6a07), one change per commit. **The `.text` and
+`.rodata` of all eight binaries are byte-identical to aec6a07's at every
+commit** (x86-64 and AArch64 `cat-ft8-decode` and `paired_bench`;
+thumbv8m check and staged images, small and host; one scratch path,
+fresh tree, rustc 1.93.0). So O17's timings, sizes and identity carry
+over unchanged, and none was rerun.
+
+### Changes
+
+- **a034ecd: `place`'s doc.** It said every place takes the layout from
+  `place`. The tables and the walk in check order are built from it, and
+  the walk's group-of-one case unrolls it. The rounds' group loops
+  (`products`, `min_sum_round`) do not call it; they rely on its shape,
+  contiguous blocks of D·G values for the whole groups and then the
+  leftover checks of D values. Comment only.
+- **4813087: two comments keep the reason only.** `INPUT_BLOCK` and
+  `group_products` no longer carry measurement history; they point to
+  these findings (O17).
+- **eb9f723: `group_products`' scratch has exactly D rows** (`[[f32; K];
+  D]`, no `.take(D)`). Byte-identical everywhere.
+  - Not kept: the same change in `group_min_sum`. It changed
+    `min_sum_round` on both hosts (x86-64 1 447 → 1 414 instructions,
+    AArch64 rescheduled at equal length), so it would need its own
+    identity and timing.
+- **508fc10: `inputs`' doc says the blocked round is tested only on
+  AArch64.** `INPUT_BLOCK` is not a parameter of the round; elsewhere the
+  tests compare `inputs` itself at several block sizes.
+  - Not kept: the `INPUT_BLOCK == 1` plain loop moved into `inputs`
+    (inside an if/else, with the blocked loop in a helper). It changed
+    `.text` on all three targets.
+- **3fe54a0: tests.**
+  - A quarter of the min-sum round test's states carry NaNs of both
+    signs, ±∞, −0 and ±`f32::MAX` in the totals, messages and soft bits.
+    A mutant that differs only for NaN (`!(a >= min1)` for `a < min1`)
+    passed the old test and fails the new one (logged).
+  - The layout test is renamed
+    `the_edge_layout_places_every_edge_once_for_both_group_sizes`.
+- **d9dadbd: a code-generation guard, `cat-ft8/codegen-check.sh`.**
+  - It emits the release library's AArch64 assembly (one codegen unit,
+    about 4 s) and fails if `sum_product_round` has fewer than 500
+    four-lane `.4s` instructions, or `min_sum_round` fewer than 100.
+    rustc 1.93.0 gives 696 and 156.
+  - It runs in the aarch64 CI job and in the local CI. Each
+    `toolchain: "1.93"` pin in the workflow says to re-check it after a
+    toolchain change.
+  - **It fires** (logged, each forced change then reverted):
+
+| forced change | `sum_product_round` | `min_sum_round` | result |
+|---|---|---|---|
+| none (d9dadbd) | 696 | 156 | pass |
+| `GROUP` one on every target | 709 | **29** | fails |
+| `PASS_LANES` 4 | **452** | 156 | fails |
+| `PASS_LANES` 8 | **177** | 156 | fails |
+| `PASS_LANES` 16 | **301** | 156 | fails |
+| `PASS_LANES` 32 (not unrolled, as in O12) | **115** | 156 | fails |
+
+  - **Limit:** the sum-product round's count is dominated by its
+    24-value tanh and atanh blocks, so the guard does not see the group
+    products on their own. Groups of one leave the round's count at 709.
+    The products' vector form is guarded only by the A76 timing.
+
+**Tried and not kept: the layout's tables as associated constants**
+(`Layout<G>`, in place of `tables<G>()`'s `#[cfg(test)]` hook into the
+tests' copies).
+- Constant promotion works on Rust 1.75. The tests pass, and the x86-64
+  and AArch64 binaries are byte-identical.
+- The thumbv8m images are not. Their functions are identical once
+  addresses are normalised, but `.rodata` is 4 B smaller and `.text`
+  differs (the tables are placed differently).
+- By the rule for this round (byte identity on every target), the
+  current form stays: `tables<G>()` returns the statics for `GROUP` and,
+  in the tests only, the tests' copies for the other size.
+
+### Evidence record corrected
+
+- **Mutants.** O17 ran nine, as its section lists (4 for 6bc283f, 1 for
+  63d8dd6, 4 for 37ec493). A count of 13 given outside these findings
+  was wrong. All nine were rerun against the commits they were written
+  for, one log each, and all are caught. The NaN mutant above makes ten.
+- **The A76 library tests.** O17's run (194 passed) logged the binary's
+  hash (d5ccf172…) but not its source commit. The run at this round's
+  head records both: the binary was built from d9dadbd (`cat-ft8` tree 3918feb7…, the same
+  at the planning commit after it; rustc 1.93.0), sha256 725d2ba1…, the
+  same hash on the Raspberry Pi 5. 194 passed with the ignored ones (the
+  one test that reads the source tree skipped), 0x0 before and after.
+
+### Checks
+
+- Local CI passes at d9dadbd: fmt; clippy `-D warnings` (workspace,
+  all targets and features, thumbv8m); workspace, profile, no-std and
+  release tests with the ignored ones; the bulk run; MSRV 1.75; docs with
+  and without `std`; `check.sh --stack` (flash 89 734 / 101 430 B, as
+  O17); the code-generation guard.
+- The Raspberry Pi 5 library tests: above.
+
+### Not done this round
+
+- Unifying `min_sum_round`'s two shapes (the groups-of-one walk and the
+  degree split) changes the M33 code; it is left for its own measured
+  round.
+- The series keeps 6bc283f's measured small-configuration regression
+  (fixed by 37ec493); O17 records it.

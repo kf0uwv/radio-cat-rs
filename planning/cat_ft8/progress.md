@@ -1660,3 +1660,22 @@
 - Not done: the A76 records of 6bc283f; per-pipe counters for the tanh
   and atanh passes; `exp2_neg` and `log2` unchanged (no same-operation
   form found).
+
+## Session: 2026-11-02 (O17b review follow-ups)
+
+- a034ecd, 4813087, 508fc10: comments only (`place`'s doc says which
+  code relies on its shape; two comments keep the reason; the blocked
+  round is tested only on AArch64).
+- eb9f723: `group_products`' scratch has D rows. The same change in
+  `group_min_sum` and the plain loop moved into `inputs` changed code,
+  and were not kept.
+- 3fe54a0: the min-sum round test carries NaN, ±∞, −0 and ±MAX (a
+  NaN-only mutant now fails); the layout test renamed.
+- d9dadbd: `cat-ft8/codegen-check.sh`, an AArch64 assembly floor on the
+  rounds' `.4s` instructions, in the aarch64 CI job; shown to fail for
+  groups of one and for 4, 8, 16 and 32 pass values.
+- `Layout<G>` associated constants tried: fine on 1.75 and byte-identical
+  on hosts, but the M33 images moved, so not kept.
+- Every commit's eight binaries are byte-identical to aec6a07's. The nine
+  O17 mutants were rerun with logs (all caught); local CI passes; the A76
+  library tests were rerun at the head with the source commit recorded.
