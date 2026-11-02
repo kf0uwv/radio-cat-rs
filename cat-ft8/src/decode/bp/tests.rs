@@ -814,6 +814,9 @@ fn the_min_sum_round_matches_its_first_form_bit_for_bit() {
         // Special values: NaNs of both signs, infinities, −0 and the
         // largest finite values, in the totals, the messages and the soft
         // bits, so that the selects meet comparisons that are all false.
+        // Comparing bits stays sound with NaNs: a NaN is never one of the
+        // two smallest magnitudes, so no message is a NaN, and a NaN sum
+        // comes from the same additions in the same order in every form.
         if state % 4 == 1 {
             let special = [
                 f32::NAN,
