@@ -1773,6 +1773,26 @@
 - Identity: records on x86-64 and the A76, WAVs × 3 × 3, encoder, M33
   dumps and residuals, at both commits; local CI and the A76 library
   tests pass; eight mutants caught.
-- Open: with `GROUP` forced to 1 on x86-64 (not shipped), one release
-  test case fails in a way that disappears with one codegen unit, with
-  the loop vectoriser off, in debug or with a print; cause not found.
+- With `GROUP` forced to 1 on x86-64 (not shipped), one release test
+  case failed; found in O19b to be LLVM's loop vectoriser miscompiling
+  the test's own expected-value loop (corrected in the findings).
+
+## Session: 2026-11-02 (O19b review follow-ups)
+
+- The forced group-of-one failure was LLVM's loop vectoriser (LLVM 20
+  and 21) miscompiling the test's own `acc[(i0 + k) % LANES] +=` loop,
+  not `add_all`. 580938c, ffba08e: the tests sum lane by lane; the
+  forced run passes (199).
+- 954e5b0: `lane-index-check.sh` in CI fails on arrays indexed by a
+  lane-wrapping expression (textual; limits stated).
+- 78aab1f: `--cfg cat_ft8_test_group_one` runs the M33's layout in the
+  release library tests on x86-64 (CI and local CI). Deleting the
+  groups-of-one branches cost the M33 +20%: kept.
+- 4eb4fd0 ring assertion; 00ef632 docs; ff3b924 compile-time assertion;
+  35aa6da floors beside the code-generation ceilings (both shown to
+  fire).
+- Every `.rs` commit's eight binaries byte-identical to 7e388d3's. The
+  `Slots` view changed code on every target: a follow-up, with the one
+  split helper.
+- Records corrected: O19's group-of-one note, the closed-form note, the
+  encoder-only +720 B; logs annotated with their real trees.

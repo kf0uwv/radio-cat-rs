@@ -9038,9 +9038,8 @@ What the counts and the code showed:
   symbol where the current pulse is alone, and the running sum then
   added them one by one. The phase there is the run's first phase plus
   k increments: integer arithmetic modulo 2³², so a product is exact
-  and the same as the sum. (The round's brief asked whether a closed
-  form could reproduce an `f32` running sum: it need not; the phase is
-  a `u32`.)
+  and the same as the sum. (A closed form need not reproduce an `f32`
+  running sum: the phase is a `u32`.)
 - **The fit loaded the sines twice.** `Fit4::add_all`'s four-lane loop
   was 27 AArch64 instructions per four samples: an `ld2` of the four
   pairs, and then the four sines again by `ldur` and three `ld1` lane
@@ -9262,6 +9261,10 @@ measure (the virtual machine's clock biases its stage times).
 - No fused multiply-add (0 `vfma`/`vfms`/`vfnma`/`vfnms`; `vmla` 74 /
   157 / 12 → 79 / 162 / 17) and no `f64` helper in any image; thumbv7em
   builds.
+- The encoder-only image grows 720 B (34 566 → 35 286 B) at 0286ee8
+  with no benefit to it: the encoder's waveform runs `fill_phase` and
+  `skip`, and its count is not what the change was for. (Added in
+  O19b.)
 
 ### Identity
 
@@ -9284,15 +9287,15 @@ measure (the virtual machine's clock biases its stage times).
   Not timed; 0x0 before and after each part.
 - **A group of one on x86-64** (`GROUP` forced to 1, not a shipped
   configuration; the M33's layout): the release library tests with the
-  ignored ones pass except one, `fit_sums_follow_the_sample_index_bit_
-  for_bit`, at one case (`i0` 1, 239 samples, slot 1), in lane 0 only.
-  There, in the same binary, `add_all` returned 473.9071, the test's
-  own sum 0.0, and a plain trace of the same inputs 0.6571188. The
-  failure goes away in a debug build, with `-C codegen-units=1`, with
-  `-C llvm-args=-vectorize-loops=false` (not with `-vectorize-slp=
-  false`), and when the test's loop is given a print (then `add_all`
-  and the test both give 0.6571188). The cause was not found. The
-  shipped M33 code is covered by the emulated identity above.
+  ignored ones passed except one, `fit_sums_follow_the_sample_index_bit_
+  for_bit`, at one case (`i0` 1, 239 samples, slot 1). (Corrected in
+  O19b.) The cause is a miscompile by LLVM's loop vectoriser of the
+  test's own expected-value loop, not of the code under test:
+  `add_all` returned 0.6571188 in lane 0, the value of a plain trace;
+  the test's expected sums were wrong (`xc[0]` 0.0, and negative sums of
+  squares in lane 0). The 473.9 first recorded here is the test's
+  `ss[0]`, not `add_all`'s result. The test is fixed and the forced run
+  passes; see O19b.
 
 ### Checks
 
@@ -9369,3 +9372,162 @@ are each at 1.5–1.7× their floors, with dependent chains per sample.
   the extended check guards (above), and on the closed-form loop being
   vectorised (not checked: losing it costs a serial add per sample over
   a quarter of the samples, not a cliff).
+
+## Review follow-ups (O19b, 2026-11-02; no code generation change on the measured targets)
+
+On top of O19 (956caaa), one change per commit: 580938c, ffba08e,
+954e5b0, 78aab1f, 4eb4fd0, 00ef632, ff3b924 and 35aa6da, then this
+record. **The `.text` and `.rodata` of all eight binaries are
+byte-identical to 7e388d3's at every commit that touches a `.rs` file**
+(x86-64 and AArch64 `cat-ft8-decode` and `paired_bench`; thumbv8m check
+and staged images built with `--cfg cat_ft8_minmaxnm`; one scratch path,
+fresh tree, rustc 1.93.0). So O19's timings, counts, sizes and identity
+carry over unchanged.
+
+### The forced group of one: a loop-vectoriser miscompile in the test
+
+O19 recorded one failing case with `GROUP` forced to 1 on x86-64 and no
+cause. The cause is LLVM's loop vectoriser, in the test's own
+expected-value loop; the code under test was right.
+
+- **The Rust shape.** A store into a four-element array at an index
+  that wraps, in a loop over samples:
+
+  ```rust
+  for (k, &x) in xs.iter().enumerate() {
+      let l = (i0 + k) % LANES; // LANES = 4; i0 not known modulo 4
+      want.xc[l] += w(x) * c(k);
+  }
+  ```
+
+  The loop vectoriser widened it into four-lane accesses starting at
+  `xc[i0 % 4]` without a check that the lane index wraps: lane 0 was
+  never updated and the next field of the struct was written (past the
+  struct's end for the last field). Safe Rust, no `unsafe`, no
+  dependencies. In the failing case `want.xc[0]` was 0.0 and lane 0's
+  sums of squares negative; `add_all` returned the plain trace's
+  0.6571188. The 473.9 of O19's record is the test's `ss[0]`.
+- **Where it was found.** rustc 1.93.0 (LLVM 21.1.8), x86-64, release
+  with the default 16 codegen units; the first bad pass by
+  `-opt-bisect-limit` is `LoopVectorizePass` on the test function. The
+  reduced IR (a top-tested loop with an unconditional latch,
+  `for (i = 0; 8·(i + 1) <= len; i++) acc[(i + a) & 3] = src[i];`) is
+  miscompiled by `opt` of LLVM 20 and of LLVM 21 alike; the rotated
+  form of the same loop gets the right check. With one codegen unit, in
+  debug, with `-vectorize-loops=false` or with a print in the loop the
+  loop takes another shape and the failure goes away. Whether a later
+  LLVM fixes it was not checked, nor was it reported upstream here.
+- **The Cortex-M33.** thumbv8m.main without the M-profile vector
+  extension has no vector registers for the loop vectoriser; on the
+  test function's IR retargeted to thumbv8m (with and without
+  `optsize`) the pass makes no change. That was checked on IR from the
+  x86-64 pipeline, not the M33's own. No production code has the shape
+  (below), and the M33's emulated identity covers its shipped code.
+- **Fixes.** 580938c: the two tests that summed by `(i0 + k) % LANES`
+  or `i % LANES` take each lane in its own loop, in sample order (the
+  same sums). ffba08e: a test helper that read `nan[i % 4]` cycles the
+  bytes instead. With `GROUP` forced to 1 the release library tests on
+  x86-64 now pass, the ignored ones included (199; logged).
+- **The guard (954e5b0).** `cat-ft8/lane-index-check.sh`, run by CI and
+  the local CI, fails on an array indexed by an expression taken modulo
+  or masked to a lane count (`% LANES`, `% GROUP`, a power of two up to
+  64, `& 3` and the like) anywhere in `cat-ft8/src`, tests included.
+  Shown to fail on 956caaa's sources (the three test lines) and on a
+  forced `a[(i + k) & 3] += …` (logged). It is textual: an index bound
+  to a variable first, the fit test's form, is not seen (the script
+  says so); a table read at a non-affine modulus (`% 1920`, `% 38`) is
+  not flagged. The production sums by lane use selects (`add_lane`) or
+  whole lanes, and none of the crate's sources has the written form.
+
+### The layout of targets without a vector unit, on a host (78aab1f)
+
+`--cfg cat_ft8_test_group_one` (declared for check-cfg; read only in
+test builds, `cfg!(all(test, …))`) gives `GROUP` 1 on every target. CI
+runs the release library tests so on x86-64, beside the bulk run; a
+test checks that the cfg takes effect. A mutant in the groups-of-one
+writer loop only (cosine and sine swapped) passes the default tests
+(193) and fails 5 with the cfg (logged).
+
+**The groups-of-one branches stay.** With them deleted (the writer's
+single samples in one loop over the inlined `put`, the removal's
+general path for groups of one, `remove_one` kept inline), the M33
+staged host image takes 38.628 M instructions a subtraction against
+32.198 M (+20%): `Removal::refs` 145.63 → 263.11 M, the subtraction's
+closure 144.46 → 186.32 M, `blocks` 363.09 → 144.52 M (s0086, 37
+calls; decodes the same). Its flash grows 44 B, and the hosts' code
+changes too (x86-64 `cat-ft8-decode` −1 728 B, AArch64 −1 280 B), not
+timed.
+
+### Other changes
+
+- **4eb4fd0: the ring's rounding is required.** The comment said the
+  ring was a multiple of `LANES` for speed only; since O19 the fit needs
+  sample j's slot `j % ring` equal to j modulo `LANES`. The comment says
+  so and `assert_eq!(ring % LANES, 0)` states it (the compiler proves
+  it: `.text` unchanged).
+- **00ef632: docs.** `Synth::phases`: with `SUM_ONLY` the output is used
+  as working storage, and the flat run carries its phase by one add per
+  sample. `whole_lane_sums` names AArch64 as the target its placement was
+  measured on (on the M33 it is +126 B; not measured apart). The
+  instruction count left `Fit4::add_all`'s doc: with rustc 1.93.0 its
+  four-lane loop is 20 AArch64 instructions per four samples (O19).
+- **ff3b924:** the writer's whole groups are a compile-time assertion
+  for the decoder's block (`CHAINS % GROUP == 0`); the tests' other
+  block sizes keep a debug assertion.
+- **35aa6da: the code-generation check's ceilings have floors beside
+  them.** A ceiling counts only its function's code, so it would pass
+  if the guarded loop moved elsewhere. Each function with a ceiling now
+  has a floor on its vector instructions (`Removal::refs` had its
+  `fmaxnm`/`fminnm` floor):
+
+| check | 7e388d3 | forced | result forced |
+|---|---|---|---|
+| `.4s` in `Fit4::add_all`, floor 12 | 18 | `add4` out of line: 8 | fails |
+| `.4s` in `blocks`, floor 400 | 549 | `scaled_cos_sin` out of line: 0 | fails |
+
+  The header's lines are filled evenly.
+- **The guard's build is not the benchmarked one.** The
+  code-generation check emits the library's assembly with one codegen
+  unit; the hosts' release builds use the default 16 (and the
+  miscompile above appeared only with 16). The measured AArch64
+  binaries' loops were read directly in O19 (`paired_bench` and
+  `cat-ft8-decode` each keep one `Removal::refs` with the 21-instruction
+  loop); after a toolchain change both should be read again.
+
+### Records corrected
+
+- O19's "A group of one on x86-64" (above), its note on a closed form
+  (now: a closed form need not reproduce an `f32` running sum, the phase
+  is a `u32`), and the encoder-only image's +720 B, which buys it
+  nothing.
+- The A76 identity log now names each build's source commit (0286ee8,
+  7e388d3) from its build record, beside the binaries' hashes; the
+  script records it from now on.
+- The mutant and forced-check logs named the work tree's HEAD, not the
+  tree that ran: each now carries a correction (HEAD plus the change
+  committed next, plus the mutant or forced edit), and the scripts record
+  the work-tree diff's hash from now on.
+
+### Follow-ups, not done
+
+- **A `Slots` view** (`(bytes, first)` in place of the `(refs, k0)`
+  pairs through `add_all`, `Removal::run`, `run_as` and `refs`): tried
+  on the read side only, it changed `.text` on every measured target
+  (x86-64 `cat-ft8-decode` +128 B, AArch64 −128 B, the M33 host check
+  image +44 B), so it was not kept untimed. With it, the congruence of
+  slot and sample could be checked in one place.
+- **One head/whole/tail split** for the four places that write it out
+  (the writer, the removal, the lane sums, the fit): not tried, for the
+  same reason; best done with the `Slots` view and timed.
+- The flat-run loop of `Synth::phases` is not in the code-generation
+  check, and there are no x86-64 checks.
+
+### Checks
+
+- Local CI passes at 35aa6da: as in O19, plus the lane-index check and
+  the release library tests with `--cfg cat_ft8_test_group_one`; the
+  code-generation check AArch64 696 / 15 / 156 / 5 / 8 / 0 / 0 / 0 / 18
+  / 2 / 3 / 549, thumbv8m 20, thumbv7em 0 / 0 / 0.
+- clippy `-D warnings` passes with the test cfg as well.
+- No measured code changed, so the A76, x86-64 and M33 timings, counts
+  and identity of O19 stand; nothing was rerun on the A76.
