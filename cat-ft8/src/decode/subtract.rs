@@ -1182,6 +1182,10 @@ fn reference(refs: &mut [u8], k0: usize, phase: &[u32], env: Option<&[f32]>) {
 /// unrolling the block (a toolchain change can lose it with every test
 /// passing).
 const CHAINS: usize = if VECTOR { 16 } else { 1 };
+// `scaled_cos_sin` takes `CHAINS` samples at a time from a whole group: whole
+// groups.
+#[allow(clippy::modulo_one)] // GROUP is 1 on some targets
+const _: () = assert!(CHAINS % GROUP == 0);
 
 /// For each sample, `weight(x)` times the cosine and sine of its phase
 /// (`cos_sin_turns`), stored in `out` from slot `k0` on by [`put`], over
@@ -1217,8 +1221,9 @@ fn scaled_cos_sin<const W: usize, X: Copy>(
         0
     };
     if W > 1 {
-        // `W` slots from a whole group are whole groups.
-        assert!(in_group(W) == 0);
+        // `W` slots from a whole group are whole groups (for `CHAINS`, the
+        // decoder's `W`, asserted at compile time).
+        debug_assert!(in_group(W) == 0);
         let at = (k0 + head) * PAIR;
         let blocks = out[at..at + whole * PAIR]
             .chunks_exact_mut(W * PAIR)
