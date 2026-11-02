@@ -129,7 +129,7 @@ fn floor_by_truncation(y: f32) -> i32 {
 /// and r in its bits is exact (at 2²⁴ the carry into the exponent still
 /// gives 2²²); outside it the result is wrong. Callers: `exp2_neg`
 /// (clamped to [−126, 0]) and the waveform's phase increment (in
-/// [0, 2¹⁶]). Relies on round-to-nearest without excess precision (SSE2
+/// [−2¹⁵, 2¹⁵]). Relies on round-to-nearest without excess precision (SSE2
 /// on x86-64, where it is used).
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 #[inline(always)]

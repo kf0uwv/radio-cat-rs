@@ -428,9 +428,13 @@ const CHUNK: usize = 64;
 ///
 /// On x86-64, where the saturating `as` conversion of a vectorised loop
 /// goes a lane at a time (SSE2), without a float-to-integer conversion:
-/// the top 15 bits are ⌊x / 2¹⁶⌋ and the low 16 bits ⌊x − 2¹⁶·⌊x / 2¹⁶⌋⌋,
-/// each step exact (the scaling by 2¹⁶ either way, and the difference, a
-/// multiple of x's spacing below 2¹⁶). Elsewhere through `i32`: one
+/// x = 2¹⁶·r + d with r = x / 2¹⁶ rounded to the nearest integer (by
+/// adding 1.5·2²³, as in [`floor_small`](crate::decode::math::floor_small),
+/// without its correction) and |d| ≤ 2¹⁵, so ⌊x⌋ = 2¹⁶·r + ⌊d⌋. Each step
+/// is exact: the scalings by 2¹⁶; r·2¹⁶ (r ≤ 2¹⁵); and the difference d,
+/// which is x itself below 2¹⁵ (r is 0 there) and otherwise a multiple of
+/// x's spacing, fewer than 2²⁴ of them as |d| ≤ 2¹⁵ ≤ x. One rounding and
+/// one floor, where flooring both parts took two corrections. Elsewhere through `i32`: one
 /// instruction on AArch64 (lanes at once) and on Cortex-M, where `i64`
 /// would be a library call.
 #[inline(always)]
@@ -448,9 +452,11 @@ fn increment(x: f32) -> u32 {
     #[cfg(target_arch = "x86_64")]
     {
         use crate::decode::math::floor_small;
-        let hi = floor_small(x * (1.0 / 65_536.0));
-        let lo = floor_small(x - hi as f32 * 65_536.0);
-        ((hi as u32) << 16).wrapping_add(lo as u32)
+        const MAGIC: f32 = 12_582_912.0; // 1.5·2²³
+        let big = x * (1.0 / 65_536.0) + MAGIC;
+        let hi = big.to_bits().wrapping_sub(MAGIC.to_bits());
+        let lo = floor_small(x - (big - MAGIC) * 65_536.0);
+        (hi << 16).wrapping_add(lo as u32)
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
