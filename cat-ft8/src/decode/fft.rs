@@ -432,7 +432,7 @@ fn twiddle_index<const R: usize>(m: usize, q: usize, k_step: usize) -> usize {
 
 /// One radix-R butterfly written out term by term: inputs m = 0 .. R at
 /// `r[m·s]`, `i[m·s]` (`$ms` lists m = 1 .. R, `$qs` q = 0 .. R), output q
-/// stored at `r[q·s]`, `i[q·s]`; the twiddle expression gives (re, im) for
+/// stored at `r[q·s]`, `i[q·s]`; the twiddle expression gives [re, im] for
 /// (m, q). Every input is read before any output is stored. Output q is
 /// a[0] + Σ_{m ≥ 1} a[m]·w(m, q), the products added in the order of m:
 /// the operations of [`radix_sums`] with one lane, in its order, so the
@@ -461,7 +461,7 @@ macro_rules! straight_butterfly {
         let mut sr = $ar[0];
         let mut si = $ai[0];
         $(
-            let (wr, wi) = {
+            let [wr, wi] = {
                 let ($m, $qq): (usize, usize) = ($mv, $q);
                 $w
             };
@@ -501,10 +501,7 @@ macro_rules! straight_stage {
                     &mut $re[base..base + ($r - 1) * $s + 1],
                     &mut $im[base..base + ($r - 1) * $s + 1],
                 );
-                straight_butterfly!(r, i, $s, $ms, $qs, (m, q) => {
-                    let t = w[m - 1][q];
-                    (t[0], t[1])
-                });
+                straight_butterfly!(r, i, $s, $ms, $qs, (m, q) => w[m - 1][q]);
                 base += SPAN;
             }
             k += 1;
@@ -534,10 +531,7 @@ fn last_straight_stage(re: &mut [f32; N], im: &mut [f32; N]) {
             &mut re[k..k + (R - 1) * S + 1],
             &mut im[k..k + (R - 1) * S + 1],
         );
-        straight_butterfly!(r, i, S, [1 2 3 4], [0 1 2 3 4], (m, q) => {
-            let t = TWIDDLES[twiddle_index::<R>(m, q, k)];
-            (t[0], t[1])
-        });
+        straight_butterfly!(r, i, S, [1 2 3 4], [0 1 2 3 4], (m, q) => TWIDDLES[twiddle_index::<R>(m, q, k)]);
     }
 }
 
@@ -691,10 +685,7 @@ fn straight_first_stage(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f3
             x[2 * INPUT_STEP + 1] * high[INPUT_STEP],
             x[3 * INPUT_STEP + 1] * high[0],
         ];
-        straight_butterfly!(@store ar, ai, r, i, 1, [1 2 3], [0 1 2 3], (m, q) => {
-            let t = w[m - 1][q];
-            (t[0], t[1])
-        });
+        straight_butterfly!(@store ar, ai, r, i, 1, [1 2 3], [0 1 2 3], (m, q) => w[m - 1][q]);
     }
 }
 
