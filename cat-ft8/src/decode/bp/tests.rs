@@ -43,6 +43,30 @@ static CHECKS: [[u8; MAX_DEGREE]; M] = {
     out
 };
 
+/// The graph's tables in the layout of groups of one and of four
+/// ([`place`]): the decoder's statics for its own group size, these for the
+/// other ([`tables`]).
+static VAR_EDGES_1: [[u16; 3]; N] = var_edges(1);
+static EDGE_VARS_1: [u8; EDGES] = edge_vars(&VAR_EDGES_1);
+static VAR_EDGES_4: [[u16; 3]; N] = var_edges(4);
+static EDGE_VARS_4: [u8; EDGES] = edge_vars(&VAR_EDGES_4);
+
+/// The tables for groups of `g` (one or four).
+pub(super) fn tables_for(g: usize) -> (&'static [u8; EDGES], &'static [[u16; 3]; N]) {
+    match g {
+        1 => (&EDGE_VARS_1, &VAR_EDGES_1),
+        4 => (&EDGE_VARS_4, &VAR_EDGES_4),
+        _ => panic!("no tables for groups of {g}"),
+    }
+}
+
+/// Each check's edges in the layout of groups of `G`, in check order.
+fn edges_of<const G: usize>() -> std::vec::Vec<std::vec::Vec<usize>> {
+    check_edges::<G>()
+        .map(|(e, n, k)| (0..n).map(|j| e + j * k).collect())
+        .collect()
+}
+
 /// Variable indices (0-based) and count of check `c`.
 fn check(c: usize) -> (&'static [u8; MAX_DEGREE], usize) {
     (&CHECKS[c], usize::from(DEGREES[c]))
@@ -150,7 +174,8 @@ fn the_stopping_test_matches_its_first_form() {
         }
         let mut want = [0u8; N];
         let holds = hard_decide_first_form(&values, &mut want);
-        assert_eq!(checks_hold(&values), holds, "state {state}");
+        assert_eq!(checks_hold::<1>(&values), holds, "state {state}");
+        assert_eq!(checks_hold::<4>(&values), holds, "state {state}");
         held += usize::from(holds);
         let mut hard = [9u8; N];
         hard_decisions(&values, &mut hard);
@@ -257,11 +282,20 @@ fn the_stopping_test_fails_first_at_every_check() {
             let holds = hard_decide_first_form(&values, &mut want);
             assert_eq!(first_failing_check(&want), Some(c), "check {c}");
             assert!(!holds);
-            assert_eq!(checks_hold(&values), holds, "check {c}, variant {variant}");
+            assert_eq!(
+                checks_hold::<1>(&values),
+                holds,
+                "check {c}, variant {variant}"
+            );
+            assert_eq!(
+                checks_hold::<4>(&values),
+                holds,
+                "check {c}, variant {variant}"
+            );
             *seen += 1;
         }
         // The codeword itself holds.
-        assert!(checks_hold(&clean));
+        assert!(checks_hold::<1>(&clean) && checks_hold::<4>(&clean));
     }
     assert!(seen.iter().all(|&n| n == 12), "{seen:?}");
 }
@@ -456,14 +490,26 @@ fn the_check_table_is_the_parity_check_matrix_0_based() {
     }
 }
 
-/// Messages in the edge layout as rows by check, in check order (unused
-/// lanes 0.0).
-fn rows_of(msg: &[f32; EDGES]) -> [[f32; MAX_DEGREE]; M] {
+/// Messages in the layout of groups of `G` as rows by check, in check
+/// order (unused lanes 0.0).
+fn rows_of<const G: usize>(msg: &[f32; EDGES]) -> [[f32; MAX_DEGREE]; M] {
     let mut rows = [[0.0f32; MAX_DEGREE]; M];
-    for (row, (v, e)) in rows.iter_mut().zip(check_edges()) {
-        row[..v.len()].copy_from_slice(&msg[e..][..v.len()]);
+    for (row, edges) in rows.iter_mut().zip(edges_of::<G>()) {
+        for (r, e) in row.iter_mut().zip(edges) {
+            *r = msg[e];
+        }
     }
     rows
+}
+
+/// Rows by check written back into messages in the layout of groups of
+/// `G`.
+fn rows_into<const G: usize>(rows: &[[f32; MAX_DEGREE]; M], msg: &mut [f32; EDGES]) {
+    for (row, edges) in rows.iter().zip(edges_of::<G>()) {
+        for (&r, e) in row.iter().zip(edges) {
+            msg[e] = r;
+        }
+    }
 }
 
 /// FNV-1a over the bits of the scratch's totals and messages (as rows by
@@ -471,7 +517,7 @@ fn rows_of(msg: &[f32; EDGES]) -> [[f32; MAX_DEGREE]; M] {
 /// array the last round left the totals in.
 fn state_hash(s: &BpScratch) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
-    let rows = rows_of(&s.msg);
+    let rows = rows_of::<GROUP>(&s.msg);
     let totals = if s.rounds % 2 == 0 { &s.total } else { &s.next };
     let words = totals.iter().chain(rows.iter().flatten());
     for x in words {
@@ -539,34 +585,66 @@ fn the_scratch_records_the_rounds_run() {
 
 #[test]
 fn the_edge_layout_uses_every_edge_once_in_aligned_blocks() {
+    assert_eq!((LOW_CHECKS, LOW_EDGES, EDGES), (59, 354, 522));
+    assert_eq!(tables_for(GROUP), (&EDGE_VARS, &VAR_EDGES));
+    assert!(core::ptr::eq(tables::<GROUP>().0, &EDGE_VARS));
+    edge_layout_is::<1>();
+    edge_layout_is::<4>();
+}
+
+/// The layout of groups of `G` ([`place`]), checked from the tables of
+/// [`tables`] and [`check_edges`] against the parity-check table.
+fn edge_layout_is<const G: usize>() {
+    let (edge_vars, var_edges) = tables::<G>();
     let mut used = [0u8; EDGES];
     let mut per_variable = [0u8; N];
-    let (mut low, mut high) = (0, LOW_EDGES);
-    for (c, (v, e)) in check_edges().enumerate() {
-        let n = v.len();
-        assert_eq!(v, &check(c).0[..check(c).1], "check {c}");
-        // Each degree's checks are consecutive blocks of their own size,
-        // in check order: degree 6 in [0, LOW_EDGES), 7 in [LOW_EDGES, EDGES).
-        if n == 6 {
-            assert_eq!(e, low, "check {c}");
-            low += 6;
-            assert!(e + 6 <= LOW_EDGES && e % 6 == 0, "check {c} at {e}");
+    // Per degree: the checks so far, and the first edge of their region.
+    let mut seen = [0usize; 2];
+    for (c, (e, n, k)) in check_edges::<G>().enumerate() {
+        assert_eq!(n, check(c).1, "check {c}");
+        let (d, first, count) = if n == 6 {
+            (0, 0, LOW_CHECKS)
         } else {
-            assert_eq!(n, 7, "check {c}");
-            assert_eq!(e, high, "check {c}");
-            high += 7;
-            assert!(e >= LOW_EDGES && e + 7 <= EDGES, "check {c} at {e}");
-            assert_eq!((e - LOW_EDGES) % 7, 0, "check {c} at {e}");
-        }
-        for (u, &i) in used[e..e + n].iter_mut().zip(v) {
-            *u += 1;
-            per_variable[usize::from(i)] += 1;
+            (1, LOW_EDGES, M - LOW_CHECKS)
+        };
+        let index = seen[d];
+        seen[d] += 1;
+        // Checks in whole groups are interleaved: edge j of the group's
+        // k-th check at the group's first edge + j·G + k. The rest are
+        // laid out one after another.
+        let whole = count / G * G;
+        let want = if index < whole {
+            (first + index / G * G * n + index % G, G)
+        } else {
+            (first + index * n, 1)
+        };
+        assert_eq!((e, k), want, "check {c}");
+        let edges: std::vec::Vec<usize> = (0..n).map(|j| e + j * k).collect();
+        let vars: std::vec::Vec<u8> = edges.iter().map(|&x| edge_vars[x]).collect();
+        assert_eq!(vars, &check(c).0[..n], "check {c}");
+        for &x in &edges {
+            assert!(x >= first && x < first + count * n, "check {c} at {x}");
+            used[x] += 1;
+            per_variable[usize::from(edge_vars[x])] += 1;
         }
     }
-    assert_eq!((low, high), (LOW_EDGES, EDGES));
-    assert_eq!((LOW_EDGES, EDGES), (354, 522));
+    assert_eq!(seen, [LOW_CHECKS, M - LOW_CHECKS]);
     assert!(used.iter().all(|&u| u == 1), "{used:?}");
     assert!(per_variable.iter().all(|&d| d == 3), "{per_variable:?}");
+    // Each variable's edges, in check order.
+    for (i, ve) in var_edges.iter().enumerate() {
+        let want: std::vec::Vec<u16> = edges_of::<G>()
+            .iter()
+            .enumerate()
+            .flat_map(|(c, edges)| {
+                let (v, n) = check(c);
+                (0..n)
+                    .filter(move |&j| usize::from(v[j]) == i)
+                    .map(move |j| edges[j] as u16)
+            })
+            .collect();
+        assert_eq!(&ve[..], &want[..], "variable {i}");
+    }
 }
 
 /// Values over a wide range, with ±0, subnormals and values up to ±1e6
@@ -629,25 +707,47 @@ fn the_sum_product_round_matches_the_check_by_check_form_bit_for_bit() {
         total.iter_mut().for_each(|x| *x = value());
         next.iter_mut().for_each(|x| *x = value());
         msg.iter_mut().for_each(|x| *x = value());
-        let mut rows = rows_of(&msg);
+        let given = rows_of::<GROUP>(&msg);
+        let mut rows = given;
         let mut want_next = next;
         reference_round(&total, &mut want_next, &mut rows);
-        // Both targets' forms: the decoder's, and the other one.
-        let forms: [(&str, Round); 3] = [
-            ("decoder", sum_product_round::<VECTOR, PASS_LANES>),
-            ("vector", sum_product_round::<true, 24>),
-            ("scalar", sum_product_round::<false, 1>),
+        // Both targets' forms: the decoder's, the other one, and each
+        // with the other layout. Each takes the same messages in its own
+        // layout.
+        let forms: [(&str, Round, usize); 5] = [
+            (
+                "decoder",
+                sum_product_round::<VECTOR, PASS_LANES, GROUP>,
+                GROUP,
+            ),
+            ("vector", sum_product_round::<true, 24, 4>, 4),
+            ("scalar", sum_product_round::<false, 1, 1>, 1),
+            ("vector, groups of one", sum_product_round::<true, 24, 1>, 1),
+            (
+                "scalar, groups of four",
+                sum_product_round::<false, 1, 4>,
+                4,
+            ),
         ];
-        for (form, round) in forms {
-            let (mut got_next, mut msg) = ([f32::NAN; N], msg);
-            round(&next, &total, &mut got_next, &mut msg);
+        for (form, round, group) in forms {
+            let mut msg = [f32::NAN; EDGES];
+            let mut got_next = [f32::NAN; N];
+            let got_rows = if group == 1 {
+                rows_into::<1>(&given, &mut msg);
+                round(&next, &total, &mut got_next, &mut msg);
+                rows_of::<1>(&msg)
+            } else {
+                rows_into::<4>(&given, &mut msg);
+                round(&next, &total, &mut got_next, &mut msg);
+                rows_of::<4>(&msg)
+            };
             assert_eq!(
                 bits(&mut got_next.iter()),
                 bits(&mut want_next.iter()),
                 "state {state}, {form}: sums"
             );
             assert_eq!(
-                bits(&mut rows_of(&msg).iter().flatten()),
+                bits(&mut got_rows.iter().flatten()),
                 bits(&mut rows.iter().flatten()),
                 "state {state}, {form}: messages"
             );
@@ -659,12 +759,15 @@ fn the_sum_product_round_matches_the_check_by_check_form_bit_for_bit() {
 type Round = fn(&[f32; N], &[f32; N], &mut [f32; N], &mut [f32; EDGES]);
 
 /// The min-sum round as first written (inside `decode_soft`, the inputs
-/// in a separate row): the reference the in-place round must match bit
-/// for bit.
-fn reference_min_sum_round(total: &[f32; N], next: &mut [f32; N], msg: &mut [f32; EDGES]) {
-    for (v, e) in check_edges() {
-        let n = v.len();
-        let row = &mut msg[e..][..n];
+/// in a separate row), over rows by check: the reference the in-place
+/// round must match bit for bit in either layout.
+fn reference_min_sum_round(
+    total: &[f32; N],
+    next: &mut [f32; N],
+    rows: &mut [[f32; MAX_DEGREE]; M],
+) {
+    for (c, row) in rows.iter_mut().enumerate() {
+        let (v, n) = check(c);
         let mut q = [0.0f32; LANES];
         for j in 0..n {
             q[j] = total[usize::from(v[j])] - row[j];
@@ -708,23 +811,36 @@ fn the_min_sum_round_matches_its_first_form_bit_for_bit() {
             msg.iter_mut().step_by(3).for_each(|x| *x = 0.0);
             total.iter_mut().step_by(2).for_each(|x| *x = 1.5);
         }
-        let (mut want_next, mut want_msg) = (next, msg);
-        reference_min_sum_round(&total, &mut want_next, &mut want_msg);
-        let forms: [(&str, Round); 2] = [
-            ("vector", min_sum_round::<true>),
-            ("scalar", min_sum_round::<false>),
+        let given = rows_of::<GROUP>(&msg);
+        let (mut want_next, mut want_rows) = (next, given);
+        reference_min_sum_round(&total, &mut want_next, &mut want_rows);
+        let forms: [(&str, Round, usize); 5] = [
+            ("decoder", min_sum_round::<VECTOR, GROUP>, GROUP),
+            ("vector", min_sum_round::<true, 4>, 4),
+            ("scalar", min_sum_round::<false, 1>, 1),
+            ("vector, groups of one", min_sum_round::<true, 1>, 1),
+            ("scalar, groups of four", min_sum_round::<false, 4>, 4),
         ];
-        for (form, round) in forms {
-            let (mut got_next, mut msg) = ([f32::NAN; N], msg);
-            round(&next, &total, &mut got_next, &mut msg);
+        for (form, round, group) in forms {
+            let mut msg = [f32::NAN; EDGES];
+            let mut got_next = [f32::NAN; N];
+            let got_rows = if group == 1 {
+                rows_into::<1>(&given, &mut msg);
+                round(&next, &total, &mut got_next, &mut msg);
+                rows_of::<1>(&msg)
+            } else {
+                rows_into::<4>(&given, &mut msg);
+                round(&next, &total, &mut got_next, &mut msg);
+                rows_of::<4>(&msg)
+            };
             assert_eq!(
                 got_next.map(f32::to_bits),
                 want_next.map(f32::to_bits),
                 "state {state}, {form}: sums"
             );
             assert_eq!(
-                msg.map(f32::to_bits),
-                want_msg.map(f32::to_bits),
+                got_rows.map(|r| r.map(f32::to_bits)),
+                want_rows.map(|r| r.map(f32::to_bits)),
                 "state {state}, {form}: messages"
             );
         }
@@ -785,7 +901,7 @@ fn the_scratch_holds_one_message_per_edge() {
 /// `decode_soft` as at its first exit-per-path form: round 0's test
 /// before the loop, then each round's test after it, the totals' arrays
 /// swapped by contents, every bit decided before the checks, and the
-/// rounds in their first forms. The messages are kept in the edge
+/// rounds in their first forms. The messages are kept in the decoder's
 /// layout. Returns the result, the rounds run, the totals and the
 /// messages.
 fn decode_soft_first_form(
@@ -814,15 +930,13 @@ fn decode_soft_first_form(
     }
     for round in 1..=max_rounds {
         let mut next = *llr;
+        let mut rows = rows_of::<GROUP>(&msg);
         if rule == CheckRule::SumProduct {
-            let mut rows = rows_of(&msg);
             reference_round(&total, &mut next, &mut rows);
-            for (row, (v, e)) in rows.iter().zip(check_edges()) {
-                msg[e..][..v.len()].copy_from_slice(&row[..v.len()]);
-            }
         } else {
-            reference_min_sum_round(&total, &mut next, &mut msg);
+            reference_min_sum_round(&total, &mut next, &mut rows);
         }
+        rows_into::<GROUP>(&rows, &mut msg);
         core::mem::swap(&mut total, &mut next);
         if hard_decide_first_form(&total, &mut hard) {
             return (done(round, &hard), round, total, msg);

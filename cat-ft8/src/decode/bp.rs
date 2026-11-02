@@ -70,7 +70,7 @@ pub struct BpScratch {
     total: [f32; N],
     next: [f32; N],
     /// The check-to-variable messages, one per edge, laid out by check
-    /// degree ([`check_edges`]).
+    /// degree in groups ([`place`]).
     msg: [f32; EDGES],
     /// The hard decisions of the last totals whose checks all held.
     hard: [u8; N],
@@ -206,13 +206,22 @@ fn hard_bit(x: f32, i: usize) -> u8 {
 
 /// True if every parity check holds for the hard decisions of `values`.
 /// Each check decides its own bits as it is tested, so a round that fails
-/// stops at its first failing check without deciding the other bits.
-fn checks_hold(values: &[f32; N]) -> bool {
-    check_edges().all(|(v, _)| {
-        v.iter().fold(0u8, |acc, &i| {
-            let i = usize::from(i);
-            acc ^ hard_bit(values[i], i)
-        }) == 0
+/// stops at its first failing check without deciding the other bits. `G`
+/// is the layout's group size; the decoder uses [`GROUP`], the tests
+/// both.
+fn checks_hold<const G: usize>(values: &[f32; N]) -> bool {
+    let (edge_vars, _) = tables::<G>();
+    let decide = |acc: u8, &i: &u8| {
+        let i = usize::from(i);
+        acc ^ hard_bit(values[i], i)
+    };
+    check_edges::<G>().all(|(e, n, k)| {
+        let parity = if k == 1 {
+            edge_vars[e..][..n].iter().fold(0u8, decide)
+        } else {
+            edge_vars[e..].iter().step_by(k).take(n).fold(0u8, decide)
+        };
+        parity == 0
     })
 }
 
@@ -271,7 +280,7 @@ pub fn decode_soft(
     // Round 0 is the channel's own hard decisions.
     let mut round = 0;
     loop {
-        if checks_hold(total) {
+        if checks_hold::<GROUP>(total) {
             hard_decisions(total, hard);
             let payload = accept(hard)?;
             return Ok(BpDecode {
@@ -286,9 +295,9 @@ pub fn decode_soft(
         round += 1;
         *rounds_run = round;
         if rule == CheckRule::SumProduct {
-            sum_product_round::<VECTOR, PASS_LANES>(llr, total, next, msg);
+            sum_product_round::<VECTOR, PASS_LANES, GROUP>(llr, total, next, msg);
         } else {
-            min_sum_round::<VECTOR>(llr, total, next, msg);
+            min_sum_round::<VECTOR, GROUP>(llr, total, next, msg);
         }
         core::mem::swap(&mut total, &mut next);
     }
@@ -313,27 +322,78 @@ const LOW_CHECKS: usize = {
     count
 };
 /// The edges of the degree-6 checks, which come first in the messages'
-/// layout ([`check_edges`]); then those of the degree-7 checks.
+/// layout ([`place`]); then those of the degree-7 checks.
 const LOW_EDGES: usize = 6 * LOW_CHECKS;
 /// Edges of the parity-check graph (522).
 const EDGES: usize = LOW_EDGES + 7 * (M - LOW_CHECKS);
 
-/// Each check in order: its variables (0-based, in `PARITY_CHECKS`
-/// order) and the index of its first edge in the messages' layout. The
-/// edges are laid out by check degree: the degree-6 checks' edges first,
-/// check by check in order, then the degree-7 checks'. A check's
-/// variables are its edges' entries of [`EDGE_VARS`], so the graph is
-/// stored once. Every place the layout is walked takes it from here.
+/// Checks of one degree whose edges are interleaved in the messages'
+/// layout ([`place`]): four where the round's loops vectorise, so that
+/// the sum-product products run over four checks in the lanes of one
+/// vector; one elsewhere, check by check.
+const GROUP: usize = if VECTOR { 4 } else { 1 };
+
+/// The messages' layout, in groups of `group` checks: the first edge of
+/// check `index` among the checks of `degree` (6 or 7), and the stride
+/// between its edges. The degree-6 checks' edges come first, then the
+/// degree-7 checks', each degree's checks in check order. They are taken
+/// `group` at a time, and within a group edge j of its k-th check is at
+/// the group's first edge + j·group + k; the checks left over after the
+/// last whole group are laid out one after another, stride 1. With a
+/// group of one this is check by check. Every place the layout is built
+/// or walked takes it from here.
 #[inline(always)]
-fn check_edges() -> impl Iterator<Item = (&'static [u8], usize)> {
-    let (mut low, mut high) = (0, LOW_EDGES);
+const fn place(degree: usize, index: usize, group: usize) -> (usize, usize) {
+    let (first, count) = if degree == 6 {
+        (0, LOW_CHECKS)
+    } else {
+        (LOW_EDGES, M - LOW_CHECKS)
+    };
+    if index < count / group * group {
+        (
+            first + index / group * group * degree + index % group,
+            group,
+        )
+    } else {
+        (first + index * degree, 1)
+    }
+}
+
+/// Each check in order: its first edge in the messages' layout of
+/// groups of `G` ([`place`]), its degree, and the stride between its
+/// edges. A check's variables are its edges' entries of [`EDGE_VARS`],
+/// so the graph is stored once. With groups of one, each degree's next
+/// check starts where the last one ended, so the walk keeps each
+/// degree's next edge rather than its count of checks.
+#[inline(always)]
+fn check_edges<const G: usize>() -> impl Iterator<Item = (usize, usize, usize)> {
+    let (mut low, mut high) = (0, if G == 1 { LOW_EDGES } else { 0 });
     (0..M).map(move |c| {
         let n = usize::from(DEGREES[c]);
-        let place = if n == 6 { &mut low } else { &mut high };
-        let e = *place;
-        *place += n;
-        (&EDGE_VARS[e..][..n], e)
+        let at = if n == 6 { &mut low } else { &mut high };
+        if G == 1 {
+            let e = *at;
+            *at += n;
+            (e, n, 1)
+        } else {
+            let (e, k) = place(n, *at, G);
+            *at += 1;
+            (e, n, k)
+        }
     })
+}
+
+/// The graph's tables in the layout of groups of `G`: the decoder's
+/// statics for [`GROUP`]; in the tests, their copies for the other group
+/// size, so that both layouts are tested on any host.
+#[inline(always)]
+fn tables<const G: usize>() -> (&'static [u8; EDGES], &'static [[u16; 3]; N]) {
+    #[cfg(test)]
+    if G != GROUP {
+        return tests::tables_for(G);
+    }
+    assert!(G == GROUP);
+    (&EDGE_VARS, &VAR_EDGES)
 }
 
 /// One sum-product round, in place on the messages: every check's new
@@ -341,39 +401,61 @@ fn check_edges() -> impl Iterator<Item = (&'static [u8], usize)> {
 /// phases over all edges (inputs, tanh, products, atanh, then the sums), so
 /// the tanh and atanh passes are long plain loops; each value's arithmetic
 /// is that of one check at a time. With the edges laid out by check degree
-/// ([`check_edges`]), the products run over whole checks of a fixed size.
-/// `V` picks the form of `tanh_half` and `W` the values the tanh and atanh
-/// passes take together; the decoder uses [`VECTOR`] and [`PASS_LANES`],
-/// the tests both targets' forms. Not inlined, so its frame is measured on
-/// its own.
+/// in groups of `G` ([`place`]), the products run over whole groups of a
+/// fixed size. `V` picks the form of `tanh_half`, `W` the values the tanh
+/// and atanh passes take together and `G` the layout; the decoder uses
+/// [`VECTOR`], [`PASS_LANES`] and [`GROUP`], the tests both targets' forms.
+/// Not inlined, so its frame is measured on its own.
 #[inline(never)]
-fn sum_product_round<const V: bool, const W: usize>(
+fn sum_product_round<const V: bool, const W: usize, const G: usize>(
     llr: &[f32; N],
     total: &[f32; N],
     next: &mut [f32; N],
     msg: &mut [f32; EDGES],
 ) {
-    for (m, &i) in msg.iter_mut().zip(&EDGE_VARS) {
+    let (edge_vars, var_edges) = tables::<G>();
+    for (m, &i) in msg.iter_mut().zip(edge_vars) {
         *m = total[usize::from(i)] - *m;
     }
     each_value::<W>(msg, tanh_half::<V>);
     let (t6, t7) = msg.split_at_mut(LOW_EDGES);
-    for tc in t6.chunks_exact_mut(6) {
-        others_products::<6>(tc);
-    }
-    for tc in t7.chunks_exact_mut(7) {
-        others_products::<7>(tc);
-    }
+    products::<6, G>(t6);
+    products::<7, G>(t7);
     each_value::<W>(msg, twice_atanh);
-    sums(llr, next, msg);
+    sums(llr, next, msg, var_edges);
 }
 
-/// Each variable's three edges in the messages' layout ([`check_edges`]),
-/// in check order: every variable is in exactly three checks.
-pub(crate) static VAR_EDGES: [[u16; 3]; N] = {
+/// The products over the edges of one degree's checks in the layout of
+/// groups of `G` ([`place`]): with groups of one, check by check; else the
+/// whole groups, then the checks left over one by one.
+#[inline(always)]
+fn products<const D: usize, const G: usize>(edges: &mut [f32]) {
+    let rest = if G == 1 {
+        edges
+    } else {
+        let mut groups = edges.chunks_exact_mut(D * G);
+        for group in &mut groups {
+            group_products::<D, G>(group);
+        }
+        groups.into_remainder()
+    };
+    for tc in rest.chunks_exact_mut(D) {
+        others_products::<D>(tc);
+    }
+}
+
+/// Each variable's three edges in the messages' layout ([`place`]), in
+/// check order: every variable is in exactly three checks.
+pub(crate) static VAR_EDGES: [[u16; 3]; N] = var_edges(GROUP);
+
+/// Each edge's variable, in the messages' layout ([`place`]).
+pub(crate) static EDGE_VARS: [u8; EDGES] = edge_vars(&VAR_EDGES);
+
+/// [`VAR_EDGES`] in the layout of groups of `group`.
+const fn var_edges(group: usize) -> [[u16; 3]; N] {
     let mut out = [[0u16; 3]; N];
     let mut seen = [0usize; N];
-    let (mut low, mut high) = (0, LOW_EDGES);
+    let (mut low, mut high) = (0, 0);
     let mut c = 0;
     while c < M {
         let mut n = 0;
@@ -382,22 +464,22 @@ pub(crate) static VAR_EDGES: [[u16; 3]; N] = {
             n += (PARITY_CHECKS[c][j] != 0) as usize;
             j += 1;
         }
-        let first = if n == 6 { low } else { high };
+        let (first, stride) = place(n, if n == 6 { low } else { high }, group);
         let (mut j, mut k) = (0, 0);
         while j < MAX_DEGREE {
             if PARITY_CHECKS[c][j] != 0 {
                 let i = (PARITY_CHECKS[c][j] - 1) as usize;
                 assert!(seen[i] < 3);
-                out[i][seen[i]] = (first + k) as u16;
+                out[i][seen[i]] = (first + k * stride) as u16;
                 seen[i] += 1;
                 k += 1;
             }
             j += 1;
         }
         if n == 6 {
-            low += 6;
+            low += 1;
         } else {
-            high += 7;
+            high += 1;
         }
         c += 1;
     }
@@ -407,28 +489,28 @@ pub(crate) static VAR_EDGES: [[u16; 3]; N] = {
         i += 1;
     }
     out
-};
+}
 
-/// Each edge's variable, in the messages' layout ([`check_edges`]).
-pub(crate) static EDGE_VARS: [u8; EDGES] = {
+/// [`EDGE_VARS`] from the variables' edges `var_edges`.
+const fn edge_vars(var_edges: &[[u16; 3]; N]) -> [u8; EDGES] {
     let mut out = [0u8; EDGES];
     let mut i = 0;
     while i < N {
         let mut k = 0;
         while k < 3 {
-            out[VAR_EDGES[i][k] as usize] = i as u8;
+            out[var_edges[i][k] as usize] = i as u8;
             k += 1;
         }
         i += 1;
     }
     out
-};
+}
 
 /// The next totals: each variable's soft bit plus its three checks'
-/// messages, added in check order.
+/// messages (at `var_edges`), added in check order.
 #[inline(always)]
-fn sums(llr: &[f32; N], next: &mut [f32; N], msg: &[f32; EDGES]) {
-    for ((x, &l), e) in next.iter_mut().zip(llr).zip(&VAR_EDGES) {
+fn sums(llr: &[f32; N], next: &mut [f32; N], msg: &[f32; EDGES], var_edges: &[[u16; 3]; N]) {
+    for ((x, &l), e) in next.iter_mut().zip(llr).zip(var_edges) {
         *x = l + msg[usize::from(e[0])] + msg[usize::from(e[1])] + msg[usize::from(e[2])];
     }
 }
@@ -464,29 +546,50 @@ fn each_value<const W: usize>(values: &mut [f32; EDGES], f: impl Fn(f32) -> f32)
 /// One normalised min-sum round, in place on the messages: check by check
 /// in order, the inputs (totals less the check's own messages) replace its
 /// messages, then its new messages, which are added to `next`. `V` picks
-/// the form for targets where the loops vectorise or not (the decoder uses
-/// [`VECTOR`], the tests both). Not inlined, so its frame is measured on
-/// its own.
+/// the form for targets where the loops vectorise or not and `G` the
+/// layout (the decoder uses [`VECTOR`] and [`GROUP`], the tests both). A
+/// check whose edges are interleaved with its group's ([`place`]) is
+/// copied out, updated and copied back. Not inlined, so its frame is
+/// measured on its own.
 #[inline(never)]
-fn min_sum_round<const V: bool>(
+fn min_sum_round<const V: bool, const G: usize>(
     llr: &[f32; N],
     total: &[f32; N],
     next: &mut [f32; N],
     msg: &mut [f32; EDGES],
 ) {
-    for (v, e) in check_edges() {
-        let row = &mut msg[e..][..v.len()];
-        // Where the loops vectorise, the check's size as a constant (the
-        // slices cut to 6 or 7 once this is inlined), so the compiler
-        // drops the vector forms of these short loops, which no check
-        // reaches; elsewhere one form for both sizes.
-        match (V, v.len()) {
-            (true, 6) => min_sum_check(total, &v[..6], &mut row[..6]),
-            (true, _) => min_sum_check(total, &v[..7], &mut row[..7]),
-            (false, _) => min_sum_check(total, v, row),
+    let (edge_vars, var_edges) = tables::<G>();
+    for (e, n, k) in check_edges::<G>() {
+        if k == 1 {
+            let (v, row) = (&edge_vars[e..][..n], &mut msg[e..][..n]);
+            min_sum_check_sized::<V>(total, v, row);
+        } else {
+            let (mut v, mut row) = ([0u8; MAX_DEGREE], [0.0f32; MAX_DEGREE]);
+            for j in 0..n {
+                v[j] = edge_vars[e + j * k];
+                row[j] = msg[e + j * k];
+            }
+            min_sum_check_sized::<V>(total, &v[..n], &mut row[..n]);
+            for j in 0..n {
+                msg[e + j * k] = row[j];
+            }
         }
     }
-    sums(llr, next, msg);
+    sums(llr, next, msg, var_edges);
+}
+
+/// [`min_sum_check`] on one check's variables `v` and messages `row`.
+/// Where the loops vectorise, the check's size as a constant (the slices
+/// cut to 6 or 7 once this is inlined), so the compiler drops the vector
+/// forms of these short loops, which no check reaches; elsewhere one form
+/// for both sizes.
+#[inline(always)]
+fn min_sum_check_sized<const V: bool>(total: &[f32; N], v: &[u8], row: &mut [f32]) {
+    match (V, v.len()) {
+        (true, 6) => min_sum_check(total, &v[..6], &mut row[..6]),
+        (true, _) => min_sum_check(total, &v[..7], &mut row[..7]),
+        (false, _) => min_sum_check(total, v, row),
+    }
 }
 
 /// [`min_sum_round`] for one check: its variables `v` and its messages
@@ -530,6 +633,40 @@ fn others_products<const D: usize>(tc: &mut [f32]) {
         let tj = tc[j];
         tc[j] = prefix[j] * suffix;
         suffix *= tj;
+    }
+}
+
+/// [`others_products`] for a group of `K` checks of degree `D` laid out
+/// as in [`place`] (edge j of the group's k-th check at j·K + k): each
+/// check's products are those of one check alone, in the same order, and
+/// the group's K checks take the K lanes of each step. The group's values
+/// are all loaded before any is stored. Written in place, row by row (as
+/// [`others_products`] is), the four-check form took about twice as long
+/// on the Cortex-A76 with rustc 1.93.0, its rows' loads and stores kept in
+/// order; that in-place form is the one kept for single checks, where the
+/// Cortex-M33 ran this one with more instructions.
+#[inline(always)]
+fn group_products<const D: usize, const K: usize>(group: &mut [f32]) {
+    let mut t = [[0.0f32; K]; MAX_DEGREE];
+    for (j, tj) in t.iter_mut().enumerate().take(D) {
+        *tj = group[j * K..][..K].try_into().unwrap();
+    }
+    let mut prefix = [[1.0f32; K]; LANES + 1];
+    for j in 0..D {
+        for l in 0..K {
+            prefix[j + 1][l] = prefix[j][l] * t[j][l];
+        }
+    }
+    let mut suffix = [1.0f32; K];
+    for j in (0..D).rev() {
+        let mut out = [0.0f32; K];
+        for l in 0..K {
+            out[l] = prefix[j][l] * suffix[l];
+        }
+        for l in 0..K {
+            suffix[l] *= t[j][l];
+        }
+        group[j * K..][..K].copy_from_slice(&out);
     }
 }
 

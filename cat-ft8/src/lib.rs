@@ -293,6 +293,9 @@ mod tests {
                         else {
                             continue;
                         };
+                        if rest.starts_with("fn ") {
+                            continue;
+                        }
                         let Some((name, ty)) = rest.split_once(": ") else {
                             continue;
                         };
