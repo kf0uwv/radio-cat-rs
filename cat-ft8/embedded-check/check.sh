@@ -41,7 +41,9 @@ target_dir="${CARGO_TARGET_DIR:-$here/../../target/embedded-check}"
 # The Cortex-M33's `f32` `max` and `min` are instructions: the decoder's
 # branch-free input clamp (see `INPUT_SELECT` in decode/subtract.rs).
 flags="--cfg cat_ft8_minmaxnm"
+stack=0
 if [ "${1:-}" = "--stack" ]; then
+  stack=1
   export RUSTC_BOOTSTRAP=1
   flags="$flags -Z emit-stack-sizes"
   target_dir="$target_dir/stack-sizes"
@@ -91,7 +93,7 @@ for variant in small host small-osd-on host-osd-off encoder-only; do
   echo "${doubles:-none}"
   [ -z "$doubles" ] || { echo "FAIL: f64 soft-float helpers linked" >&2; exit 1; }
 
-  if [ -n "$flags" ]; then
+  if [ "$stack" = 1 ]; then
     echo "== largest stack frames (bytes, per function; precompiled core has none recorded)"
     "$readobj" --stack-sizes "$elf" | awk '/Functions:/{f=$2} /^ *Size: 0x/{print $2, f}' \
       | while read -r hex name; do printf '%6d %s\n' "$((hex))" "$name"; done \
