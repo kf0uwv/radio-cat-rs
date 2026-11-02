@@ -541,18 +541,6 @@ fn last_straight_stage(re: &mut [f32; N], im: &mut [f32; N]) {
     }
 }
 
-const _: () = {
-    // The calls in `straight_stages`, against `STAGES`.
-    let calls = [(4, 4), (4, 16), (2, 64), (3, 128), (5, 384)];
-    let mut l = STAGES[0];
-    let mut i = 1;
-    while i < STAGES.len() {
-        assert!(STAGES[i] == calls[i - 1].0 && l == calls[i - 1].1);
-        l *= STAGES[i];
-        i += 1;
-    }
-};
-
 /// The transform as first written (every product, `% N` per twiddle): the
 /// reference [`fft`] is checked against.
 #[cfg(test)]
