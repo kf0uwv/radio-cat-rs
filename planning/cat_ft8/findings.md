@@ -7929,3 +7929,28 @@ unaffected (`.text` identical, as `LANES` is already 4 there).
   as at 78b1755. No fused multiply-add and no `f64`; thumbv7em builds.
   The encoder's 45 files are identical.
 - Decoder identity was not rerun, since no binary's code changed.
+
+## Closure follow-ups (O16c, 2026-11-02; no code generation change)
+
+Three code commits, one change each, with no new measurements:
+
+- 43079a8: the first stage passes each twiddle as an array with the same
+  value in every lane; the one-value type and its `Index` impl are gone.
+- 79e8d84: comments and an assertion message only.
+  - The macro's doc says the function form compiled differently but was
+    not timed, and is to be re-checked after a toolchain change.
+  - The group assertion's message names `SPREAD_BLOCKS`.
+  - The group bound in the layout check is marked redundant.
+  - `GROUP`'s doc names SSE2 and NEON.
+- 9dabad0: the first-stage test is renamed
+  `first_stage_equals_the_stored_window_and_stage_for_every_group_size`
+  (in O16 above, `..._bit_for_bit`), and says group, not lanes.
+
+**`.text` and `.rodata` byte-identical** to 78b1755's on all eight
+binaries (x86-64 and AArch64 `cat-ft8-decode` and `paired_bench`;
+thumbv8m check and staged images, small and host), each built at one
+scratch path from a fresh tree with rustc 1.93.0. Checked after 43079a8
+and at 9dabad0. The comparison script now removes every build directory
+before building, touches the extracted tree, and records the source
+commit, the compiler and both sections' hashes. Local CI and
+`check.sh --stack` pass at 9dabad0 (flash, RAM and frames unchanged).

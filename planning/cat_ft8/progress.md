@@ -1625,3 +1625,11 @@
 - Local CI and `check.sh --stack` pass at 4150813. The 8 A76 runs are
   valid (one warm-up sample at 1.5 GHz, disclosed); a first set of 8
   was void (a quoting error) and discarded.
+
+## Session: 2026-11-02 (O16c closure follow-ups)
+
+- 43079a8 (twiddles as arrays, `Same` removed), 79e8d84 (comments and
+  an assertion message), 9dabad0 (the first-stage test says group).
+- `.text` and `.rodata` byte-identical to 78b1755's on all eight
+  binaries; the comparison script now builds from clean directories and
+  records its provenance. Local CI and `check.sh --stack` pass.
