@@ -174,7 +174,9 @@ jobs:
       - name: Library tests with the reference in groups of one (x86-64)
         # The subtraction's reference layout of the targets without a
         # vector unit (GROUP 1, the Cortex-M33's), which no host takes by
-        # itself; forced by a tests-only cfg. In release, where code
+        # itself; forced by a tests-only cfg. It covers that layout only:
+        # CHAINS and belief propagation's VECTOR choices stay the host's,
+        # so this is not the M33's build on a host. In release, where code
         # generation differs most from the tests' debug builds.
         run: |
           CARGO_TARGET_DIR=target/group-one RUSTFLAGS="--cfg cat_ft8_test_group_one" \

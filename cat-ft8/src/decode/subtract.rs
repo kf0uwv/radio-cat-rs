@@ -1114,7 +1114,10 @@ const PAIR: usize = 8;
 /// vector unit, so that each part of a group of lanes loads and stores as
 /// one vector; one elsewhere (a sample's two parts side by side). The
 /// tests built with `--cfg cat_ft8_test_group_one` take one on every
-/// target, so that a host runs the layout of the targets without one.
+/// target, so that a host runs the layout of the targets without one. That
+/// covers this layout only: `CHAINS` and the other `VECTOR` choices (such as
+/// belief propagation's) keep the host's, so it is not the Cortex-M33's
+/// build on a host.
 const GROUP: usize = if VECTOR && !cfg!(all(test, cat_ft8_test_group_one)) {
     LANES
 } else {
