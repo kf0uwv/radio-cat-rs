@@ -393,6 +393,9 @@ fn blocks(
     want: impl Fn(usize) -> bool,
     mut f: impl FnMut(usize, &mut [u32], Option<&[f32]>),
 ) {
+    // `j0` is the generator's position: it starts at the waveform's first
+    // sample, which the ramp test below relies on.
+    debug_assert_eq!(synth.position(), 0);
     let mut s = synth.clone();
     let mut phase = [0u32; BLOCK];
     let mut env = [0.0f32; BLOCK];
