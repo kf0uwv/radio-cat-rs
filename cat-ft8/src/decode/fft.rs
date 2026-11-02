@@ -494,8 +494,7 @@ macro_rules! straight_stage {
     ($re:ident, $im:ident, $r:literal, $s:literal, $ms:tt, $qs:tt) => {{
         const SPAN: usize = $r * $s;
         const STEP: usize = N / SPAN;
-        let mut k = 0;
-        while k < $s {
+        for k in 0..$s {
             // Row m − 1 holds the twiddles of m.
             let w: [[[f32; 2]; $r]; $r - 1] = straight_twiddles!($r, k * STEP, $ms, $qs);
             let mut base = k;
@@ -507,7 +506,6 @@ macro_rules! straight_stage {
                 straight_butterfly!(r, i, $s, $ms, $qs, (m, q) => w[m - 1][q]);
                 base += SPAN;
             }
-            k += 1;
         }
     }};
 }
