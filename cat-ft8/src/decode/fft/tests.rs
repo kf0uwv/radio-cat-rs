@@ -575,56 +575,53 @@ fn twiddle_index_equals_the_stage_index() {
     check::<5>(384);
 }
 
-#[test]
-fn straight_stages_equal_the_side_by_side_stages_bit_for_bit() {
-    // The one-lane form (`straight_stages`) against `stage` with one lane,
-    // every bit including the sign of zero: noise at several scales,
-    // signed zeros mixed with values, subnormals, the largest values the
-    // front end passes (±2¹⁶ · N) and impulses.
+/// Inputs for the stages after the first, each named: noise at several
+/// scales, signed zeros mixed with values, subnormals, the largest values
+/// the front end passes (±2¹⁶ · N) and impulses.
+fn later_stage_inputs() -> Vec<(String, [f32; N], [f32; N])> {
+    fn filled(mut f: impl FnMut(usize) -> (f32, f32)) -> ([f32; N], [f32; N]) {
+        let (mut re, mut im) = ([0.0f32; N], [0.0f32; N]);
+        for n in 0..N {
+            (re[n], im[n]) = f(n);
+        }
+        (re, im)
+    }
     let mut seed = 0xbb67_ae85_84ca_a73bu64;
-    let mut inputs: Vec<([f32; N], [f32; N])> = Vec::new();
+    let mut inputs = Vec::new();
     for scale in [1e-30f32, 1e-6, 0.03, 1.0, 65_536.0, 65_536.0 * 1_920.0] {
-        for _ in 0..4 {
-            let (mut re, mut im) = ([0.0f32; N], [0.0f32; N]);
-            for (r, i) in re.iter_mut().zip(im.iter_mut()) {
-                *r = scale * noise(&mut seed);
-                *i = scale * noise(&mut seed);
-            }
-            inputs.push((re, im));
+        for run in 0..4 {
+            let (re, im) = filled(|_| (scale * noise(&mut seed), scale * noise(&mut seed)));
+            inputs.push((std::format!("noise {scale:e}, run {run}"), re, im));
         }
     }
-    let (mut re, mut im) = ([0.0f32; N], [0.0f32; N]);
-    for (n, (r, i)) in re.iter_mut().zip(im.iter_mut()).enumerate() {
+    let (re, im) = filled(|n| {
         let (a, b) = (noise(&mut seed), noise(&mut seed));
-        *r = if n % 29 == 4 {
-            a
-        } else if a < 0.0 {
-            -0.0
-        } else {
-            0.0
-        };
-        *i = if b < 0.0 { -0.0 } else { 0.0 };
-    }
-    inputs.push((re, im));
-    let (mut re, mut im) = ([0.0f32; N], [0.0f32; N]);
-    for (r, i) in re.iter_mut().zip(im.iter_mut()) {
-        *r = 1e-39 * noise(&mut seed);
-        *i = 1e-39 * noise(&mut seed);
-    }
-    inputs.push((re, im));
+        let zero = |x: f32| if x < 0.0 { -0.0 } else { 0.0 };
+        (if n % 29 == 4 { a } else { zero(a) }, zero(b))
+    });
+    inputs.push((String::from("signed zeros"), re, im));
+    let (re, im) = filled(|_| (1e-39 * noise(&mut seed), 1e-39 * noise(&mut seed)));
+    inputs.push((String::from("subnormals"), re, im));
     for at in [0, 1, 383, 384, 767, 1_535, 1_536, 1_919] {
         let (mut re, mut im) = ([-0.0f32; N], [0.0f32; N]);
         re[at] = 2.5;
         im[at] = -1.5;
-        inputs.push((re, im));
+        inputs.push((std::format!("impulse at {at}"), re, im));
     }
+    inputs
+}
+
+#[test]
+fn straight_stages_equal_the_side_by_side_stages_bit_for_bit() {
+    // The one-lane form against `stage` with one lane, every bit including
+    // the sign of zero.
     let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
-    for (re, im) in inputs {
+    for (name, re, im) in later_stage_inputs() {
         let (mut ar, mut ai) = (re, im);
         straight_stages(&mut ar, &mut ai);
         let (mut br, mut bi) = (re, im);
         side_by_side_stages::<1>(&mut br, &mut bi);
-        assert!(bits(&ar) == bits(&br) && bits(&ai) == bits(&bi));
+        assert!(bits(&ar) == bits(&br) && bits(&ai) == bits(&bi), "{name}");
     }
 }
 
