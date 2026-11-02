@@ -121,11 +121,16 @@ const _: () = assert!(RAMP_SAMPLES <= SAMPLES_PER_SYMBOL);
 /// Within a symbol, the previous symbol's pulse is non-zero before this
 /// sample (`s + PULSE_FIRST <= ns`) ...
 const PREV_END: usize = SAMPLES_PER_SYMBOL + 1 - PULSE_FIRST;
-/// ... the current one's is read mirrored from this sample on
-/// (`ns + s > 2·ns − s`), and the next one's is non-zero from
-/// `PULSE_FIRST` on: the runs of `Synth::increments`.
-const MIRROR: usize = SAMPLES_PER_SYMBOL / 2 + 1;
-const _: () = assert!(PREV_END <= MIRROR && MIRROR <= PULSE_FIRST);
+/// ... and the next one's is non-zero from `PULSE_FIRST` on: the runs of
+/// `Synth::increments`. Between the two only the current pulse is
+/// non-zero, and it is exactly 1.0 there (`PULSE_HALF` from index
+/// `PULSE_FLAT` to its centre, read directly before the centre and
+/// mirrored after it; tested).
+const _: () = assert!(PREV_END <= PULSE_FIRST);
+/// The first index of `PULSE_HALF` in the run `PREV_END..PULSE_FIRST`
+/// (the current pulse at `SAMPLES_PER_SYMBOL + s` for sample s).
+#[cfg(test)]
+const PULSE_FLAT: usize = SAMPLES_PER_SYMBOL + PREV_END - PULSE_FIRST;
 
 /// The pulse `g` at sample `i` of `0..PULSE_SAMPLES` (centre at 2880).
 #[cfg(test)]
@@ -325,9 +330,11 @@ impl Synth {
     /// non-negative sums would change nothing, so this is bit-identical to
     /// summing all three. The loops run over each symbol's parts where the
     /// same pulses overlap (the previous symbol's and the current one's
-    /// rising half, the current one's rising half alone, its falling half
-    /// alone, its falling half and the next symbol's), with no per-sample
-    /// branch or bounds check, so they vectorise.
+    /// rising half, then the current one's falling half and the next
+    /// symbol's), with no per-sample branch or bounds check, so they
+    /// vectorise. Between them the current pulse is alone and exactly 1.0,
+    /// so `cur · g` is `cur` there: that run is one increment, `step(cur)`,
+    /// computed once per symbol and stored at every sample.
     #[inline]
     fn increments(&self, pos: usize, out: &mut [u32]) {
         const NS: usize = SAMPLES_PER_SYMBOL;
@@ -346,10 +353,9 @@ impl Synth {
             let s0 = p - sym * NS;
             let s1 = NS.min(s0 + (end - p));
             let cut = |x: usize| x.clamp(s0, s1);
-            let (a, b, c) = (cut(PREV_END), cut(MIRROR), cut(PF));
+            let (a, c) = (cut(PREV_END), cut(PF));
             let (o1, rest) = core::mem::take(&mut out).split_at_mut(a - s0);
-            let (o2, rest) = rest.split_at_mut(b - a);
-            let (o3, rest) = rest.split_at_mut(c - b);
+            let (o2, rest) = rest.split_at_mut(c - a);
             let (o4, rest) = rest.split_at_mut(s1 - c);
             out = rest;
             // s in s0..a: the current pulse at NS + s, the previous one's
@@ -361,18 +367,10 @@ impl Synth {
                     *y = step(cur * g + prev * h);
                 }
             }
-            // s in a..b: the current pulse at NS + s alone.
-            if b > a {
-                for (y, &g) in o2.iter_mut().zip(&pulse[NS + a - PF..NS + b - PF]) {
-                    *y = step(cur * g);
-                }
-            }
-            // s in b..c: the current pulse mirrored, at 2·NS − s, alone.
-            if c > b {
-                let g = &pulse[2 * NS + 1 - c - PF..2 * NS + 1 - b - PF];
-                for (y, &g) in o3.iter_mut().zip(g.iter().rev()) {
-                    *y = step(cur * g);
-                }
+            // s in a..c: the current pulse alone, and exactly 1.0, so
+            // `cur · g` is `cur` and every increment is `step(cur)`.
+            if c > a {
+                o2.fill(step(cur));
             }
             // s in c..s1: the current pulse mirrored and the next one's at s.
             if s1 > c {

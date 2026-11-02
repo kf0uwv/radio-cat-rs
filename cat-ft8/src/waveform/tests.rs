@@ -599,6 +599,24 @@ fn samples_match_the_per_sample_generator() {
     }
 }
 
+/// Where `Synth::increments` stores one increment per symbol, from
+/// `PREV_END` to `PULSE_FIRST`, the current pulse is exactly 1.0: read
+/// directly up to the centre (sample `NS / 2`) and mirrored after it, both
+/// in `PULSE_HALF[PULSE_FLAT..]`.
+#[test]
+fn the_pulse_is_exactly_one_where_it_is_alone() {
+    let ns = SAMPLES_PER_SYMBOL;
+    for s in PREV_END..PULSE_FIRST {
+        let i = (ns + s).min(2 * ns - s) - PULSE_FIRST;
+        assert!(i >= PULSE_FLAT, "{s}");
+        assert_eq!(PULSE_HALF[i].to_bits(), 1.0f32.to_bits(), "{s}");
+    }
+    assert!(PULSE_HALF[PULSE_FLAT..]
+        .iter()
+        .all(|g| g.to_bits() == 1.0f32.to_bits()));
+    assert_eq!(PULSE_HALF.len(), PULSE_HALF_LEN - PULSE_FIRST);
+}
+
 /// `increment` against the original conversion, truncation through
 /// `i64`, at every `f32` in [0, 2³¹) in `stride` steps of the bit pattern,
 /// and at the edges.
