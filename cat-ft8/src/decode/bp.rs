@@ -579,10 +579,11 @@ fn each_value<const W: usize>(values: &mut [f32; EDGES], f: impl Fn(f32) -> f32)
 /// in order, the inputs (totals less the check's own messages) replace its
 /// messages, then its new messages, which are added to `next`. `V` picks
 /// the form for targets where the loops vectorise or not and `G` the
-/// layout (the decoder uses [`VECTOR`] and [`GROUP`], the tests both). A
-/// check whose edges are interleaved with its group's ([`place`]) is
-/// copied out, updated and copied back. Not inlined, so its frame is
-/// measured on its own.
+/// layout (the decoder uses [`VECTOR`] and [`GROUP`], the tests both).
+/// With groups of more than one ([`place`]), each degree's whole groups
+/// come first ([`group_min_sum`]), then its checks left over; the checks
+/// are independent, so their order does not matter. Not inlined, so its
+/// frame is measured on its own.
 #[inline(never)]
 fn min_sum_round<const V: bool, const G: usize>(
     llr: &[f32; N],
@@ -591,23 +592,38 @@ fn min_sum_round<const V: bool, const G: usize>(
     msg: &mut [f32; EDGES],
 ) {
     let (edge_vars, var_edges) = tables::<G>();
-    for (e, n, k) in check_edges::<G>() {
-        if k == 1 {
+    if G == 1 {
+        for (e, n, _) in check_edges::<G>() {
             let (v, row) = (&edge_vars[e..][..n], &mut msg[e..][..n]);
             min_sum_check_sized::<V>(total, v, row);
-        } else {
-            let (mut v, mut row) = ([0u8; MAX_DEGREE], [0.0f32; MAX_DEGREE]);
-            for j in 0..n {
-                v[j] = edge_vars[e + j * k];
-                row[j] = msg[e + j * k];
-            }
-            min_sum_check_sized::<V>(total, &v[..n], &mut row[..n]);
-            for j in 0..n {
-                msg[e + j * k] = row[j];
-            }
         }
+    } else {
+        let (m6, m7) = msg.split_at_mut(LOW_EDGES);
+        let (v6, v7) = edge_vars.split_at(LOW_EDGES);
+        min_sum_groups::<V, 6, G>(total, v6, m6);
+        min_sum_groups::<V, 7, G>(total, v7, m7);
     }
     sums(llr, next, msg, var_edges);
+}
+
+/// [`min_sum_round`]'s checks of degree `D` in the layout of groups of
+/// `G` ([`place`]): their variables `vars` and messages `edges`, the whole
+/// groups, then the checks left over one by one.
+#[inline(always)]
+fn min_sum_groups<const V: bool, const D: usize, const G: usize>(
+    total: &[f32; N],
+    vars: &[u8],
+    edges: &mut [f32],
+) {
+    let mut groups = edges.chunks_exact_mut(D * G);
+    let mut group_vars = vars.chunks_exact(D * G);
+    for (group, v) in (&mut groups).zip(&mut group_vars) {
+        group_min_sum::<D, G>(total, v, group);
+    }
+    let rest = groups.into_remainder().chunks_exact_mut(D);
+    for (row, v) in rest.zip(group_vars.remainder().chunks_exact(D)) {
+        min_sum_check_sized::<V>(total, v, row);
+    }
 }
 
 /// [`min_sum_check`] on one check's variables `v` and messages `row`.
@@ -648,6 +664,48 @@ fn min_sum_check(total: &[f32; N], v: &[u8], row: &mut [f32]) {
         let others_negative = negatives - u32::from(*x < 0.0);
         let mag = ALPHA * if j == at { min2 } else { min1 };
         *x = if others_negative % 2 == 1 { -mag } else { mag };
+    }
+}
+
+/// [`min_sum_check`] for a group of `K` checks of degree `D` laid out as
+/// in [`place`] (edge j of the group's k-th check at j·K + k), with their
+/// variables `vars`: each check's comparisons, counts and messages are
+/// those of one check alone, and the group's K checks take the K lanes of
+/// each step. The branches that keep the two smallest magnitudes are
+/// selects here, which choose the same values.
+#[inline(always)]
+fn group_min_sum<const D: usize, const K: usize>(total: &[f32; N], vars: &[u8], group: &mut [f32]) {
+    let mut x = [[0.0f32; K]; MAX_DEGREE];
+    for (j, xj) in x.iter_mut().enumerate().take(D) {
+        for l in 0..K {
+            xj[l] = total[usize::from(vars[j * K + l])] - group[j * K + l];
+        }
+    }
+    let (mut min1, mut min2) = ([f32::MAX; K], [f32::MAX; K]);
+    let (mut at, mut negatives) = ([0u32; K], [0u32; K]);
+    for (j, xj) in x.iter().enumerate().take(D) {
+        for l in 0..K {
+            let v = xj[l];
+            let a = if v < 0.0 { -v } else { v };
+            negatives[l] += u32::from(v < 0.0);
+            let (below1, below2) = (a < min1[l], a < min2[l]);
+            min2[l] = if below1 {
+                min1[l]
+            } else if below2 {
+                a
+            } else {
+                min2[l]
+            };
+            min1[l] = if below1 { a } else { min1[l] };
+            at[l] = if below1 { j as u32 } else { at[l] };
+        }
+    }
+    for (j, xj) in x.iter().enumerate().take(D) {
+        for l in 0..K {
+            let others_negative = negatives[l] - u32::from(xj[l] < 0.0);
+            let mag = ALPHA * if at[l] == j as u32 { min2[l] } else { min1[l] };
+            group[j * K + l] = if others_negative % 2 == 1 { -mag } else { mag };
+        }
     }
 }
 
