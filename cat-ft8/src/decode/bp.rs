@@ -437,11 +437,9 @@ fn sum_product_round<const V: bool, const W: usize, const G: usize>(
 }
 
 /// Edges whose inputs [`inputs`] takes together: eight on AArch64, one
-/// elsewhere. The gather is a scalar loop; on the Cortex-A76 it is bound
-/// by the instructions it issues, and in blocks of eight, with one count
-/// and branch per block, it took about a quarter less time (rustc 1.93.0).
-/// On x86-64 blocks gained nothing measurable, so it keeps the plain
-/// loop.
+/// elsewhere. The gather is a scalar loop bound by the instructions it
+/// issues on the Cortex-A76; blocks issue one count and branch per eight
+/// edges. On x86-64 blocks did not help (findings O17).
 const INPUT_BLOCK: usize = if cfg!(target_arch = "aarch64") { 8 } else { 1 };
 
 /// The inputs: each edge's message replaced by its variable's total
@@ -737,11 +735,9 @@ fn others_products<const D: usize>(tc: &mut [f32]) {
 /// as in [`place`] (edge j of the group's k-th check at j·K + k): each
 /// check's products are those of one check alone, in the same order, and
 /// the group's K checks take the K lanes of each step. The group's values
-/// are all loaded before any is stored. Written in place, row by row (as
-/// [`others_products`] is), the four-check form took about twice as long
-/// on the Cortex-A76 with rustc 1.93.0, its rows' loads and stores kept in
-/// order; that in-place form is the one kept for single checks, where the
-/// Cortex-M33 ran this one with more instructions.
+/// are all loaded before any is stored, so the compiler keeps the lanes
+/// together; single checks keep the in-place [`others_products`], which
+/// is the better form on the Cortex-M33 (findings O17).
 #[inline(always)]
 fn group_products<const D: usize, const K: usize>(group: &mut [f32]) {
     let mut t = [[0.0f32; K]; MAX_DEGREE];
