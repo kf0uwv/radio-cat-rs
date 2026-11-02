@@ -30,6 +30,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # After a toolchain change, re-check the decoder's vectorised
+          # code: cat-ft8/codegen-check.sh, and the A76 timings it names.
           toolchain: "1.93"
           # llvm-tools and the bare-metal target are for cat-ft8's no_std
           # link check (ADR 0024).
@@ -150,6 +152,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # After a toolchain change, re-check the decoder's vectorised
+          # code: cat-ft8/codegen-check.sh, and the A76 timings it names.
           toolchain: "1.93"
 
       - name: Cache cargo registry and build
@@ -187,6 +191,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # After a toolchain change, re-check the decoder's vectorised
+          # code: cat-ft8/codegen-check.sh, and the A76 timings it names.
           toolchain: "1.93"
 
       - name: Cache cargo registry and build
@@ -206,6 +212,9 @@ jobs:
 
       - name: cargo test (cat-ft8, no std)
         run: cargo test -p cat-ft8 --no-default-features
+
+      - name: cat-ft8 belief propagation still vectorised (AArch64 assembly)
+        run: cat-ft8/codegen-check.sh
 
   windows-check:
     name: Windows (MSVC)
@@ -232,6 +241,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # After a toolchain change, re-check the decoder's vectorised
+          # code: cat-ft8/codegen-check.sh, and the A76 timings it names.
           toolchain: "1.93"
           components: clippy
 
