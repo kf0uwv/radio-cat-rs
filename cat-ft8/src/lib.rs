@@ -44,6 +44,25 @@
 //! examples and makes the decoder's stages public for them; it does not
 //! change results.
 //!
+//! On a microcontroller whose `f32` `max` and `min` are instructions, such
+//! as thumbv8m.main with its FPU (Cortex-M33: `VMAXNM`, `VMINNM`), build
+//! with `--cfg cat_ft8_minmaxnm`: the subtraction then clamps its input
+//! without a branch, the form measured on the Cortex-M33. Stable Rust
+//! cannot tell such a target from one where they are library calls
+//! (thumbv7em), so the crate does not set it. Scoped to the target, in the
+//! application's `.cargo/config.toml`:
+//!
+//! ```toml
+//! [target.thumbv8m.main-none-eabihf]
+//! rustflags = ["--cfg", "cat_ft8_minmaxnm"]
+//! ```
+//!
+//! Without it the branch form is used there: the results are the same, bit
+//! for bit; its speed on the Cortex-M33 was not measured. A `RUSTFLAGS`
+//! environment variable replaces the rustflags of the configuration
+//! files, so a build that sets it must repeat the cfg. x86-64 and AArch64
+//! take the branch-free form without it.
+//!
 //! # Determinism
 //!
 //! Packing, CRC, LDPC and tone mapping are integer-only. The waveform uses
