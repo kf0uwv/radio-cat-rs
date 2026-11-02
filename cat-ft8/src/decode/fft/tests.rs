@@ -456,12 +456,12 @@ fn stored_first_stage(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f32;
 }
 
 #[test]
-fn first_stage_equals_the_stored_window_and_stage_bit_for_bit() {
+fn first_stage_equals_the_stored_window_and_stage_for_every_group_size() {
     // Noise at several scales up to the input limit, signed zeros mixed
     // with values, subnormals, the limit itself with alternating signs, and
     // impulses at the window's mirror points and the ends. Every output
-    // bit is compared, the sign of zero included, for one, two and four
-    // lanes; the whole transform likewise.
+    // bit is compared, the sign of zero included, for groups of one, two
+    // and four blocks; the whole transform likewise.
     let mut seed = 0x6a09_e667_f3bc_c909u64;
     let mut windows: Vec<[f32; WINDOW]> = Vec::new();
     for scale in [1e-30f32, 1e-6, 0.03, 1.0, 65_536.0] {
@@ -508,16 +508,16 @@ fn first_stage_equals_the_stored_window_and_stage_bit_for_bit() {
         stored_first_stage(x, &mut wr, &mut wi);
         let (mut fr, mut fi) = (wr, wi);
         later_stages::<1>(&mut fr, &mut fi);
-        for lanes in [1, 2, 4] {
+        for group in [1, 2, 4] {
             let (mut gr, mut gi) = ([f32::NAN; N], [f32::NAN; N]);
-            match lanes {
+            match group {
                 1 => first_stage::<1>(x, &mut gr, &mut gi),
                 2 => first_stage::<2>(x, &mut gr, &mut gi),
                 _ => first_stage::<4>(x, &mut gr, &mut gi),
             }
             assert!(
                 bits(&gr) == bits(&wr) && bits(&gi) == bits(&wi),
-                "{lanes} lanes"
+                "groups of {group}"
             );
         }
         let mut buf = FftBuffer::new();
