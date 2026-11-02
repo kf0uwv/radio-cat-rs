@@ -472,10 +472,13 @@ macro_rules! straight_butterfly {
         )*
         (sr, si)
     }};
-    // The twiddles of (m, q) for m in `$ms`, q in `$qs` (one row per m),
-    // from `TWIDDLES`.
-    (@twiddles $radix:literal, $k_step:expr, [$($m:tt)*], $qs:tt) => {
-        [$(straight_butterfly!(@row $radix, $k_step, $m, $qs)),*]
+}
+
+/// The twiddles of (m, q) for m in `$ms`, q in `$qs` (one row per m), from
+/// `TWIDDLES`, for the k whose k·(N/span) is `$k_step`.
+macro_rules! straight_twiddles {
+    ($radix:literal, $k_step:expr, [$($m:tt)*], $qs:tt) => {
+        [$(straight_twiddles!(@row $radix, $k_step, $m, $qs)),*]
     };
     (@row $radix:literal, $k_step:expr, $m:tt, [$($q:tt)*]) => {
         [$(TWIDDLES[twiddle_index::<$radix>($m, $q, $k_step)]),*]
@@ -494,7 +497,7 @@ macro_rules! straight_stage {
         let mut k = 0;
         while k < $s {
             // Row m − 1 holds the twiddles of m.
-            let w: [[[f32; 2]; $r]; $r - 1] = straight_butterfly!(@twiddles $r, k * STEP, $ms, $qs);
+            let w: [[[f32; 2]; $r]; $r - 1] = straight_twiddles!($r, k * STEP, $ms, $qs);
             let mut base = k;
             while base < N {
                 let (r, i) = (
@@ -660,7 +663,7 @@ fn first_stage<const G: usize>(samples: &[f32; WINDOW], re: &mut [f32; N], im: &
 fn straight_first_stage(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f32; N]) {
     // W₄^(m·q) as `stage::<4, 1, 1>` reads it: TWIDDLES[m·q·N/4 mod N]
     // (row m − 1).
-    let w: [[[f32; 2]; 4]; 3] = straight_butterfly!(@twiddles 4, 0, [1 2 3], [0 1 2 3]);
+    let w: [[[f32; 2]; 4]; 3] = straight_twiddles!(4, 0, [1 2 3], [0 1 2 3]);
     for (c, (r, i)) in re
         .chunks_exact_mut(4)
         .zip(im.chunks_exact_mut(4))
