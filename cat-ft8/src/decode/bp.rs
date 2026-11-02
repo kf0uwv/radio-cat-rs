@@ -740,8 +740,8 @@ fn others_products<const D: usize>(tc: &mut [f32]) {
 /// is the better form on the Cortex-M33 (findings O17).
 #[inline(always)]
 fn group_products<const D: usize, const K: usize>(group: &mut [f32]) {
-    let mut t = [[0.0f32; K]; MAX_DEGREE];
-    for (j, tj) in t.iter_mut().enumerate().take(D) {
+    let mut t = [[0.0f32; K]; D];
+    for (j, tj) in t.iter_mut().enumerate() {
         *tj = group[j * K..][..K].try_into().unwrap();
     }
     let mut prefix = [[1.0f32; K]; LANES + 1];
