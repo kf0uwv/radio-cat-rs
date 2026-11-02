@@ -262,8 +262,8 @@ fn fft<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
 /// The stages after the first, in place, `L` butterflies at a time. With
 /// one lane (as on a Cortex-M) each butterfly is written out term by term
 /// ([`straight_stages`]); the operations, their values and their order are
-/// those of [`stage`].
-#[inline(always)]
+/// those of [`stage`]. (The decoder chooses between the two in [`spectrum`].)
+#[cfg(test)]
 fn later_stages<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
     let () = Lanes::<L>::OK;
     if L == 1 {
@@ -587,8 +587,13 @@ pub(crate) fn fft_reference(buf: &mut [Complex; N]) {
 /// The windowed spectrum of `samples`: the complex transform of the
 /// packed samples (Z[k], k = 0..1 920) in `buf`.
 fn spectrum(samples: &[f32; WINDOW], buf: &mut FftBuffer) {
-    first_stage::<GROUP>(samples, &mut buf.re, &mut buf.im);
-    later_stages::<LANES>(&mut buf.re, &mut buf.im);
+    if LANES == 1 {
+        straight_first_stage(samples, &mut buf.re, &mut buf.im);
+        straight_stages(&mut buf.re, &mut buf.im);
+    } else {
+        first_stage::<GROUP>(samples, &mut buf.re, &mut buf.im);
+        side_by_side_stages::<LANES>(&mut buf.re, &mut buf.im);
+    }
 }
 
 /// The first stage (radix 4, `l` = 1) from the samples: position p's input
@@ -617,10 +622,6 @@ fn spectrum(samples: &[f32; WINDOW], buf: &mut FftBuffer) {
 #[inline(always)]
 fn first_stage<const G: usize>(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f32; N]) {
     let () = Group::<G>::OK;
-    if G == 1 {
-        straight_first_stage(samples, re, im);
-        return;
-    }
     // W₄^(m·q) as `stage::<4, 1, 1>` reads it: TWIDDLES[m·q·N/4 mod N].
     let mut w = [[[0.0f32; 2]; 4]; 4];
     for (m, wm) in w.iter_mut().enumerate() {

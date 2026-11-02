@@ -455,13 +455,11 @@ fn stored_first_stage(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f32;
     stage::<4, 1, 1>(re, im);
 }
 
-#[test]
-fn first_stage_equals_the_stored_window_and_stage_for_every_group_size() {
-    // Noise at several scales up to the input limit, signed zeros mixed
-    // with values, subnormals, the limit itself with alternating signs, and
-    // impulses at the window's mirror points and the ends. Every output
-    // bit is compared, the sign of zero included, for groups of one, two
-    // and four blocks; the whole transform likewise.
+/// Windows for the first stage's tests: noise at several scales up to the
+/// input limit, signed zeros mixed with values, subnormals, the limit
+/// itself with alternating signs, and impulses at the window's mirror
+/// points and the ends.
+fn test_windows() -> Vec<[f32; WINDOW]> {
     let mut seed = 0x6a09_e667_f3bc_c909u64;
     let mut windows: Vec<[f32; WINDOW]> = Vec::new();
     for scale in [1e-30f32, 1e-6, 0.03, 1.0, 65_536.0] {
@@ -502,6 +500,14 @@ fn first_stage_equals_the_stored_window_and_stage_for_every_group_size() {
         x[at] = -3.0;
         windows.push(x);
     }
+    windows
+}
+
+#[test]
+fn first_stage_equals_the_stored_window_and_stage_for_every_group_size() {
+    // Every output bit is compared, the sign of zero included, for groups
+    // of one, two and four blocks; the whole transform likewise.
+    let windows = test_windows();
     let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
     for x in &windows {
         let (mut wr, mut wi) = ([0.0f32; N], [0.0f32; N]);
@@ -523,6 +529,23 @@ fn first_stage_equals_the_stored_window_and_stage_for_every_group_size() {
         let mut buf = FftBuffer::new();
         spectrum(x, &mut buf);
         assert!(bits(&buf.re) == bits(&fr) && bits(&buf.im) == bits(&fi));
+    }
+}
+
+#[test]
+fn straight_first_stage_equals_first_stage_with_a_group_of_one() {
+    // The form the decoder runs with one lane against the looped form, every
+    // bit including the sign of zero.
+    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
+    for (n, x) in test_windows().iter().enumerate() {
+        let (mut ar, mut ai) = ([f32::NAN; N], [f32::NAN; N]);
+        straight_first_stage(x, &mut ar, &mut ai);
+        let (mut br, mut bi) = ([f32::NAN; N], [f32::NAN; N]);
+        first_stage::<1>(x, &mut br, &mut bi);
+        assert!(
+            bits(&ar) == bits(&br) && bits(&ai) == bits(&bi),
+            "window {n}"
+        );
     }
 }
 
