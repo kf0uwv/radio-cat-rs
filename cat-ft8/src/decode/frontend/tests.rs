@@ -179,6 +179,7 @@ fn skip_and_non_finite_samples_are_zeros_and_counted() {
         s.feed(&samples[52_000..]);
         assert_eq!(s.skipped_samples(), 2_000);
         assert_eq!(s.sanitised_samples(), 0);
+        assert_eq!(s.clamped_samples(), 0);
         assert_eq!(s.rows_filled(), ROWS);
     }
     assert!(levels == want);
@@ -221,6 +222,7 @@ fn i16_input_equals_the_scaled_f32_input() {
         for chunk in ints.chunks(1_000) {
             s.feed_i16(chunk);
         }
+        assert_eq!((s.sanitised_samples(), s.clamped_samples()), (0, 0));
     }
     assert!(levels == want);
 }
@@ -296,6 +298,12 @@ fn feed_equals_feeding_the_classified_samples() {
     // they fall before the row origin, inside blocks and on block edges:
     // the levels and counters equal those of feeding the samples that
     // `classify` returns, one at a time, which `feed` copies unchanged.
+    // The reference goes through `feed` itself (every one of its samples
+    // passes the block check, so it takes the copy). What is independent
+    // here is `classify`, called directly for the values and the counts.
+    // The levels of in-range input are anchored separately by the
+    // transform's and powers' reference tests in `fft`, and the zeros by
+    // `skip_and_non_finite_samples_are_zeros_and_counted`.
     let mut samples = slot("CQ K1ABC FN42", 1_500.0, 0.0, 0.3, 0.03, 13);
     let above = f32::from_bits(INPUT_LIMIT.to_bits() + 1);
     let specials = [
