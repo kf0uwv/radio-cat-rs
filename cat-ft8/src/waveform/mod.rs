@@ -325,8 +325,8 @@ impl Synth {
     /// The phase of waveform samples `pos..pos + out.len()` (within the
     /// waveform) from `p`, the phase before sample `pos`: the running sum
     /// of [`increment`] of `(base + Δf · dev) · TURNS_PER_HZ` at each
-    /// sample. With `SUM_ONLY` the phases are not stored (`out` is working
-    /// storage, overwritten). Returns the phase after the last sample.
+    /// sample. With `SUM_ONLY` the phases are not stored and `out` is used
+    /// as working storage. Returns the phase after the last sample.
     ///
     /// Symbol m's pulse covers samples [(m−1)T, (m+2)T), so sample s of
     /// symbol m gets the current symbol's pulse at NS + s and the previous
@@ -344,8 +344,11 @@ impl Synth {
     /// Between them the current pulse is alone and exactly 1.0, so
     /// `cur · g` is `cur` and every increment is the same, `step(cur)`:
     /// there the phase at the k-th sample is the run's first phase plus
-    /// k increments, written without a carried sum. Integer addition
-    /// modulo 2³² is associative, so every grouping gives the same phases.
+    /// k increments, written without storing the increments: the phase is
+    /// carried from sample to sample by one add of the increment, which the
+    /// compiler vectorises (no running sum over stored values), and the
+    /// run's total is one product. Integer addition modulo 2³² is
+    /// associative, so every grouping gives the same phases.
     #[inline]
     fn phases<const SUM_ONLY: bool>(&self, pos: usize, out: &mut [u32], p: u32) -> u32 {
         const NS: usize = SAMPLES_PER_SYMBOL;

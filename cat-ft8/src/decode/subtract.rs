@@ -529,7 +529,8 @@ fn lane_sums(pairs: &[u8], i0: usize, i1: usize) -> (f32, f32) {
 
 /// [`lane_sums`] over whole lanes: the pairs in `pairs` (whole groups,
 /// sample i in lane i % [`LANES`]) added to `re` and `im` lane by lane.
-/// Not inlined: inside `lane_sums` the compiler kept the sums as scalars.
+/// Not inlined: on AArch64 (the target measured), inside `lane_sums` the
+/// compiler kept the sums as scalars.
 #[inline(never)]
 #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
 fn whole_lane_sums(pairs: &[u8], re: &mut [f32; LANES], im: &mut [f32; LANES]) {
@@ -797,9 +798,8 @@ impl Fit4 {
     /// [`LANES`], so whole lanes are whole groups). Not inlined: inside the
     /// fit's block loop the compiler assembled the lanes from single-lane
     /// loads and moves and kept some sums as scalars; on its own the five
-    /// sums stay in vector registers over the call (with rustc 1.93, 20
-    /// AArch64 instructions per four samples, the group's cosines and
-    /// sines one paired load). One call per block of at most 240 samples.
+    /// sums stay in vector registers over the call. One call per block of
+    /// at most 240 samples.
     #[inline(never)]
     #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
     fn add_all(&mut self, i0: usize, xs: &[f32], refs: &[u8], k0: usize) {
