@@ -1603,3 +1603,25 @@
   (73 800, 0 differ) and 800 WAV slots × 3 × 3. Local CI and the A76
   test suite (193) pass. Every timed A76 run valid (8 `slotcost`, 8
   microbenchmark runs, every sample 0x0).
+
+## Session: 2026-11-02 (O16b review follow-ups)
+
+- dc9fc22: the radix-4 sum shared by the butterflies and the first stage
+  as a macro. A function, even inlined, changed the transform's code on
+  every target; the macro leaves every binary's `.text` byte-identical.
+- a145178: the first stage's group size is its own parameter with its
+  own assertion (it divides 4), and the docs no longer call the group
+  lanes. Offsets are named constants from N; the stated bounds are
+  asserted; n₀ is now base(b). `.text` byte-identical on x86-64,
+  AArch64 and thumbv8m. Measured and not kept: per-block window slices
+  (A76 `feed` +0.65%, M33 +0.09 M) and a group of four on the M33 (feed
+  +2.5%, +212 B flash).
+- 4150813: tests check that `skip` and `feed_i16` leave the counters at
+  0 (the (0, 1) `skip` mutant now fails); the feed test's comment names
+  its anchors.
+- O16 findings fixed: one statistic for the crate-level table and the
+  noisy x86-64 base run, 199.94 M and 2.43 M, the microbenchmarks'
+  warm-up clocks, and 78b1755's two optimisations noted as one commit.
+- Local CI and `check.sh --stack` pass at 4150813. The 8 A76 runs are
+  valid (one warm-up sample at 1.5 GHz, disclosed); a first set of 8
+  was void (a quoting error) and discarded.

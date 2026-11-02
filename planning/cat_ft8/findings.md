@@ -7610,14 +7610,26 @@ with NaN, infinite and out-of-range samples, for whole-slot,
 - **The window table** gains least and costs 15 KB; not pursued.
 - The crate-level check (`feed` and `feed_i16` through the public API,
   the two builds from one source path, alternated, two runs each; the
-  levels' checksum equal):
+  levels' checksum equal). Each cell is run 1 / run 2, the median of 15
+  repetitions in each; the change is between the run-2 medians in every
+  column:
 
 | | A76 `feed` | A76 `feed_i16` | x86-64 `feed` | x86-64 `feed_i16` |
 |---|---|---|---|---|
 | 641c599's code | 39 981 / 39 986 | 40 057 / 40 067 | 24 676 / 22 981 | 23 453 / 23 025 |
-| 78b1755's code | 34 643 / 34 608 (−13.4%) | 34 527 / 34 497 (−13.9%) | 20 653 / 19 859 (−13.6%) | 20 703 / 19 878 (−13.6%) |
+| 78b1755's code | 34 643 / 34 608 (−13.4%) | 34 527 / 34 497 (−13.9%) | 20 653 / 19 859 (−13.6%) | 20 703 / 19 878 (−13.7%) |
+
+  The x86-64 base's run 1 is noisy (its `feed` repetitions range
+  22 702–26 442 ns, its median 7% above run 2's); against it the change
+  would read −16.3% and −11.7%. The A76 runs agree within 0.2%.
 
 ### Changes (78b1755)
+
+78b1755 makes two optimisations in one commit, so the decoder-level
+figures below (A76, x86-64, M33) are their sum. Only the microbenchmark
+separates them (A76: the window in the first stage −13.1% of a row, the
+block checks −3.2%, both −16.0%). From O16b on, one optimisation per
+commit.
 
 1. **The window in the first stage** (`fft::first_stage`).
    - Position p's input is element n = `DIGIT_REV[p]` windowed:
@@ -7692,13 +7704,16 @@ numbers in the data differ).
   the start and end checks; no sample below 2.39 GHz during a run (one
   warm-up sample was, the first of the first run); peak 55.4 °C. The 8
   microbenchmark runs (4 of the variants, 4 of the crate-level check)
-  were all valid at 0x0 as well.
+  were all valid at 0x0 as well; in 5 of them the warm-up's first
+  sample was at 1.5–1.6 GHz (4 variant runs and the base's first
+  crate-level run), the busy loop's ramp, with every sample during the
+  runs at 2.4 GHz.
 
 ### Cortex-M33 (emulated instructions; staged measurement images, s0086)
 
 | | small slot (one pass) | small feed | host slot (40 messages, three passes) | host feed (per pass) | subtraction | stack high water (small / host) |
 |---|---|---|---|---|---|---|
-| 641c599's code | 293.53 M | 199.95 M | 2 426.54 M | 605.54 M (201.85 M) | 1 332.26 M | 10 200 / 10 392 B |
+| 641c599's code | 293.53 M | 199.94 M | 2 426.54 M | 605.54 M (201.85 M) | 1 332.26 M | 10 200 / 10 392 B |
 | 78b1755 | **285.89 M (−2.6%)** | **191.99 M (−4.0%)** | **2 403.40 M (−0.95%)** | **581.72 M (193.91 M), −3.9%** | 1 332.26 M | 10 200 / 10 392 B |
 
 - Same decodes (23 small, 40 host). Sync, belief propagation and the
@@ -7725,7 +7740,7 @@ Per pass, small image, s0086, 184 rows:
 | window (and, with the change, the first stage) | 10.60 M (the gather) | 28.68 M |
 | butterflies, stages 2–6 | 135.62 M (159.70 M with the first) | 135.62 M |
 | input copy and checks | 4.87 M | 2.40 M (`checked_copy` 1.80 M, its copy 0.59 M) |
-| window shift (`memmove`) | 2.44 M | 2.44 M |
+| window shift (`memmove`) | 2.43 M | 2.43 M |
 | powers (`bin_powers`) | 6.49 M | 6.49 M |
 | `log2`, levels and counts (`finish_row`) | 9.61 M | 9.61 M |
 | **feed** | **200.70 M** | **192.22 M** |
@@ -7733,7 +7748,7 @@ Per pass, small image, s0086, 184 rows:
 - On the M33 the butterflies are 80% of the feed (159.7 M a pass, 0.87 M
   a row), 54% of the small one-pass slot. The window with the first
   stage fell 34.68 → 28.68 M and the input checks 4.87 → 2.40 M.
-- The out-of-line images are not better: 200.70 against 199.95 M
+- The out-of-line images are not better: 200.70 against 199.94 M
   (base) and 192.22 against 191.99 M (change), 10 448–10 480 B of stack
   against 10 200. Not shipped.
 
@@ -7807,7 +7822,7 @@ after.
 - The variants not kept were measured in the microbenchmark only, not
   in the decoder.
 - The front end's remaining parts outside the butterflies: the window
-  shift (`copy_within`, 2 880 values a row; 2.44 M a pass on the M33)
+  shift (`copy_within`, 2 880 values a row; 2.43 M a pass on the M33)
   and the powers and levels (5.6 µs a row on the A76, 16.1 M a pass on
   the M33) were not changed.
 - **Next on the M33:** the butterflies, 80% of its feed. A reference
@@ -7815,3 +7830,102 @@ after.
 - Whether the four-lane first stage is held in vector registers on
   AArch64 and x86-64 was not read from the disassembly; only its time
   was measured (rustc 1.93.0).
+
+## Review follow-ups (O16b, bit-identical, 2026-11-02)
+
+Three code commits on top of O16, one change each: dc9fc22 (one radix-sum
+macro), a145178 (the first stage's group, named and asserted) and
+4150813 (tests). **The code section of every binary is byte-identical to
+78b1755's**, so O16's timings, sizes and identity carry over unchanged.
+
+### Byte comparison of `.text`
+
+Each tree was built at one scratch path: aligned x86-64 and AArch64
+`cat-ft8-decode` and `paired_bench`, and the thumbv8m check images
+(small, host) and staged measurement images (small, host). The `.text`
+sections were compared byte for byte.
+
+| tree | x86-64 (2) | AArch64 (2) | thumbv8m (4) |
+|---|---|---|---|
+| radix sum as an `#[inline(always)]` function (not kept) | differ: `power_bins`, 2 830 → 2 844 instructions | differ: `power_bins` rescheduled, same count | check images differ (two instructions swapped); staged images identical |
+| the same, with the first stage's twiddle as one value per lane | as above, byte for byte | as above | as above |
+| the same function in `butterflies` only | differ (`power_bins` +10) | differ | not built |
+| **radix sum as a macro (dc9fc22)** | **identical** | **identical** | **identical** |
+| per-block window slices, group = lanes (not kept) | differ (+128 B) | differ (−64 B) | differ (+4 B) |
+| **group offsets with named constants and asserts (a145178)** | **identical** | **identical** | **identical** |
+| either form with a group of four on every target (not kept) | identical to the same form | identical to the same form | differ (+204 to +212 B) |
+| **4150813 (head)** | **identical** | **identical** | **identical** |
+
+The function form moved only the transform (`power_bins`). A macro
+expands to the loops each caller had, so it changes nothing.
+
+### Per-block window slices (measured, not kept)
+
+The simpler form takes three slices per block instead of one set per
+group with offsets. Measured with O16's crate-level check (`feed` and
+`feed_i16`, ns per row, 4 alternated runs each, medians over the runs):
+
+| | A76 `feed` | A76 `feed_i16` | x86-64 `feed` | x86-64 `feed_i16` |
+|---|---|---|---|---|
+| group offsets (78b1755's code) | 34 597 | 34 457 | 20 357 | 20 339 |
+| per-block slices | 34 822 (+0.65%) | 34 756 (+0.87%) | 20 327 | 20 342 |
+
+- On the A76 every per-block run is slower than every base run.
+- x86-64 cannot separate them: its run-to-run spread is 3%.
+- On the M33 the small feed is +0.09 M (191.99 → 192.07 M a pass), and
+  flash is +4 B.
+- The group-offset form is kept, with its offsets as named constants.
+- Validity: the 8 A76 runs are valid, every sample 0x0. One warm-up
+  sample was at 1.5 GHz (the first sample of the base's first run); every
+  sample during the runs was at 2.4 GHz. A first set of 8 runs was void
+  and discarded: a shell quoting error started a program that did not
+  exist.
+
+### A group of four on every target (measured, not kept)
+
+The group size is now `GROUP`, separate from `LANES`, with its own
+condition (it divides the four blocks whose bases are N/16 apart). Four
+on every target changes only the Cortex-M33, where `LANES` is 1:
+
+| M33, s0086, small, per pass | feed | slot | stack | check-image flash |
+|---|---|---|---|---|
+| group of one (78b1755's code) | 191.99 M | 285.89 M | 10 200 B | base |
+| group of four, group offsets | 196.75 M (+2.5%) | 290.81 M | 10 288 B | +212 B |
+| group of four, per-block slices | 198.05 M (+3.2%) | 292.18 M | 10 288 B | +204 B |
+
+The group stays the lane count, one on the M33. x86-64 and AArch64 are
+unaffected (`.text` identical, as `LANES` is already 4 there).
+
+### Other changes
+
+- **Comments.**
+  - The first stage's group is not a set of vector lanes. The compiler
+    vectorises each block's butterfly over q.
+  - Bit identity is claimed, and tested, for finite input within the
+    input limit.
+  - The input check is a fold because `all` exits at the first failing
+    sample and is not vectorised: checked with rustc 1.93.0 on a copy of
+    the loop, which is vectorised as a fold on AArch64 and x86-64 and is
+    a scalar loop with an exit as `all` on both.
+- **Assertions.** base(b) < N/4 and base(4c) + 3·N/16 < N/4 are now
+  asserted in the constant block that states them. `DIGIT_REV`'s first
+  element of a block is called its base, no longer n₀.
+- **Tests.**
+  - After `skip`, `clamped_samples()` is 0.
+  - After `feed_i16`, both counters are 0.
+  - Mutants that make `skip` return (0, 1), or `feed_i16` (0, 1) or
+    (1, 0), now fail; the `skip` mutant passed before.
+  - The feed test's comment says that its reference runs through `feed`
+    (the copy path), and names the independent anchors: `classify`
+    called directly, and the transform's and powers' reference tests.
+
+### Checks
+
+- Local CI at 4150813 passes: fmt; clippy `-D warnings` (workspace, all
+  targets and features, thumbv8m); workspace, profile, no-std and
+  release tests with the ignored ones; the bulk run; MSRV 1.75; docs;
+  `check.sh --stack`.
+- `check.sh --stack` at 4150813: flash, static RAM and every frame are
+  as at 78b1755. No fused multiply-add and no `f64`; thumbv7em builds.
+  The encoder's 45 files are identical.
+- Decoder identity was not rerun, since no binary's code changed.
