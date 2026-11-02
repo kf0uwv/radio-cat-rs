@@ -942,7 +942,7 @@ fn time_search_lanes_follow_the_sample_index_at_any_start() {
                     if s < usable.lo || s >= usable.hi {
                         continue;
                     }
-                    let w = input(audio[s as usize]);
+                    let w = input_branch(audio[s as usize]);
                     let (c, sn) = cos_sin_turns(q);
                     re[i % LANES] += w * c;
                     im[i % LANES] += w * sn;
@@ -1158,7 +1158,7 @@ fn blocks_leave_out_only_an_envelope_of_one() {
     assert_eq!(without, WAVEFORM_SAMPLES / BLOCK - 2);
 }
 
-/// [`input_select`] against [`input`] bit for bit at every `stride`-th
+/// [`input_select`] and [`input`] against [`input_branch`] bit for bit at every `stride`-th
 /// `f32` bit pattern (both signs, NaNs and infinities included) and at the
 /// values the front end treats specially.
 fn input_select_matches(stride: usize) -> usize {
@@ -1187,21 +1187,26 @@ fn input_select_matches(stride: usize) -> usize {
     let strided = (0..=u32::MAX).step_by(stride);
     for bits in strided.chain(edges) {
         let x = f32::from_bits(bits);
-        assert_eq!(input_select(x).to_bits(), input(x).to_bits(), "{bits:#x}");
+        assert_eq!(
+            input_select(x).to_bits(),
+            input_branch(x).to_bits(),
+            "{bits:#x}"
+        );
+        assert_eq!(input(x).to_bits(), input_branch(x).to_bits(), "{bits:#x}");
         n += 1;
     }
     n
 }
 
 #[test]
-fn input_select_is_input() {
+fn input_select_is_the_branch_form() {
     assert!(input_select_matches(4_099) > 1_000_000);
 }
 
 /// Every `f32` bit pattern (2³² values; run in release).
 #[test]
 #[ignore]
-fn input_select_is_input_everywhere() {
+fn input_select_is_the_branch_form_everywhere() {
     input_select_matches(1);
 }
 
@@ -1217,7 +1222,7 @@ fn run_as_first<const REPORT: bool>(r: &mut Removal, j0: usize, xs: &mut [f32], 
         let t = if j > from { (j - from) as f32 } else { 0.0 };
         let (ra, rb) = (base.0 + t * slope.0, base.1 + t * slope.1);
         let est = ra * rc + rb * rs;
-        *x = input(*x) - est;
+        *x = input_branch(*x) - est;
         if REPORT {
             energy += est * est;
             sums.add(*x, rc, rs);
@@ -1392,7 +1397,7 @@ fn fit_sums_follow_the_sample_index_bit_for_bit() {
             got.add_all(i0, &xs, &refs);
             for (k, &x) in xs.iter().enumerate() {
                 let (c, s) = get(&refs[k * PAIR..]);
-                let (w, l) = (input(x), (i0 + k) % LANES);
+                let (w, l) = (input_branch(x), (i0 + k) % LANES);
                 want.xc[l] += w * c;
                 want.xs[l] += w * s;
                 want.cc[l] += c * c;

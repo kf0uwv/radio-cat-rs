@@ -450,7 +450,7 @@ fn symbol_correlations(
         // The products sample by sample (a loop that vectorises), then
         // their sums by lane.
         let products = &mut work[..(b - a) * PAIR];
-        scaled_cos_sin::<CHAINS, _>(products, &phase[a..b], xs, input_loop);
+        scaled_cos_sin::<CHAINS, _>(products, &phase[a..b], xs, input);
         let (re, im) = lane_sums(a, products);
         let k = j0 / T;
         // The conjugate's sine part: the sum's sign turned.
@@ -460,10 +460,12 @@ fn symbol_correlations(
     c
 }
 
-/// A sample as the decoder's front end takes it: a non-finite value is
-/// 0.0 and a finite one beyond ±[`INPUT_LIMIT`] is clamped to it.
+/// [`input`] with a branch: a non-finite value is 0.0 and a finite one
+/// beyond ±[`INPUT_LIMIT`] is clamped to it. The form where `max` and
+/// `min` are library calls ([`INPUT_SELECT`] false), and the reference
+/// that [`input_select`] is tested against.
 #[inline]
-fn input(x: f32) -> f32 {
+fn input_branch(x: f32) -> f32 {
     if x.is_finite() {
         x.clamp(-INPUT_LIMIT, INPUT_LIMIT)
     } else {
@@ -788,9 +790,12 @@ impl Fit4 {
     #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
     fn add_all(&mut self, i0: usize, xs: &[f32], refs: &[u8]) {
         let (m0, m1) = lane_bounds(i0, i0 + xs.len());
+        // The single samples before and after the whole lanes take the
+        // branch form: they are not in a vectorised loop, and the
+        // selected form there gave other code that was not measured.
         let one = |f: &mut Fit4, i: usize| {
             let (c, s) = get(&refs[(i - i0) * PAIR..]);
-            f.add(i, input(xs[i - i0]), c, s);
+            f.add(i, input_branch(xs[i - i0]), c, s);
         };
         for i in i0..m0 {
             one(self, i);
@@ -1169,11 +1174,11 @@ fn scaled_cos_sin<const W: usize, X: Copy>(
     }
 }
 
-/// [`input`] without a branch, the same value: `max` and `min` clamp a
+/// [`input_branch`] without a branch, the same value: `max` and `min` clamp a
 /// finite value as `clamp` does (and take a NaN to −[`INPUT_LIMIT`]), and
 /// a mask then zeroes the non-finite. In a loop over samples this
-/// vectorises to a few lane operations, where [`input`]'s branch becomes
-/// compares and selects.
+/// vectorises to a few lane operations, where [`input_branch`]'s branch
+/// becomes compares and selects.
 #[inline(always)]
 #[allow(clippy::manual_clamp)]
 fn input_select(x: f32) -> f32 {
@@ -1182,8 +1187,8 @@ fn input_select(x: f32) -> f32 {
     f32::from_bits(v.to_bits() & 0u32.wrapping_sub(u32::from(finite)))
 }
 
-/// Whether the loops over samples clamp with [`input_select`] rather than
-/// [`input`] (the same values): where `f32` `max` and `min` are single
+/// Whether [`input`] is [`input_select`] rather than [`input_branch`] (the
+/// same values): where `f32` `max` and `min` are single
 /// instructions and the form was measured faster (O18). That is x86-64
 /// and AArch64, and, with `--cfg cat_ft8_minmaxnm`, other targets that
 /// declare it, such as thumbv8m.main with its FPU (VMAXNM, VMINNM; the
@@ -1199,24 +1204,28 @@ const INPUT_SELECT: bool = cfg!(any(
     cat_ft8_minmaxnm
 ));
 
-/// The clamp of the loops over samples: [`input_select`] or [`input`],
-/// by [`INPUT_SELECT`].
+/// A sample as the decoder's front end takes it: a non-finite value is
+/// 0.0 and a finite one beyond ±[`INPUT_LIMIT`] is clamped to it. Both
+/// forms stay in the build because the choice is per target
+/// ([`INPUT_SELECT`]): [`input_select`] where `max` and `min` are
+/// instructions, [`input_branch`] elsewhere. (The fit's edge samples also
+/// take [`input_branch`]; see [`Fit4::add_all`].)
 #[inline(always)]
-fn input_loop(x: f32) -> f32 {
+fn input(x: f32) -> f32 {
     if INPUT_SELECT {
         input_select(x)
     } else {
-        input(x)
+        input_branch(x)
     }
 }
 
-/// [`input_loop`] of four samples.
+/// [`input`] of four samples.
 #[inline(always)]
 #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
 fn input4(x: [f32; LANES]) -> [f32; LANES] {
     let mut out = [0.0f32; LANES];
     for l in 0..LANES {
-        out[l] = input_loop(x[l]);
+        out[l] = input(x[l]);
     }
     out
 }
@@ -1354,7 +1363,7 @@ impl Removal {
             let t = if d > 0 { d as f32 } else { 0.0 };
             let (ra, rb) = (base.0 + t * slope.0, base.1 + t * slope.1);
             let est = ra * rc + rb * rs;
-            *x = input_loop(*x) - est;
+            *x = input(*x) - est;
             if REPORT {
                 energy += est * est;
                 sums.add(*x, rc, rs);
