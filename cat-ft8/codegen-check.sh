@@ -24,8 +24,9 @@
 # `fmaxnm`/`fminnm` rather than compares and selects (`input_select`),
 # and the reference stored in groups of four (`GROUP`) loaded and stored
 # as whole vectors, without interleaving loads and stores or shuffles. A
-# compiler change can lose any of them with every test passing. On thumbv8m.main built with `--cfg cat_ft8_minmaxnm`
-# (the Cortex-M33 measured) the clamp is `vmaxnm`/`vminnm`; on thumbv7em
+# compiler change can lose any of them with every test passing. On
+# thumbv8m.main built with `--cfg cat_ft8_minmaxnm` (the Cortex-M33
+# measured) the clamp is `vmaxnm`/`vminnm`; on thumbv7em
 # (no such cfg) it must not call `fmaxf`/`fminf`, the library's `max` and
 # `min`. This emits the release library's assembly (one codegen unit; no
 # std for the microcontrollers) for each target and fails if a
