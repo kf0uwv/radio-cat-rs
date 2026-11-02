@@ -1796,3 +1796,16 @@
   split helper.
 - Records corrected: O19's group-of-one note, the closed-form note, the
   encoder-only +720 B; logs annotated with their real trees.
+
+## Session: 2026-11-02 (O19c closure follow-ups)
+
+- 8c81172: the lane-index source check removed (it missed the
+  let-bound form, swallowed grep errors, and invited that form); the
+  lane-by-lane release tests with and without the groups-of-one cfg are
+  the protection. No production code has the pattern.
+- 19cc572 what the groups-of-one config covers; b8a3566 the ring's
+  tautological assertion dropped; 2f1d160, 742a710 the codegen check's
+  header. A compile-time check of every `W` (an associated constant)
+  changed host code: not kept.
+- `.text`/`.rodata` byte-identical to 7e388d3's at every `.rs` commit;
+  O19b records corrected (the 296.09 M closure, the filtered test).

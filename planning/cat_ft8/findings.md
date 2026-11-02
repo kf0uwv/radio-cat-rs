@@ -9427,13 +9427,14 @@ expected-value loop; the code under test was right.
   or `i % LANES` take each lane in its own loop, in sample order (the
   same sums). ffba08e: a test helper that read `nan[i % 4]` cycles the
   bytes instead. With `GROUP` forced to 1 the release library tests on
-  x86-64 now pass, the ignored ones included (199; logged).
+  x86-64 now pass, the ignored ones included (199; 1 filtered out, the
+  source-tree test; checked).
 - **The guard (954e5b0).** `cat-ft8/lane-index-check.sh`, run by CI and
   the local CI, fails on an array indexed by an expression taken modulo
   or masked to a lane count (`% LANES`, `% GROUP`, a power of two up to
   64, `& 3` and the like) anywhere in `cat-ft8/src`, tests included.
   Shown to fail on 956caaa's sources (the three test lines) and on a
-  forced `a[(i + k) & 3] += …` (logged). It is textual: an index bound
+  forced `a[(i + k) & 3] += …` (checked). (Removed in O19c.) It is textual: an index bound
   to a variable first, the fit test's form, is not seen (the script
   says so); a table read at a non-affine modulus (`% 1920`, `% 38`) is
   not flagged. The production sums by lane use selects (`add_lane`) or
@@ -9446,15 +9447,18 @@ test builds, `cfg!(all(test, …))`) gives `GROUP` 1 on every target. CI
 runs the release library tests so on x86-64, beside the bulk run; a
 test checks that the cfg takes effect. A mutant in the groups-of-one
 writer loop only (cosine and sine swapped) passes the default tests
-(193) and fails 5 with the cfg (logged).
+(193) and fails 5 with the cfg (checked).
 
 **The groups-of-one branches stay.** With them deleted (the writer's
 single samples in one loop over the inlined `put`, the removal's
 general path for groups of one, `remove_one` kept inline), the M33
 staged host image takes 38.628 M instructions a subtraction against
 32.198 M (+20%): `Removal::refs` 145.63 → 263.11 M, the subtraction's
-closure 144.46 → 186.32 M, `blocks` 363.09 → 144.52 M (s0086, 37
-calls; decodes the same). Its flash grows 44 B, and the hosts' code
+closure 144.46 → 186.32 M, `blocks` 363.09 → 144.52 M, and a closure of
+`scaled_cos_sin` (the writer's single samples) 0 → 296.09 M, out of
+line (s0086, 37 calls; decodes the same; corrected in O19c, which added
+the last). Part of the +20% may be that closure not being inlined at
+`opt-level = "s"` rather than the general path itself; not separated. Its flash grows 44 B, and the hosts' code
 changes too (x86-64 `cat-ft8-decode` −1 728 B, AArch64 −1 280 B), not
 timed.
 
@@ -9514,8 +9518,10 @@ timed.
   pairs through `add_all`, `Removal::run`, `run_as` and `refs`): tried
   on the read side only, it changed `.text` on every measured target
   (x86-64 `cat-ft8-decode` +128 B, AArch64 −128 B, the M33 host check
-  image +44 B), so it was not kept untimed. With it, the congruence of
-  slot and sample could be checked in one place.
+  image +44 B), so it was not kept untimed. **It is a prerequisite for
+  the next caller that threads `(refs, k0)`**: the view is where the
+  congruence the fit needs, `k0 ≡ i0 (mod LANES)` (today a debug
+  assertion in `Fit4::add_all`), would be checked once.
 - **One head/whole/tail split** for the four places that write it out
   (the writer, the removal, the lane sums, the fit): not tried, for the
   same reason; best done with the `Slots` view and timed.
@@ -9531,3 +9537,75 @@ timed.
 - clippy `-D warnings` passes with the test cfg as well.
 - No measured code changed, so the A76, x86-64 and M33 timings, counts
   and identity of O19 stand; nothing was rerun on the A76.
+
+## Closure follow-ups (O19c, 2026-11-02; no code generation change on the measured targets)
+
+On top of O19b (5f8cba0), one change per commit: 8c81172, 19cc572,
+b8a3566, 2f1d160 and 742a710, then this record. The commits that touch
+a `.rs` file (19cc572, b8a3566) leave the `.text`
+and `.rodata` of all eight binaries byte-identical to 7e388d3's (x86-64
+and AArch64 `cat-ft8-decode` and `paired_bench`; thumbv8m check and
+staged images built with `--cfg cat_ft8_minmaxnm`, the flags now named
+in each build record; one scratch path, fresh tree, rustc 1.93.0).
+
+- **8c81172: the lane-index source check removed**, with its CI and
+  local CI steps. It missed the form that was miscompiled (an index
+  bound to a variable before the store, the fit test's form), so the
+  claim that it caught it was false; it passed when `grep` itself
+  failed; and the easiest way around one of its false positives was to
+  write exactly that form. The protection is the release library tests,
+  whose reference sums go lane by lane, run with groups of four and with
+  `--cfg cat_ft8_test_group_one`. No production code in `cat-ft8/src`
+  has the miscompiled shape, a sum into a small array at a lane index
+  that wraps: the production sums by lane use selects (`add_lane`) or
+  whole lanes (checked by reading every `% LANES`, `% GROUP` and masked
+  index in the crate's sources at 5f8cba0). The one production use of a
+  wrapping index is `slot`, the byte offset of a stored sample
+  (`k % GROUP` within its group); it is used by the writer's and the
+  removal's single samples before and after the whole groups, through
+  bounds-checked slices, and those paths run in the release tests in
+  both layouts. ffba08e (the NaN scratch) stays as it is.
+- **19cc572: what the groups-of-one tests cover.** `GROUP`'s doc and
+  the CI step say so: the reference layout only. `CHAINS` and the other
+  `VECTOR` choices (belief propagation's) keep the host's, so it is not
+  the Cortex-M33's build on a host.
+- **b8a3566: the ring's assertion dropped.** `assert_eq!(ring % LANES,
+  0)` restated the line above it. The congruence that matters is the
+  fit's `k0 ≡ i0 (mod LANES)`, a debug assertion in `Fit4::add_all`,
+  and the `Slots` view (O19b, follow-ups) is where it would be checked
+  once; that view is a prerequisite for the next caller that threads
+  `(refs, k0)`.
+- **2f1d160: the code-generation check's floors are AArch64's.** The
+  header said every function with a ceiling has a floor; the thumbv7em
+  `fmaxf`/`fminf` ceilings have none. A floor of `vmul`/`vadd`/`vsub.f32`
+  there was tried: it fell when `Removal::run_as` or `scaled_cos_sin`
+  was forced out of line (39 → 19 in the removal, 39 → 24 in the time
+  search), but `Fit4::add_all` holds only 5 such instructions on
+  thumbv7em and none of the forced forms moved them, so the sentence
+  was narrowed instead. 742a710 fills the header's long line.
+- **Whole groups checked at compile time for every `W`: tried, not
+  kept.** An associated constant `WholeGroups::<W>::CHECK`
+  (`assert!(W == 1 || W % GROUP == 0)`), named in `scaled_cos_sin` and
+  so evaluated when it is instantiated, builds on Rust 1.75 and fails
+  the build for a bad `W` (shown: a test with `W` 6 does not compile on
+  x86-64). It changed code on the hosts, with `in_group` made a
+  `const fn` and without: x86-64 `cat-ft8-decode` −64 B and
+  `paired_bench` +64 B of `.text`, AArch64 `paired_bench` other code at
+  the same size (the M33 images were unchanged). Not timed, so not
+  kept: the decoder's `W` (`CHAINS`) keeps its compile-time assertion
+  and the tests' other block sizes their debug assertion.
+- **Records corrected** in O19b: the groups-of-one deletion's breakdown
+  now includes the writer's out-of-line closure (296.09 M); the forced
+  run's 199 tests had 1 filtered out (the source-tree test); "(logged)"
+  reads "(checked)".
+- The code-generation check's `4Fit47add_all` label also matches
+  `add_all`'s closure (its single edge samples): the counts for that
+  label are the two functions' together (no effect on today's bounds).
+
+### Checks
+
+- Local CI passes at 742a710: as in O19b, less the removed source check
+  (the release library tests with `--cfg cat_ft8_test_group_one`
+  included; the code-generation check's counts as in O19b).
+- No measured code changed, so O19's timings, counts and identity
+  stand; nothing was rerun on the A76 or the M33.
