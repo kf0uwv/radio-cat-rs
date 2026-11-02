@@ -1695,3 +1695,28 @@
   reworded.
 - `.text` and `.rodata` byte-identical to aec6a07's on all eight
   binaries; local CI passes.
+
+## Session: 2026-11-02 (O18, the subtraction)
+
+- Profiled first on the A76 (O13's microbenchmark brought up to date,
+  counters and PC samples): 24.5 cycles a waveform sample, 1.72× its
+  issue floor; the polynomial passes near their floor, the removal's
+  clamp 11 of its loop's 23 vector instructions, and the generator
+  computing a constant increment over 26% of each symbol and an envelope
+  of 1.0 nearly everywhere.
+- a17baa6: the input clamp without a branch in the removal and the time
+  search's products (`input_select`; exhaustive test, ignored).
+- 7d747e3: one phase increment per symbol where its pulse is alone and
+  exactly 1.0 (tested against the table).
+- 513fd17: no envelope, no multiplication by it, for the blocks clear of
+  the ramps (`Synth::fill_phase_only`).
+- A76 crowded three-pass slot 99.65 → 94.00 ms (−5.7%), subtraction
+  53.63 → 48.12 ms (−10.3%), untouched stages within 0.11 ms; x86-64
+  cycles −4.6%; M33 subtraction 36.01 → 32.43 M instructions a call
+  (−9.9%), host slot −5.5%, host flash +380 B (the second
+  `scaled_cos_sin` instance), stack high water lower.
+- Not kept: the reference in two planes (the loop vectoriser interleaved
+  the fit, +33%).
+- Identity: records on x86-64 and the A76 at all three commits, WAVs × 3 ×
+  3 on both, encoder, M33 dumps and residuals; local CI and the A76
+  library tests (199) pass; four mutants caught.
