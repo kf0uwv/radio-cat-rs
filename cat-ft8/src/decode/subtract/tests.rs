@@ -472,7 +472,7 @@ fn stack_storage_is_bounded() {
 /// Scratch of `len` bytes holding NaN `f32` patterns.
 fn nan_scratch(len: usize) -> Vec<u8> {
     let nan = f32::NAN.to_ne_bytes();
-    (0..len).map(|i| nan[i % 4]).collect()
+    nan.iter().copied().cycle().take(len).collect()
 }
 
 #[test]
