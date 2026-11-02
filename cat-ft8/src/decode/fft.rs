@@ -21,12 +21,12 @@
 //!   real and imaginary arrays. Six stages of radix 4, 4, 4, 2, 3, 5
 //!   (innermost first) run butterflies whose twiddles come from one static
 //!   table of e^(−2πit/1920). The first stage loads its inputs in
-//!   digit-reversed order (a compile-time table) and applies the window as
-//!   it loads them; the later stages work in place. Independent
-//!   butterflies run side by side ([`LANES`] at a time) so that vector
-//!   units take them together;
-//!   each keeps its own operations in the same order, so the result does
-//!   not depend on the lane count or the target.
+//!   digit-reversed order (a compile-time table, read once per group of
+//!   blocks) and applies the window as it loads them; the later stages
+//!   work in place, independent butterflies side by side ([`LANES`] at a
+//!   time) so that vector units take them together. Each butterfly keeps
+//!   its own operations in the same order, so the result does not depend
+//!   on the group size, the lane count or the target.
 //! - **Real split.** The 3 840 real samples are packed as 1 920 complex
 //!   values `z[n] = x[2n] + i·x[2n+1]`; bin k of the real transform is
 //!   `X[k] = E[k] + W₃₈₄₀ᵏ·O[k]`, with E and O from `Z[k]` and `Z[1920 − k]`.
@@ -93,27 +93,54 @@ const DIGIT_REV_TABLE: [u16; N] = {
     table
 };
 
-/// Samples between the inputs of adjacent first-stage blocks (see
-/// [`first_stage`]): 2 × 120.
+/// Samples between a first-stage block's inputs m and m + 1 (elements
+/// N/4 apart, two samples each): 960.
+const INPUT_STEP: usize = 2 * (N / 4);
+/// Samples from a first-stage block's first input to its last, inclusive:
+/// 2 882.
+const BLOCK_SAMPLES: usize = 3 * INPUT_STEP + 2;
+/// Samples between the first inputs of blocks 4c + j and 4c + j + 1
+/// (elements N/16 apart): 240.
 const BLOCK_SPREAD: usize = 2 * (N / 16);
+/// Blocks whose base elements are [`BLOCK_SPREAD`] / 2 apart: the second
+/// stage's radix.
+const SPREAD_BLOCKS: usize = STAGES[1];
 
-// The layout [`first_stage`] relies on: block b (positions 4b..4b + 4)
-// holds elements n₀ + 480m, m = 0..4, and block 4c + j (j < 4) has
-// n₀ = DIGIT_REV[16c] + 120j. Hence every n₀ + 120j is below 480.
+const _: () = assert!(WINDOW == 4 * INPUT_STEP);
+
+// The layout [`first_stage`] relies on. Block b (positions 4b..4b + 4)
+// holds elements base(b) + (N/4)·m, m = 0..4, where base(b) =
+// DIGIT_REV[4b] < N/4; and block 4c + j (j < 4) has base(4c + j) =
+// base(4c) + (N/16)·j, so base(4c) + (N/16)·3 < N/4 too.
 const _: () = {
     let mut b = 0;
     while b < N / 4 {
-        let first = DIGIT_REV_TABLE[16 * (b / 4)] as usize;
-        let n0 = DIGIT_REV_TABLE[4 * b] as usize;
-        assert!(n0 == first + (N / 16) * (b % 4));
+        let group = DIGIT_REV_TABLE[4 * SPREAD_BLOCKS * (b / SPREAD_BLOCKS)] as usize;
+        let base = DIGIT_REV_TABLE[4 * b] as usize;
+        assert!(base < N / 4);
+        assert!(group + (N / 16) * (SPREAD_BLOCKS - 1) < N / 4);
+        assert!(base == group + (N / 16) * (b % SPREAD_BLOCKS));
         let mut m = 0;
         while m < 4 {
-            assert!(DIGIT_REV_TABLE[4 * b + m] as usize == n0 + (N / 4) * m);
+            assert!(DIGIT_REV_TABLE[4 * b + m] as usize == base + (N / 4) * m);
             m += 1;
         }
         b += 1;
     }
 };
+
+/// Group sizes [`first_stage`] takes: `Group::<G>::OK` fails to compile
+/// unless `G` divides [`SPREAD_BLOCKS`], so that every block of a group
+/// is placed from the group's first table entry.
+struct Group<const G: usize>;
+
+impl<const G: usize> Group<G> {
+    const OK: () = assert!(G > 0 && SPREAD_BLOCKS % G == 0, "group size must divide 4");
+}
+
+/// Blocks per group in [`first_stage`]: four where the target has vectors,
+/// one on a Cortex-M, where four measured slower and larger.
+const GROUP: usize = LANES;
 
 /// A complex value (the reference transform in the tests).
 #[cfg(test)]
@@ -419,7 +446,7 @@ pub(crate) fn fft_reference(buf: &mut [Complex; N]) {
 /// The windowed spectrum of `samples`: the complex transform of the
 /// packed samples (Z[k], k = 0..1 920) in `buf`.
 fn spectrum(samples: &[f32; WINDOW], buf: &mut FftBuffer) {
-    first_stage::<LANES>(samples, &mut buf.re, &mut buf.im);
+    first_stage::<GROUP>(samples, &mut buf.re, &mut buf.im);
     later_stages::<LANES>(&mut buf.re, &mut buf.im);
 }
 
@@ -428,59 +455,69 @@ fn spectrum(samples: &[f32; WINDOW], buf: &mut FftBuffer) {
 /// `samples[2n + 1] · hann(2n + 1)`, computed as it is loaded rather than
 /// stored first. Every value and product is the one that storing the
 /// windowed input and running `stage::<4, 1, 1>` computes, in the same
-/// order, so the result is the same bit for bit.
+/// order. The result is claimed, and tested, to be the same bit for bit
+/// for finite input within ±[`INPUT_LIMIT`], which is what the front end
+/// passes (like `stage`, it skips the m = 0 product; see there).
 ///
-/// Block b (positions 4b..4b + 4) takes elements n₀ + 480m, m = 0..4, and
-/// block 4c + j takes n₀ = `DIGIT_REV[16c]` + 120j (checked at compile
-/// time), so one table entry places `L` adjacent blocks. With n₀ < 480 the
-/// window's mirror point is known for each m: `hann` reads `HANN_HALF[i]`
-/// for sample i = 2n + e (e = 0, 1) when m is 0 or 1, and
-/// `HANN_HALF[3 840 − i]` when m is 2 or 3; those entries are read here
-/// directly. `L` adjacent blocks run side by side ([`LANES`]), each with
-/// its own operations in order.
+/// Block b takes elements base(b) + (N/4)·m, m = 0..4, with base(b) < N/4
+/// (checked at compile time), so the window's mirror point is known for
+/// each m: `hann` reads `HANN_HALF[i]` for sample i = 2n + e (e = 0, 1)
+/// when m is 0 or 1, and `HANN_HALF[WINDOW − i]` when m is 2 or 3. Those
+/// entries are read directly.
+///
+/// The blocks are taken `G` at a time. Within a group of up to four the
+/// base elements are N/16 apart, so one `DIGIT_REV` read places the whole
+/// group. That, and the loop unrolled over the group, is the gain over
+/// one block at a time. The group is not a set of vector lanes: the
+/// compiler vectorises each block's butterfly over q, not across the
+/// blocks (rustc 1.93.0).
+///
+/// [`INPUT_LIMIT`]: super::frontend::INPUT_LIMIT
 #[inline(always)]
-fn first_stage<const L: usize>(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f32; N]) {
-    let () = Lanes::<L>::OK;
-    // W₄^(m·q) as `stage::<4, 1, 1>` reads it: TWIDDLES[m·q·480 mod N].
+fn first_stage<const G: usize>(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f32; N]) {
+    let () = Group::<G>::OK;
+    // W₄^(m·q) as `stage::<4, 1, 1>` reads it: TWIDDLES[m·q·N/4 mod N].
     let mut w = [[[0.0f32; 2]; 4]; 4];
     for (m, wm) in w.iter_mut().enumerate() {
         for (q, wmq) in wm.iter_mut().enumerate() {
             *wmq = TWIDDLES[(m * q * (N / 4)) % N];
         }
     }
-    // The spread of the `L` blocks' inputs, in samples.
-    let d = BLOCK_SPREAD * (L - 1);
     for (c, (r, i)) in re
-        .chunks_exact_mut(4 * L)
-        .zip(im.chunks_exact_mut(4 * L))
+        .chunks_exact_mut(4 * G)
+        .zip(im.chunks_exact_mut(4 * G))
         .enumerate()
     {
-        // Sample 2n₀ of the first block; k + d ≤ 958.
-        let k = 2 * usize::from(DIGIT_REV[4 * L * c]);
-        let x = &samples[k..][..2882 + d];
-        // low[t] = HANN_HALF[k + t]; high[t] = HANN_HALF[959 − d − k + t].
-        let low = &HANN_HALF[k..][..962 + d];
-        let high = &HANN_HALF[959 - d - k..][..962 + d];
-        let mut ar = [[0.0f32; L]; 4];
-        let mut ai = [[0.0f32; L]; 4];
-        for j in 0..L {
-            // Block j's first sample is k + o; its mirrored window entries
-            // 3 840 − (k + o + 1 920 + e) and 3 840 − (k + o + 2 880 + e)
-            // are high[g + 961 − e] and high[g + 1 − e].
+        // The first sample of the group's first block, 2·base(Gc); with
+        // d, the spread of the group's first samples, first + d < INPUT_STEP.
+        let d = BLOCK_SPREAD * (G - 1);
+        let first = 2 * usize::from(DIGIT_REV[4 * G * c]);
+        // low[t] = HANN_HALF[first + t]; high[t] =
+        // HANN_HALF[INPUT_STEP − 1 − d − first + t].
+        let x = &samples[first..][..BLOCK_SAMPLES + d];
+        let low = &HANN_HALF[first..][..INPUT_STEP + 2 + d];
+        let high = &HANN_HALF[INPUT_STEP - 1 - d - first..][..INPUT_STEP + 2 + d];
+        let mut ar = [[0.0f32; G]; 4];
+        let mut ai = [[0.0f32; G]; 4];
+        for j in 0..G {
+            // Block j's first sample is first + o; its mirrored window
+            // entries WINDOW − (first + o + 2·INPUT_STEP + e) and
+            // WINDOW − (first + o + 3·INPUT_STEP + e) are
+            // high[g + INPUT_STEP + 1 − e] and high[g + 1 − e].
             let o = BLOCK_SPREAD * j;
             let g = d - o;
             ar[0][j] = x[o] * low[o];
             ai[0][j] = x[o + 1] * low[o + 1];
-            ar[1][j] = x[o + 960] * low[o + 960];
-            ai[1][j] = x[o + 961] * low[o + 961];
-            ar[2][j] = x[o + 1920] * high[g + 961];
-            ai[2][j] = x[o + 1921] * high[g + 960];
-            ar[3][j] = x[o + 2880] * high[g + 1];
-            ai[3][j] = x[o + 2881] * high[g];
+            ar[1][j] = x[o + INPUT_STEP] * low[o + INPUT_STEP];
+            ai[1][j] = x[o + INPUT_STEP + 1] * low[o + INPUT_STEP + 1];
+            ar[2][j] = x[o + 2 * INPUT_STEP] * high[g + INPUT_STEP + 1];
+            ai[2][j] = x[o + 2 * INPUT_STEP + 1] * high[g + INPUT_STEP];
+            ar[3][j] = x[o + 3 * INPUT_STEP] * high[g + 1];
+            ai[3][j] = x[o + 3 * INPUT_STEP + 1] * high[g];
         }
         // Each block's butterfly as `stage::<4, 1, 1>` computes it.
-        radix_sums!(4, L, ar, ai, (m, q) => (Same(w[m][q][0]), Same(w[m][q][1])), (sr, si) => {
-            for j in 0..L {
+        radix_sums!(4, G, ar, ai, (m, q) => (Same(w[m][q][0]), Same(w[m][q][1])), (sr, si) => {
+            for j in 0..G {
                 r[4 * j + q] = sr[j];
                 i[4 * j + q] = si[j];
             }

@@ -204,7 +204,9 @@ fn classify(x: f32, sanitised: &mut usize, clamped: &mut usize) -> f32 {
 /// classified sample by sample.
 fn checked_copy(src: &[f32], dst: &mut [f32]) -> (usize, usize) {
     // False for NaN and the infinities; true exactly where `classify`
-    // returns `x`. A fold over the whole block, with no early exit.
+    // returns `x`. A fold over the whole block rather than `all`: `all`
+    // stops at the first failing sample, and a loop with that exit is not
+    // vectorised (rustc 1.93.0). Blocks almost always pass.
     if src.iter().fold(true, |ok, &x| ok & (abs(x) <= INPUT_LIMIT)) {
         dst.copy_from_slice(src);
         return (0, 0);
