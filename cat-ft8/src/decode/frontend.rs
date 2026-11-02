@@ -50,7 +50,7 @@
 //! [`Band::spectrogram_len`] entries.
 
 use super::fft::{power_bins, FftBuffer, BINS, WINDOW};
-use super::math::log2_power;
+use super::math::{abs, log2_power};
 use crate::{Error, SLOT_SAMPLES};
 
 /// Hop between rows: half a symbol.
@@ -197,6 +197,25 @@ fn classify(x: f32, sanitised: &mut usize, clamped: &mut usize) -> f32 {
     }
 }
 
+/// Copies `src` into `dst` (the same length) as [`classify`] takes each
+/// sample, and returns how many it sanitised and clamped. A block whose
+/// samples are all finite and within ±[`INPUT_LIMIT`], which `classify`
+/// returns unchanged, is checked as a whole and copied; any other block is
+/// classified sample by sample.
+fn checked_copy(src: &[f32], dst: &mut [f32]) -> (usize, usize) {
+    // False for NaN and the infinities; true exactly where `classify`
+    // returns `x`. A fold over the whole block, with no early exit.
+    if src.iter().fold(true, |ok, &x| ok & (abs(x) <= INPUT_LIMIT)) {
+        dst.copy_from_slice(src);
+        return (0, 0);
+    }
+    let (mut sanitised, mut clamped) = (0, 0);
+    for (d, &x) in dst.iter_mut().zip(src) {
+        *d = classify(x, &mut sanitised, &mut clamped);
+    }
+    (sanitised, clamped)
+}
+
 /// The buffers' contents are not printed.
 impl core::fmt::Debug for FrontEnd {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -293,18 +312,31 @@ impl<'a> Spectrogram<'a> {
     /// Feeds 12 kHz samples (full scale ±1.0). Returns how many were
     /// taken: all of them, unless the slot's 180 000 samples are reached.
     pub fn feed(&mut self, samples: &[f32]) -> usize {
-        self.take(samples.len(), |i| samples[i])
+        self.take(samples.len(), |i, dst| {
+            checked_copy(&samples[i..i + dst.len()], dst)
+        })
     }
 
     /// Feeds 16-bit samples (full scale ±32 768).
     pub fn feed_i16(&mut self, samples: &[i16]) -> usize {
-        self.take(samples.len(), |i| f32::from(samples[i]) * (1.0 / 32_768.0))
+        // Each scaled sample is finite and within ±1, so `classify` would
+        // return it unchanged and count nothing.
+        self.take(samples.len(), |i, dst| {
+            let src = &samples[i..i + dst.len()];
+            for (d, &x) in dst.iter_mut().zip(src) {
+                *d = f32::from(x) * (1.0 / 32_768.0);
+            }
+            (0, 0)
+        })
     }
 
     /// Advances over `n` missing samples, which count as zeros. Returns
     /// how many were taken.
     pub fn skip(&mut self, n: usize) -> usize {
-        let taken = self.take(n, |_| 0.0);
+        let taken = self.take(n, |_, dst| {
+            dst.fill(0.0);
+            (0, 0)
+        });
         self.skipped += taken;
         taken
     }
@@ -359,26 +391,31 @@ impl<'a> Spectrogram<'a> {
         Some(&self.levels[r * width..(r + 1) * width])
     }
 
-    /// The core loop: takes up to `n` samples produced by `sample(i)`.
-    fn take<F: Fn(usize) -> f32>(&mut self, n: usize, sample: F) -> usize {
+    /// The core loop: takes up to `n` samples. `fill(i, dst)` writes
+    /// samples `i..i + dst.len()` into `dst` as the front end takes them
+    /// (see [`classify`]) and returns how many it sanitised and clamped.
+    fn take<F: FnMut(usize, &mut [f32]) -> (usize, usize)>(
+        &mut self,
+        n: usize,
+        mut fill: F,
+    ) -> usize {
         let n = n.min(SLOT_SAMPLES - self.consumed);
-        let mut i = 0;
         // Samples before the row origin belong to no row, but are still
-        // checked so the counters cover the whole slot.
+        // checked so the counters cover the whole slot. They pass through
+        // the start of the window, which is empty until the row origin
+        // (`filled` is 0) and which the first row's samples overwrite.
         let before = n.min(ROW_ORIGIN.saturating_sub(self.consumed));
-        for k in 0..before {
-            classify(sample(k), &mut self.sanitised, &mut self.clamped);
-        }
-        i += before;
+        let (sanitised, clamped) = fill(0, &mut self.front.window[..before]);
+        self.sanitised += sanitised;
+        self.clamped += clamped;
+        let mut i = before;
         self.consumed += before;
         while i < n {
             let chunk = (n - i).min(WINDOW - self.filled);
-            for (k, slot) in self.front.window[self.filled..self.filled + chunk]
-                .iter_mut()
-                .enumerate()
-            {
-                *slot = classify(sample(i + k), &mut self.sanitised, &mut self.clamped);
-            }
+            let (sanitised, clamped) =
+                fill(i, &mut self.front.window[self.filled..self.filled + chunk]);
+            self.sanitised += sanitised;
+            self.clamped += clamped;
             i += chunk;
             self.consumed += chunk;
             self.filled += chunk;

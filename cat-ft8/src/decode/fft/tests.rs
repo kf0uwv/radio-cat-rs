@@ -444,6 +444,88 @@ fn transform_equals_the_reference_bit_for_bit() {
     }
 }
 
+/// The window applied and stored in digit-reversed order, then the
+/// first stage: what [`first_stage`] computes without the stored input.
+fn stored_first_stage(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f32; N]) {
+    for (p, &n) in DIGIT_REV.iter().enumerate() {
+        let n = usize::from(n);
+        re[p] = samples[2 * n] * hann(2 * n);
+        im[p] = samples[2 * n + 1] * hann(2 * n + 1);
+    }
+    stage::<4, 1, 1>(re, im);
+}
+
+#[test]
+fn first_stage_equals_the_stored_window_and_stage_bit_for_bit() {
+    // Noise at several scales up to the input limit, signed zeros mixed
+    // with values, subnormals, the limit itself with alternating signs, and
+    // impulses at the window's mirror points and the ends. Every output
+    // bit is compared, the sign of zero included, for one, two and four
+    // lanes; the whole transform likewise.
+    let mut seed = 0x6a09_e667_f3bc_c909u64;
+    let mut windows: Vec<[f32; WINDOW]> = Vec::new();
+    for scale in [1e-30f32, 1e-6, 0.03, 1.0, 65_536.0] {
+        for _ in 0..4 {
+            let mut x = [0.0f32; WINDOW];
+            for v in x.iter_mut() {
+                *v = scale * noise(&mut seed);
+            }
+            windows.push(x);
+        }
+    }
+    let mut zeros = [0.0f32; WINDOW];
+    for (i, v) in zeros.iter_mut().enumerate() {
+        let a = noise(&mut seed);
+        *v = if i % 31 == 3 {
+            a
+        } else if a < 0.0 {
+            -0.0
+        } else {
+            0.0
+        };
+    }
+    windows.push(zeros);
+    let mut tiny = [0.0f32; WINDOW];
+    for v in tiny.iter_mut() {
+        *v = 1e-39 * noise(&mut seed);
+    }
+    windows.push(tiny);
+    let mut limit = [0.0f32; WINDOW];
+    for (i, v) in limit.iter_mut().enumerate() {
+        *v = if i % 3 == 0 { -65_536.0 } else { 65_536.0 };
+    }
+    windows.push(limit);
+    for at in [
+        0, 1, 958, 959, 960, 961, 1_918, 1_919, 1_920, 1_921, 2_879, 2_880, 2_881, 3_839,
+    ] {
+        let mut x = [0.0f32; WINDOW];
+        x[at] = -3.0;
+        windows.push(x);
+    }
+    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
+    for x in &windows {
+        let (mut wr, mut wi) = ([0.0f32; N], [0.0f32; N]);
+        stored_first_stage(x, &mut wr, &mut wi);
+        let (mut fr, mut fi) = (wr, wi);
+        later_stages::<1>(&mut fr, &mut fi);
+        for lanes in [1, 2, 4] {
+            let (mut gr, mut gi) = ([f32::NAN; N], [f32::NAN; N]);
+            match lanes {
+                1 => first_stage::<1>(x, &mut gr, &mut gi),
+                2 => first_stage::<2>(x, &mut gr, &mut gi),
+                _ => first_stage::<4>(x, &mut gr, &mut gi),
+            }
+            assert!(
+                bits(&gr) == bits(&wr) && bits(&gi) == bits(&wi),
+                "{lanes} lanes"
+            );
+        }
+        let mut buf = FftBuffer::new();
+        spectrum(x, &mut buf);
+        assert!(bits(&buf.re) == bits(&fr) && bits(&buf.im) == bits(&fi));
+    }
+}
+
 /// The transform, `L` butterflies at a time, on an array of complex values.
 fn fft_complex<const L: usize>(buf: &mut [Complex; N]) {
     let mut re = [0.0f32; N];

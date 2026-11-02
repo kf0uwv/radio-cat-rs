@@ -18,11 +18,13 @@
 //! real-split step. Own code; `f32` `+ − ×` only, in a fixed order.
 //!
 //! - **Complex transform.** Decimation in time, in place, on separate
-//!   real and imaginary arrays. The input is loaded in digit-reversed
-//!   order (a compile-time table), then six stages of radix 4, 4, 4, 2, 3,
-//!   5 (innermost first) run butterflies whose twiddles come from one
-//!   static table of e^(−2πit/1920). Independent butterflies run side by
-//!   side ([`LANES`] at a time) so that vector units take them together;
+//!   real and imaginary arrays. Six stages of radix 4, 4, 4, 2, 3, 5
+//!   (innermost first) run butterflies whose twiddles come from one static
+//!   table of e^(−2πit/1920). The first stage loads its inputs in
+//!   digit-reversed order (a compile-time table) and applies the window as
+//!   it loads them; the later stages work in place. Independent
+//!   butterflies run side by side ([`LANES`] at a time) so that vector
+//!   units take them together;
 //!   each keeps its own operations in the same order, so the result does
 //!   not depend on the lane count or the target.
 //! - **Real split.** The 3 840 real samples are packed as 1 920 complex
@@ -61,7 +63,12 @@ const _: () = {
 /// the top-level stage (radix `STAGES[5]`) splits the input into
 /// interleaved subsequences, stored as contiguous blocks, recursively.
 /// Computed at compile time.
-static DIGIT_REV: [u16; N] = {
+static DIGIT_REV: [u16; N] = DIGIT_REV_TABLE;
+
+/// [`DIGIT_REV`]'s contents, as a constant so that its layout can be
+/// checked at compile time (a `static` cannot be read in a constant on the
+/// minimum Rust).
+const DIGIT_REV_TABLE: [u16; N] = {
     let mut table = [0u16; N];
     let mut p = 0;
     while p < N {
@@ -82,6 +89,28 @@ static DIGIT_REV: [u16; N] = {
         p += 1;
     }
     table
+};
+
+/// Samples between the inputs of adjacent first-stage blocks (see
+/// [`first_stage`]): 2 × 120.
+const BLOCK_SPREAD: usize = 2 * (N / 16);
+
+// The layout [`first_stage`] relies on: block b (positions 4b..4b + 4)
+// holds elements n₀ + 480m, m = 0..4, and block 4c + j (j < 4) has
+// n₀ = DIGIT_REV[16c] + 120j. Hence every n₀ + 120j is below 480.
+const _: () = {
+    let mut b = 0;
+    while b < N / 4 {
+        let first = DIGIT_REV_TABLE[16 * (b / 4)] as usize;
+        let n0 = DIGIT_REV_TABLE[4 * b] as usize;
+        assert!(n0 == first + (N / 16) * (b % 4));
+        let mut m = 0;
+        while m < 4 {
+            assert!(DIGIT_REV_TABLE[4 * b + m] as usize == n0 + (N / 4) * m);
+            m += 1;
+        }
+        b += 1;
+    }
 };
 
 /// A complex value (the reference transform in the tests).
@@ -144,7 +173,7 @@ impl Default for FftBuffer {
 }
 
 /// The Hann window value for sample `n` of `0..WINDOW`: sin²(πn / 3 840).
-#[inline]
+#[cfg(test)]
 fn hann(n: usize) -> f32 {
     HANN_HALF[n.min(WINDOW - n)]
 }
@@ -186,13 +215,21 @@ const _: () = Lanes::<LANES>::OK;
 
 /// In-place 1 920-point complex DFT of (`re`, `im`), whose input is
 /// already in digit-reversed order. Output in natural order. `L`
-/// butterflies at a time ([`LANES`] outside the tests).
+/// butterflies at a time. (The decoder runs [`first_stage`] from the
+/// samples instead of the first stage here; see [`spectrum`].)
+#[cfg(test)]
 fn fft<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
-    let () = Lanes::<L>::OK;
     // One call per entry of `STAGES`, with its `l` (checked at compile
     // time below). The first stage (`l` = 1) has one butterfly per block:
     // one lane.
     stage::<4, 1, 1>(re, im);
+    later_stages::<L>(re, im);
+}
+
+/// The stages after the first, in place, `L` butterflies at a time.
+#[inline(always)]
+fn later_stages<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
+    let () = Lanes::<L>::OK;
     stage::<4, L, 4>(re, im);
     stage::<4, L, 16>(re, im);
     stage::<2, L, 64>(re, im);
@@ -350,12 +387,85 @@ pub(crate) fn fft_reference(buf: &mut [Complex; N]) {
 /// The windowed spectrum of `samples`: the complex transform of the
 /// packed samples (Z[k], k = 0..1 920) in `buf`.
 fn spectrum(samples: &[f32; WINDOW], buf: &mut FftBuffer) {
-    for (p, &n) in DIGIT_REV.iter().enumerate() {
-        let n = usize::from(n);
-        buf.re[p] = samples[2 * n] * hann(2 * n);
-        buf.im[p] = samples[2 * n + 1] * hann(2 * n + 1);
+    first_stage::<LANES>(samples, &mut buf.re, &mut buf.im);
+    later_stages::<LANES>(&mut buf.re, &mut buf.im);
+}
+
+/// The first stage (radix 4, `l` = 1) from the samples: position p's input
+/// is element n = `DIGIT_REV[p]` windowed, `samples[2n] · hann(2n)` and
+/// `samples[2n + 1] · hann(2n + 1)`, computed as it is loaded rather than
+/// stored first. Every value and product is the one that storing the
+/// windowed input and running `stage::<4, 1, 1>` computes, in the same
+/// order, so the result is the same bit for bit.
+///
+/// Block b (positions 4b..4b + 4) takes elements n₀ + 480m, m = 0..4, and
+/// block 4c + j takes n₀ = `DIGIT_REV[16c]` + 120j (checked at compile
+/// time), so one table entry places `L` adjacent blocks. With n₀ < 480 the
+/// window's mirror point is known for each m: `hann` reads `HANN_HALF[i]`
+/// for sample i = 2n + e (e = 0, 1) when m is 0 or 1, and
+/// `HANN_HALF[3 840 − i]` when m is 2 or 3; those entries are read here
+/// directly. `L` adjacent blocks run side by side ([`LANES`]), each with
+/// its own operations in order.
+#[inline(always)]
+fn first_stage<const L: usize>(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f32; N]) {
+    let () = Lanes::<L>::OK;
+    // W₄^(m·q) as `stage::<4, 1, 1>` reads it: TWIDDLES[m·q·480 mod N].
+    let mut w = [[[0.0f32; 2]; 4]; 4];
+    for (m, wm) in w.iter_mut().enumerate() {
+        for (q, wmq) in wm.iter_mut().enumerate() {
+            *wmq = TWIDDLES[(m * q * (N / 4)) % N];
+        }
     }
-    fft::<LANES>(&mut buf.re, &mut buf.im);
+    // The spread of the `L` blocks' inputs, in samples.
+    let d = BLOCK_SPREAD * (L - 1);
+    for (c, (r, i)) in re
+        .chunks_exact_mut(4 * L)
+        .zip(im.chunks_exact_mut(4 * L))
+        .enumerate()
+    {
+        // Sample 2n₀ of the first block; k + d ≤ 958.
+        let k = 2 * usize::from(DIGIT_REV[4 * L * c]);
+        let x = &samples[k..][..2882 + d];
+        // low[t] = HANN_HALF[k + t]; high[t] = HANN_HALF[959 − d − k + t].
+        let low = &HANN_HALF[k..][..962 + d];
+        let high = &HANN_HALF[959 - d - k..][..962 + d];
+        let mut ar = [[0.0f32; L]; 4];
+        let mut ai = [[0.0f32; L]; 4];
+        for j in 0..L {
+            // Block j's first sample is k + o; its mirrored window entries
+            // 3 840 − (k + o + 1 920 + e) and 3 840 − (k + o + 2 880 + e)
+            // are high[g + 961 − e] and high[g + 1 − e].
+            let o = BLOCK_SPREAD * j;
+            let g = d - o;
+            ar[0][j] = x[o] * low[o];
+            ai[0][j] = x[o + 1] * low[o + 1];
+            ar[1][j] = x[o + 960] * low[o + 960];
+            ai[1][j] = x[o + 961] * low[o + 961];
+            ar[2][j] = x[o + 1920] * high[g + 961];
+            ai[2][j] = x[o + 1921] * high[g + 960];
+            ar[3][j] = x[o + 2880] * high[g + 1];
+            ai[3][j] = x[o + 2881] * high[g];
+        }
+        // Each block's butterfly as `stage::<4, 1, 1>` computes it, the
+        // m = 0 product not computed (see `stage`).
+        for q in 0..4 {
+            let mut sr = ar[0];
+            let mut si = ai[0];
+            for m in 1..4 {
+                let [wr, wi] = w[m][q];
+                for j in 0..L {
+                    let pr = ar[m][j] * wr - ai[m][j] * wi;
+                    let pi = ar[m][j] * wi + ai[m][j] * wr;
+                    sr[j] += pr;
+                    si[j] += pi;
+                }
+            }
+            for j in 0..L {
+                r[4 * j + q] = sr[j];
+                i[4 * j + q] = si[j];
+            }
+        }
+    }
 }
 
 /// Normalised power of real-transform bin k from a = Z[k], c = Z[N − k]

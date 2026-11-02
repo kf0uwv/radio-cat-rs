@@ -261,6 +261,8 @@ mod tests {
         "ONES",   // Gray bit masks for soft bits, folded into code
         "ALL",    // the decoder's profiling stages, folded into code
         "STEPS",  // the decode command's profile names (not in the library)
+        // The contents of DIGIT_REV as a constant, for compile-time checks.
+        "DIGIT_REV_TABLE",
     ];
 
     #[test]

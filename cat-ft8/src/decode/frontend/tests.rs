@@ -290,6 +290,68 @@ fn early_samples_are_counted_and_huge_ones_clamped() {
 }
 
 #[test]
+fn feed_equals_feeding_the_classified_samples() {
+    // Samples at and just beyond ±INPUT_LIMIT, the largest finite values,
+    // infinities, NaNs, signed zeros and subnormals, scattered so that
+    // they fall before the row origin, inside blocks and on block edges:
+    // the levels and counters equal those of feeding the samples that
+    // `classify` returns, one at a time, which `feed` copies unchanged.
+    let mut samples = slot("CQ K1ABC FN42", 1_500.0, 0.0, 0.3, 0.03, 13);
+    let above = f32::from_bits(INPUT_LIMIT.to_bits() + 1);
+    let specials = [
+        INPUT_LIMIT,
+        -INPUT_LIMIT,
+        above,
+        -above,
+        f32::MAX,
+        f32::MIN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NAN,
+        -f32::NAN,
+        f32::from_bits(0x7f80_0001),
+        -0.0,
+        f32::from_bits(1),
+    ];
+    for (k, at) in [
+        0, 7, 239, 240, 241, 3_839, 4_079, 4_080, 50_000, 99_999, 179_999,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        samples[at] = specials[k % specials.len()];
+    }
+    for (k, x) in samples[120_000..120_000 + 4 * specials.len()]
+        .iter_mut()
+        .enumerate()
+    {
+        *x = specials[k / 4];
+    }
+    let (mut sanitised, mut clamped) = (0, 0);
+    let classified: Vec<f32> = samples
+        .iter()
+        .map(|&x| classify(x, &mut sanitised, &mut clamped))
+        .collect();
+    assert!(sanitised > 0 && clamped > 0);
+    let (want, _) = spectrogram_of(&classified, Band::DEFAULT, 1);
+    for block in [1, 77, 240, 960, 3_840, SLOT_SAMPLES] {
+        let mut front = FrontEnd::new();
+        let mut levels = vec![0u8; Band::DEFAULT.spectrogram_len()];
+        {
+            let mut s = Spectrogram::new(&mut front, &mut levels, Band::DEFAULT).unwrap();
+            for chunk in samples.chunks(block) {
+                s.feed(chunk);
+            }
+            assert_eq!(
+                (s.sanitised_samples(), s.clamped_samples()),
+                (sanitised, clamped)
+            );
+        }
+        assert!(levels == want, "block {block}");
+    }
+}
+
+#[test]
 fn floor_and_top_levels_are_counted() {
     let mut front = FrontEnd::new();
     let mut levels = vec![0u8; Band::DEFAULT.spectrogram_len()];
