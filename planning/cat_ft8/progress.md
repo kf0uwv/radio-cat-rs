@@ -1505,3 +1505,23 @@
   names, docs); ADR evidence called synthetic, the WAV slots described,
   sparse CPU (A76 +0.39 ms per slot, valid at 0x0). `host,osd=off`
   identical to 511bf32's host on records and WAV output.
+
+## Session: 2026-11-01 (O14, the subtraction's generator; branch `o14` from b93516e)
+
+- bf73225 (local branch `o14-scan` only): the generator's running phase
+  in four lanes (sliding sums of four). A76 subtraction −0.11 ms (0.2%),
+  slot unchanged, within the spread; x86-64 cycles +0.54%,
+  instructions +2.8%; microbenchmark A76 −1.7%, x86-64 +4%. Not faster:
+  kept out. The generator's cost is `increments` (x86-64 17.1% of the
+  slot's cycles against `fill_phase`'s 3.6%), not the running sum.
+- 68634cc: ⌊r · 2³² / d⌋ in 32-bit arithmetic for the envelope and the
+  step phases; the M33's 64-bit library division gone. M33 subtraction
+  per call 36.378 → 36.007 M (−1.02%), host 40-message slot −0.56%,
+  flash −910 to −930 B per image, static RAM and frames unchanged
+  (encoder-only `fill_phase` 112 → 80 B). A76 and x86-64 neutral.
+- Identity at 68634cc: x86-64 records (73 800) and 800 WAV slots ×
+  3 × 3, encoder, the emulated small and host images on seven slots,
+  the multi-pass residuals on s0086 and s0407. Local CI passes.
+- Every timed A76 run valid (24 runs, every sample 0x0). The A76
+  record run and test suite did not complete: the Raspberry Pi 5 went
+  off the network during the record run; not repeated.

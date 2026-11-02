@@ -7028,3 +7028,200 @@ the pass it starts costs 17.7 ms.
 - Off-air recordings; real-band slots where pass 1 decodes one strong
   signal over a weaker one (needed before results-changing candidate 1).
 - Energy and power.
+
+## The subtraction's generator, fourteenth round (O14, bit-identical, 2026-11-01)
+
+On the local branch `o14` from b93516e. Two candidates from the profile
+above (its first and fifth bit-identical items): a blocked running sum
+for the generator's phase, and the Cortex-M33's 64-bit division. The
+first is **not faster and is kept out**; the second is kept (68634cc).
+Decodes, records, residuals and encoder output identical, with no
+qualification.
+
+### Candidates
+
+1. **The running phase four samples at a time** (bf73225, kept only on
+   the local branch `o14-scan`, not on `o14`).
+   - `fill_phase` turns the increments into phases by a running `u32`
+     sum, one dependent add per sample. The candidate gave each of four
+     lanes its own running sum: lane l holds the phase before sample
+     i + l and moves to sample i + l + 4 by the four increments from
+     i + l (a sliding sum of four, read with overlapping loads), so the
+     carried dependency is one vector add per four samples. Integer
+     addition modulo 2³² is associative, so the phases are the same.
+     The Cortex-M33 kept the plain loop (`VECTOR`).
+   - A first form (shifted adds inside a group of four, the group's
+     base broadcast to every lane) was turned back into scalar code by
+     the compiler: the lanes of the base are equal, so it kept one, and
+     the result was 19 AArch64 instructions per four samples with no
+     vector operation. The sliding form compiles to the intended loop on
+     both hosts (AArch64: 12 instructions per four samples, 4 loads, 3
+     adds for the sums, 1 for the lanes, 1 store).
+   - Test: both forms against the plain sum at every length up to four
+     groups and at 239–241, from random and wrapping inputs; a mutant
+     that drops one term of the sliding sum fails it and the per-sample
+     generator test.
+2. **Whole-sample phases without a 64-bit division** (68634cc).
+   - The ramp's envelope (`envelope`, d = 480) and the time search's
+     step phases (`step_phase`, d = 1 920) took ⌊r · 2³² / d⌋ through
+     a `u64` division, a library call (`__aeabi_uldivmod`,
+     `__udivmoddi4`, `u64_div_rem`) on the Cortex-M33. With
+     2³² = q·d + m it is r·q + ⌊r·m / d⌋ exactly, in `u32` with no
+     overflow for r < d < 2¹⁶ (`waveform::phase_of_ratio`); d is a
+     constant at both call sites, so the remaining division is a
+     multiply.
+   - Tests: the 32-bit form against the 64-bit quotient for every
+     r < d for every d up to 2 048 and a sample at d = 65 535; the
+     envelope at every waveform sample and `step_phase` at every tone
+     step and start error in −1 920…1 920, each against its previous
+     form. A mutant that halves the remainder term fails these three,
+     the pinned subtraction tests and the encoder's golden hashes.
+
+### A76 (Raspberry Pi 5; `slotcost host host,passes=1 200 5`, medians)
+
+64-byte-aligned builds (`-align-loops=64 -align-all-functions=6`), one
+source path, a target directory per commit; one benchmark at a time on
+core 3, the throttle, clock and temperature sampled once a second from
+core 0, a run started only on 0x0. The base's `paired_bench` is
+byte-identical to the profile's (sha256 5eb4624b…); the candidate pair
+was built as fb138e6 and e6b7c31 (the same tree, a message amended),
+byte-identical binaries.
+
+| build (runs) | slot (ms) | subtract | feed | BP | one pass |
+|---|---|---|---|---|---|
+| **round 1** (alternated, 4 each) | | | | | |
+| b93516e (base) | 107.40 | 56.70 | 22.10 | 21.00 | 20.20 |
+| bf73225 (blocked sum) | 107.40 | 56.59 | 22.235 | 20.99 | 20.30 |
+| e6b7c31 (blocked sum + division) | 107.40 | 56.56 | 22.225 | 21.005 | 20.30 |
+| **round 2** (alternated, 4 each) | | | | | |
+| b93516e (base) | 107.40 | 56.69 | 22.10 | 21.00 | 20.20 |
+| 68634cc (division only) | 107.50 | 56.77 | 22.105 | 21.02 | 20.20 |
+
+- The blocked sum takes 0.11 ms from the subtraction (0.2%) and the
+  slot does not move: the feed, which it does not touch, moved
+  +0.135 ms the other way (placement). Within the run-to-run spread of
+  the subtraction (0.07–0.12 ms). **Not faster.**
+- The division alone: +0.08 ms subtraction, +0.1 ms slot, within the
+  spread; the A76 never called a library division (its `u64` quotient
+  by a constant is a multiply), so no change is expected there.
+- **Every timed run is valid:** 20 `slotcost` runs and 4 microbenchmark
+  runs, 2 964 samples, every one 0x0, start and end checks too; one
+  sample below 2.39 GHz in two runs, each the first second; peak
+  55.4 °C.
+
+**Why the profile's estimate did not hold.** An out-of-tree
+microbenchmark (`Synth::fill_phase` over whole waveforms in 240-sample
+blocks, as the subtraction calls it):
+
+| | A76 ns / sample | x86-64 ns / sample | x86-64 instructions |
+|---|---|---|---|
+| b93516e | 1.707 | 1.48 | 7.81 G |
+| bf73225 | 1.677 (−1.7%) | 1.54 (+4%) | 9.53 G (+22%) |
+
+The generator costs about 4.1 A76 cycles a sample, and the running sum
+is a small part of it: the dependent add is one cycle a sample and the
+out-of-order core overlaps it with the loop's loads and stores, while
+the blocked form's overlapping loads read lines that `increments` has
+just stored. On x86-64 `perf` splits the two (they are separate
+functions): `increments` 17.1% of the three-pass slot's cycles,
+`fill_phase` (the sum, the envelope fill and the ramps) 3.6%; with the
+blocked sum `fill_phase` rose to 4.3%. The profile's "generator" share
+is almost all `increments`, the per-sample pulse, frequency and
+conversion.
+
+### x86-64 (Threadripper 3970X, core 5, `perf stat` user cycles and instructions)
+
+The whole `slotcost host host,passes=1 200 5` program (slot synthesis
+included), four alternated runs per build; the stage times carry the
+virtual machine's clock bias (`acpi_pm`, about 6.7 µs a read) and are
+given only for the subtraction:
+
+| build | cycles (median) | instructions | subtract (ms) |
+|---|---|---|---|
+| round 1: b93516e | 375.38 G | 1 045.45 G | 34.42 |
+| bf73225 | 377.40 G (+0.54%) | 1 074.29 G (+2.76%) | 34.84 |
+| fb138e6 (= e6b7c31) | 377.33 G (+0.52%) | 1 074.66 G | 34.89 |
+| round 2: b93516e | 375.12 G | 1 045.45 G | 34.39 |
+| 68634cc | 374.92 G (−0.05%) | 1 045.81 G (+0.04%) | 34.37 |
+
+The blocked sum is slower on x86-64; the division change is neutral
+(a few more instructions where the 64-bit quotient by a constant was
+one multiply).
+
+### Cortex-M33 (emulated instructions; staged measurement image, s0086, 40 messages)
+
+| | host slot | subtraction (37 calls) | per call | library division | stack high water |
+|---|---|---|---|---|---|
+| b93516e | 2 440.26 M | 1 345.99 M | 36.378 M | 13.80 M | 10 424 B |
+| 68634cc | 2 426.54 M (−0.56%) | 1 332.26 M | **36.007 M (−1.02%)** | 0 | 10 392 B |
+
+- The generator's own count is unchanged (`increments` 163.68 M,
+  `fill_phase` 73.2–73.3 M, `skip_with` 11.56 M); `score` 6.41 →
+  6.34 M. The blocked sum was not tried here (the M33 keeps the plain
+  loop by construction).
+- The small one-pass slot is unchanged (293 527 765 instructions on
+  s0086): its only division was in the encoder checks before the
+  decode (setup 9.94 → 9.88 M in the host image).
+
+### Sizes and stack (`check.sh --stack`, thumbv8m)
+
+| image | flash b93516e → 68634cc (B) | static RAM |
+|---|---|---|
+| small | 90 564 → 89 634 (−930) | 212 048 (unchanged) |
+| host | 102 256 → 101 334 (−922) | 241 616 (unchanged) |
+| small, OSD on | 90 564 → 89 634 | 212 048 |
+| host, OSD off | 102 256 → 101 334 | 241 616 |
+| encoder only | 35 676 → 34 766 (−910) | 0 |
+
+Frames unchanged (`_start` 4 104, `decode_a_slot` 2 512, host
+`subtract_one` 4 808, the subtraction's closure 2 872, `osd_decode`
+272 B) except `Synth::fill_phase` 112 → 80 B in the encoder-only image.
+No fused multiply-add (0 `vfma`/`vfms`/`vfnma`/`vfnms`; `vmla` 75 /
+146 / 13, unchanged) and no `f64` helper in any image; thumbv7em
+builds.
+
+### Identity (68634cc against b93516e)
+
+- **Records, x86-64:** the 73 800 `paired_bench run` records (`crowded`,
+  `wide`, `fading` on `main`, `cap1`, `cap2`; `sweep`, `edges`, `empty`
+  on `main`; `host`, `host,passes=1`, `small`): 0 differ.
+- **800 WAV slots** × `host`, `small`, `host,passes=1` × plain, `--raw`,
+  `--profile` (7 200 runs, 78 690 decode lines, timings removed):
+  byte-identical, `--profile` metadata included.
+- **Encoder:** the 45 `cat-ft8-encode` WAV files identical.
+- **Cortex-M33 in the emulator:** the small and host images' decodes on
+  the seven WAV slots (report counts, every decode, the `LEVELS` and
+  `DECODES_LIST` statics) byte-identical, 14 of 14; the multi-pass host
+  image's residual after the further passes on s0086 and s0407
+  (180 000 `f32` each) identical, and equal to O13's.
+- **A76: not checked.** The record run was started on the A76, but the
+  Raspberry Pi 5 dropped off the network before it finished and before
+  the records were copied back, and the release test suite could not be
+  started. The A76 `slotcost` runs report the same decode and
+  subtraction counts per pass for every build (24.1 / 10.5 / 3.0 new
+  decodes, 24.1 and 10.5 subtractions), which is consistent with
+  identity but is not a bit-for-bit check.
+- The blocked sum (bf73225) was checked by its tests and the per-sample
+  generator test on x86-64 only; it is not on the branch.
+
+### Checks at 68634cc
+
+Local CI: fmt; clippy `-D warnings` on the workspace, cat-ft8 with all
+targets and features, and the thumbv8m library; workspace, profile,
+no-std and release tests with the ignored ones; MSRV 1.75; docs with
+and without `std`; `check.sh --stack`.
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instructions only).
+- Where `increments`' 4 A76 cycles a sample go: there are no hardware
+  counters on the Pi, so its loop was not split into issue and stalls.
+  It is now the generator's cost on every target (x86-64 17% of the
+  slot's cycles, the M33 164 M of the subtraction's 1 332 M) and the
+  next candidate here; its arithmetic per sample is already minimal for
+  bit identity, so the lever is the loop structure (four runs per
+  symbol, their setup and scalar tails per 240-sample block) and, on
+  x86-64, the two-step conversion of `increment`.
+- The blocked sum on the M33 and on other cores.
+- The A76 record identity and the release test suite on the A76 at
+  68634cc (above).
