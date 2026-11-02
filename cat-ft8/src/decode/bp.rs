@@ -340,8 +340,15 @@ const GROUP: usize = if VECTOR { 4 } else { 1 };
 /// `group` at a time, and within a group edge j of its k-th check is at
 /// the group's first edge + j·group + k; the checks left over after the
 /// last whole group are laid out one after another, stride 1. With a
-/// group of one this is check by check. Every place the layout is built
-/// or walked takes it from here.
+/// group of one this is check by check.
+///
+/// The tables ([`var_edges`]) and the walk in check order
+/// ([`check_edges`]) are built from this function; its `group == 1` case
+/// is unrolled there (each degree's next check starts where the last one
+/// ended), which keeps the Cortex-M33's code as it was. The rounds' group
+/// loops ([`products`], [`min_sum_round`]) do not call it: they rely on
+/// its shape, each degree's edges as contiguous blocks of D·G values for
+/// the whole groups followed by the leftover checks of D values each.
 #[inline(always)]
 const fn place(degree: usize, index: usize, group: usize) -> (usize, usize) {
     let (first, count) = if degree == 6 {
