@@ -23,10 +23,11 @@
 //!   table of e^(−2πit/1920). The first stage loads its inputs in
 //!   digit-reversed order (a compile-time table, read once per group of
 //!   blocks) and applies the window as it loads them; the later stages
-//!   work in place, independent butterflies side by side ([`LANES`] at a
-//!   time) so that vector units take them together. Each butterfly keeps
-//!   its own operations in the same order, so the result does not depend
-//!   on the group size, the lane count or the target.
+//!   work in place. With vectors ([`LANES`] above one), independent
+//!   butterflies run side by side so that vector units take them together;
+//!   with one lane, each butterfly is written out term by term. Each
+//!   butterfly keeps its own operations in the same order, so the result
+//!   does not depend on the group size, the lane count or the target.
 //! - **Real split.** The 3 840 real samples are packed as 1 920 complex
 //!   values `z[n] = x[2n] + i·x[2n+1]`; bin k of the real transform is
 //!   `X[k] = E[k] + W₃₈₄₀ᵏ·O[k]`, with E and O from `Z[k]` and `Z[1920 − k]`.
@@ -436,8 +437,9 @@ fn twiddle_index<const R: usize>(m: usize, q: usize, k_step: usize) -> usize {
 /// (m, q). Every input is read before any output is stored. Output q is
 /// a[0] + Σ_{m ≥ 1} a[m]·w(m, q), the products added in the order of m:
 /// the operations of [`radix_sums`] with one lane, in its order, so the
-/// result is the same bit for bit. Written out so that the inputs stay in
-/// registers and no loop counter or index is kept per term.
+/// result is the same bit for bit. Written out because opt-level "s" does
+/// not unroll the loops (rustc 1.93.0): this way the inputs stay in registers
+/// and no loop counter or index is kept per term.
 macro_rules! straight_butterfly {
     ($re:ident, $im:ident, $stride:expr, $ms:tt, $qs:tt, ($m_name:ident, $q_name:ident) => $w:expr) => {{
         let ar = straight_butterfly!(@load $re, $stride, $ms);
