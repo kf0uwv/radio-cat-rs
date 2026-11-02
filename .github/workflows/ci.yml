@@ -117,6 +117,12 @@ jobs:
           cargo clippy -p cat-ft8 --no-default-features --target thumbv8m.main-none-eabihf -- -D warnings
           CARGO_TARGET_DIR=target/embedded-check cat-ft8/embedded-check/check.sh
 
+      - name: cat-ft8 lane-wrapping array indices
+        # An array indexed by `% LANES`, `& 3` and the like inside a loop
+        # was miscompiled by LLVM's loop vectoriser (LLVM 20 and 21); the
+        # script fails on that written form anywhere in cat-ft8/src.
+        run: cat-ft8/lane-index-check.sh
+
       - name: cat-ft8 library on its minimum Rust (1.75)
         # The crate's rust-version is 1.75; newer `core` methods (such as
         # `f32::abs`, in `core` only from 1.85) must not slip into the
