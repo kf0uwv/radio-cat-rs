@@ -259,9 +259,24 @@ fn fft<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
     later_stages::<L>(re, im);
 }
 
-/// The stages after the first, in place, `L` butterflies at a time.
+/// The stages after the first, in place, `L` butterflies at a time. With
+/// one lane (as on a Cortex-M) each butterfly is written out term by term
+/// ([`straight_stages`]); the operations, their values and their order are
+/// those of [`stage`].
 #[inline(always)]
 fn later_stages<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
+    let () = Lanes::<L>::OK;
+    if L == 1 {
+        straight_stages(re, im);
+        return;
+    }
+    side_by_side_stages::<L>(re, im);
+}
+
+/// The stages after the first through [`stage`], `L` butterflies at a
+/// time.
+#[inline(always)]
+fn side_by_side_stages<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
     let () = Lanes::<L>::OK;
     stage::<4, L, 4>(re, im);
     stage::<4, L, 16>(re, im);
@@ -405,6 +420,132 @@ fn butterflies<const R: usize, const L: usize, const S: usize>(
         }
     });
 }
+
+/// Index into `TWIDDLES` of W_span^(m·(k + q·l)) for a radix-`R` stage over
+/// sub-transforms of length l (span = l·`R`, `k` < l, m < `R`, q < `R`):
+/// the index `stage` reads, m·(k + q·l)·(N/span) mod N, as l·(N/span) is
+/// N/`R`. `k_step` is k·(N/span).
+#[inline(always)]
+fn twiddle_index<const R: usize>(m: usize, q: usize, k_step: usize) -> usize {
+    (m * k_step + (N / R) * (m * q)) % N
+}
+
+/// One radix-R butterfly written out term by term: inputs m = 0 .. R at
+/// `r[m·s]`, `i[m·s]` (`$ms` lists m = 1 .. R, `$qs` q = 0 .. R), output q
+/// stored at `r[q·s]`, `i[q·s]`; the twiddle expression gives (re, im) for
+/// (m, q). Every input is read before any output is stored. Output q is
+/// a[0] + Σ_{m ≥ 1} a[m]·w(m, q), the products added in the order of m:
+/// the operations of [`radix_sums`] with one lane, in its order, so the
+/// result is the same bit for bit. Written out so that the inputs stay in
+/// registers and no loop counter or index is kept per term.
+macro_rules! straight_butterfly {
+    ($r:ident, $i:ident, $s:expr, $ms:tt, [$($q:tt)*], ($m:ident, $qq:ident) => $w:expr) => {{
+        let ar = straight_butterfly!(@load $r, $s, $ms);
+        let ai = straight_butterfly!(@load $i, $s, $ms);
+        $(
+            let (sr, si) = straight_butterfly!(@sum ar, ai, $q, $ms, ($m, $qq) => $w);
+            $r[$q * $s] = sr;
+            $i[$q * $s] = si;
+        )*
+    }};
+    (@load $x:ident, $s:expr, [$($m:tt)*]) => {
+        [$x[0] $(, $x[$m * $s])*]
+    };
+    (@sum $ar:ident, $ai:ident, $q:tt, [$($mv:tt)*], ($m:ident, $qq:ident) => $w:expr) => {{
+        let mut sr = $ar[0];
+        let mut si = $ai[0];
+        $(
+            let (wr, wi) = {
+                let ($m, $qq): (usize, usize) = ($mv, $q);
+                $w
+            };
+            let pr = $ar[$mv] * wr - $ai[$mv] * wi;
+            let pi = $ar[$mv] * wi + $ai[$mv] * wr;
+            sr += pr;
+            si += pi;
+        )*
+        (sr, si)
+    }};
+    // The twiddles of (m, q) for m in `$ms`, q in `$qs` (one row per m),
+    // from `TWIDDLES`.
+    (@twiddles $rad:literal, $k_step:expr, [$($mv:tt)*], $qs:tt) => {
+        [$(straight_butterfly!(@row $rad, $k_step, $mv, $qs)),*]
+    };
+    (@row $rad:literal, $k_step:expr, $mv:tt, [$($q:tt)*]) => {
+        [$(TWIDDLES[twiddle_index::<$rad>($mv, $q, $k_step)]),*]
+    };
+}
+
+/// One radix-`$r` stage over sub-transforms of length `$s` (not the last
+/// stage, which has one block: see [`last_straight_stage`]), one butterfly
+/// at a time, as [`stage`] computes it with one lane: for each k, the
+/// twiddles of every (m ≥ 1, q) are read once from `TWIDDLES` into an
+/// array, then the butterfly at k runs in every block.
+macro_rules! straight_stage {
+    ($re:ident, $im:ident, $r:literal, $s:literal, $ms:tt, $qs:tt) => {{
+        const SPAN: usize = $r * $s;
+        const STEP: usize = N / SPAN;
+        let mut k = 0;
+        while k < $s {
+            // Row m − 1 holds the twiddles of m.
+            let w: [[[f32; 2]; $r]; $r - 1] = straight_butterfly!(@twiddles $r, k * STEP, $ms, $qs);
+            let mut base = k;
+            while base < N {
+                let (r, i) = (
+                    &mut $re[base..base + ($r - 1) * $s + 1],
+                    &mut $im[base..base + ($r - 1) * $s + 1],
+                );
+                straight_butterfly!(r, i, $s, $ms, $qs, (m, q) => {
+                    let t = w[m - 1][q];
+                    (t[0], t[1])
+                });
+                base += SPAN;
+            }
+            k += 1;
+        }
+    }};
+}
+
+/// [`stage`]'s operations with one lane, each butterfly written out term
+/// by term (see [`straight_butterfly`]).
+#[inline(always)]
+fn straight_stages(re: &mut [f32; N], im: &mut [f32; N]) {
+    straight_stage!(re, im, 4, 4, [1 2 3], [0 1 2 3]);
+    straight_stage!(re, im, 4, 16, [1 2 3], [0 1 2 3]);
+    straight_stage!(re, im, 2, 64, [1], [0 1]);
+    straight_stage!(re, im, 3, 128, [1 2], [0 1 2]);
+    last_straight_stage(re, im);
+}
+
+/// The last stage (radix 5, `l` = 384, one block) with one lane: each
+/// butterfly reads its twiddles from `TWIDDLES` where it uses them.
+#[inline(always)]
+fn last_straight_stage(re: &mut [f32; N], im: &mut [f32; N]) {
+    const R: usize = 5;
+    const S: usize = N / R;
+    for k in 0..S {
+        let (r, i) = (
+            &mut re[k..k + (R - 1) * S + 1],
+            &mut im[k..k + (R - 1) * S + 1],
+        );
+        straight_butterfly!(r, i, S, [1 2 3 4], [0 1 2 3 4], (m, q) => {
+            let t = TWIDDLES[twiddle_index::<R>(m, q, k)];
+            (t[0], t[1])
+        });
+    }
+}
+
+const _: () = {
+    // The calls in `straight_stages`, against `STAGES`.
+    let calls = [(4, 4), (4, 16), (2, 64), (3, 128), (5, 384)];
+    let mut l = STAGES[0];
+    let mut i = 1;
+    while i < STAGES.len() {
+        assert!(STAGES[i] == calls[i - 1].0 && l == calls[i - 1].1);
+        l *= STAGES[i];
+        i += 1;
+    }
+};
 
 /// The transform as first written (every product, `% N` per twiddle): the
 /// reference [`fft`] is checked against.

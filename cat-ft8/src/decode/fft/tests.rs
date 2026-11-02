@@ -526,6 +526,85 @@ fn first_stage_equals_the_stored_window_and_stage_for_every_group_size() {
     }
 }
 
+#[test]
+fn twiddle_index_equals_the_stage_index() {
+    // Every (k, m, q) of every stage after the first: the index `stage`
+    // computes with a division.
+    fn check<const R: usize>(l: usize) {
+        let step = N / (l * R);
+        for k in 0..l {
+            for m in 0..R {
+                for q in 0..R {
+                    let want = (m * (k + q * l) * step) % N;
+                    assert_eq!(
+                        twiddle_index::<R>(m, q, k * step),
+                        want,
+                        "R {R} l {l} k {k} m {m} q {q}"
+                    );
+                }
+            }
+        }
+    }
+    check::<4>(4);
+    check::<4>(16);
+    check::<2>(64);
+    check::<3>(128);
+    check::<5>(384);
+}
+
+#[test]
+fn straight_stages_equal_the_side_by_side_stages_bit_for_bit() {
+    // The one-lane form (`straight_stages`) against `stage` with one lane,
+    // every bit including the sign of zero: noise at several scales,
+    // signed zeros mixed with values, subnormals, the largest values the
+    // front end passes (±2¹⁶ · N) and impulses.
+    let mut seed = 0xbb67_ae85_84ca_a73bu64;
+    let mut inputs: Vec<([f32; N], [f32; N])> = Vec::new();
+    for scale in [1e-30f32, 1e-6, 0.03, 1.0, 65_536.0, 65_536.0 * 1_920.0] {
+        for _ in 0..4 {
+            let (mut re, mut im) = ([0.0f32; N], [0.0f32; N]);
+            for (r, i) in re.iter_mut().zip(im.iter_mut()) {
+                *r = scale * noise(&mut seed);
+                *i = scale * noise(&mut seed);
+            }
+            inputs.push((re, im));
+        }
+    }
+    let (mut re, mut im) = ([0.0f32; N], [0.0f32; N]);
+    for (n, (r, i)) in re.iter_mut().zip(im.iter_mut()).enumerate() {
+        let (a, b) = (noise(&mut seed), noise(&mut seed));
+        *r = if n % 29 == 4 {
+            a
+        } else if a < 0.0 {
+            -0.0
+        } else {
+            0.0
+        };
+        *i = if b < 0.0 { -0.0 } else { 0.0 };
+    }
+    inputs.push((re, im));
+    let (mut re, mut im) = ([0.0f32; N], [0.0f32; N]);
+    for (r, i) in re.iter_mut().zip(im.iter_mut()) {
+        *r = 1e-39 * noise(&mut seed);
+        *i = 1e-39 * noise(&mut seed);
+    }
+    inputs.push((re, im));
+    for at in [0, 1, 383, 384, 767, 1_535, 1_536, 1_919] {
+        let (mut re, mut im) = ([-0.0f32; N], [0.0f32; N]);
+        re[at] = 2.5;
+        im[at] = -1.5;
+        inputs.push((re, im));
+    }
+    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
+    for (re, im) in inputs {
+        let (mut ar, mut ai) = (re, im);
+        straight_stages(&mut ar, &mut ai);
+        let (mut br, mut bi) = (re, im);
+        side_by_side_stages::<1>(&mut br, &mut bi);
+        assert!(bits(&ar) == bits(&br) && bits(&ai) == bits(&bi));
+    }
+}
+
 /// The transform, `L` butterflies at a time, on an array of complex values.
 fn fft_complex<const L: usize>(buf: &mut [Complex; N]) {
     let mut re = [0.0f32; N];
