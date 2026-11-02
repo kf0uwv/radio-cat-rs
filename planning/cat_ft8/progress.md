@@ -1508,7 +1508,7 @@
 
 ## Session: 2026-11-01 (O14, the subtraction's generator; branch `o14` from b93516e)
 
-- bf73225 (local branch `o14-scan` only): the generator's running phase
+- A variant not on the branch: the generator's running phase
   in four lanes (sliding sums of four). A76 subtraction −0.11 ms (0.2%),
   slot unchanged, within the spread; x86-64 cycles +0.54%,
   instructions +2.8%; microbenchmark A76 −1.7%, x86-64 +4%. Not faster:
@@ -1547,3 +1547,20 @@
   images on seven slots and the residuals. Local CI and the A76 test
   suite pass. Every timed A76 run valid (12 `slotcost`, 11
   microbenchmark runs, every sample 0x0). Sizes and frames unchanged.
+
+## Session: 2026-11-01 (O15b review follow-ups; branch `o15b` from `o15`)
+
+- Three running-sum forms measured on every target (variants not on the
+  branch): the grouped form is the only one faster on the A76 (b and c
+  0.33–0.35 ms slower on the subtraction, about three times the spread);
+  it costs the M33 +4.3% per subtraction and +108 B, x86-64 neutral.
+- 641c599: the grouped sum on AArch64 only (`GROUPED_SUM`), its comment
+  on the emitted code; `round_small` shared by `floor_small` and the
+  x86-64 increment; `phase_of_ratio` in `decode::math`; docs re-wrapped.
+  A76 and M33 unchanged (104.40 against 104.35 ms; 36.007 M per
+  subtraction); x86-64 within spread.
+- Findings fixes from review (logged per-pass medians, the
+  microbenchmarks' low-clock samples, local-only hashes, wording).
+- Identity: records x86-64 and A76, 800 WAV slots × 3 × 3 on both,
+  encoder, M33 dump images and residuals. Local CI and the A76 suite
+  pass. All 20 timed A76 runs valid (2 900 samples, all 0x0).

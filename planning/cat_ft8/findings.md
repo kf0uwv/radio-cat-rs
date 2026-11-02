@@ -6870,7 +6870,7 @@ conversion for `increments`).
 | s0086 (40) | host, OSD off | 40 | 605.4 M | 92.0 M | 24.1 M | 365.4 M | — | 3.6 M | 1 346.0 M | 2 438.2 M |
 
 (Refine 0.5–1.6 M and `finish` at most 0.15 M; setup before the decode,
-9.9 M, left out. s0081, one signal at the corpus's −24…−12 dB, decoded
+9.9 M, left out. s0081, one signal at the synthetic slots' −24…−12 dB, decoded
 nothing: 314.2 M small, 474.4 M host. s0087: small 291.7 M, host
 2 329.1 M.)
 
@@ -7040,8 +7040,8 @@ qualification.
 
 ### Candidates
 
-1. **The running phase four samples at a time** (bf73225, kept only on
-   the local branch `o14-scan`, not on `o14`).
+1. **The running phase four samples at a time** (a variant not on the
+   branch).
    - `fill_phase` turns the increments into phases by a running `u32`
      sum, one dependent add per sample. The candidate gave each of four
      lanes its own running sum: lane l holds the phase before sample
@@ -7084,15 +7084,15 @@ source path, a target directory per commit; one benchmark at a time on
 core 3, the throttle, clock and temperature sampled once a second from
 core 0, a run started only on 0x0. The base's `paired_bench` is
 byte-identical to the profile's (sha256 5eb4624b…); the candidate pair
-was built as fb138e6 and e6b7c31 (the same tree, a message amended),
+was built twice from one tree (a commit message amended in between):
 byte-identical binaries.
 
 | build (runs) | slot (ms) | subtract | feed | BP | one pass |
 |---|---|---|---|---|---|
 | **round 1** (alternated, 4 each) | | | | | |
 | b93516e (base) | 107.40 | 56.70 | 22.10 | 21.00 | 20.20 |
-| bf73225 (blocked sum) | 107.40 | 56.59 | 22.235 | 20.99 | 20.30 |
-| e6b7c31 (blocked sum + division) | 107.40 | 56.56 | 22.225 | 21.005 | 20.30 |
+| blocked sum (a variant not on the branch) | 107.40 | 56.59 | 22.235 | 20.99 | 20.30 |
+| blocked sum + division (a variant not on the branch) | 107.40 | 56.56 | 22.225 | 21.005 | 20.30 |
 | **round 2** (alternated, 4 each) | | | | | |
 | b93516e (base) | 107.40 | 56.69 | 22.10 | 21.00 | 20.20 |
 | 68634cc (division only) | 107.50 | 56.77 | 22.105 | 21.02 | 20.20 |
@@ -7116,7 +7116,7 @@ blocks, as the subtraction calls it):
 | | A76 ns / sample | x86-64 ns / sample | x86-64 instructions |
 |---|---|---|---|
 | b93516e | 1.707 | 1.48 | 7.81 G |
-| bf73225 | 1.677 (−1.7%) | 1.54 (+4%) | 9.53 G (+22%) |
+| blocked sum | 1.677 (−1.7%) | 1.54 (+4%) | 9.53 G (+22%) |
 
 The generator costs about 4.1 A76 cycles a sample, and the running sum
 is a small part of it: the dependent add is one cycle a sample and the
@@ -7139,8 +7139,8 @@ given only for the subtraction:
 | build | cycles (median) | instructions | subtract (ms) |
 |---|---|---|---|
 | round 1: b93516e | 375.38 G | 1 045.45 G | 34.42 |
-| bf73225 | 377.40 G (+0.54%) | 1 074.29 G (+2.76%) | 34.84 |
-| fb138e6 (= e6b7c31) | 377.33 G (+0.52%) | 1 074.66 G | 34.89 |
+| blocked sum | 377.40 G (+0.54%) | 1 074.29 G (+2.76%) | 34.84 |
+| blocked sum + division | 377.33 G (+0.52%) | 1 074.66 G | 34.89 |
 | round 2: b93516e | 375.12 G | 1 045.45 G | 34.39 |
 | 68634cc | 374.92 G (−0.05%) | 1 045.81 G (+0.04%) | 34.37 |
 
@@ -7201,7 +7201,7 @@ builds.
   `cat-ft8-decode` (7 200 runs, 78 690 decode lines) byte-identical to
   x86-64 b93516e's. Not timed, so not held to the throttle rule; 0x0
   before and after each part.
-- The blocked sum (bf73225) was checked by its tests and the per-sample
+- The blocked sum was checked by its tests and the per-sample
   generator test on x86-64 only; it is not on the branch.
 
 ### Checks at 68634cc
@@ -7343,20 +7343,24 @@ throttle sampled once a second from core 0.
   times the largest run-to-run spread of the stage (0.25 ms). The
   untouched stages move by at most 0.13 ms (feed, placement).
 - By pass: pass 2 is 54.32 → 52.11 ms, pass 3 is 32.98 → 32.03 ms, and
-  the cost per new decode is 0.84 / 4.96 / 10.68 ms.
+  the cost per new decode is 0.84 / 4.97 / 10.64 ms (the logged
+  medians).
 - b18ded6 does not change AArch64 code. Its −0.08 ms is inside the
   spread.
 - **Every timed run is valid.** The 12 `slotcost` runs had 1 764
   samples, every one 0x0, including the start and end checks; one
   sample below 2.39 GHz, in the first second of the first run; peak
-  56.0 °C. The 11 microbenchmark runs were also all 0x0.
+  56.0 °C. The 11 microbenchmark runs were also all 0x0, but 4 of them
+  had a sample below 2.39 GHz (each its first second; the runs were
+  1–6 s long with no warm-up), so their figures carry some ramp-up time;
+  the decision rests on the `slotcost` runs above.
 
 ### x86-64 (Threadripper 3970X, core 5, `perf stat` user counters over the whole `slotcost` program)
 
 | build | cycles (median) | instructions | subtract (ms) | `increments` share |
 |---|---|---|---|---|
 | round 1: 18198d7 (base code) | 374.03 G | 1 045.82 G | 34.19 | 17.2% |
-| ce9c5fe (= b18ded6's tree) | **361.30 G (−3.4%)** | 1 030.63 G (−1.45%) | 31.28 | 13.6% |
+| b18ded6's code | **361.30 G (−3.4%)** | 1 030.63 G (−1.45%) | 31.28 | 13.6% |
 | round 2: b18ded6 (the same binary) | 362.13 G | 1 030.63 G | 31.45 | 13.6% |
 | 81cb159 | 361.79 G (−0.1%) | 1 036.26 G (+0.55%) | 31.52 | 13.5% |
 
@@ -7420,3 +7424,118 @@ Raspberry Pi 5: the release library tests with the ignored ones pass
 - After a toolchain change, check that the grouped sum still compiles to
   paired loads and stores on AArch64 (12 instructions per four samples
   in `fill_phase`, rustc 1.93.0).
+
+## Review follow-ups (O15b, bit-identical, 2026-11-01)
+
+On the local branch `o15b` from `o15`. One code commit (641c599):
+- the grouped running sum is gated on what was measured;
+- `round_small` is shared by `floor_small` and the x86-64 increment;
+- `phase_of_ratio` moves to `decode::math`;
+- the docs are re-wrapped.
+
+No output changes.
+
+### The running sum's form
+
+Three forms, each built for every target. They are variants not on the
+branch.
+
+- **(a)** The shipped grouped form: inclusive sums by two shifted adds,
+  then each less its entry. AArch64 emits 12 instructions per four
+  entries: two paired loads, two paired stores, three dependent adds.
+- **(b)** A serial exclusive prefix per group of four, one carried add
+  per group.
+- **(c)** The plain loop inside `chunks_exact_mut(4)`.
+- (b) and (c) both compile to 11 AArch64 instructions per four entries,
+  with the same paired loads and stores but four dependent adds. A
+  direct write-out of (a)'s emitted code also compiles to (b)'s.
+
+Measurement setup:
+- A76: aligned builds, `slotcost host host,passes=1 200 5`, 4
+  alternated runs each.
+- x86-64: core 5, `perf stat` over the whole program, 4 alternated runs.
+- M33: the staged image on s0086 (37 subtractions) and `check.sh`.
+
+| form | A76 slot (ms) | A76 subtract (spread) | A76 feed | x86-64 cycles (median) | x86-64 instructions | M33 per subtraction | M33 host slot | flash small / host / encoder (B) |
+|---|---|---|---|---|---|---|---|---|
+| plain loop (reference: O15's M33 and O14) | 107.50 | 56.775 (0.25) | 22.100 | 362.13 G | 1 030.63 G | 36.007 M | 2 426.44 M | 89 634 / 101 334 / 34 766 |
+| **(a) grouped** | **104.45** | **53.620 (0.12)** | 22.225 | 361.58 G | 1 036.26 G | 37.552 M (+4.3%) | 2 484.90 M | 89 742 / 101 442 / 34 858 |
+| (b) serial per group | 104.65 | 53.945 (0.03) | 22.100 | 360.49 G | 1 033.99 G | 35.501 M (−1.4%) | 2 409.00 M | 89 686 / 101 386 / 34 818 |
+| (c) plain in groups | 104.65 | 53.965 (0.10) | 22.100 | 361.20 G | 1 030.84 G | 36.467 M (+1.3%) | 2 444.74 M | 89 686 / 101 386 / 34 794 |
+
+The plain loop's A76 and x86-64 figures come from O15's runs, not this
+round's alternation.
+
+**Decision.**
+
+- **A76.** (b) and (c) are 0.33–0.35 ms slower than (a) on the
+  subtraction, about three times (a)'s spread, and 0.2 ms slower on the
+  slot. Neither is within spread of (a), so (a) stays.
+  - (a)'s feed reads 0.125 ms higher with no change to the feed. That
+    is placement, and of the same size as the difference, so the
+    margin between the forms is small.
+- **M33.** (a) is not neutral there: +4.3% per subtraction and +108 B
+  of flash per image.
+- **x86-64.** The forms are within 0.3% of each other on x86-64.
+- **Result.** (a) is taken on AArch64 only (`GROUPED_SUM =
+  cfg!(target_arch = "aarch64")`). x86-64 and the M33 keep the plain
+  loop, which is the M33's O15 code. The const parameter stays, so the
+  test still runs both forms on every host.
+- **A lead for later.** (b) would cut the M33's subtraction by 1.4%
+  (+52 B of flash). It is not taken here.
+
+### The final commit (641c599)
+
+**A76:** 641c599 against 81cb159 (O15), 4 alternated runs each.
+
+| | slot (ms) | subtract | feed | BP |
+|---|---|---|---|---|
+| 81cb159 | 104.35 | 53.535 | 22.210 | 21.000 |
+| 641c599 | 104.40 | 53.565 | 22.220 | 21.000 |
+
+The grouped sum's AArch64 code in `fill_phase` is instruction for
+instruction the same as in (a)'s variant. The difference between the
+two rows is inside the spread.
+
+**x86-64:** 641c599 runs the plain loop and the `round_small` form of the
+increment. Against O15's code (grouped on x86-64):
+
+| build | cycles (median) | range |
+|---|---|---|
+| O15's code | 361.03 G | 360.75–362.57 G |
+| 641c599 | 362.76 G (+0.5%) | 361.29–363.17 G |
+
+- The ranges overlap.
+- Instructions fell 1 036.25 → 1 030.63 G (−0.54%).
+- `increments` is 13.6% of the slot.
+
+**Validity.**
+- All 20 timed A76 `slotcost` runs this round are valid: 2 900 samples,
+  every one 0x0, including the start and end checks.
+- In two runs the first second was below 2.39 GHz.
+
+**Sizes (`check.sh --stack`, 641c599):** flash, static RAM and every
+recorded frame are unchanged from O15: small 89 634 B, host 101 334 B,
+encoder only 34 766 B. No fused multiply-add and no `f64`. thumbv7em
+builds.
+
+**Identity (641c599):**
+
+- **Records:** the 73 800 records on x86-64, and those of the A76's
+  AArch64 build, equal b93516e's (0 differ).
+- **WAV slots:** 800 × 3 configurations × 3 modes, byte-identical on
+  both targets.
+- **Encoder:** the 45 WAV files are identical.
+- **M33 (emulated):** the small and host images' decodes and statics on
+  seven slots are byte-identical to 68634cc's (14 of 14), as are the
+  multi-pass residuals on s0086 and s0407. The subtraction is
+  36.007 M instructions a call, unchanged.
+
+**Checks:**
+
+- Local CI passes, including the exhaustive `floor_small` and
+  `increment` tests through `round_small`.
+- The A76 release library tests with the ignored ones pass (190; the
+  source-tree test is skipped).
+- A mutant that offsets `round_small`'s returned value fails
+  `floor_small`'s and belief propagation's pinned tests.
