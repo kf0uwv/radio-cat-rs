@@ -1633,3 +1633,30 @@
 - `.text` and `.rodata` byte-identical to 78b1755's on all eight
   binaries; the comparison script now builds from clean directories and
   records its provenance. Local CI and `check.sh --stack` pass.
+
+## Session: 2026-11-02 (O17 belief propagation)
+
+- Measured first: an out-of-tree microbenchmark of the sum-product
+  round, its parts and `exp2_neg` / `log2`. On the A76 the tanh and atanh
+  passes are 68% of the round. Inputs, products and sums are 36% and were
+  issue- or latency-bound. No memory or branch effect.
+- 6bc283f: on x86-64 and AArch64 the messages are laid out in groups of
+  four checks of a degree (`place`), and the sum-product products run
+  four checks in the lanes of each step. The M33 keeps groups of one
+  (its previous layout and code). Every walker takes the group size as
+  a const parameter, so the tests run both layouts on any host.
+- 63d8dd6: the round's inputs in blocks of eight on AArch64 only; the
+  x86-64 and M33 binaries are byte-identical to 6bc283f's.
+- 37ec493: min-sum over four checks at a time (selects for the two
+  smallest magnitudes). 6bc283f had copied each check out and back,
+  costing the small configuration on hosts +5% (x86-64) and +8% (A76).
+- A76 host three-pass slot 101.30 → 99.65 ms (BP −9.3%), one pass
+  19.30 → 18.40; small 14.40 → 12.90 ms (BP −28%). x86-64 host −0.7%
+  cycles, small −22%. M33 counts at 37ec493 identical to the base's in
+  both images; flash, RAM and frames unchanged.
+- Identity: x86-64 and A76 records (73 800, 0 differ) and 800 WAV slots
+  × 3 × 3 on both; encoder; M33 dumps on seven slots and the residuals.
+  Local CI and the A76 test suite (194) pass. Every timed A76 run valid.
+- Not done: the A76 records of 6bc283f; per-pipe counters for the tanh
+  and atanh passes; `exp2_neg` and `log2` unchanged (no same-operation
+  form found).

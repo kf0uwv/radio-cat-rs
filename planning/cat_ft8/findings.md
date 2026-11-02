@@ -7954,3 +7954,349 @@ and at 9dabad0. The comparison script now removes every build directory
 before building, touches the extracted tree, and records the source
 commit, the compiler and both sections' hashes. Local CI and
 `check.sh --stack` pass at 9dabad0 (flash, RAM and frames unchanged).
+
+## Belief propagation, seventeenth round (O17, bit-identical, 2026-11-02)
+
+Base: 38045b2 (the code of O16c). The target is belief propagation,
+about 21 ms of the A76's 101.3 ms crowded three-pass host slot and 55%
+of an empty one. Every candidate was chosen with an out-of-tree
+microbenchmark first. Three code commits are kept, one optimisation
+each: 6bc283f (the sum-product products over four checks), 63d8dd6
+(the inputs in blocks of eight, AArch64 only) and 37ec493 (min-sum over
+four checks). Decodes, records, residuals and encoder output are
+identical, with no qualification. Cutting the rounds spent on
+candidates that fail (over 99% of them) changes results and is not part
+of this round.
+
+### Measured first: the round's parts
+
+The microbenchmark is a test module appended to a scratch copy of
+`bp/tests.rs`, with `unsafe` allowed in that copy for the counters. It
+runs:
+- the round as the decoder runs it on failing candidates: 256 noisy
+  codewords of eight messages, 30 rounds each from zero messages;
+- the round's parts alone, on a mid-decode state;
+- `exp2_neg` and `log2` alone, on the values they see in the round;
+- the candidate forms.
+
+Each form is checked bit for bit against `sum_product_round` on 456
+states over 30 rounds, and on 2 000 single rounds from random messages
+(zeros, subnormals and values to ±10⁶ included). A76: core 3, a 3 s
+warm-up in the program after the 5 s sampled busy loop, user-space
+counters (`perf_event_open`). Every run is valid at 0x0. Figures are
+cycles per edge (522 edges a round); the three repetitions in a run
+agree within 0.3%.
+
+| part (A76) | cycles per edge | instructions per edge |
+|---|---|---|
+| the round (`sum_product_round`) | 19.24 | 42.7 |
+| inputs (the gather through `EDGE_VARS`) | 3.05 | 11.6 |
+| tanh pass, 24 values at a time (4 at a time) | 6.32 (7.65) | 10.8 |
+| products, check by check | 2.05 | 3.7 |
+| atanh pass, 24 at a time (4 at a time) | 6.81 (8.07) | 11.7 |
+| sums (`VAR_EDGES`) | 1.94 | 7.2 |
+| `exp2_neg` alone, 24 at a time (4 at a time) | 5.27 (6.21) | 8.4 |
+| `log2` alone, 24 at a time (4 at a time) | 4.34 (5.16) | 7.6 |
+
+**What bounds the round.**
+- **Not memory, not branches.** L1D read misses are under 0.001 per
+  edge (the arrays, 4.9 KB, stay in L1), and mispredictions 0.002 per
+  edge.
+- **The tanh and atanh passes are 68% of the round.**
+  - Their helpers run at 1.6–1.75 instructions a cycle, with backend
+    stalls about half the cycles.
+  - About three quarters of each pass's instructions are vector
+    instructions. So neither four-wide issue (about 2.1 cycles a value
+    for `exp2_neg`) nor two vector pipes (about 3.1) is reached at the
+    measured 5.3.
+  - Twenty-four values side by side are already 15–17% faster than
+    four. What limits them further was not identified (no per-pipe
+    counters were read).
+  - No form with the same operations in the same order was found for
+    them, so `exp2_neg` and `log2` are unchanged.
+- **The other 36% (inputs, products, sums; 7.0 cycles per edge)** is
+  where this round gains.
+  - The inputs and the sums are scalar loops issuing 3.7–3.8
+    instructions a cycle: issue-bound, with a bounds check, a count and
+    a branch per edge or variable.
+  - The products are scalar prefix and suffix chains per check, and
+    latency-bound (backend stalls half their cycles).
+
+**Forms tried** (the round; A76 cycles per edge, x86-64 ns per edge on
+core 5, where the virtual machine's cycle counter dropped out mid-run):
+
+| form | A76 | x86-64 |
+|---|---|---|
+| the round as it was | 19.24 | 5.43 |
+| checks in groups of four (layout), the products as the compiler vectorised them | 18.89 | 5.29 |
+| **the same, the products written lane by lane (four checks in four lanes)** | **17.93 (−6.8%)** | 5.33 (−1.8%) |
+| that, inputs in blocks of eight, sums in blocks of six | 17.01 (−11.6%) | 5.30 |
+| inputs in blocks of eight alone | 18.42 (−4.3%) | 5.52 (+1.6%) |
+| sums in blocks of six alone | 19.27 | 5.52 |
+| inputs fused into the tanh pass (either layout) | 58.8–61.1 | 12.2–12.4 |
+| a whole group's inputs, tanh, products and atanh fused | 52.5 | 12.5 |
+| products and atanh fused per check | 31.9 | 14.7 |
+
+- The fused forms were not vectorised (the tanh and atanh chains ran a
+  value at a time). Not pursued.
+- The products alone, A76 cycles per edge: check by check 2.05; groups
+  of four as the compiler vectorised them 1.72; lane by lane, all
+  loaded first, 0.82; the same in place, row by row, 1.71; loaded first
+  and stored row by row without a staging copy, 1.27.
+- Sums in blocks gained only alone (1.94 → 1.77), nothing in the round.
+  Not kept.
+
+### Changes
+
+1. **6bc283f: the sum-product products over four checks at a time.**
+   - **The layout** (`place`). Each degree's checks are taken in groups
+     of `GROUP`. Edge j of a group's k-th check is at the group's first
+     edge + j·`GROUP` + k. The checks left over after the last whole
+     group (3 of the 59 of degree 6) follow one after another.
+   - `GROUP` is four on x86-64 and AArch64. On the Cortex-M33 it is
+     one, which is the previous layout, with unchanged tables.
+   - **The products.** `group_products` runs a group's prefix and suffix
+     products with the four checks in the lanes of each step. Each
+     check's multiplications are the same, in the same order. Single
+     checks (groups of one, and the leftovers) keep `others_products`.
+   - **Why two forms.** One form for both was tried, with rustc 1.93.0.
+     Written in place, it lost the A76 gain (1.71 cycles per edge). The
+     loaded-first form added a zero fill and a copy per check on the
+     M33 (`sum_product_round` 331 → 363–372 instructions). So the form
+     follows the group size.
+   - **The walkers.** The tables are built from `place` (`var_edges`,
+     `edge_vars`). The stopping test, both rounds and the tests walk the
+     layout through `check_edges::<G>`. For groups of one, the walk
+     keeps each degree's next edge as before, so the M33's code is the
+     previous code up to one constant hoisted in `min_sum_round` (below).
+     A first form that computed each first edge from its index added
+     0.30 M instructions to the M33's small slot, 0.26 M of them in
+     `min_sum_round`.
+   - **Tests on any host.** Every walker takes the group size as a
+     const parameter, and the tests run both layouts (the other size's
+     tables are test statics). Table sizes, `TABLE_BYTES` and the
+     `--profile` output are unchanged. The crate's array-item scanner
+     now skips `const fn` declarations.
+   - **Min-sum** copied each interleaved check out and back in this
+     commit. That cost the small configuration on hosts (below) and is
+     replaced in 37ec493.
+   - **Tests:**
+     - the layout against the parity-check table, for both group sizes;
+     - the sum-product and min-sum rounds in five forms each (both
+       targets', and each with the other layout) against the
+       check-by-check references, over 20 000 states;
+     - the stopping test in both layouts;
+     - `decode_soft` against its first form, and the pinned state hash
+       (unchanged).
+   - **Mutants caught:** a neighbouring lane's suffix in the group
+     products; the group stride given to the leftover checks; the
+     grouped stopping test skipping an edge; a grouped min-sum check not
+     written back.
+2. **63d8dd6: the inputs in blocks of eight on AArch64.**
+   - `inputs::<8>` takes eight edges per iteration, with one count and
+     branch per block. Each edge's subtraction is unchanged.
+   - `INPUT_BLOCK` is one elsewhere, where the round keeps the plain
+     loop. The x86-64 and M33 binaries' `.text` and `.rodata` are
+     byte-identical to 6bc283f's.
+   - Test: blocks of 1, 3, 8, 16 and `INPUT_BLOCK` against the plain
+     loop, in both layouts. A block that skips its last edge fails it.
+3. **37ec493: min-sum over four checks at a time.**
+   - Each degree's whole groups run in `group_min_sum`, with the four
+     checks in the lanes of each step; then the leftover checks run as
+     before.
+   - The branches that keep the two smallest magnitudes are selects
+     that choose the same values, ties included: both forms make the
+     same comparisons.
+   - The checks are independent, so their order changes no result.
+     Groups of one walk the checks in order as before.
+   - Mutants caught: the second smallest never updated; ties taking the
+     later edge; a neighbouring lane's sign count; the first leftover
+     check skipped.
+
+### A76 (Raspberry Pi 5; `slotcost`, medians of 4 alternated runs)
+
+Aligned builds (`-align-loops=64 -align-all-functions=6`) from one
+scratch path, core 3. The throttle, clock and temperature are sampled
+once a second from core 0, with a 5 s busy loop on core 3 (sampled)
+before each run.
+
+**Host configuration** (`slotcost host host,passes=1 200 5`; the base,
+6bc283f and 63d8dd6 alternated):
+
+| build | slot (ms) | BP (spread) | feed (spread) | subtract (spread) | sync | one pass | one-pass BP |
+|---|---|---|---|---|---|---|---|
+| 38045b2 (base) | 101.30 | 21.010 (0.130) | 19.115 (0.050) | 53.630 (0.030) | 4.680 | 19.30 | 9.870 |
+| 6bc283f | 100.45 | 19.850 (0.010), −1.16 | 19.410 (0.020) | 53.600 (0.040) | 4.680 | 18.80 | 9.315 |
+| **63d8dd6** | **99.65 (−1.6%)** | **19.050 (0.000), −1.96 (−9.3%)** | 19.400 (0.010) | 53.655 (0.260) | 4.680 | **18.40 (−4.7%)** | **8.940 (−9.4%)** |
+
+- **Placement check.**
+  - Between the three AArch64 `paired_bench` builds, only the
+    belief-propagation functions differ (compared per function, with
+    addresses and immediates normalised). `encode_payload` also
+    differs, at equal length; it is outside the timed slot.
+  - The untouched stages moved by at most 0.295 ms: the feed, from the
+    base to 6bc283f, with identical code, so placement. Sync and soft
+    bits moved by 0, the subtraction by up to 0.055.
+  - The BP gains are 1.16 ms (3.9 times that largest move) and 0.80 ms
+    (6bc283f → 63d8dd6; 15 times the largest untouched move between
+    those two, the subtraction's 0.055).
+- By pass, BP goes 9.86 / 5.13 / 6.02 → 8.945 / 4.65 / 5.45 ms: every
+  pass gains 9–10%.
+- The slot gains less than BP (−1.65 against −1.96 ms) because the
+  feed's placement moved +0.29 ms.
+
+**The head** (the same benchmark; 63d8dd6 and 37ec493 alternated). 37ec493
+changes only `min_sum_round` on AArch64, which the host configuration
+does not run:
+
+| build | slot (ms) | BP | feed | subtract | one pass | one-pass BP |
+|---|---|---|---|---|---|---|
+| 63d8dd6 | 99.60 | 19.050 (0.010) | 19.405 | 53.575 | 18.40 | 8.940 |
+| 37ec493 | 99.60 | 19.050 (0.000) | 19.375 | 53.565 | 18.40 | 8.940 |
+
+63d8dd6 agrees with its first measurement (99.65, BP 19.050).
+
+**Small configuration** (`slotcost small small 200 5`; min-sum, one
+pass; the base, 6bc283f and 37ec493 alternated):
+
+| build | slot (ms) | BP (spread) | feed (spread) | sync | soft bits |
+|---|---|---|---|---|---|
+| 38045b2 (base) | 14.40 | 5.580 (0.000) | 6.350 (0.010) | 1.380 | 0.900 |
+| 6bc283f (min-sum copies) | 15.60 (+8.3%) | 6.700 (0.000), +20% | 6.440 (0.000) | 1.380 | 0.900 |
+| **37ec493** | **12.90 (−10.4%)** | **4.020 (0.020), −28%** | 6.425 (0.010) | 1.380 | 0.900 |
+
+- 63d8dd6 was not timed here: on AArch64 it differs from 6bc283f only
+  in `sum_product_round`, which this configuration does not run.
+- The untouched stages moved by at most 0.09 ms (the feed); BP's −1.56
+  ms is 17 times that.
+- 6bc283f's regression is real, and it is the reason for 37ec493. The
+  host configuration, the decoder's default, never ran min-sum.
+
+**Validity.** Every timed `slotcost` run is valid: 32 runs (12 host, 12
+small, 8 for the head), with 3 324 samples during the runs and 160 in
+the warm-ups. Every sample was 0x0, start and end checks included.
+- No sample during a run was below 2.39 GHz. Two warm-up samples were
+  (minimum 1.5 GHz), each the first of a warm-up, as the busy loop
+  ramps.
+- Peak 55.4 °C.
+- Not counted as evidence: one exploratory host pair (2 runs, valid)
+  and the 5 microbenchmark runs. Those were valid at 0x0 too; four of
+  their warm-up first samples were at 1.5–1.6 GHz.
+
+### x86-64 (Threadripper 3970X, core 5, `perf stat` user counters over the whole `slotcost` program)
+
+Four alternated runs per build, aligned builds from one scratch path.
+Stage times carry the virtual machine's clock bias (`acpi_pm`); the
+cycle counts are the measure. 6bc283f and 63d8dd6 are the same x86-64
+code (byte-identical `.text`).
+
+| build, configuration | cycles (median, range) | instructions | BP (ms) |
+|---|---|---|---|
+| 38045b2, host | 353.22 G (352.52–353.95) | 995.45 G | 15.670 |
+| 63d8dd6, host | **351.00 G (350.47–352.02), −0.63%** | 987.09 G | 15.310 |
+| 38045b2, host (second pair) | 353.61 G (352.21–354.41) | 995.46 G | 15.700 |
+| 37ec493, host | **351.06 G (349.67–351.94), −0.72%** | 987.08 G | 15.300 |
+| 38045b2, small | 124.02 G (123.46–124.78) | 313.89 G | 5.530 |
+| 63d8dd6, small | 130.28 G (129.85–130.56), **+5.0%** | 330.39 G | 6.300 |
+| 38045b2, small (second pair) | 124.77 G (123.67–124.83) | 313.90 G | 5.585 |
+| 37ec493, small | **97.09 G (96.78–97.77), −22.2%** | 296.82 G | **2.070 (−63%)** |
+
+- The host configuration's ranges do not overlap in either pair. Its
+  gain on x86-64 is small, as the microbenchmark showed: SSE2 gains less
+  from the grouped products, and the blocked inputs are AArch64 only.
+- 6bc283f's min-sum copies cost the small configuration 5% on x86-64;
+  37ec493 more than recovers it. (The 37ec493 small pair was measured on
+  a build of its working tree whose eight binaries' `.text` and
+  `.rodata` are byte-identical to 37ec493's.)
+
+### Cortex-M33 (emulated instructions; staged measurement images, s0086)
+
+| | small slot | small BP | host slot | host BP | stack high water (small / host) |
+|---|---|---|---|---|---|
+| 38045b2 (base) | 295 769 317 | 54 265 018 | 2 413 281 393 | 365 407 067 | 10 200 / 10 392 B |
+| 6bc283f, 63d8dd6 | 295 639 007 (−130 310) | 54 134 708 | 2 413 281 393 | 365 407 067 | 10 200 / 10 392 B |
+| 37ec493 | 295 769 317 | 54 265 018 | 2 413 281 393 | 365 407 067 | 10 200 / 10 392 B |
+
+- Same decodes (23 small, 40 host). At 37ec493 every stage's and every
+  function's count is the base's, in both images.
+- At 6bc283f and 63d8dd6, `min_sum_round` was 2 instructions shorter (a
+  constant hoisted out of its loop) and the small slot 0.04% lower.
+  37ec493's `min_sum_round` is the base's code with two registers
+  swapped.
+- `sum_product_round` is the base's code at every commit, up to one
+  addressing mode and the operand order of one multiplication. Its
+  inputs are tanh values in [−1, 1], never NaN.
+- 63d8dd6 leaves all four M33 images byte-identical to 6bc283f's.
+
+### Sizes and stack (`check.sh --stack`, thumbv8m)
+
+| image | 38045b2 | 6bc283f, 63d8dd6 | 37ec493 |
+|---|---|---|---|
+| small | 89 734 B | 89 722 B | 89 734 B |
+| host | 101 430 B | 101 418 B | 101 430 B |
+| small, OSD on / host, OSD off | 89 734 / 101 430 B | 89 722 / 101 418 B | 89 734 / 101 430 B |
+| encoder only | 34 766 B | 34 766 B | 34 766 B |
+
+- Static RAM is unchanged (212 048 / 241 616 / 0 B).
+- Every recorded frame is unchanged at 63d8dd6 and 37ec493 (`_start`
+  4 104, `decode_a_slot` 2 512, host `subtract_one` 4 808, the
+  subtraction's closure 2 872, `osd_decode` 272 B).
+- No fused multiply-add (`vmla` 75 / 146 / 13) and no `f64` helper in
+  any image; thumbv7em builds.
+- Hosts, `paired_bench` `.text` at 37ec493: x86-64 +5 120 B, AArch64
+  +6 400 B.
+
+### Identity
+
+- **Records, x86-64:** the 73 800 `paired_bench run` records of 63d8dd6
+  (whose x86-64 code is 6bc283f's) and of 37ec493 equal b93516e's
+  (0 differ).
+- **800 WAV slots** × `host`, `small`, `host,passes=1` × plain, `--raw`,
+  `--profile` (7 200 runs, 78 690 decode lines): byte-identical to
+  b93516e's at 63d8dd6 and at 37ec493, `--profile` metadata included.
+- **Encoder:** the 45 `cat-ft8-encode` WAV files are identical at
+  63d8dd6 and 37ec493.
+- **Cortex-M33 (emulated):** the small and host dump images' decodes and
+  statics on seven slots (14 of 14), and the multi-pass residuals on
+  s0086 and s0407, are byte-identical to 68634cc's, at 63d8dd6 (whose
+  M33 code is 6bc283f's) and at 37ec493.
+- **A76:** the 73 800 records of 63d8dd6's and of 37ec493's AArch64
+  `paired_bench` equal x86-64 b93516e's (0 differ); the 800 WAV slots ×
+  3 × 3 with 37ec493's AArch64 `cat-ft8-decode` are byte-identical to
+  x86-64 b93516e's (7 200 runs, 78 690 decode lines). Not timed; 0x0
+  before and after each part.
+
+### Checks
+
+- Local CI passes at 37ec493: fmt; clippy `-D warnings` (workspace, all
+  targets and features, thumbv8m); workspace, profile, no-std and
+  release tests with the ignored ones; the bulk run; MSRV 1.75; docs
+  with and without `std`; `check.sh --stack`.
+- Raspberry Pi 5: the release library tests of 37ec493 with the ignored
+  ones pass (194; the one test that reads the source tree skipped), 0x0
+  before and after. They include both layouts' round, stopping-test and
+  layout tests, the blocked inputs and the 2³² `tanh_half` test on
+  AArch64.
+- `.text` and `.rodata` of all eight binaries were compared between the
+  commits at one scratch path (x86-64 and AArch64 `cat-ft8-decode` and
+  `paired_bench`, thumbv8m check and staged images): 63d8dd6 against
+  6bc283f differs only in the two AArch64 binaries, as intended.
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instructions only). M33 counts on s0086
+  only; M33 identity on seven slots.
+- What limits the tanh and atanh passes on the A76 beyond issue: no
+  per-pipe counters were read. `exp2_neg` and `log2` are unchanged.
+- The microbenchmark ran on A76 core 3 only. The forms were not measured
+  on other AArch64 or x86-64 cores. Groups of four match 128-bit vectors
+  (SSE2, NEON); wider vectors were not tried.
+- The A76 records of 6bc283f (its AArch64 code differs from 63d8dd6's
+  only in `sum_product_round`'s inputs loop).
+- x86-64 stage times carry the virtual machine's clock bias.
+- **After a toolchain change**, the group forms depend on the compiler
+  keeping a group's four lanes in one vector (rustc 1.93.0). A change
+  can lose that with every test passing. Re-run the A76 `slotcost` in
+  both configurations, or check the AArch64 release `paired_bench`:
+  `sum_product_round` 1 552 and `min_sum_round` 1 934 instructions at
+  37ec493.
