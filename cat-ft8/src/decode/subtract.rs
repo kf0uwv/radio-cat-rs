@@ -889,7 +889,6 @@ fn run(
     // (`Fit4::add_all`) takes whole lanes only if the two are equal modulo
     // LANES; it also keeps every group of slots whole.
     let ring = (held.len() / PAIR).min(HELD) / LANES * LANES;
-    assert_eq!(ring % LANES, 0);
     if ring < BLOCK {
         return Err(Error::BufferTooSmall);
     }
