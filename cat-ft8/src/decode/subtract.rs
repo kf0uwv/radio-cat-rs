@@ -443,7 +443,7 @@ fn symbol_correlations(
         // The products sample by sample (a loop that vectorises), then
         // their sums by lane.
         let products = &mut work[..(b - a) * PAIR];
-        scaled_cos_sin::<CHAINS>(products, &phase[a..b], xs, input);
+        scaled_cos_sin::<CHAINS>(products, &phase[a..b], xs, input_select);
         let (re, im) = lane_sums(a, products);
         let k = j0 / T;
         // The conjugate's sine part: the sum's sign turned.
@@ -1157,19 +1157,26 @@ fn scaled_cos_sin<const W: usize>(
     }
 }
 
-/// [`input`] of four samples, the same values without a branch (so that
-/// it vectorises): `max` and `min` clamp a finite value as `clamp` does
-/// (and take a NaN to −[`INPUT_LIMIT`]), and a mask then zeroes the
-/// non-finite.
+/// [`input`] without a branch, the same value: `max` and `min` clamp a
+/// finite value as `clamp` does (and take a NaN to −[`INPUT_LIMIT`]), and
+/// a mask then zeroes the non-finite. In a loop over samples this
+/// vectorises to a few lane operations, where [`input`]'s branch becomes
+/// compares and selects.
 #[inline(always)]
 #[allow(clippy::manual_clamp)]
+fn input_select(x: f32) -> f32 {
+    let v = x.max(-INPUT_LIMIT).min(INPUT_LIMIT);
+    let finite = (x.to_bits() & 0x7fff_ffff) < 0x7f80_0000;
+    f32::from_bits(v.to_bits() & 0u32.wrapping_sub(u32::from(finite)))
+}
+
+/// [`input_select`] of four samples.
+#[inline(always)]
 #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
 fn input4(x: [f32; LANES]) -> [f32; LANES] {
     let mut out = [0.0f32; LANES];
     for l in 0..LANES {
-        let v = x[l].max(-INPUT_LIMIT).min(INPUT_LIMIT);
-        let finite = (x[l].to_bits() & 0x7fff_ffff) < 0x7f80_0000;
-        out[l] = f32::from_bits(v.to_bits() & 0u32.wrapping_sub(u32::from(finite)));
+        out[l] = input_select(x[l]);
     }
     out
 }
@@ -1307,7 +1314,7 @@ impl Removal {
             let t = if d > 0 { d as f32 } else { 0.0 };
             let (ra, rb) = (base.0 + t * slope.0, base.1 + t * slope.1);
             let est = ra * rc + rb * rs;
-            *x = input(*x) - est;
+            *x = input_select(*x) - est;
             if REPORT {
                 energy += est * est;
                 sums.add(*x, rc, rs);

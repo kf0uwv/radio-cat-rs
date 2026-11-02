@@ -1096,6 +1096,53 @@ fn scaled_cos_sin_is_its_first_form_bit_for_bit() {
     assert!(checked > 1_000, "{checked}");
 }
 
+/// [`input_select`] against [`input`] bit for bit at every `stride`-th
+/// `f32` bit pattern (both signs, NaNs and infinities included) and at the
+/// values the front end treats specially.
+fn input_select_matches(stride: usize) -> usize {
+    let mut n = 0usize;
+    let edges = [
+        0u32,
+        0x8000_0000,
+        1,
+        0x8000_0001,
+        INPUT_LIMIT.to_bits(),
+        (-INPUT_LIMIT).to_bits(),
+        INPUT_LIMIT.to_bits() + 1,
+        (-INPUT_LIMIT).to_bits() + 1,
+        INPUT_LIMIT.to_bits() - 1,
+        f32::MAX.to_bits(),
+        f32::MIN.to_bits(),
+        f32::INFINITY.to_bits(),
+        f32::NEG_INFINITY.to_bits(),
+        f32::NAN.to_bits(),
+        (-f32::NAN).to_bits(),
+        0x7f80_0001,
+        0xff80_0001,
+        0x7fff_ffff,
+        u32::MAX,
+    ];
+    let strided = (0..=u32::MAX).step_by(stride);
+    for bits in strided.chain(edges) {
+        let x = f32::from_bits(bits);
+        assert_eq!(input_select(x).to_bits(), input(x).to_bits(), "{bits:#x}");
+        n += 1;
+    }
+    n
+}
+
+#[test]
+fn input_select_is_input() {
+    assert!(input_select_matches(4_099) > 1_000_000);
+}
+
+/// Every `f32` bit pattern (2³² values; run in release).
+#[test]
+#[ignore]
+fn input_select_is_input_everywhere() {
+    input_select_matches(1);
+}
+
 /// [`Removal::run_as`] as first written: the ramp index `(j − from) as
 /// f32` from `usize`.
 fn run_as_first<const REPORT: bool>(r: &mut Removal, j0: usize, xs: &mut [f32], refs: &[u8]) {
