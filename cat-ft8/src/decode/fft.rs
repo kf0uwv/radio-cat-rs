@@ -442,12 +442,18 @@ macro_rules! straight_butterfly {
     ($r:ident, $i:ident, $s:expr, $ms:tt, [$($q:tt)*], ($m:ident, $qq:ident) => $w:expr) => {{
         let ar = straight_butterfly!(@load $r, $s, $ms);
         let ai = straight_butterfly!(@load $i, $s, $ms);
+        straight_butterfly!(@store ar, ai, $r, $i, $s, $ms, [$($q)*], ($m, $qq) => $w);
+    }};
+    // Outputs q in `$qs` of inputs `$ar`, `$ai`, stored at `$r[q·s]`,
+    // `$i[q·s]`.
+    (@store $ar:ident, $ai:ident, $r:ident, $i:ident, $s:expr, $ms:tt, [$($q:tt)*],
+     ($m:ident, $qq:ident) => $w:expr) => {
         $(
-            let (sr, si) = straight_butterfly!(@sum ar, ai, $q, $ms, ($m, $qq) => $w);
+            let (sr, si) = straight_butterfly!(@sum $ar, $ai, $q, $ms, ($m, $qq) => $w);
             $r[$q * $s] = sr;
             $i[$q * $s] = si;
         )*
-    }};
+    };
     (@load $x:ident, $s:expr, [$($m:tt)*]) => {
         [$x[0] $(, $x[$m * $s])*]
     };
@@ -611,6 +617,10 @@ fn spectrum(samples: &[f32; WINDOW], buf: &mut FftBuffer) {
 #[inline(always)]
 fn first_stage<const G: usize>(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f32; N]) {
     let () = Group::<G>::OK;
+    if G == 1 {
+        straight_first_stage(samples, re, im);
+        return;
+    }
     // W₄^(m·q) as `stage::<4, 1, 1>` reads it: TWIDDLES[m·q·N/4 mod N].
     let mut w = [[[0.0f32; 2]; 4]; 4];
     for (m, wm) in w.iter_mut().enumerate() {
@@ -656,6 +666,45 @@ fn first_stage<const G: usize>(samples: &[f32; WINDOW], re: &mut [f32; N], im: &
                 r[4 * j + q] = sr[j];
                 i[4 * j + q] = si[j];
             }
+        });
+    }
+}
+
+/// [`first_stage`] with a group of one, its butterfly written out term by
+/// term (see [`straight_butterfly`]): the same window products, then the
+/// operations of `stage::<4, 1, 1>` in its order.
+#[inline(always)]
+fn straight_first_stage(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f32; N]) {
+    // W₄^(m·q) as `stage::<4, 1, 1>` reads it: TWIDDLES[m·q·N/4 mod N]
+    // (row m − 1).
+    let w: [[[f32; 2]; 4]; 3] = straight_butterfly!(@twiddles 4, 0, [1 2 3], [0 1 2 3]);
+    for (c, (r, i)) in re
+        .chunks_exact_mut(4)
+        .zip(im.chunks_exact_mut(4))
+        .enumerate()
+    {
+        // As in `first_stage` with one block: its first sample, and the
+        // window entries low[t] = HANN_HALF[first + t] and high[t] =
+        // HANN_HALF[INPUT_STEP − 1 − first + t].
+        let first = 2 * usize::from(DIGIT_REV[4 * c]);
+        let x = &samples[first..][..BLOCK_SAMPLES];
+        let low = &HANN_HALF[first..][..INPUT_STEP + 2];
+        let high = &HANN_HALF[INPUT_STEP - 1 - first..][..INPUT_STEP + 2];
+        let ar = [
+            x[0] * low[0],
+            x[INPUT_STEP] * low[INPUT_STEP],
+            x[2 * INPUT_STEP] * high[INPUT_STEP + 1],
+            x[3 * INPUT_STEP] * high[1],
+        ];
+        let ai = [
+            x[1] * low[1],
+            x[INPUT_STEP + 1] * low[INPUT_STEP + 1],
+            x[2 * INPUT_STEP + 1] * high[INPUT_STEP],
+            x[3 * INPUT_STEP + 1] * high[0],
+        ];
+        straight_butterfly!(@store ar, ai, r, i, 1, [1 2 3], [0 1 2 3], (m, q) => {
+            let t = w[m - 1][q];
+            (t[0], t[1])
         });
     }
 }
