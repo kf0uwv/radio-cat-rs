@@ -110,7 +110,7 @@ const TURN: f32 = 4_294_967_296.0;
 const TURNS_PER_HZ: f32 = TURN / SAMPLE_RATE as f32;
 
 // The current symbol's pulse is never in the zero prefix, so
-// `Synth::increments` reads it in every run.
+// `Synth::phases` reads it in every run.
 const _: () = assert!(PULSE_FIRST <= SAMPLES_PER_SYMBOL);
 // At most two pulses overlap any sample: the previous symbol's run
 // (s ≤ ns − PULSE_FIRST) and the next symbol's (s ≥ PULSE_FIRST) are
@@ -122,7 +122,7 @@ const _: () = assert!(RAMP_SAMPLES <= SAMPLES_PER_SYMBOL);
 /// sample (`s + PULSE_FIRST <= ns`) ...
 const PREV_END: usize = SAMPLES_PER_SYMBOL + 1 - PULSE_FIRST;
 /// ... and the next one's is non-zero from `PULSE_FIRST` on: the runs of
-/// `Synth::increments`. Between the two only the current pulse is
+/// `Synth::phases`. Between the two only the current pulse is
 /// non-zero, and it is exactly 1.0 there (`PULSE_HALF` from index
 /// `PULSE_FLAT` to its centre, read directly before the centre and
 /// mirrored after it; tested).
@@ -305,10 +305,8 @@ impl Synth {
         let n = phase.len().min(self.remaining());
         let phase = &mut phase[..n];
         let pos = self.pos;
-        // The increments first, then their running sum (the phase before
-        // each sample).
-        self.increments(pos, phase);
-        self.phase = running_sum::<GROUPED_SUM>(self.phase, phase);
+        // The phase before each sample.
+        self.phase = self.phases::<false>(pos, phase, self.phase);
         self.pos = pos + n;
         n
     }
@@ -319,17 +317,16 @@ impl Synth {
     pub(crate) fn skip_with(&mut self, buf: &mut [u32]) -> usize {
         let n = buf.len().min(self.remaining());
         let buf = &mut buf[..n];
-        self.increments(self.pos, buf);
-        // Integer addition modulo 2³²: any order gives the same sum.
-        let step = buf.iter().fold(0u32, |a, &b| a.wrapping_add(b));
-        self.phase = self.phase.wrapping_add(step);
+        self.phase = self.phases::<true>(self.pos, buf, self.phase);
         self.pos += n;
         n
     }
 
-    /// The phase increments of waveform samples `pos..pos + out.len()`
-    /// (within the waveform) into `out`: [`increment`] of
-    /// `(base + Δf · dev) · TURNS_PER_HZ` at each sample.
+    /// The phase of waveform samples `pos..pos + out.len()` (within the
+    /// waveform) from `p`, the phase before sample `pos`: the running sum
+    /// of [`increment`] of `(base + Δf · dev) · TURNS_PER_HZ` at each
+    /// sample. With `SUM_ONLY` the phases are not stored (`out` is working
+    /// storage, overwritten). Returns the phase after the last sample.
     ///
     /// Symbol m's pulse covers samples [(m−1)T, (m+2)T), so sample s of
     /// symbol m gets the current symbol's pulse at NS + s and the previous
@@ -339,30 +336,43 @@ impl Synth {
     /// one of them applies (the const asserts above) and `dev` is
     /// `cur · g` plus that term, if any: adding a +0.0 term to these
     /// non-negative sums would change nothing, so this is bit-identical to
-    /// summing all three. The loops run over each symbol's parts where the
-    /// same pulses overlap (the previous symbol's and the current one's
-    /// rising half, then the current one's falling half and the next
-    /// symbol's), with no per-sample branch or bounds check, so they
-    /// vectorise. Between them the current pulse is alone and exactly 1.0,
-    /// so `cur · g` is `cur` there: that run is one increment, `step(cur)`,
-    /// computed once per symbol and stored at every sample.
+    /// summing all three. Each symbol is taken in three runs. Where the
+    /// same two pulses overlap (the previous symbol's and the current
+    /// one's rising half, then the current one's falling half and the
+    /// next symbol's) the increments are stored first, with no per-sample
+    /// branch or bounds check, so the loop vectorises, and then summed.
+    /// Between them the current pulse is alone and exactly 1.0, so
+    /// `cur · g` is `cur` and every increment is the same, `step(cur)`:
+    /// there the phase at the k-th sample is the run's first phase plus
+    /// k increments, written without a carried sum. Integer addition
+    /// modulo 2³² is associative, so every grouping gives the same phases.
     #[inline]
-    fn increments(&self, pos: usize, out: &mut [u32]) {
+    fn phases<const SUM_ONLY: bool>(&self, pos: usize, out: &mut [u32], p: u32) -> u32 {
         const NS: usize = SAMPLES_PER_SYMBOL;
         const PF: usize = PULSE_FIRST;
         let last = SYMBOL_COUNT - 1;
         let tone = |m: usize| f32::from(self.symbols[m.min(last)]);
         let base = self.base_hz;
         let step = |dev: f32| increment((base + TONE_SPACING_HZ * dev) * TURNS_PER_HZ);
+        // The stored increments' sum from `p`: their running sum in place,
+        // or, with `SUM_ONLY`, their total.
+        let sum = |p: u32, xs: &mut [u32]| {
+            if SUM_ONLY {
+                xs.iter().fold(p, |a, &b| a.wrapping_add(b))
+            } else {
+                running_sum::<GROUPED_SUM>(p, xs)
+            }
+        };
         let pulse = &PULSE_HALF[..];
         let end = pos + out.len();
-        let mut p = pos;
+        let mut at = pos;
+        let mut p = p;
         let mut out = out;
-        while p < end {
-            let sym = p / NS;
+        while at < end {
+            let sym = at / NS;
             let (prev, cur, next) = (tone(sym.saturating_sub(1)), tone(sym), tone(sym + 1));
-            let s0 = p - sym * NS;
-            let s1 = NS.min(s0 + (end - p));
+            let s0 = at - sym * NS;
+            let s1 = NS.min(s0 + (end - at));
             let cut = |x: usize| x.clamp(s0, s1);
             let (a, c) = (cut(PREV_END), cut(PF));
             let (o1, rest) = core::mem::take(&mut out).split_at_mut(a - s0);
@@ -377,11 +387,20 @@ impl Synth {
                 for ((y, &g), &h) in o1.iter_mut().zip(g).zip(h.iter().rev()) {
                     *y = step(cur * g + prev * h);
                 }
+                p = sum(p, o1);
             }
             // s in a..c: the current pulse alone, and exactly 1.0, so
             // `cur · g` is `cur` and every increment is `step(cur)`.
             if c > a {
-                o2.fill(step(cur));
+                let inc = step(cur);
+                if !SUM_ONLY {
+                    let mut q = p;
+                    for y in o2.iter_mut() {
+                        *y = q;
+                        q = q.wrapping_add(inc);
+                    }
+                }
+                p = p.wrapping_add(inc.wrapping_mul((c - a) as u32));
             }
             // s in c..s1: the current pulse mirrored and the next one's at s.
             if s1 > c {
@@ -390,9 +409,11 @@ impl Synth {
                 for ((y, &g), &h) in o4.iter_mut().zip(g.iter().rev()).zip(h) {
                     *y = step(cur * g + next * h);
                 }
+                p = sum(p, o4);
             }
-            p += s1 - s0;
+            at += s1 - s0;
         }
+        p
     }
 
     /// Advances by up to `n` samples without producing them (phase still

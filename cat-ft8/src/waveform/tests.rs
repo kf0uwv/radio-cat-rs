@@ -398,7 +398,7 @@ fn phase_increment_stays_below_two_to_the_31() {
     while synth.fill(&mut block) == block.len() {}
 }
 
-/// The per-sample generator the runs of `Synth::increments` replaced, kept
+/// The per-sample generator the runs of `Synth::phases` replaced, kept
 /// as the reference: symbol by symbol, sample by sample, each sample's
 /// phase and envelope, the increment converted by truncation through
 /// `i64` (the original conversion on 64-bit targets).
@@ -599,7 +599,7 @@ fn samples_match_the_per_sample_generator() {
     }
 }
 
-/// Where `Synth::increments` stores one increment per symbol, from
+/// Where `Synth::phases` takes one increment per symbol, from
 /// `PREV_END` to `PULSE_FIRST`, the current pulse is exactly 1.0: read
 /// directly up to the centre (sample `NS / 2`) and mirrored after it, both
 /// in `PULSE_HALF[PULSE_FLAT..]`.
