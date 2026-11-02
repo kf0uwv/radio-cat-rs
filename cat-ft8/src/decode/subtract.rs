@@ -426,7 +426,7 @@ fn blocks(
 /// Per symbol, the audio times the conjugate unit reference starting at
 /// `start`, summed over the symbol's middle half. `work` (at least a
 /// block's [`PAIR`]s) holds a block's products between the loop that takes
-/// them and the sums.
+/// them and the sums, sample i of the block at slot i ([`slot`]).
 fn symbol_correlations(
     audio: &[f32],
     usable: Usable,
@@ -452,9 +452,8 @@ fn symbol_correlations(
         let xs = &audio[(start + (j0 + a) as i64) as usize..][..b - a];
         // The products sample by sample (a loop that vectorises), then
         // their sums by lane.
-        let products = &mut work[..(b - a) * PAIR];
-        scaled_cos_sin::<CHAINS, _>(products, &phase[a..b], xs, input);
-        let (re, im) = lane_sums(a, products);
+        scaled_cos_sin::<CHAINS, _>(work, a, &phase[a..b], xs, input);
+        let (re, im) = lane_sums(work, a, b);
         let k = j0 / T;
         // The conjugate's sine part: the sum's sign turned.
         c[k].0 += re;
@@ -504,35 +503,45 @@ fn add_lane(acc: &mut [f32; LANES], i: usize, v: f32) {
     }
 }
 
-/// The sums of the pairs stored in `pairs` ([`PAIR`] bytes each, as by
-/// [`put`]), which are samples `i0..` of a block that starts at a multiple
-/// of [`LANES`]: sample i in lane i % `LANES`, each lane in sample order,
-/// the lanes then added in a fixed order ([`sum_lanes`]).
+/// The sums of the pairs of samples `i0..i1` of a block that starts at a
+/// multiple of [`LANES`], sample i stored at slot i of `pairs` (by
+/// [`put`]): sample i in lane i % `LANES`, each lane in sample order, the
+/// lanes then added in a fixed order ([`sum_lanes`]).
 #[inline(always)]
 #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
-fn lane_sums(i0: usize, pairs: &[u8]) -> (f32, f32) {
-    let i1 = i0 + pairs.len() / PAIR;
+fn lane_sums(pairs: &[u8], i0: usize, i1: usize) -> (f32, f32) {
     let (m0, m1) = lane_bounds(i0, i1);
     let (mut re, mut im) = ([0.0f32; LANES], [0.0f32; LANES]);
     let one = |re: &mut [f32; LANES], im: &mut [f32; LANES], i: usize| {
-        let (c, s) = get(&pairs[(i - i0) * PAIR..]);
+        let (c, s) = get(pairs, i);
         add_lane(re, i, c);
         add_lane(im, i, s);
     };
     for i in i0..m0 {
         one(&mut re, &mut im, i);
     }
-    for r in pairs[(m0 - i0) * PAIR..(m1 - i0) * PAIR].chunks_exact(LANES * PAIR) {
-        for l in 0..LANES {
-            let (c, s) = get(&r[l * PAIR..]);
-            re[l] += c;
-            im[l] += s;
-        }
-    }
+    whole_lane_sums(&pairs[m0 * PAIR..m1 * PAIR], &mut re, &mut im);
     for i in m1..i1 {
         one(&mut re, &mut im, i);
     }
     (sum_lanes(re), sum_lanes(im))
+}
+
+/// [`lane_sums`] over whole lanes: the pairs in `pairs` (whole groups,
+/// sample i in lane i % [`LANES`]) added to `re` and `im` lane by lane.
+/// Not inlined: inside `lane_sums` the compiler kept the sums as scalars.
+#[inline(never)]
+#[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
+fn whole_lane_sums(pairs: &[u8], re: &mut [f32; LANES], im: &mut [f32; LANES]) {
+    let (mut a, mut b) = (*re, *im);
+    for r in pairs.chunks_exact(LANES * PAIR) {
+        for l in 0..LANES {
+            let (c, s) = get(r, l);
+            a[l] += c;
+            b[l] += s;
+        }
+    }
+    (*re, *im) = (a, b);
 }
 
 /// The lanes' sum, in a fixed order.
@@ -784,33 +793,37 @@ impl Fit4 {
 
     /// The samples `i0..i0 + xs.len()` of a block that starts at a
     /// multiple of [`LANES`]: the audio `xs` and the reference stored in
-    /// `refs` ([`PAIR`] bytes each). Not inlined: inside the fit's block
-    /// loop the compiler assembled the lanes from single-lane loads and
-    /// moves and kept some sums as scalars (47 AArch64 instructions per
-    /// four samples); on its own the five sums stay in vector registers
-    /// over the call (27). One call per block of at most 240 samples.
+    /// `refs` from slot `k0` on ([`slot`]; `k0` and `i0` equal modulo
+    /// [`LANES`], so whole lanes are whole groups). Not inlined: inside the
+    /// fit's block loop the compiler assembled the lanes from single-lane
+    /// loads and moves and kept some sums as scalars; on its own the five
+    /// sums stay in vector registers over the call (with rustc 1.93, 20
+    /// AArch64 instructions per four samples, the group's cosines and
+    /// sines one paired load). One call per block of at most 240 samples.
     #[inline(never)]
     #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
-    fn add_all(&mut self, i0: usize, xs: &[f32], refs: &[u8]) {
+    fn add_all(&mut self, i0: usize, xs: &[f32], refs: &[u8], k0: usize) {
+        debug_assert_eq!(k0 % LANES, i0 % LANES);
         let (m0, m1) = lane_bounds(i0, i0 + xs.len());
         // The single samples before and after the whole lanes take the
         // branch form: they are not in a vectorised loop, and the
         // selected form there gave other code that was not measured.
         let one = |f: &mut Fit4, i: usize| {
-            let (c, s) = get(&refs[(i - i0) * PAIR..]);
+            let (c, s) = get(refs, k0 + (i - i0));
             f.add(i, input_branch(xs[i - i0]), c, s);
         };
         for i in i0..m0 {
             one(self, i);
         }
-        let refs4 = &refs[(m0 - i0) * PAIR..(m1 - i0) * PAIR];
+        let k = k0 + (m0 - i0);
+        let refs4 = &refs[k * PAIR..(k + (m1 - m0)) * PAIR];
         for (x, r) in xs[m0 - i0..m1 - i0]
             .chunks_exact(LANES)
             .zip(refs4.chunks_exact(LANES * PAIR))
         {
             let (mut c, mut s) = ([0.0f32; LANES], [0.0f32; LANES]);
             for l in 0..LANES {
-                (c[l], s[l]) = get(&r[l * PAIR..]);
+                (c[l], s[l]) = get(r, l);
             }
             self.add4(input4(lanes(x)), c, s);
         }
@@ -994,18 +1007,17 @@ fn run(
                         while i < b {
                             let h = (j0 + i) % ring;
                             let stop = b.min(i + (ring - h));
-                            let refs = &mut held[h * PAIR..(h + stop - i) * PAIR];
-                            reference(refs, &phase[i..stop], env.map(|e| &e[i..stop]));
-                            f.add_all(i, &xs[i - a..stop - a], refs);
+                            reference(held, h, &phase[i..stop], env.map(|e| &e[i..stop]));
+                            f.add_all(i, &xs[i - a..stop - a], held, h);
                             i = stop;
                         }
                         written = j0 + b;
                     } else {
-                        // Through the start of `held`: nothing held is
-                        // needed once the fit is not fused.
-                        let refs = &mut held[..(b - a) * PAIR];
-                        reference(refs, &phase[a..b], env.map(|e| &e[a..b]));
-                        f.add_all(a, xs, refs);
+                        // Through the start of `held` (sample i of the
+                        // block at slot i): nothing held is needed once the
+                        // fit is not fused.
+                        reference(held, a, &phase[a..b], env.map(|e| &e[a..b]));
+                        f.add_all(a, xs, held, a);
                     }
                     c.skip(n - b);
                 }
@@ -1050,8 +1062,8 @@ fn run(
         r.held(&amp, segments, held, ring, audio, start, done, written);
     } else {
         // The samples from `done` on, from a second run of the reference,
-        // a block at a time through the start of `held` (nothing held is
-        // needed any more).
+        // a block at a time through the start of `held`, sample i of the
+        // block at slot i (nothing held is needed any more).
         let mut corr = correction;
         let mut at = 0;
         blocks(
@@ -1066,11 +1078,9 @@ fn run(
                 // registers rather than stored back every sample.
                 let mut c = corr;
                 c.apply(&mut phase[a..b]);
-                let refs = &mut held[..(b - a) * PAIR];
-                reference(refs, &phase[a..b], env.map(|e| &e[a..b]));
+                reference(held, a, &phase[a..b], env.map(|e| &e[a..b]));
                 corr = c;
-                let refs = &held[..(b - a) * PAIR];
-                r.refs(&amp, segments, refs, audio, start, j0 + a);
+                r.refs(&amp, segments, held, a, audio, start, j0 + a, j0 + b);
                 at = j0 + b;
             },
         );
@@ -1096,34 +1106,59 @@ const HELD: usize = FUSED_SEGMENT * 3 / 2;
 /// native byte order.
 const PAIR: usize = 8;
 
-/// Stores a reference sample in `d` ([`PAIR`] bytes).
+/// Reference samples stored together: a group's cosine parts in slot
+/// order, then its sine parts ([`slot`]). [`LANES`] where the target has a
+/// vector unit, so that each part of a group of lanes loads and stores as
+/// one vector; one elsewhere (a sample's two parts side by side).
+const GROUP: usize = if VECTOR { LANES } else { 1 };
+// Whole lanes and whole blocks are whole groups.
+#[allow(clippy::modulo_one)] // GROUP is 1 on some targets
+const _: () = assert!(LANES % GROUP == 0 && BLOCK % LANES == 0);
+
+/// Slot `k`'s place in its group, `k % GROUP`.
 #[inline(always)]
-fn put(d: &mut [u8], r: (f32, f32)) {
-    d[..4].copy_from_slice(&r.0.to_ne_bytes());
-    d[4..PAIR].copy_from_slice(&r.1.to_ne_bytes());
+#[allow(clippy::modulo_one)] // GROUP is 1 on some targets
+fn in_group(k: usize) -> usize {
+    k % GROUP
 }
 
-/// The reference sample stored in `d` ([`PAIR`] bytes) by [`put`], bit for
-/// bit.
+/// The byte offset in a buffer of the cosine part stored at slot `k`; the
+/// sine part follows `4 · GROUP` bytes on. Slots `k..k + GROUP` from a
+/// multiple of [`GROUP`] fill bytes `k · PAIR..(k + GROUP) · PAIR`.
 #[inline(always)]
-fn get(d: &[u8]) -> (f32, f32) {
+fn slot(k: usize) -> usize {
+    (k - in_group(k)) * PAIR + in_group(k) * 4
+}
+
+/// Stores a reference sample at slot `k` of `d` ([`slot`]).
+#[inline(always)]
+fn put(d: &mut [u8], k: usize, r: (f32, f32)) {
+    let o = slot(k);
+    d[o..o + 4].copy_from_slice(&r.0.to_ne_bytes());
+    d[o + 4 * GROUP..o + 4 * GROUP + 4].copy_from_slice(&r.1.to_ne_bytes());
+}
+
+/// The reference sample stored at slot `k` of `d` by [`put`], bit for bit.
+#[inline(always)]
+fn get(d: &[u8], k: usize) -> (f32, f32) {
     let f = |b: &[u8]| f32::from_ne_bytes([b[0], b[1], b[2], b[3]]);
-    (f(&d[..4]), f(&d[4..PAIR]))
+    let o = slot(k);
+    (f(&d[o..o + 4]), f(&d[o + 4 * GROUP..o + 4 * GROUP + 4]))
 }
 
 /// The reference of samples with (frequency-corrected) phases `phase` and
 /// envelope `env` (`None` where it is 1.0 throughout), stored in `refs`
-/// ([`PAIR`] bytes each) by [`put`]. A cosine or sine times 1.0 is itself,
-/// so without an envelope the products are not taken.
+/// from slot `k0` on by [`put`]. A cosine or sine times 1.0 is itself, so
+/// without an envelope the products are not taken.
 #[inline(always)]
-fn reference(refs: &mut [u8], phase: &[u32], env: Option<&[f32]>) {
+fn reference(refs: &mut [u8], k0: usize, phase: &[u32], env: Option<&[f32]>) {
     match env {
-        Some(env) => scaled_cos_sin::<CHAINS, _>(refs, phase, env, |w| w),
+        Some(env) => scaled_cos_sin::<CHAINS, _>(refs, k0, phase, env, |w| w),
         // Weights of 1.0, one per phase: `phase` itself is passed as the
         // weights' slice only for its length; its values are ignored. (A
         // slice of `()` as long as a block gave other code: the loop's
         // count took a third bound.)
-        None => scaled_cos_sin::<CHAINS, _>(refs, phase, phase, |_| 1.0),
+        None => scaled_cos_sin::<CHAINS, _>(refs, k0, phase, phase, |_| 1.0),
     }
 }
 
@@ -1140,44 +1175,86 @@ fn reference(refs: &mut [u8], phase: &[u32], env: Option<&[f32]>) {
 const CHAINS: usize = if VECTOR { 16 } else { 1 };
 
 /// For each sample, `weight(x)` times the cosine and sine of its phase
-/// (`cos_sin_turns`), stored in `out` ([`PAIR`] bytes each) by [`put`]:
-/// `W` samples at a time, then the rest one by one, over the shortest of
-/// the three. With `W` 1 this is the plain loop.
+/// (`cos_sin_turns`), stored in `out` from slot `k0` on by [`put`], over
+/// the shorter of `phase` and `xs`: single samples up to a whole group,
+/// then `W` samples at a time (whole groups), then the rest one by one.
+/// With `W` 1 this is the plain loop.
 #[inline(always)]
 fn scaled_cos_sin<const W: usize, X: Copy>(
     out: &mut [u8],
+    k0: usize,
     phase: &[u32],
     xs: &[X],
     weight: impl Fn(X) -> f32,
 ) {
-    let n = (out.len() / PAIR).min(phase.len()).min(xs.len());
-    let whole = if W > 1 { n - n % W } else { 0 };
+    let n = phase.len().min(xs.len());
+    let one = |out: &mut [u8], i: usize| {
+        let w = weight(xs[i]);
+        let (c, s) = cos_sin_turns(phase[i]);
+        put(out, k0 + i, (w * c, w * s));
+    };
+    // Up to the first whole group (none when `W` is 1).
+    let head = if W > 1 {
+        in_group(GROUP - in_group(k0)).min(n)
+    } else {
+        0
+    };
+    for i in 0..head {
+        one(out, i);
+    }
+    let whole = if W > 1 {
+        (n - head) - (n - head) % W
+    } else {
+        0
+    };
     if W > 1 {
-        let blocks = out[..whole * PAIR]
+        // `W` slots from a whole group are whole groups.
+        assert!(in_group(W) == 0);
+        let at = (k0 + head) * PAIR;
+        let blocks = out[at..at + whole * PAIR]
             .chunks_exact_mut(W * PAIR)
-            .zip(phase[..whole].chunks_exact(W))
-            .zip(xs[..whole].chunks_exact(W));
+            .zip(phase[head..head + whole].chunks_exact(W))
+            .zip(xs[head..head + whole].chunks_exact(W));
         for ((d, q), x) in blocks {
             let (q, x): (&[u32; W], &[X; W]) = (q.try_into().unwrap(), x.try_into().unwrap());
-            let mut v = [(0.0f32, 0.0f32); W];
-            for ((v, &q), &x) in v.iter_mut().zip(q).zip(x) {
+            let (mut vc, mut vs) = ([0.0f32; W], [0.0f32; W]);
+            for (((vc, vs), &q), &x) in vc.iter_mut().zip(&mut vs).zip(q).zip(x) {
                 let w = weight(x);
                 let (c, s) = cos_sin_turns(q);
-                *v = (w * c, w * s);
+                (*vc, *vs) = (w * c, w * s);
             }
-            for (d, &v) in d.chunks_exact_mut(PAIR).zip(&v) {
-                put(d, v);
+            for ((d, c), s) in d
+                .chunks_exact_mut(GROUP * PAIR)
+                .zip(vc.chunks_exact(GROUP))
+                .zip(vs.chunks_exact(GROUP))
+            {
+                let (dc, ds) = d.split_at_mut(4 * GROUP);
+                for ((dc, ds), (&c, &s)) in dc
+                    .chunks_exact_mut(4)
+                    .zip(ds.chunks_exact_mut(4))
+                    .zip(c.iter().zip(s))
+                {
+                    dc.copy_from_slice(&c.to_ne_bytes());
+                    ds.copy_from_slice(&s.to_ne_bytes());
+                }
             }
         }
     }
-    let rest = out[whole * PAIR..]
-        .chunks_exact_mut(PAIR)
-        .zip(&phase[whole..])
-        .zip(&xs[whole..]);
-    for ((d, &q), &x) in rest {
-        let w = weight(x);
-        let (c, s) = cos_sin_turns(q);
-        put(d, (w * c, w * s));
+    if GROUP == 1 {
+        // Slot by slot in order: each slot is one sample's two parts.
+        let rest = out[(k0 + head + whole) * PAIR..(k0 + n) * PAIR]
+            .chunks_exact_mut(PAIR)
+            .zip(&phase[head + whole..n])
+            .zip(&xs[head + whole..n]);
+        for ((d, &q), &x) in rest {
+            let w = weight(x);
+            let (c, s) = cos_sin_turns(q);
+            put(d, 0, (w * c, w * s));
+        }
+    } else {
+        for i in head + whole..n {
+            one(out, i);
+        }
     }
 }
 
@@ -1336,22 +1413,22 @@ impl Removal {
         }
     }
 
-    /// Subtracts the reference of samples `j0 + i`, stored at `refs[i]`
-    /// ([`PAIR`] bytes each), from `xs[i]`; within one interval and, when
+    /// Subtracts the reference of samples `j0 + i`, stored at slot
+    /// `k0 + i` of `refs`, from `xs[i]`; within one interval and, when
     /// reporting, one segment (after [`Removal::enter`]).
     #[inline(always)]
-    fn run(&mut self, j0: usize, xs: &mut [f32], refs: &[u8]) {
+    fn run(&mut self, j0: usize, xs: &mut [f32], refs: &[u8], k0: usize) {
         if self.report {
-            self.run_as::<true>(j0, xs, refs);
+            self.run_as::<true>(j0, xs, refs, k0);
         } else {
-            self.run_as::<false>(j0, xs, refs);
+            self.run_as::<false>(j0, xs, refs, k0);
         }
     }
 
     /// [`Removal::run`], with `REPORT` equal to [`Removal::report`]: the
     /// energy and the residue's sums are taken only if it is true.
     #[inline(always)]
-    fn run_as<const REPORT: bool>(&mut self, j0: usize, xs: &mut [f32], refs: &[u8]) {
+    fn run_as<const REPORT: bool>(&mut self, j0: usize, xs: &mut [f32], refs: &[u8], k0: usize) {
         let (from, base, slope) = (self.from, self.base, self.slope);
         let mut energy = self.energy;
         let mut sums = self.sums;
@@ -1366,16 +1443,51 @@ impl Removal {
         const _: () = assert!(WAVEFORM_SAMPLES < 1 << 24);
         assert!(j0 + xs.len() <= WAVEFORM_SAMPLES && from <= WAVEFORM_SAMPLES);
         let (j0, from) = (j0 as i32, from as i32);
-        for (i, (x, r)) in xs.iter_mut().zip(refs.chunks_exact(PAIR)).enumerate() {
-            let (rc, rs) = get(r);
-            let d = j0 + i as i32 - from;
-            let t = if d > 0 { d as f32 } else { 0.0 };
-            let (ra, rb) = (base.0 + t * slope.0, base.1 + t * slope.1);
-            let est = ra * rc + rb * rs;
-            *x = input(*x) - est;
-            if REPORT {
-                energy += est * est;
-                sums.add(*x, rc, rs);
+        let n = xs.len();
+        let line = (base, slope);
+        if GROUP == 1 {
+            // One sample at a time; each slot is one sample's two parts.
+            let refs = &refs[k0 * PAIR..(k0 + n) * PAIR];
+            for (i, (x, r)) in xs.iter_mut().zip(refs.chunks_exact(PAIR)).enumerate() {
+                let t = ramp_index(j0 + i as i32, from);
+                remove_one::<REPORT>(x, t, get(r, 0), line, &mut energy, &mut sums);
+            }
+        } else {
+            // Single samples up to a whole group, the whole groups, the
+            // rest.
+            let head = in_group(GROUP - in_group(k0)).min(n);
+            let whole = (n - head) - in_group(n - head);
+            for (i, x) in xs[..head].iter_mut().enumerate() {
+                let t = ramp_index(j0 + i as i32, from);
+                remove_one::<REPORT>(x, t, get(refs, k0 + i), line, &mut energy, &mut sums);
+            }
+            // In whole groups each lane's index before the clamp at 0 is
+            // carried as an `f32`: an integer below 2²⁴ in magnitude
+            // (asserted above), so it and each step are exact, and the
+            // clamped value is `ramp_index`'s. (As integers, the compiler's
+            // loop vectoriser took four groups at a time with their lanes
+            // interleaved, which is slower.)
+            let mut index = [0.0f32; GROUP];
+            for (l, t) in index.iter_mut().enumerate() {
+                *t = (j0 + (head + l) as i32 - from) as f32;
+            }
+            let at = (k0 + head) * PAIR;
+            let groups = xs[head..head + whole]
+                .chunks_exact_mut(GROUP)
+                .zip(refs[at..at + whole * PAIR].chunks_exact(GROUP * PAIR));
+            for (x, r) in groups {
+                for (l, x) in x.iter_mut().enumerate() {
+                    let t = if index[l] > 0.0 { index[l] } else { 0.0 };
+                    remove_one::<REPORT>(x, t, get(r, l), line, &mut energy, &mut sums);
+                }
+                for t in &mut index {
+                    *t += GROUP as f32;
+                }
+            }
+            for (i, x) in xs[head + whole..].iter_mut().enumerate() {
+                let i = head + whole + i;
+                let t = ramp_index(j0 + i as i32, from);
+                remove_one::<REPORT>(x, t, get(refs, k0 + i), line, &mut energy, &mut sums);
             }
         }
         self.energy = energy;
@@ -1383,21 +1495,25 @@ impl Removal {
         self.changed += xs.len();
     }
 
-    /// Subtracts samples `from..from + refs.len() / PAIR`, whose references
-    /// are stored in `refs`, in runs within one interval and, when
-    /// reporting, one segment. `from` must follow the last sample given;
-    /// reference sample j is at slot sample `start + j`.
+    /// Subtracts samples `from..to`, whose references are stored in `refs`
+    /// from slot `k0` on ([`slot`]; `k0` and `from` equal modulo [`GROUP`]),
+    /// in runs within one interval and, when reporting, one segment. `from`
+    /// must follow the last sample given; reference sample j is at slot
+    /// sample `start + j`.
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     fn refs(
         &mut self,
         amp: &[(f32, f32); MAX_SEGMENTS],
         segments: usize,
         refs: &[u8],
+        k0: usize,
         audio: &mut [f32],
         start: i64,
         from: usize,
+        to: usize,
     ) {
-        let to = from + refs.len() / PAIR;
+        debug_assert_eq!(in_group(k0), in_group(from));
         let mut j = from;
         while j < to {
             self.enter(amp, segments, j);
@@ -1408,13 +1524,13 @@ impl Removal {
             }
             .min(self.until);
             let xs = &mut audio[(start + j as i64) as usize..][..stop - j];
-            self.run(j, xs, &refs[(j - from) * PAIR..(stop - from) * PAIR]);
+            self.run(j, xs, refs, k0 + (j - from));
             j = stop;
         }
     }
 
-    /// Subtracts samples `from..to`, whose reference is held at pair
-    /// `j % ring` of `held`.
+    /// Subtracts samples `from..to`, whose reference is held at slot
+    /// `j % ring` of `held` (`ring` a multiple of [`LANES`]).
     #[allow(clippy::too_many_arguments)]
     fn held(
         &mut self,
@@ -1432,16 +1548,44 @@ impl Removal {
             // Up to the end of the ring buffer at a time.
             let h = j % ring;
             let stop = to.min(j + (ring - h));
-            self.refs(
-                amp,
-                segments,
-                &held[h * PAIR..(h + stop - j) * PAIR],
-                audio,
-                start,
-                j,
-            );
+            self.refs(amp, segments, held, h, audio, start, j, stop);
             j = stop;
         }
+    }
+}
+
+/// The removal's ramp index of sample `j`: `j − from`, and 0 at and
+/// before the centre `from`.
+#[inline(always)]
+fn ramp_index(j: i32, from: i32) -> f32 {
+    let d = j - from;
+    if d > 0 {
+        d as f32
+    } else {
+        0.0
+    }
+}
+
+/// One sample of the removal at ramp index `t` with reference `r`:
+/// `x` less the estimate at the amplitude `base + t · slope` of
+/// `line = (base, slope)`; when `REPORT`, the estimate's energy and the
+/// residual's sums taken.
+#[inline(always)]
+fn remove_one<const REPORT: bool>(
+    x: &mut f32,
+    t: f32,
+    r: (f32, f32),
+    line: ((f32, f32), (f32, f32)),
+    energy: &mut f32,
+    sums: &mut Sums,
+) {
+    let ((rc, rs), (base, slope)) = (r, line);
+    let (ra, rb) = (base.0 + t * slope.0, base.1 + t * slope.1);
+    let est = ra * rc + rb * rs;
+    *x = input(*x) - est;
+    if REPORT {
+        *energy += est * est;
+        sums.add(*x, rc, rs);
     }
 }
 

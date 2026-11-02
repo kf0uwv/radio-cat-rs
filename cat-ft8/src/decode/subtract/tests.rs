@@ -1039,18 +1039,25 @@ fn finite_reference(v: f32) -> f32 {
 }
 
 /// [`scaled_cos_sin`] as first written: the plain loop, one sample at a
-/// time.
-fn scaled_cos_sin_first(out: &mut [u8], phase: &[u32], xs: &[f32], weight: impl Fn(f32) -> f32) {
-    for ((d, &q), &x) in out.chunks_exact_mut(PAIR).zip(phase).zip(xs) {
+/// time, sample i at slot `k0 + i`.
+fn scaled_cos_sin_first(
+    out: &mut [u8],
+    k0: usize,
+    phase: &[u32],
+    xs: &[f32],
+    weight: impl Fn(f32) -> f32,
+) {
+    for (i, (&q, &x)) in phase.iter().zip(xs).enumerate() {
         let w = weight(x);
         let (c, s) = cos_sin_turns(q);
-        put(d, (w * c, w * s));
+        put(out, k0 + i, (w * c, w * s));
     }
 }
 
 /// [`scaled_cos_sin`] at `W` samples at a time against its first form,
-/// byte for byte over the whole buffer (so nothing past the shortest input
-/// is written), for both weights the decoder uses.
+/// byte for byte over the whole buffer (so no slot outside the samples'
+/// is written), from every first slot modulo a group and beyond, for both
+/// weights the decoder uses.
 fn scaled_cos_sin_matches<const W: usize>(seed: u64) -> usize {
     let mut n = Noise(seed);
     let mut checked = 0;
@@ -1058,24 +1065,21 @@ fn scaled_cos_sin_matches<const W: usize>(seed: u64) -> usize {
     for len in lens {
         let phase = test_phases(&mut n, len + 2);
         let xs = test_weights(&mut n, len + 2);
-        // Equal lengths, and each input the shortest by one or two.
-        let shapes = [
-            (len, len, len),
-            (len, len + 1, len + 2),
-            (len + 2, len, len + 1),
-            (len + 1, len + 2, len),
-        ];
-        for (no, np, nx) in shapes {
-            for clamp in [false, true] {
-                // The audio through the front end's clamp; the envelope,
-                // which is finite, as it is.
-                let weigh = |x: f32| if clamp { input(x) } else { finite_reference(x) };
-                let mut got = std::vec![0xa5u8; (no + 1) * PAIR];
-                let mut want = got.clone();
-                scaled_cos_sin::<W, _>(&mut got[..no * PAIR], &phase[..np], &xs[..nx], weigh);
-                scaled_cos_sin_first(&mut want[..no * PAIR], &phase[..np], &xs[..nx], weigh);
-                assert_eq!(got, want, "W {W} lengths {no} {np} {nx} clamp {clamp}");
-                checked += 1;
+        // Equal lengths, and each input the shorter by one or two.
+        let shapes = [(len, len), (len, len + 2), (len + 1, len)];
+        for (np, nx) in shapes {
+            for k0 in 0..=GROUP + 1 {
+                for clamp in [false, true] {
+                    // The audio through the front end's clamp; the envelope,
+                    // which is finite, as it is.
+                    let weigh = |x: f32| if clamp { input(x) } else { finite_reference(x) };
+                    let mut got = std::vec![0xa5u8; (k0 + len + 2 * GROUP + 2) * PAIR];
+                    let mut want = got.clone();
+                    scaled_cos_sin::<W, _>(&mut got, k0, &phase[..np], &xs[..nx], weigh);
+                    scaled_cos_sin_first(&mut want, k0, &phase[..np], &xs[..nx], weigh);
+                    assert_eq!(got, want, "W {W} lengths {np} {nx} slot {k0} clamp {clamp}");
+                    checked += 1;
+                }
             }
         }
     }
@@ -1106,14 +1110,16 @@ fn reference_without_an_envelope_is_the_reference_times_one() {
     for len in (0..=3 * CHAINS + 5).chain([BLOCK - 1, BLOCK]) {
         let phase = test_phases(&mut n, len);
         let ones = std::vec![1.0f32; len];
-        let mut got = std::vec![0xa5u8; (len + 1) * PAIR];
-        let mut want = got.clone();
-        reference(&mut got[..len * PAIR], &phase, None);
-        reference(&mut want[..len * PAIR], &phase, Some(&ones));
-        assert_eq!(got, want, "{len}");
-        checked += 1;
+        for k0 in 0..=GROUP {
+            let mut got = std::vec![0xa5u8; (k0 + len + 2 * GROUP) * PAIR];
+            let mut want = got.clone();
+            reference(&mut got, k0, &phase, None);
+            reference(&mut want, k0, &phase, Some(&ones));
+            assert_eq!(got, want, "length {len} slot {k0}");
+            checked += 1;
+        }
     }
-    assert_eq!(checked, 3 * CHAINS + 8);
+    assert_eq!(checked, (3 * CHAINS + 8) * (GROUP + 1));
 }
 
 /// `blocks` passes no envelope exactly for the blocks where it is 1.0 at
@@ -1211,13 +1217,20 @@ fn input_select_is_the_branch_form_everywhere() {
 }
 
 /// [`Removal::run_as`] as first written: the ramp index `(j − from) as
-/// f32` from `usize`.
-fn run_as_first<const REPORT: bool>(r: &mut Removal, j0: usize, xs: &mut [f32], refs: &[u8]) {
+/// f32` from `usize`, one sample at a time, the reference of sample
+/// `j0 + i` at slot `k0 + i`.
+fn run_as_first<const REPORT: bool>(
+    r: &mut Removal,
+    j0: usize,
+    xs: &mut [f32],
+    refs: &[u8],
+    k0: usize,
+) {
     let (from, base, slope) = (r.from, r.base, r.slope);
     let mut energy = r.energy;
     let mut sums = r.sums;
-    for (i, (x, rf)) in xs.iter_mut().zip(refs.chunks_exact(PAIR)).enumerate() {
-        let (rc, rs) = get(rf);
+    for (i, x) in xs.iter_mut().enumerate() {
+        let (rc, rs) = get(refs, k0 + i);
         let j = j0 + i;
         let t = if j > from { (j - from) as f32 } else { 0.0 };
         let (ra, rb) = (base.0 + t * slope.0, base.1 + t * slope.1);
@@ -1246,11 +1259,12 @@ fn removal_bits(r: &Removal, xs: &[f32]) -> Vec<u32> {
     v
 }
 
-/// The removal with the ramp index in 32-bit integers against its first
-/// form, bit for bit, reporting and not: runs that start before, at and
-/// after the interval's centre and cross it, at every offset modulo the
-/// lanes, up to the waveform's last sample; random and edge audio and
-/// references, slopes of either sign.
+/// The removal with the ramp index in 32-bit integers (and, in whole
+/// groups, carried as `f32`) against its first form, bit for bit,
+/// reporting and not: runs that start before, at and after the interval's
+/// centre and cross it, at every offset modulo the lanes, the reference
+/// from every slot modulo a group, up to the waveform's last sample;
+/// random and edge audio and references, slopes of either sign.
 #[test]
 fn removal_ramp_is_its_first_form_bit_for_bit() {
     let mut n = Noise(77);
@@ -1272,8 +1286,9 @@ fn removal_ramp_is_its_first_form_bit_for_bit() {
             for len in [0usize, 1, 3, 4, 5, 8, 31, 240, 961] {
                 let j0 = from.saturating_add_signed(off).min(WAVEFORM_SAMPLES);
                 let len = len.min(WAVEFORM_SAMPLES - j0);
+                let k0 = (j0 + len) % GROUP;
                 let mut xs = test_weights(&mut n, len);
-                let refs: Vec<u8> = test_weights(&mut n, 2 * len)
+                let refs: Vec<u8> = test_weights(&mut n, 2 * (k0 + len + GROUP))
                     .iter()
                     .map(|&v| finite_reference(v))
                     .flat_map(|x| x.to_ne_bytes())
@@ -1290,16 +1305,16 @@ fn removal_ramp_is_its_first_form_bit_for_bit() {
                         (a.from, a.base, a.slope, a.energy, a.sums);
                     let mut ys = xs.clone();
                     if report {
-                        a.run_as::<true>(j0, &mut xs, &refs);
-                        run_as_first::<true>(&mut b, j0, &mut ys, &refs);
+                        a.run_as::<true>(j0, &mut xs, &refs, k0);
+                        run_as_first::<true>(&mut b, j0, &mut ys, &refs, k0);
                     } else {
-                        a.run_as::<false>(j0, &mut xs, &refs);
-                        run_as_first::<false>(&mut b, j0, &mut ys, &refs);
+                        a.run_as::<false>(j0, &mut xs, &refs, k0);
+                        run_as_first::<false>(&mut b, j0, &mut ys, &refs, k0);
                     }
                     assert_eq!(
                         removal_bits(&a, &xs),
                         removal_bits(&b, &ys),
-                        "from {from} j0 {j0} len {len} report {report}"
+                        "from {from} j0 {j0} len {len} slot {k0} report {report}"
                     );
                     checked += 1;
                 }
@@ -1323,7 +1338,8 @@ fn removal_ramp_is_plus_zero_at_and_before_the_centre() {
     for j0 in from - 9..=from {
         for len in [1usize, 4, 5, 9, 17] {
             let xs = std::vec![-0.0f32; len];
-            let refs: Vec<u8> = (0..2 * len)
+            let k0 = (j0 + 2 * len) % GROUP;
+            let refs: Vec<u8> = (0..2 * (k0 + len + GROUP))
                 .map(|k| 0.25 + k as f32 / 64.0)
                 .flat_map(|x| x.to_ne_bytes())
                 .collect();
@@ -1334,11 +1350,11 @@ fn removal_ramp_is_plus_zero_at_and_before_the_centre() {
                 (b.from, b.base, b.slope) = (a.from, a.base, a.slope);
                 let (mut got, mut want) = (xs.clone(), xs.clone());
                 if report {
-                    a.run_as::<true>(j0, &mut got, &refs);
-                    run_as_first::<true>(&mut b, j0, &mut want, &refs);
+                    a.run_as::<true>(j0, &mut got, &refs, k0);
+                    run_as_first::<true>(&mut b, j0, &mut want, &refs, k0);
                 } else {
-                    a.run_as::<false>(j0, &mut got, &refs);
-                    run_as_first::<false>(&mut b, j0, &mut want, &refs);
+                    a.run_as::<false>(j0, &mut got, &refs, k0);
+                    run_as_first::<false>(&mut b, j0, &mut want, &refs, k0);
                 }
                 // Samples j0..=from are at or before the centre.
                 for (j, x) in (j0..).zip(&got).take_while(|&(j, _)| j <= from) {
@@ -1368,16 +1384,19 @@ fn fit4_bits(f: &Fit4) -> Vec<u32> {
 /// [`Fit4::add_all`] against its definition, sample by sample: sample i
 /// of the block in lane i % `LANES`, each lane in sample order, the audio
 /// as the front end takes it. Bit for bit, from random lane sums, at every
-/// start modulo the lanes and lengths up to a block, random and edge audio
-/// and references.
+/// start modulo the lanes and lengths up to a block, the reference from
+/// slot `i0` and from a lane on, random and edge audio and references.
 #[test]
 fn fit_sums_follow_the_sample_index_bit_for_bit() {
     let mut n = Noise(91);
     let mut checked = 0;
     for i0 in 0..2 * LANES + 1 {
-        for len in (0..=13).chain([BLOCK - i0, 961]) {
+        for (len, k0) in (0..=13)
+            .chain([BLOCK - i0, 961])
+            .flat_map(|len| [(len, i0), (len, i0 + LANES)])
+        {
             let xs = test_weights(&mut n, len);
-            let refs: Vec<u8> = test_weights(&mut n, 2 * len)
+            let refs: Vec<u8> = test_weights(&mut n, 2 * (k0 + len + GROUP))
                 .iter()
                 .map(|&v| {
                     if v.is_finite() {
@@ -1394,9 +1413,9 @@ fn fit_sums_follow_the_sample_index_bit_for_bit() {
                 (got.cs[l], got.ss[l]) = ((n.gauss()) as f32, 0.125);
             }
             let mut want = got;
-            got.add_all(i0, &xs, &refs);
+            got.add_all(i0, &xs, &refs, k0);
             for (k, &x) in xs.iter().enumerate() {
-                let (c, s) = get(&refs[k * PAIR..]);
+                let (c, s) = get(&refs, k0 + k);
                 let (w, l) = (input_branch(x), (i0 + k) % LANES);
                 want.xc[l] += w * c;
                 want.xs[l] += w * s;
@@ -1404,11 +1423,15 @@ fn fit_sums_follow_the_sample_index_bit_for_bit() {
                 want.cs[l] += c * s;
                 want.ss[l] += s * s;
             }
-            assert_eq!(fit4_bits(&got), fit4_bits(&want), "i0 {i0} len {len}");
+            assert_eq!(
+                fit4_bits(&got),
+                fit4_bits(&want),
+                "i0 {i0} len {len} slot {k0}"
+            );
             checked += 1;
         }
     }
-    assert_eq!(checked, (2 * LANES + 1) * 16);
+    assert_eq!(checked, (2 * LANES + 1) * 16 * 2);
 }
 
 #[test]

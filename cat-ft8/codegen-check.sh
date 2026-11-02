@@ -13,15 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Checks that the belief-propagation rounds and the subtraction's input
-# clamp are still vectorised on AArch64, and that the clamp keeps its
-# form on the microcontroller targets. Their speed depends on code
+# Checks that the belief-propagation rounds, the subtraction's input
+# clamp and its reference's loads and stores are still vectorised on
+# AArch64, and that the clamp keeps its form on the microcontroller
+# targets. Their speed depends on code
 # generation that no test sees: the sum-product round's tanh and atanh
 # passes 24 values at a time (`PASS_LANES`), its products over four
 # checks in the lanes of one vector (`group_products`), min-sum likewise
 # (`group_min_sum`), and the clamp of the removal and the time search's
 # products as four-lane `fmaxnm`/`fminnm` rather than compares and
-# selects (`input_select`). A compiler change can lose any of them with
+# selects (`input_select`), and the reference stored in groups of four
+# (`GROUP`) loaded and stored as whole vectors, without interleaving
+# loads and stores or shuffles. A compiler change can lose any of them with
 # every test passing. On thumbv8m.main built with `--cfg cat_ft8_minmaxnm`
 # (the Cortex-M33 measured) the clamp is `vmaxnm`/`vminnm`; on thumbv7em
 # (no such cfg) it must not call `fmaxf`/`fminf`, the library's `max` and
@@ -39,8 +42,19 @@
 # - four-lane `fmaxnm`/`fminnm` in the removal (`Removal::refs`) and in
 #   symbol_correlations, a floor, and compares and selects (`fcmgt`,
 #   `bsl`, `bit`, `bif`) in the removal, a ceiling: with rustc 1.93 the
-#   removal has 6 and 0, symbol_correlations 8; with the branch form of
+#   removal has 5 and 0, symbol_correlations 8; with the branch form of
 #   the clamp 0, 18 and 0;
+# - interleaving loads and stores (`ld2`-`ld4`, `st2`-`st4`) in the
+#   removal and in `Fit4::add_all`, a ceiling of 0: with rustc 1.93 both
+#   0; with the reference's parts interleaved sample by sample (a group
+#   of one) 3 and 1, and with the removal's ramp index carried as an
+#   integer (the loop vectoriser takes four groups at a time) 2 and 0;
+# - four-lane `.4s` instructions in `whole_lane_sums`, a floor of 2: 2
+#   with rustc 1.93; inlined into `lane_sums` (the sums kept as scalars)
+#   the function is not found;
+# - shuffles (`zip`, `uzp`, `trn`) in `blocks` (the reference's block
+#   of 16 samples), a ceiling of 12: 3 with rustc 1.93; with the parts
+#   interleaved 19, and with each sample stored by itself 75;
 # - thumbv8m.main with the cfg: `vmaxnm`/`vminnm` in the removal, a
 #   floor: 20 with rustc 1.93, 0 without the cfg;
 # - thumbv7em: calls of `fmaxf`/`fminf` in the removal,
@@ -70,12 +84,17 @@ builds=("a64 aarch64-unknown-linux-gnu - -"
 # four-lane `fmaxnm` and `fminnm`, at least the bound; `selects` counts
 # `fcmgt`, `bsl`, `bit` and `bif`, at most the bound; `vminmax` counts
 # `vmaxnm` and `vminnm`, at least the bound; `libcalls` counts calls of
-# `fmaxf` and `fminf`, at most the bound. A function whose label is not
+# `fmaxf` and `fminf`, at most the bound; `interleaved` counts `ld2`,
+# `ld3`, `ld4`, `st2`, `st3` and `st4`, at most the bound; `shuffles`
+# counts `zip1`, `zip2`, `uzp1`, `uzp2`, `trn1` and `trn2`, at most the
+# bound. A function whose label is not
 # found, or an unknown metric, fails.
 checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 min_sum_round vec4 100"
   "a64 7Removal4refs minmax 2" "a64 symbol_correlations minmax 2"
   "a64 7Removal4refs selects 2"
+  "a64 7Removal4refs interleaved 0" "a64 4Fit47add_all interleaved 0"
+  "a64 whole_lane_sums vec4 2" "a64 6blocks shuffles 12"
   "m33 7Removal4refs vminmax 8"
   "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit47add_all libcalls 0")
 
@@ -113,6 +132,8 @@ for entry in "${checks[@]}"; do
     metric == "selects" && /^\t(fcmgt|bsl|bit|bif)\t/ { n++ }
     metric == "vminmax" && /^\t(vmaxnm|vminnm)/ { n++ }
     metric == "libcalls" && /^\tbl\t(fmaxf|fminf)$/ { n++ }
+    metric == "interleaved" && /^\t(ld[234]|st[234])\t/ { n++ }
+    metric == "shuffles" && /^\t(zip[12]|uzp[12]|trn[12])\t/ { n++ }
     END { if (found) print n + 0; else print "missing" }' "${asm[$key]}")
   if [ "$n" = missing ]; then
     echo "FAIL $key $name: function not found"
@@ -126,6 +147,8 @@ for entry in "${checks[@]}"; do
     selects) what="compares and selects (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     vminmax) what="vmaxnm/vminnm (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     libcalls) what="fmaxf/fminf calls (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    interleaved) what="interleaving loads and stores (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    shuffles) what="shuffles (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     *) what="unknown metric $metric"; ok=0 ;;
   esac
   if [ $ok = 1 ]; then
