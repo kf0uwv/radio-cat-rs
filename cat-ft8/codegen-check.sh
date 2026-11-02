@@ -69,20 +69,29 @@
 # - thumbv7em: calls of `fmaxf`/`fminf` in the removal,
 #   symbol_correlations and `Fit4::add_all`, a ceiling of 0: with the cfg
 #   (wrongly set) they are 20, 6 and 8.
-# - thumbv8m.main with the cfg at opt-level "s" (the size the
-#   embedded check builds at): the FFT, inlined into `finish_row`,
-#   written out butterfly by butterfly with one lane. A floor on its
-#   `f32` multiplies (`vmul`, `vmla`, `vmls`): 237 with rustc 1.93, 71
-#   with the stages as loops (findings O20); a ceiling of 0 on divisions
-#   (`umull`, `udiv`): 0, and 5 with the stages as loops; a ceiling of 1
-#   on `__aeabi_memclr4`/`memset` calls: 1, and 8 with the stages as
-#   loops. The floor guards the later stages only: with just the first
-#   stage as loops the multiplies are 243 and the ceilings fire instead
-#   (1 division, 2 zero-fill calls).
+# - thumbv8m.main with the cfg at opt-level "s" (the size the embedded
+#   check builds at, though this is the library, not the linked image):
+#   the FFT, inlined into `finish_row`, written out butterfly by butterfly
+#   with one lane. With rustc 1.93.0: 238 `f32` multiplies (`vmul`, `vmla`,
+#   `vmls`; a floor of 230), 0 divisions (`umull`, `udiv`; a ceiling of 0)
+#   and 1 zero-fill call (`__aeabi_memclr4`, `__aeabi_memclr`, `memset`; a
+#   ceiling of 1).
+#   It was run against these forms (findings O20b), and fails on each: a
+#   radix-4 stage as loops (202 multiplies), the radix-3 stage (218), the
+#   radix-5 stage (171, 1 division), all the later stages as loops (142),
+#   `stage` in their place (66, 4, 7) and `first_stage::<1>` for the first
+#   stage (243, 1, 2: the ceilings, not the floor).
+#   It misses: the radix-2 stage alone as loops (234 passes), the form of
+#   the twiddle index (`% N` and a subtraction both pass), a zero fill by
+#   `__aeabi_memclr8` or a tail call, and what link-time optimisation does
+#   to the image. A first stage as loops with no division and no zero fill
+#   was not run, and the floor would not be expected to catch it.
 # The multiplication by an envelope of 1.0 that the reference leaves out
 # (the weight folded by the compiler) is not checked: findings O18b.
-# A bound that fails means: re-measure on the Cortex-A76 (planning/
-# cat_ft8, findings O12, O17, O17c, O18 and O19) before changing it.
+# A bound that fails means: re-measure before changing it (planning/
+# cat_ft8): on the Cortex-A76 for the AArch64 bounds (findings O12, O17,
+# O17c, O18 and O19), by emulated instruction counts on the Cortex-M33 for
+# the opt-level "s" bounds (findings O20 and O20b).
 #
 # Needs: rustup targets aarch64-unknown-linux-gnu, thumbv8m.main-none-eabihf
 # and thumbv7em-none-eabihf (assembly only; nothing is linked).
@@ -121,7 +130,7 @@ checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 4Fit47add_all vec4 12" "a64 whole_lane_sums vec4 2"
   "a64 6blocks shuffles 12" "a64 6blocks vec4 400"
   "m33 7Removal4refs vminmax 8"
-  "m33s 10finish_row fpmul 200" "m33s 10finish_row divides 0" "m33s 10finish_row zerofills 1"
+  "m33s 10finish_row fpmul 230" "m33s 10finish_row divides 0" "m33s 10finish_row zerofills 1"
   "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit47add_all libcalls 0")
 
 declare -A asm
