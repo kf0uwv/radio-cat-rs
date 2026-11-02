@@ -1116,6 +1116,10 @@ fn get(d: &[u8]) -> (f32, f32) {
 fn reference(refs: &mut [u8], phase: &[u32], env: Option<&[f32]>) {
     match env {
         Some(env) => scaled_cos_sin::<CHAINS, _>(refs, phase, env, |w| w),
+        // Weights of 1.0, one per phase: `phase` itself is passed as the
+        // weights' slice only for its length; its values are ignored. (A
+        // slice of `()` as long as a block gave other code: the loop's
+        // count took a third bound.)
         None => scaled_cos_sin::<CHAINS, _>(refs, phase, phase, |_| 1.0),
     }
 }
