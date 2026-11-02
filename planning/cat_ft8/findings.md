@@ -8620,8 +8620,9 @@ branch, in the order tried):
      never read the envelope.
    - `scaled_cos_sin` takes its weights' type as a parameter; without an
      envelope it is called with a constant weight of 1.0, which the
-     compiler folds away. That is a second instance of the 16-sample
-     block: `.text` grows (below).
+     compiler folds away. That is a second instance of the loop (on the
+     hosts the 16-sample block, on the M33 the scalar loop): `.text`
+     grows (below).
    - Tests: the reference without an envelope against the reference
      times an envelope of ones, byte for byte, at every length up to
      three blocks of `CHAINS` and beyond; `blocks` against `fill_phase`
@@ -8718,9 +8719,10 @@ virtual machine's clock biases its stage times).
   `decode_a_slot` 2 512, `osd_decode` 272 B). The measured high water
   falls (table above).
 - 513fd17's host image is 632 B larger than 7d747e3's: the second
-  instance of `scaled_cos_sin` (with and without an envelope). Hosts'
-  `.text` grows with it: AArch64 `paired_bench` +4 992 B, x86-64 +8 128 B
-  (on 7d747e3).
+  instance of `scaled_cos_sin` (with and without an envelope), on the
+  M33 a second scalar loop (`CHAINS` is 1 there; corrected in O18b).
+  Hosts' `.text` grows with it, where each instance is the 16-sample
+  block: AArch64 `paired_bench` +4 992 B, x86-64 +8 128 B (on 7d747e3).
 - No fused multiply-add (0 `vfma`/`vfms`/`vfnma`/`vfnms`; `vmla` 75 /
   146 / 13 → 74 / 157 / 12) and no `f64` helper in any image; thumbv7em
   builds.
@@ -8728,7 +8730,10 @@ virtual machine's clock biases its stage times).
 ### Identity
 
 - **Records, x86-64:** the 73 800 `paired_bench run` records of
-  a17baa6, 7d747e3 and 513fd17 equal b93516e's (0 differ).
+  a17baa6, 7d747e3 and 513fd17 equal b93516e's (0 differ). (Corrected in
+  O18b: the comparisons in this round's log named an empty reference
+  directory and all failed; the result above came from a comparison
+  repeated by hand. O18b reruns it from the script and logs it.)
 - **800 WAV slots** × `host`, `small`, `host,passes=1` × plain, `--raw`,
   `--profile` (7 200 runs, 78 690 decode lines): byte-identical to
   b93516e's at all three, `--profile` metadata included.
@@ -8816,3 +8821,107 @@ running the generator over the skipped samples again.
   an envelope (rustc 1.93.0). Neither is in the code-generation check.
   The removal's loop is 22 AArch64 instructions per four samples in the
   aligned `paired_bench` here.
+
+## Review follow-ups (O18b, 2026-11-02; no code generation change on the measured targets)
+
+On top of O18 (26f66ad), one change per commit: 8dc7a85, a6feb13,
+75729ab, 6f389c4 and 85ba626. **The `.text` and `.rodata` of all eight
+binaries are byte-identical to 513fd17's at every commit** (x86-64 and
+AArch64 `cat-ft8-decode` and `paired_bench`; thumbv8m check and staged
+images, small and host, built with `--cfg cat_ft8_minmaxnm`; one scratch
+path, fresh tree, rustc 1.93.0). So O18's timings, counts, sizes and
+identity carry over unchanged.
+
+### Changes
+
+1. **8dc7a85: the branch-free clamp only where `max` and `min` are
+   instructions.**
+   - On thumbv7em (and 32-bit ARMv7) `f32` `max` and `min` are library
+     calls, so `input_select` put `fmaxf`/`fminf` calls into the
+     subtraction's per-sample loops: 20 in `Removal::refs`, 6 in
+     `symbol_correlations`, and 8 in `Fit4::add_all` (from `input4`,
+     there since O13) in the thumbv7em library's assembly.
+   - `INPUT_SELECT` now picks the form: the branch-free one on x86-64,
+     AArch64 and targets built with `--cfg cat_ft8_minmaxnm`, the branch
+     elsewhere. The thumbv7em subtraction has no such calls left (34 →
+     0). The 22 elsewhere in the thumbv7em library (`finish_row`,
+     `sum_product_round`, `snr::estimate`, `soft_bits_at`, `ratio_db`)
+     are older than this round and unchanged.
+   - **Why a hand-set cfg.** Stable Rust exposes no ARM target feature
+     (`--print cfg` lists none for thumbv8m.main or thumbv7em), so no
+     `cfg` tells the two apart. A build script reading the target name
+     was tried: its presence alone, before any use, changed the code on
+     every measured target (43 AArch64 `paired_bench` functions, and on
+     the M33 `Removal::refs`'s instruction order). So thumbv8m.main with
+     its FPU takes the measured form by `--cfg cat_ft8_minmaxnm`; the
+     embedded check builds with it, and the crate declares the cfg for
+     `unexpected_cfgs` (the `[lints]` table; MSRV 1.75 builds it without
+     warnings). **A thumbv8m.main build without the cfg takes the branch
+     form: not the code O18 measured on the M33**, and not measured.
+2. **a6feb13: one clamp, `input`, chosen per target.** The branch form
+   is `input_branch`; `input` is `input_select` or `input_branch` by
+   `INPUT_SELECT`. Both stay in the build because the choice is per
+   target. The fit's single edge samples keep `input_branch` by name:
+   with `input` there the code changed on every measured target (x86-64
+   `cat-ft8-decode` −64 B, the M33 host image −20 B), and that was not
+   measured. The tests take `input_branch` as the reference.
+3. **75729ab: the reference's unit weights explained** (comment only).
+   A slice of `()` as long as a block, in place of `phase` as the
+   weights' slice, changed the code on every target (x86-64
+   `cat-ft8-decode` +1 088 B, the M33 host image +20 B: the loop's count
+   took a third bound), and one release library test failed with it;
+   the form was dropped without finding which bound.
+4. **6f389c4: `blocks` asserts the generator starts at sample 0**
+   (`debug_assert_eq!(synth.position(), 0)`): its ramp test reads the
+   block's position from its own count. Release code unchanged.
+5. **85ba626: the code-generation check covers the clamp.** New checks
+   in `cat-ft8/codegen-check.sh` on the release library's AArch64
+   assembly (one codegen unit), counts with rustc 1.93.0:
+
+| check | head | branch form everywhere (forced) | branch form in the removal only (forced) |
+|---|---|---|---|
+| four-lane `fmaxnm`/`fminnm` in `Removal::refs` (`7Removal4refs`), floor 2 | 6 | **0** | **0** |
+| the same in `symbol_correlations`, floor 2 | 8 | **0** | 8 |
+| `fcmgt`/`bsl`/`bit`/`bif` in `Removal::refs`, ceiling 2 | 0 | **18** | **18** |
+| (the existing checks: 696 / 15 / 156) | pass | pass | pass |
+
+   Each forced run is logged; both fail, as they must. The header now
+   names O18.
+
+### What is not guarded, and why
+
+The reference without an envelope relies on the compiler folding the
+multiplication by the constant weight 1.0 (an exact fold, `x · 1.0 =
+x`, done by LLVM's instruction combining). It is left unchecked: losing
+it costs only the two multiplications per sample that 7d747e3 still
+had (the reference 4.79 → about 5.3 cycles a sample, about 0.5 of the
+subtraction's 22.1), not a cliff, and its signature in the assembly (two
+`fmul` fewer per four samples among the polynomial's) is not separable
+by a count the way the clamp's is.
+
+### Evidence corrected
+
+- **x86-64 records (O18).** The O18 log's nine record comparisons named
+  an empty reference directory and all failed; O18's result (0 differ)
+  came from a comparison repeated by hand. `x86id.sh` now makes the
+  comparisons itself against b93516e's records and WAV output, and was
+  rerun at 26f66ad and at 85ba626: the 73 800 records equal b93516e's
+  (0 differ, each of `host`, `host,passes=1` and `small`), and the 800
+  WAV slots × 3 × 3 are byte-identical (7 200 runs, 78 690 decode lines),
+  at both. The old log is replaced.
+- **The M33's +632 B (O18)** is a second scalar loop there, not a
+  16-sample block; corrected in place.
+
+### Checks
+
+- Local CI passes at 85ba626, including the extended code-generation
+  check and `check.sh --stack` (flash 89 534 / 101 810 / 34 566 B, static RAM
+  and frames as at 513fd17).
+- The thumbv7em library builds, and `clippy -D warnings` passes for it
+  and for thumbv8m with and without the cfg.
+
+### Follow-up, not done
+
+- `Synth::envelope_is_one` (or the like): `blocks` and
+  `Synth::fill_phase` each know where the ramps are; one place should
+  say it. Deferred to the next change to that code.

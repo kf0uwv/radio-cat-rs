@@ -1720,3 +1720,21 @@
 - Identity: records on x86-64 and the A76 at all three commits, WAVs × 3 ×
   3 on both, encoder, M33 dumps and residuals; local CI and the A76
   library tests (199) pass; four mutants caught.
+
+## Session: 2026-11-02 (O18b review follow-ups)
+
+- 8dc7a85: the branch-free clamp only where `max`/`min` are instructions
+  (x86-64, AArch64, `--cfg cat_ft8_minmaxnm` for thumbv8m.main with its
+  FPU, set in the embedded check); thumbv7em's subtraction loses its 34
+  `fmaxf`/`fminf` calls. A build script was tried and moved code on every
+  target.
+- a6feb13: one `input`, chosen per target; `input_branch` is the
+  reference and the fit's edge samples' form.
+- 75729ab: comment on the reference's unit weights (a `()` slice changed
+  code). 6f389c4: `blocks` asserts the generator starts at 0.
+- 85ba626: the code-generation check counts `fmaxnm`/`fminnm` in the
+  removal and the time search and selects in the removal; shown to fail
+  with the branch form.
+- Every commit's eight binaries byte-identical to 513fd17's; x86-64
+  record comparison fixed in the script and rerun; findings corrected
+  (x86-64 records log, the M33 +632 B).
