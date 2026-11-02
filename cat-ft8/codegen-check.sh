@@ -15,8 +15,9 @@
 #
 # Checks that the belief-propagation rounds, the subtraction's input
 # clamp and its reference's loads and stores are still vectorised on
-# AArch64, and that the clamp keeps its form on the microcontroller
-# targets. Their speed depends on code generation that no test sees: the
+# AArch64, that the clamp keeps its form on the microcontroller targets,
+# and that the FFT stays written out butterfly by butterfly on the
+# Cortex-M33. Their speed depends on code generation that no test sees: the
 # sum-product round's tanh and atanh passes 24 values at a time
 # (`PASS_LANES`), its products over four checks in the lanes of one
 # vector (`group_products`), min-sum likewise (`group_min_sum`), the
@@ -68,6 +69,16 @@
 # - thumbv7em: calls of `fmaxf`/`fminf` in the removal,
 #   symbol_correlations and `Fit4::add_all`, a ceiling of 0: with the cfg
 #   (wrongly set) they are 20, 6 and 8.
+# - thumbv8m.main with the cfg at opt-level "s" (the size the
+#   embedded check builds at): the FFT, inlined into `finish_row`,
+#   written out butterfly by butterfly with one lane. A floor on its
+#   `f32` multiplies (`vmul`, `vmla`, `vmls`): 237 with rustc 1.93, 71
+#   with the stages as loops (findings O20); a ceiling of 0 on divisions
+#   (`umull`, `udiv`): 0, and 5 with the stages as loops; a ceiling of 1
+#   on `__aeabi_memclr4`/`memset` calls: 1, and 8 with the stages as
+#   loops. The floor guards the later stages only: with just the first
+#   stage as loops the multiplies are 243 and the ceilings fire instead
+#   (1 division, 2 zero-fill calls).
 # The multiplication by an envelope of 1.0 that the reference leaves out
 # (the weight folded by the compiler) is not checked: findings O18b.
 # A bound that fails means: re-measure on the Cortex-A76 (planning/
@@ -78,11 +89,13 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 target_dir="${CARGO_TARGET_DIR:-$here/../target/codegen-check}"
-# The builds: a name, the target, cargo's features option and a `--cfg`
-# for rustc (`-` for none).
-builds=("a64 aarch64-unknown-linux-gnu - -"
-  "m33 thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm"
-  "m4 thumbv7em-none-eabihf --no-default-features -")
+# The builds: a name, the target, cargo's features option, a `--cfg`
+# for rustc (`-` for none) and an opt-level (`-` for the release
+# profile's).
+builds=("a64 aarch64-unknown-linux-gnu - - -"
+  "m33 thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm -"
+  "m33s thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm s"
+  "m4 thumbv7em-none-eabihf --no-default-features - -")
 # Each check: the build, the function, what is counted, and its bound. The function
 # is a name, or a mangled path segment as it appears in the symbol (its
 # length first) where the name alone is ambiguous. `vec4` counts
@@ -95,7 +108,10 @@ builds=("a64 aarch64-unknown-linux-gnu - -"
 # `fmaxf` and `fminf`, at most the bound; `interleaved` counts `ld2`,
 # `ld3`, `ld4`, `st2`, `st3` and `st4`, at most the bound; `shuffles`
 # counts `zip1`, `zip2`, `uzp1`, `uzp2`, `trn1` and `trn2`, at most the
-# bound. A function whose label is not
+# bound; `fpmul` counts `vmul`, `vmla` and `vmls` on `f32`, at least the
+# bound; `divides` counts `umull` and `udiv`, at most the bound;
+# `zerofills` counts calls of `__aeabi_memclr4`, `__aeabi_memclr` and
+# `memset`, at most the bound. A function whose label is not
 # found, or an unknown metric, fails.
 checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 min_sum_round vec4 100"
@@ -105,6 +121,7 @@ checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 4Fit47add_all vec4 12" "a64 whole_lane_sums vec4 2"
   "a64 6blocks shuffles 12" "a64 6blocks vec4 400"
   "m33 7Removal4refs vminmax 8"
+  "m33s 10finish_row fpmul 200" "m33s 10finish_row divides 0" "m33s 10finish_row zerofills 1"
   "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit47add_all libcalls 0")
 
 declare -A asm
@@ -113,6 +130,7 @@ for b in "${builds[@]}"; do
   key=$1 target=$2 cargo_opt=$3 rustc_opt=""
   [ "$cargo_opt" = - ] && cargo_opt=""
   [ "$4" = - ] || rustc_opt="--cfg $4"
+  [ "$5" = - ] || rustc_opt="$rustc_opt -C opt-level=$5"
   dir="$target_dir/$key"
   # Clean the library first: cargo would otherwise see it as fresh, run
   # no compiler and write no assembly.
@@ -143,6 +161,9 @@ for entry in "${checks[@]}"; do
     metric == "libcalls" && /^\tbl\t(fmaxf|fminf)$/ { n++ }
     metric == "interleaved" && /^\t(ld[234]|st[234])\t/ { n++ }
     metric == "shuffles" && /^\t(zip[12]|uzp[12]|trn[12])\t/ { n++ }
+    metric == "fpmul" && /^\tv(mul|mla|mls)\.f32\t/ { n++ }
+    metric == "divides" && /^\t(umull|udiv)\t/ { n++ }
+    metric == "zerofills" && /^\tbl\t(__aeabi_memclr4|__aeabi_memclr|memset)$/ { n++ }
     END { if (found) print n + 0; else print "missing" }' "${asm[$key]}")
   if [ "$n" = missing ]; then
     echo "FAIL $key $name: function not found"
@@ -158,6 +179,9 @@ for entry in "${checks[@]}"; do
     libcalls) what="fmaxf/fminf calls (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     interleaved) what="interleaving loads and stores (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     shuffles) what="shuffles (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    fpmul) what="f32 multiplies (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
+    divides) what="divisions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    zerofills) what="zero-fill calls (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     *) what="unknown metric $metric"; ok=0 ;;
   esac
   if [ $ok = 1 ]; then
