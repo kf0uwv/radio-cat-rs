@@ -1195,16 +1195,17 @@ fn input_select(x: f32) -> f32 {
 }
 
 /// Whether [`input`] is [`input_select`] rather than [`input_branch`] (the
-/// same values): where `f32` `max` and `min` are single
-/// instructions and the form was measured faster (O18). That is x86-64
-/// and AArch64, and, with `--cfg cat_ft8_minmaxnm`, other targets that
-/// declare it, such as thumbv8m.main with its FPU (VMAXNM, VMINNM; the
-/// embedded check builds it so). Elsewhere, for example on thumbv7em, `max`
-/// and `min` are library calls, and the branch stays. The cfg is set by
-/// hand because stable Rust exposes no ARM target feature that tells
-/// thumbv8m.main from thumbv7em, and a build script that read the target
-/// name would change the code generated for every target (its presence
-/// alone moved code on all three measured targets).
+/// same values): where `f32` `max` and `min` are not library calls and the
+/// form was measured faster (O18). That is x86-64 (`maxss` with a compare
+/// and blend), AArch64 (`fmaxnm`, `fminnm`), and, with
+/// `--cfg cat_ft8_minmaxnm`, other targets that declare it, such as
+/// thumbv8m.main with its FPU (`vmaxnm`, `vminnm`; the embedded check
+/// builds it so). Elsewhere, for example on thumbv7em, `max` and `min` are
+/// library calls, and the branch stays. The cfg is set by hand because
+/// stable Rust exposes no ARM target feature that tells thumbv8m.main from
+/// thumbv7em, and a build script that read the target name would change
+/// the code generated for every target (its presence alone moved code on
+/// all three measured targets).
 const INPUT_SELECT: bool = cfg!(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
@@ -1214,9 +1215,10 @@ const INPUT_SELECT: bool = cfg!(any(
 /// A sample as the decoder's front end takes it: a non-finite value is
 /// 0.0 and a finite one beyond ±[`INPUT_LIMIT`] is clamped to it. Both
 /// forms stay in the build because the choice is per target
-/// ([`INPUT_SELECT`]): [`input_select`] where `max` and `min` are
-/// instructions, [`input_branch`] elsewhere. (The fit's edge samples also
-/// take [`input_branch`]; see [`Fit4::add_all`].)
+/// ([`INPUT_SELECT`]): [`input_select`] where `max` and `min` are not
+/// library calls and it was measured faster, [`input_branch`] elsewhere.
+/// (The fit's edge samples also take [`input_branch`]; see
+/// [`Fit4::add_all`].)
 #[inline(always)]
 fn input(x: f32) -> f32 {
     if INPUT_SELECT {
