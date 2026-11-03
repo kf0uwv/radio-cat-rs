@@ -13286,8 +13286,12 @@ unit). Each carries its tests and code-generation bounds. Decodes,
 records, residuals and encoder output are identical. No memory is added:
 static RAM, the slot's storage and the scratch are unchanged, the M33
 stack's high water is unchanged; flash grows by 84 B (M33 small) and 12 B
-(host), the hosts' `.text` by 26 KB (x86-64) and 11 KB (AArch64), almost
-all 2a7ab53's loops.
+(host); the hosts' `.text` grows by 26 176 B net over the round on x86-64
+and 10 944 B on AArch64 (`cat-ft8-decode`): 2a7ab53 alone +25 408 B and
++14 848 B, its six segments' loops (its commit message does not give
+that cost), the other commits −384 and +1 152 B, −1 664 and −2 240 B. O26b
+replaces the segments (+3 712 B and −2 432 B `.text` against 669666d, with
+9 192 B more `.rodata`).
 
 | target | measure | 669666d | 6db1324 | change |
 |---|---|---|---|---|
@@ -13389,8 +13393,10 @@ O25's profile at b335b0a (whose feed code is 669666d's), the feed's parts:
   (the rest of the transform and levels) 98.00 → 88.07 M; `memmove` (the
   window's shift) 2.26 M unchanged.
 - Paint high water: small 10 304 B, host 10 276 B, unchanged at every
-  commit. Frames: `finish_row` 464 → 472 B; `bin_powers_apart` below the
-  largest listed.
+  commit. The feed's path is deeper but stays under it: `finish_row`'s
+  frame 464 → 472 B (+8), and below it `bin_powers_apart`'s 56 B (five
+  and four registers pushed, 20 B of locals), 64 B more in all on that
+  path.
 
 ### Cortex-A76 (Raspberry Pi 5; medians of 4 alternated runs)
 
@@ -13529,13 +13535,15 @@ is equal to 669666d's.
   `--profile` lines (exit 0). One benchmark at a time, in fresh directories;
   1 524 throttle samples, once a second, start and end included, all 0x0.
   (2a7ab53's and 129f934's AArch64 code was run on the A76 only in the
-  timing; their x86-64 identity stands for their host code.)
+  timing, so their AArch64 identity is inferred from their x86-64 identity
+  and 6db1324's A76 runs, not run.)
 - **Encoder:** the 45 `cat-ft8-encode` WAV files of each commit equal
   70be604's.
 - **Cortex-M33 (emulated):** at 3ea1327, 129f934 and 6db1324 (2a7ab53's
   thumbv8m sections equal 3ea1327's) the small and host dump images on
   seven slots (14 of 14) and the multi-pass residuals of s0086 and s0407
-  equal 68634cc's (16 of 16; the M33 comparison exits 0 each).
+  equal 68634cc's (16 of 16: 14 dumps and 2 residuals; the M33 comparison
+  exits 0 each).
 - **Comparators on a forced difference** (copies of 129f934's outputs; each
   line its own exit status): the records comparison 0 unforced, 1 with one
   record's field changed; the WAV comparison 0 unforced, 1 with a decode
@@ -13647,7 +13655,8 @@ a4, b2, e3 and e4 are equivalent by design.
   limit's bits (samples of 2 or more beside smaller ones; audio fed at
   16-bit scale as `f32`): 4 + 7 instructions a sample on the M33 instead of
   the fold's 10, and a block out of the limit is classified as before.
-- Code size: the hosts' `.text` +26 KB (x86-64), +11 KB (AArch64).
+- Code size: the hosts' `.text` +26 176 B net (x86-64), +10 944 B
+  (AArch64); 2a7ab53 alone +25 408 B and +14 848 B.
 
 ### Not measured
 
@@ -13660,4 +13669,230 @@ a4, b2, e3 and e4 are equivalent by design.
   16-bit scale fed as `f32` (the check's second pass) on any target.
 - A placement variation on the A76 (the untouched stages moved by at most
   0.01 ms, the subtraction 0.065 ms).
+- After a toolchain change: the bounds above.
+
+## Review follow-ups (O26b, 2026-11-03; the FFT's last stage one loop over a twiddle table past one turn)
+
+On top of O26 (b6a7e5c): 8f225df (the last stage as one loop over an
+extended twiddle table, replacing 2a7ab53's six segments, with its tests
+and code-generation bounds, x86-64 among them), ff43e16 (names: the
+check's `calls_within_limit` metric, `bin_powers_out_of_line`; the level
+count test's top level), then this record. Every section of all eight
+binaries at ff43e16 equals 8f225df's, and both equal the build timed
+below (one scratch path, rustc 1.93.0, thumbv8m with `--cfg
+cat_ft8_minmaxnm`).
+
+### The shape chosen
+
+2a7ab53 split the last stage (radix 5, l = 384) at the five k where one
+of its twiddle indices m·k + 384·(m·q mod 5) passes N, so that within each
+segment the index is m·k plus a constant and the loop vectoriser loads
+each m's twiddles as interleaved vectors. Each segment compiled as a
+vector loop and a scalar tail: +25 408 B `.text` on x86-64 and +14 848 B
+on AArch64 (`cat-ft8-decode`), which its commit message does not say.
+
+8f225df instead lets the index run unreduced: the largest is 4·383 +
+384·4 = 3 068, so the twiddle table, where vectors are taken (`LANES` above
+one), holds 3 069 entries (N + 1 149: the turn's entries again, built at
+compile time from the generated turn, `TWIDDLE_TURN`) and the stage is
+one loop over k. That is the least extension the unwrapped index allows,
+and one table: every other reader takes its index mod N and reads the
+same table unchanged, so the hosts link one 24 552 B table rather than
+the turn plus a second one (`TWIDDLE_ENTRIES` is N where one lane is
+taken, from the same `LANES` predicate that picks `straight_stages`). The
+same AArch64 vector loop as each segment's (336 instructions a step of
+four butterflies, 10 `ld2`/`ld4`), one scalar tail of the last four k
+(the `ld4` of m = 2 would read past the stage's last entry, so the
+vectoriser peels one step), no bounds-check call in the stage. On x86-64
+the loop of 80 `mulps` is 450 instructions, as was the first segment's.
+
+### Memory (one scratch path, aligned; `.text` + `.rodata`, B)
+
+| binary | 669666d | 6db1324 (segments) | ff43e16 (table) | against 6db1324 | against 669666d |
+|---|---|---|---|---|---|
+| x86-64 `cat-ft8-decode` | 464 966 + 84 272 = 549 238 | 491 142 + 84 320 = 575 462 | 468 678 + 93 504 = 562 182 | −22 464 + 9 184 = **−13 280** | +3 712 + 9 232 = +12 944 |
+| x86-64 `paired_bench` | 1 419 254 + 147 236 = 1 566 490 | 1 445 558 + 147 228 = 1 592 786 | 1 422 966 + 156 428 = 1 579 394 | −22 592 + 9 200 = **−13 392** | +3 712 + 9 192 = +12 904 |
+| AArch64 `cat-ft8-decode` | 404 712 + 76 632 = 481 344 | 415 656 + 76 632 = 492 288 | 402 280 + 85 840 = 488 120 | −13 376 + 9 208 = **−4 168** | −2 432 + 9 208 = +6 776 |
+| AArch64 `paired_bench` | 1 177 240 + 137 940 = 1 315 180 | 1 188 120 + 137 948 = 1 326 068 | 1 174 872 + 147 132 = 1 322 004 | −13 248 + 9 184 = **−4 064** | −2 368 + 9 192 = +6 824 |
+
+- The twiddle table is 24 552 B in each host binary (`llvm-nm`), 15 360 B
+  in each M33 and M4F image; no binary holds two. `decode::TABLE_BYTES`
+  and `--profile`'s `static_table_bytes` read 48 621 B on hosts (39 429
+  before and on the Cortex-M targets); ADR 0024 is amended with both.
+- RAM, scratch and slot storage unchanged on every target.
+- `finish_row`, the function holding the transform: AArch64 2 882
+  instructions (5 898 with the segments), x86-64 3 364 (7 394); the
+  x86-64 figure was 41 KB of code with the segments, over the 32 KB
+  instruction cache of the Zen 2 core it was timed on.
+- **Cortex-M33:** flash small 92 038 B, host 104 738 B, static RAM
+  201 668 / 230 084 B, as at 6db1324 (`check.sh --stack`); `.text` and
+  `.rodata` of all four images the same sizes. Their hashes differ: the
+  table, now `fft::TWIDDLES` built from the turn, sits elsewhere in
+  `.rodata` (0xd844 rather than 0x111ec in the small staged image), which
+  moves the literal addresses; the instructions are the same in number
+  (below). **M4F:** flash 92 304 / 105 332 B and static RAM as at
+  6db1324; `fmaxf`/`fminf` 10 and 14, no `f64` helper, no fused
+  multiply-add.
+
+### CPU
+
+**Cortex-A76** (Raspberry Pi 5, core 3; medians of 6 alternated cycles,
+`slotcost host host,passes=1 200 5` then `slotcost small small 200 5` of
+each build, forward on odd cycles and reversed on even; 6db1324's binaries
+stand for b6a7e5c, whose code they are; the table build's every section
+is ff43e16's):
+
+| ms (median, spread) | 669666d | 6db1324 (segments) | ff43e16 (table) |
+|---|---|---|---|
+| host: feed | 19.105 (0.030) | 17.040 (0.020) | **16.840 (0.020)**: −0.200 (−1.2%), −2.265 (−11.9%) against 669666d |
+| host: slot / worst | 80.8 / 85.5 | 78.7 / 83.4 | 78.6 / 83.3 |
+| one pass: slot, feed | 18.3, 6.455 | 17.6, 5.770 | 17.6, **5.690** |
+| small: feed | 6.350 (0.010) | 5.660 (0.010) | **5.590 (0.010)**: −0.070 (−1.2%), −0.760 (−12.0%) |
+| small: slot / worst | 12.8 / 13.2 | 12.1 / 12.6 | 12.1 / 12.5 |
+
+- **Placement check.** Belief propagation, the sync search and soft bits
+  agree within 0.01 ms in all three builds and both configurations (soft
+  bits small 0.890 → 0.900 at the table build, one step); the subtraction,
+  whose code no commit here touches, reads 35.065, 35.000 and 35.080 ms
+  (layout, ±0.2%). The feed's gain over the segments is ten times its
+  spreads, in each of the 6 cycles.
+- **Validity.** All 36 runs valid: 2 850 samples during the runs and 180
+  in the warm-ups, every one 0x0, the end checks included; every sample
+  during a run at 2 400 MHz (one warm-up's minimum 1 600 MHz, the first);
+  peak 54.3 °C.
+
+**x86-64** (Threadripper 3970X, core 5, `perf stat` user counters over the
+whole `slotcost` program; medians of 4 alternated rounds, none void):
+
+| | 669666d | 6db1324 | ff43e16 (table) |
+|---|---|---|---|
+| small: cycles (range) | 95.66 G (95.44–95.88) | 94.22 G (93.83–94.32) | **92.21 G (91.79–92.40)**: −2.13%, −3.60% against 669666d |
+| small: instructions | 295.11 G | 281.55 G | 279.21 G (−0.83%) |
+| host: cycles | 308.66 G (308.25–310.08) | 305.65 G (305.53–306.01) | **301.55 G (301.38–303.08)**: −1.34%, −2.30% |
+| host: instructions | 870.70 G | 843.04 G | 838.34 G (−0.56%) |
+
+The cycles fall more than the instructions: the five scalar tails it
+drops are 20 of 384 butterflies; the rest is likely the instruction cache
+(above; not measured). O26's own x86-64 rounds (medians of 5, 96.36 →
+93.93 G small) were another session; these 4 rounds compare the three
+builds side by side.
+
+**Cortex-M33** (emulated, staged images, s0086 and s0407, small and host):
+every stage's and function's instruction count at ff43e16 equals
+6db1324's (function names aside: `bin_powers_out_of_line`), decodes 23 /
+40 and 30 / 38, the paint high water 10 304 / 10 276 B. The M33 runs
+`last_straight_stage`; O26's M33 figures stand.
+
+So the table form is at least as fast everywhere it runs and smaller in
+code and code + data on both hosts than the segments; against 669666d it
+costs 6.8 KB (AArch64) and 12.9 KB (x86-64) of code + data for −12% of
+the A76 feed. It is kept.
+
+### Tried, not kept
+
+- **The segments at run time** (one loop over a list of bounds, the
+  segment a function with `lo`, `hi`): out of line (the reviewer's build)
+  the stage lost its vectorisation (no `ld2`/`ld4`, 10 bounds-check
+  calls); inlined (forced form g4 below) AArch64 kept 12 interleaved loads
+  but `finish_row` grew to 3 703 instructions with 103 two-lane `.2d`
+  instructions, x86-64 to 4 296 with its vector loop 629 instructions. Not
+  timed.
+- **A table of 2N** (the reviewer's build, a second table beside the
+  turn): the same AArch64 loop, +30 KB `.rodata`; with the turn's own
+  readers on the first half, 15 360 B more than the N + 1 149 table that
+  replaces the turn. The reviewer's x86-64 timing of it (feed −5.8%
+  against 6db1324) had the hosts' bins' powers indexed as well.
+- **The index reduced mod N** (g2): no vector loop on x86-64, 9
+  interleaved loads on AArch64; equal values (mutant t7).
+
+### The code-generation check (ff43e16)
+
+Changes: an x86-64 build (`x64`); `mulloop80` (the shortest loop with 80
+`mulps`, a ceiling, x86-64: 460 against 450); `insns` (a function's
+instructions, a ceiling: `finish_row` 3 000 on AArch64 against 2 882,
+3 500 on x86-64 against 3 364); the `ldn` floor at its count (12, of which
+10 the stage's; it was 48 against 62, so a segment could have stopped
+vectorising); `checks` renamed `calls_within_limit` (it shared its name
+with the script's list of checks); CI installs the x86-64 target. Each
+form below is a fresh copy of ff43e16's tree with one edit, its own log
+and the check's exit status:
+
+| form | a64 ldn (≥ 12) | x64 mulloop80 (≤ 460) | a64 insns (≤ 3 000) | x64 insns (≤ 3 500) | a64 / m33s calls_within_limit (≥ 2) | exit |
+|---|---|---|---|---|---|---|
+| head (ff43e16) | 12 | 450 | 2 882 | 3 364 | 2 / 2 | 0 (41 of 41) |
+| g1: the last stage side by side, twiddles gathered (O26's f2) | **2** | **699** | 2 941 | 3 403 | | 1 |
+| g2: the index reduced mod N | **9** | **no loop** | **3 140** | 2 757 | | 1 |
+| g3: O26's six segments, each compiled | 62 | 450 | **5 898** | **7 394** | | 1 |
+| g4: the segments at run time, inlined | 12 | **629** | **3 703** | **4 296** | | 1 (and `vec2` 103) |
+| a4 (O26's mutant): every block classified | 12 | 450 | 2 882 | 3 364 | **0 / 0** | 1 |
+
+O26's b2 (the wrap decided per k) has no counterpart: the table form has
+no wrap. Its nearest form, the index reduced per twiddle, is g2. O26's e3
+and e4 (the powers' form on the M33, equivalent by value) stay as O26
+left them: e3 fails `fploop4` as O26's f4a, e4 is guarded by nothing on
+the hosts (equivalent, unguarded).
+
+### Identity (ff43e16)
+
+- **Records, x86-64:** 73 800 `paired_bench run` records equal b93516e's
+  (24 600 each of host, one pass, small; 0 differ, exit 0 each).
+- **800 WAV slots** × 3 × 3, x86-64: 93 091 lines byte-identical to
+  b93516e's, 2 400 `--profile` lines differing only by the sync scratch
+  and, new, by `static_table_bytes` 39 429 → 48 621 in every one of them
+  (`wavcmp26b.py`: O21's rule plus that one change; exit 0). On forced
+  copies it exits 0 unforced, 1 with one line's table bytes at 48 629, 1
+  with one left at 39 429, 1 with one decode's frequency one higher.
+- **A76:** the 73 800 records equal b93516e's (24 600 each of host, one
+  pass, small; 0 differ, exit 0 each), and the 800 WAV slots × 3 × 3 the
+  same as x86-64's above under `wavcmp26b.py` (exit 0); throttle 0x0 in
+  all 1 527 samples.
+- **Encoder:** the 45 `cat-ft8-encode` WAVs equal 70be604's.
+- **Cortex-M33 (emulated):** the small and host dump images on seven slots
+  and the multi-pass residuals of s0086 and s0407 equal 68634cc's: 16 of
+  16, 14 dumps and 2 residuals (exit 0).
+
+### Tests and mutants
+
+`last_twiddle_index_equals_the_stage_index` is replaced by
+`twiddles_repeat_the_turn_as_far_as_the_last_stage_reads` (every entry
+against the turn's at t mod N, bit for bit; every (k, m, q) of the last
+stage's unreduced index against the stage's index mod N; the largest + 1
+equal to the table's length where vectors are taken). The bit-for-bit
+stage and transform tests are unchanged and cover the loop.
+`level_counts_equal_the_filtered_counts`' third kind of row mixes 0, 127
+and 255 (it gave 0, 127 and 254).
+
+Fresh copies of ff43e16's tree, release library tests (215), one log each:
+
+| mutant | failing |
+|---|---|
+| none (control) | 0 |
+| t1 the table one entry short | 58 |
+| t2 one turn on the hosts too | 58 |
+| t3 the extension one entry off | 9 |
+| t4 the extension zeros | 16 |
+| t5 the index's m·q not reduced mod 5 | 25 |
+| t6 q for m·q | 26 |
+| t7 the index reduced mod N (equivalent: the same values; g2 above fails the check) | 0 |
+| t8 the last stage side by side (equivalent; g1 fails the check) | 0 |
+| t9 a twiddle's parts swapped | 26 |
+| c1 the top at 254 (O26's, again with the new row) | 2 |
+
+### Checks (ff43e16)
+
+- Local CI passes at ff43e16, 17 of 17 steps, among them codegen-check
+  (41 of 41) and the group-one step.
+- A76 release library tests with the ignored ones: 223 pass, 0 fail (the
+  source-tree test filtered out); throttle 0x0 in all 240 samples.
+- `check.sh --stack`: flash and static RAM above, the largest frame
+  `finish_row` 472 B, no fused multiply-add (`vmla` 128, 241, 17 as
+  before).
+
+### Not measured
+
+- The table form on the M33 or M4F (not linked there; the M33's counts
+  are equal to the instruction).
+- The runtime-segment form's and the 2N table's timing on the A76; the
+  x86-64 per-function shares; d-cache misses of the larger table (24 KB
+  of 64 KB L1d on the A76; the stage reads 3 069 entries a transform).
 - After a toolchain change: the bounds above.

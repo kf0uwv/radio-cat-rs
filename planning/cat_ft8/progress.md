@@ -2165,3 +2165,24 @@
   forms each fail.
 - Tried, not kept: the powers indexed but inlined (38 a bin) or apart but
   zipped (37); the level counts in 8-bit runs of 255 (unrolled, more code).
+
+## Session: 2026-11-03 (O26b the FFT's last stage over one longer table)
+
+- Review follow-ups to O26. 8f225df: where vectors are taken, one twiddle
+  table of N + 1149 entries (the largest index the last stage reads, plus
+  one) replaces the one-turn table, so the last stage is one loop with no
+  wrap; the six segments, `LAST_BOUNDS`, `LAST_SEGMENTS` and
+  `last_twiddle_index` are gone, and `side_by_side_stages` calls
+  `last_stage` directly. The M33 and M4F keep the one-turn table.
+  codegen-check builds x86-64 and bounds the last stage's loop there, caps
+  `finish_row`'s size on both hosts, and holds `ldn` at its count, 12.
+  ff43e16: `calls_within_limit`, `bin_powers_out_of_line`, and the level
+  counts' test row with 255.
+- Against the segments: A76 feed −1.2% (host 17.040 → 16.840 ms, small
+  5.660 → 5.590); x86-64 user cycles −2.13% small, −1.34% host; M33 counts
+  equal. Hosts' text + rodata −13.3 KB (x86-64), −4.1 KB (AArch64); against
+  669666d +12.9 KB and +6.8 KB, 9.2 KB of it the longer table. M33 and M4F
+  flash and RAM unchanged.
+- Identity at ff43e16 (x86-64, A76, encoder, M33), comparators failing when
+  forced, mutants caught (two equivalent, their forms failing the check),
+  local CI passes, A76 library tests pass.
