@@ -2209,11 +2209,31 @@
   images).
   Hosts' `.text` −3.8 KB (x86-64) and −4.4 KB (AArch64); RAM, scratch,
   slot storage, M33 and M4F flash unchanged.
+- The A76 timings are of a build whose sections equal 66d99a4's and
+  11a783b's. M33 counts measured at 11a783b equal 958f04e's (s0086) and
+  ff43e16's (s0407); the M4F images were compared by size and library
+  calls, not hashed.
 - Identity at 11a783b (x86-64, A76, encoder, M33 16/16), comparators
   failing when forced, mutants caught (three equivalent by design), four
   forced code-generation forms (three fail, one equivalent and unbounded),
   local CI passes, A76 library tests pass.
 - Tried, not kept: the last group of three checks padded to a group
-  (t124: no A76 gain, +832 B AArch64 code); the correction's lanes as
+  (no A76 gain, +832 B AArch64 code); the correction's lanes as
   32-bit halves or two pairs; the M33 min-sum's scaled magnitudes taken
   once a check (same code).
+
+## Session: 2026-11-03 (O27b review follow-ups)
+
+- 644f97c: `total_of`, one helper for the clamped gathers, with the
+  reason documented once, a debug assertion of the index and const
+  assertions beside `EDGE_VARS` (N fits a `u8`; every entry below N); the
+  four checked gathers keep their code, each with a line why. With
+  2537329, the source comments no longer carry instruction counts.
+- 366e3a1: codegen-check's `a64r` entries `one`; a new `each` field, so
+  `blocks`' two instantiations each keep their two-lane 64-bit adds (floor
+  2); `sumloop8` ceiling 54; an explicit failure when the release build
+  leaves no per-unit assembly; the 16 units noted as the profile's
+  default; the bounds' history moved to the findings, one line per check.
+- Every section of all eight binaries at 366e3a1 equals 11a783b's. The
+  forced forms g1, g3 and g4 still fail the check; g2 passes as before.
+- Next candidate recorded: `total`/`next` padded to `[f32; 256]`.

@@ -13909,8 +13909,9 @@ blocks without bounds-check branches); then 11a783b (a count in the
 check's comment). Each code commit carries its code-generation bounds.
 Decodes, records, residuals and encoder output are identical. No memory
 is added: static RAM, scratch, slot storage and the M33 stack's high
-water are unchanged; every thumbv8m and thumbv7em section is unchanged;
-the hosts' code shrinks (AArch64 `cat-ft8-decode` −4 352 B, x86-64
+water are unchanged; every thumbv8m section is unchanged (hashed), and
+the thumbv7em images' sizes and library calls are unchanged (their
+sections were not hashed); the hosts' code shrinks (AArch64 `cat-ft8-decode` −4 352 B, x86-64
 −3 840 B, `.rodata` unchanged).
 
 | target | measure | 958f04e | 66d99a4 | change |
@@ -13925,10 +13926,14 @@ the hosts' code shrinks (AArch64 `cat-ft8-decode` −4 352 B, x86-64
 | | `slotcost host host,passes=1 200 5` | 302.40 G | 300.67 G | **−0.57%** |
 | Cortex-M33 | every count | | | 0 (sections identical) |
 
+The A76 timings in the column 66d99a4 are of a build whose `.text` and
+`.rodata` in all eight binaries equal 66d99a4's and 11a783b's (below).
+
 The M33 runs none of the changed code: its images are identical at every
-commit, and its counts at 11a783b equal 958f04e's to the instruction
-(s0086 small 169 188 866, host 1 427 092 090; s0407 162 318 338,
-1 423 827 980).
+commit (section hashes), so its counts are 958f04e's. Measured at
+11a783b (s0086 small 169 188 866, host 1 427 092 090; s0407 162 318 338,
+1 423 827 980), every stage equals 958f04e's run on s0086 and O26b's
+ff43e16 run on s0407 to the instruction.
 
 ### The profile at 958f04e
 
@@ -14049,15 +14054,15 @@ ceiling of 50 (48 one-unit, 46 release; 63 and 61 with the branches).
 
 ### Cortex-A76 (Raspberry Pi 5; medians of 4 alternated cycles)
 
-Aligned builds of 958f04e, trial t12 (whose `.text` and `.rodata` in all
-eight binaries equal 66d99a4's and 11a783b's) and trial t124 (below,
-dropped) from one scratch path; core 3, the throttle, clock and
+Aligned builds of 958f04e, 66d99a4's build (its sections equal
+11a783b's: `.text` and `.rodata` in all eight binaries) and the last
+group padded (below, dropped) from one scratch path; core 3, the throttle, clock and
 temperature sampled once a second from core 0, a 5 s sampled busy loop on
 core 3 before each run; per cycle `slotcost host host,passes=1 200 5` then
 `slotcost small small 200 5` of each build, forward on odd cycles and
 reversed on even.
 
-| ms (median, spread) | 958f04e | 66d99a4 (t12) | t124 |
+| ms (median, spread) | 958f04e | 66d99a4 (= 11a783b) | the last group padded |
 |---|---|---|---|
 | small: belief propagation | 4.020 (0.000) | **2.370 (0.000)** | 2.370 (0.000) |
 | small: slot / worst | 12.1 / 12.5 | **10.4 / 10.7** | 10.4 / 10.6 |
@@ -14113,9 +14118,10 @@ whole program includes the bench's slot synthesis and classification.
 - Cortex-M33 (`check.sh --stack` at 11a783b): flash small 92 038 B, host
   104 738 B, encoder 35 190 B; static RAM 201 668 / 230 084 / 0 B; paint
   high water 10 304 / 10 276 B: all as at 958f04e (the images are the
-  same). No fused multiply-add; `vmla` 128 / 241 / 17. M4F: flash 92 304
-  / 105 332 B, static RAM unchanged, `fmaxf`/`fminf` 10 and 14, no `f64`
-  helper, no fused multiply-add, the same library calls.
+  same). No fused multiply-add; `vmla` 128 / 241 / 17. M4F (measured:
+  sizes and library calls, not section hashes): flash 92 304 / 105 332 B
+  as at 958f04e, static RAM unchanged, `fmaxf`/`fminf` 10 and 14, no
+  `f64` helper, no fused multiply-add, the same library calls.
 - Scratch and slot storage: no type changes size (`BpScratch`, the
   subtraction's scratch). The hosts' frames were not measured.
 
@@ -14158,7 +14164,7 @@ A76's compared with them), 68634cc's (M33 dumps and residuals) and
 
 - **Records, x86-64:** the 73 800 `paired_bench run` records equal
   b93516e's (host, one pass, small: 24 600 each, 0 differ; exit 0 each).
-  The trial t12 (66d99a4's sections) likewise.
+  66d99a4's build (its sections equal 11a783b's) likewise.
 - **800 WAV slots** × 3 × 3, x86-64: 93 091 lines byte-identical, 2 400
   `--profile` lines differing only by the sync scratch and
   `static_table_bytes` 39 429 → 48 621 (O26b's comparison; exit 0).
@@ -14219,7 +14225,7 @@ m4, l1 and i2 are equivalent by design.
 
 ### Tried, not kept
 
-- **The last group padded (O26's question; trial t124).** The 3 checks of
+- **The last group padded (O26's question).** The 3 checks of
   degree 6 left over after the groups of four laid out as a last group of
   three (`place` with stride r = 59 mod 4), taken by the group forms with
   the other lane as padding (inputs 0 or products 1, never stored), so the
@@ -14241,7 +14247,8 @@ m4, l1 and i2 are equivalent by design.
 
 ### What bounds the stages now (A76)
 
-PC samples of the head's code (the trial t12, 66d99a4's sections), as at
+PC samples of the head's code (66d99a4's build, its sections equal
+11a783b's), as at
 958f04e (all 0x0, 2 400 MHz):
 
 - **Small** (shares of the decoder's samples): the feed 53.6%
@@ -14264,6 +14271,7 @@ PC samples of the head's code (the trial t12, 66d99a4's sections), as at
 | `soft_bits_at`, the Costas sums, `search_rows` (A76 small 7.4, 6.6, 4.7%) | uncertain | — |
 | The rounds' sums (`sums`: three bounds-checked gathers a variable) | A76 small 5.5%, host 2.4% at the head | a clamp or a layout the compiler can prove; not tried |
 | The code-generation check's other bounds in the release form | the one-unit build may pass forms the release build does not take: only min-sum differed at 958f04e (per-function `.4s` counts compared) | more builds |
+| `total` and `next` padded to `[f32; 256]`, so that every `u8` gather is in bounds without a clamp (O27b) | the remaining checked gathers (the sums, `min_sum_check`, the plain inputs loop) branch-free; perhaps the M33's `min_sum_check` | +656 B RAM on the M33 (two arrays of 82 more `f32`); to be measured |
 
 ### Risks
 
@@ -14275,7 +14283,8 @@ PC samples of the head's code (the trial t12, 66d99a4's sections), as at
 - The clamped index (`min(N - 1)`) is a no-op only while every entry of
   `EDGE_VARS` is a variable; the tables are built at compile time and the
   layout test checks every entry. A wrong index would read the last
-  variable rather than panic.
+  variable rather than panic. (O27b: a const assertion checks every entry,
+  and with debug assertions the helper asserts the index.)
 - `lanes` out of line rests on the compiler not seeing through the call;
   inlined by a later compiler, the check's `add2d` fails.
 
@@ -14287,3 +14296,263 @@ PC samples of the head's code (the trial t12, 66d99a4's sections), as at
   profile after the commits.
 - A placement variation on the A76.
 - Other dependents' build profiles (above).
+
+## Review follow-ups (O27b, 2026-11-03; every section of all eight binaries unchanged)
+
+Base: 2064882 (O27). Three code commits, none of which changes a section:
+
+- 644f97c: `total_of`, the one helper for the clamped gathers (the
+  min-sum groups and the sum-product inputs' blocks), documented once
+  with the reason (`edge_vars` writes only `i as u8` for i < N, so the
+  clamp never changes an index; it makes the gather a select, so the
+  rows vectorise in the release form). With debug assertions it asserts
+  the index, so a bad table panics in debug builds and their tests rather
+  than reading the last total (a new test, debug only, checks the
+  panic; another checks each variable's own total). Beside `EDGE_VARS`
+  two const assertions: N fits a `u8`, and every entry of the table, built
+  again at compile time, is below N (forced to `< N - 1` it fails to
+  compile; MSRV 1.75 builds it). The four plain gathers stay checked,
+  each with a line why: the plain inputs loop and `min_sum_check` (where
+  every check takes it, without a vector unit) were not measured with the
+  clamp; the inputs' remainder is at most seven edges a round. Their code
+  is unchanged this round. The source comments no longer carry
+  instruction counts; they name the check.
+- 2537329: the same for the correction's lanes' note.
+- 366e3a1: the code-generation check (below).
+
+**Sections.** At 366e3a1 the `.text` and `.rodata` of all eight binaries
+(x86-64 and AArch64 `cat-ft8-decode` and `paired_bench`, the M33 check
+and staged images small and host, thumbv8m built with `--cfg
+cat_ft8_minmaxnm`) equal 11a783b's, so O27's identity, timings and counts
+stand for it; the identity was not run again.
+
+### The code-generation check (366e3a1)
+
+- The release-form (`a64r`) entries are marked `one`: with 16 units a
+  function copied into two units would otherwise be summed.
+- A fifth field `each` (counts only) checks the least of each matching
+  function's count. `a64 6blocks add2d 2 each`: the one-unit build has two
+  instantiations of `blocks`, 4 two-lane 64-bit adds each, and a sum
+  would pass with one of them lost. `a64r 6blocks add2d 2 one`: the
+  release form has one `blocks` out of line (4); the other is inlined into
+  `subtract::run`, which no check reads for this.
+- `sumloop8` (the inputs' blocks): a ceiling of 54, from 50; the head is
+  48 one-unit and 46 release, the bounds-checked form 63 and 61.
+- The release build fails with its own message when it leaves no
+  per-unit assembly (`cat_ft8-*.rcgu.s`), and the note on its 16 units
+  says they are cargo's default for the release profile and must follow
+  any profile that sets `codegen-units`.
+- The header's history of each bound moved here (below); each check entry
+  has one line on what it guards.
+
+Forced forms, each a fresh copy of 366e3a1's tree with O27's edit (on the
+helper where the edit was on the clamp), its own log and the check's exit
+status:
+
+| form | a64 / a64r `min_sum_round` vec4 (≥ 100) | a64 (least of two) / a64r `6blocks` add2d (≥ 2) | a64 / a64r inputs `sumloop8` (≤ 54) | exit |
+|---|---|---|---|---|
+| head (366e3a1) | 165 / 162 | 4 / 4 | 48 / 46 | 0 (46 of 46) |
+| g1: the min-sum group as at 958f04e | 156 / **14** | 4 / 4 | 48 / 46 | 1 |
+| g2: the group's index checked, in place (equivalent by value) | 143 / 166 | 4 / 4 | 48 / 46 | 0 |
+| g3: the correction's lanes' setup inlined | 165 / 162 | **0 / 0** | 48 / 46 | 1 |
+| g4: the inputs' index checked | 165 / 162 | 4 / 4 | **63 / 61** | 1 |
+
+No other check failed in any form. The new paths, on copies of the script:
+`each` with a floor of 5 fails (4, the least of the two); `each` on a loop
+metric fails with its own message; `one` on the one-unit `6blocks` fails
+(two functions); a release build with no per-unit assembly stops with its
+message (exit 1). A summed `a64 6blocks add2d` floor of 7 passed (8),
+which is why the check takes each function.
+
+### Checks (366e3a1)
+
+- **Local CI** passes at 366e3a1, 17 of 17 steps: fmt; clippy `-D
+  warnings` (workspace, all targets and features, thumbv8m); workspace,
+  profile, no-std and release tests with the ignored ones; the group-one
+  step; the bulk run; MSRV 1.75; docs with and without `std`;
+  `check.sh --stack`; codegen-check (46 of 46).
+- Library tests: debug 219 pass and 9 ignored (the debug-only panic test
+  among them); release with the ignored ones 225 pass; the group-one
+  step (release, `--cfg cat_ft8_test_group_one`) 216 pass, 9 ignored.
+
+### Not done
+
+- The `total`/`next` arrays padded to `[f32; 256]` (every `u8` gather in
+  bounds without a clamp, +656 B RAM on the M33): a candidate for a later
+  round, to be measured on the A76 and the M33 (O27's next candidates).
+- The four checked gathers keep their code: changing them is unmeasured.
+- The M4F images' sections were not hashed; O27's M4F claim now says
+  what was measured (sizes and library calls).
+
+### The code-generation check's bounds
+
+Moved from `codegen-check.sh`'s header at O27b; the counts are as they
+stood at O27, with rustc 1.93.0. Since O27b: `a64 6blocks add2d` is a
+floor of 2 on each instantiation (4 each), `a64r 6blocks add2d` a floor
+of 2, and the inputs' `sumloop8` a ceiling of 54.
+
+- four-lane `.4s` instructions, a floor: with rustc 1.93
+  sum_product_round has 698 and min_sum_round 165 (696 and 156 before
+  O27); forms that lost the gain counted 115-452 (passes of 4 to 32
+  values, 32 not unrolled) and 29 (min-sum check by check). The margin
+  under the passes of 4 values is thin: 452 against the floor of 500.
+  min_sum_round also as a release build compiles it (`a64r`, findings
+  O27): with 16 codegen units the local ThinLTO pipeline inlines and
+  unrolls the round again before the vectorisers, and with each row's
+  inputs first in a local array and its gathers bounds-checked it left
+  the groups scalar, 14 with rustc 1.93.0, while the one-unit build
+  counted 156 and passed; with each row's inputs taken in place and the
+  variables' indices taken no further than the last, 162 (a floor of
+  100). The sum-product round's inputs, eight edges a block, likewise
+  without a branch (findings O27): its shortest loop with eight byte
+  loads (`sumloop8`, a ceiling of 50: 48 with rustc 1.93.0, and 46 as
+  a release build compiles it; 63 and 61 with the indices checked);
+- single-lane moves in sum_product_round, a ceiling: 15 with rustc
+  1.93; 46 with the group products written in place row by row, 38
+  with the products check by check;
+- four-lane `fmaxnm`/`fminnm` in the removal (`Removal::refs`) and in
+  the time search's whole lanes (`correlation_whole`), a floor, and
+  compares and selects (`fcmgt`, `bsl`, `bit`, `bif`) in the removal, a
+  ceiling: with rustc 1.93.0 the removal has 6 and 0, the time search
+  14; with the branch form of the clamp (`INPUT_SELECT` false) 1, 0 and
+  0 (the floors catch it);
+- interleaving loads and stores (`ld2`-`ld4`, `st2`-`st4`) in the
+  removal and in `Fit4::add_all`, a ceiling of 0: with rustc 1.93 both
+  0; with the reference's parts interleaved sample by sample (a group
+  of one) 3 and 1, and with the removal's ramp index carried as an
+  integer (the loop vectoriser takes four groups at a time) 2 and 0;
+- shuffles (`zip`, `uzp`, `trn`) in `blocks` (the reference's block
+  of 16 samples), a ceiling of 12: 3 with rustc 1.93; with the parts
+  interleaved 19, and with each sample stored by itself 75;
+- a ceiling counts only the code in its function, so it would pass if
+  the loop it guards moved out (into a function of its own, or inlined
+  elsewhere): on AArch64 each function with a ceiling also has a floor
+  on its vector instructions (the thumbv7em `fmaxf`/`fminf` ceilings
+  have none). `Removal::refs` has its `fmaxnm`/`fminnm` floor;
+  `Fit4::add_all_as` a floor of 12 `.4s` instructions (28 with rustc
+  1.93.0 over its two forms; 8 with its four-lane step `add4` out of
+  line) and `blocks` 400 (440 with rustc 1.93.0; 0 with
+  `scaled_cos_sin` out of line).
+- thumbv8m.main with the cfg: `vmaxnm`/`vminnm` in the removal, a
+  floor: 20 with rustc 1.93, 0 without the cfg;
+- thumbv7em: calls of `fmaxf`/`fminf` in the removal,
+  symbol_correlations and `Fit4::add_all_as`, a ceiling of 0: with the cfg
+  (wrongly set) they are 20, 6 and 8.
+- thumbv8m.main with the cfg at opt-level "s" (the size the embedded
+  check builds at, though this is the library, not the linked image):
+  the FFT, inlined into `finish_row`, written out butterfly by butterfly
+  with one lane. With rustc 1.93.0: 207 `f32` multiplies (`vmul`, `vmla`,
+  `vmls`; a floor of 199: 238 and 230 before the bins' powers went out
+  of line with their 31, findings O26), 0 divisions (`umull`, `udiv`; a ceiling of 0)
+  and 1 zero-fill call (`__aeabi_memclr4`, `__aeabi_memclr`, `memset`; a
+  ceiling of 1).
+  The forms it was run against are listed in findings O20b.
+- thumbv8m.main with the cfg at opt-level "s": the subtraction's sums
+  where a group is one sample, taken one lane at a time with the sums in
+  registers. With rustc 1.93.0 the shortest loop with five `f32`
+  multiply-accumulates or adds in `Fit4::add_all_as` is the form
+  without the clamp's, 14 instructions (a ceiling of 15; 20 with the
+  clamp, a form this does not bound: see the input's check below; 25
+  with the four lanes side by side); the frequency
+  correction one sample at a time leaves 19 carry
+  adds (`adc`) in the two `blocks` (a ceiling of 24; 37 with the
+  correction in lanes), and no method of `Correction` out of line (with
+  the correction's `apply` out of line, `blocks` keeps 15 carry adds,
+  under the ceiling, so the count alone would pass). The forms were run
+  in findings O22 and O22b.
+  It misses: the radix-2 stage alone as loops (234 passes), the form of
+  the twiddle index (`% N` and a subtraction both pass), a zero fill by
+  `__aeabi_memclr8` or a tail call, and what link-time optimisation does
+  to the image. A first stage as loops with no division and no zero fill
+  was not run, and the floor would not be expected to catch it.
+- the polynomial of the subtraction's reference and of the time search's
+  products (`cos_sin_turns_times`): on AArch64 its remainder by one shift
+  and quarter by one sign word (`cvtloop4` in `blocks` and
+  `correlation_whole`); on thumbv8m.main with the cfg at opt-level "s"
+  also the quarter's swap as `vsel` and the half turn's sign after the
+  weight (`cvtloop1` in `blocks` and in the subtraction's one closure,
+  which holds the products; `fpneg` in `blocks`). The ceilings sit one
+  to five instructions above rustc 1.93.0's code; the forms they catch,
+  and what they miss, are in findings O23 and O23b (the closure's
+  ceiling, 40 there, is O24's, below).
+- the time search's sums taken as its products are (findings O24): on
+  AArch64 its whole lanes out of line (`correlation_whole`; inlined, the
+  compiler split the sums across half vectors and spilled them), whose
+  shortest loop of four conversions, the form without the clamp's, has
+  107 instructions with rustc 1.93.0 (a ceiling of 110; 137 with the
+  clamp), and the half turn's sign on the weight, one `eor` a vector (7
+  in each of the two forms, a ceiling of 16; a form with the sign after
+  the weight had 14, findings O24); on thumbv8m.main with the cfg at
+  opt-level "s" one lane at a time with the sign on the weight, the
+  products' loop in the subtraction's one closure 30 without the clamp
+  (a ceiling of 31; 36 with it; with the clamp, 39 with the products
+  stored and summed after, 42 with the sign after the weight, 69 with
+  the lanes side by side). There
+  too the generator sums its overlap runs' increments as it takes them,
+  so `fill_phase_only` and `skip_with` keep no loop that loads with no
+  floating point (`memsums`, a ceiling of 0; 2 each with the increments
+  stored and summed after).
+- the input checked once per subtraction (findings O25): the loops that
+  read the audio have a form without the clamp, taken when every usable
+  sample is within the limit (`within_limit`), whose bitwise or decides
+  in one pass for audio within ±1. On AArch64 that pass is vectorised
+  (`vecor`, vector `orr`, a floor of 2: 4 with rustc 1.93.0, 0 as a
+  scalar loop). On thumbv8m.main with the cfg at opt-level "s" it is 4
+  instructions a sample (`shortloop`, the function's shortest loop, a
+  ceiling of 4; 7 with the largest magnitude alone). The ceiling is
+  exact because 4 is the least a loop of one sample a turn can have (a
+  load that steps its pointer, the or, the count and the branch), and
+  each instruction more is a quarter more on the pass; a loop unrolled
+  to several samples a turn would be longer and fail it while perhaps
+  faster, and is to be measured then. The removal's form without the
+  clamp, unreported, is 20 instructions a sample (`fploop4`, a ceiling
+  of 21; 26 with the clamp).
+  The loop metrics take the shortest loop, so in the fit, the products,
+  the time search's whole lanes and the removal they bound the forms
+  without the clamp only; the forms with it (20, 36, 137 and 26 above)
+  carry no bound. They run only on audio with a sample beyond ±2¹⁶ or
+  not finite, which a receiver's samples scaled to ±1 never are, so
+  their speed is not on any measured path, and their results are the
+  tests' (each form against the other, bit for bit). The counts above
+  are summed over both forms: a ceiling (the m4 library calls, the
+  removal's selects) binds each form, a floor only the two together.
+- the front end checks each block it is fed with the same function
+  (findings O26): `Spectrogram::feed` calls `within_limit`
+  (`calls_within_limit`, a floor of 2 on AArch64 and on thumbv8m.main with the cfg at opt-level
+  "s": 2 with rustc 1.93.0, the row's first block and the others; 0
+  with the block's own compare fold, 10 instructions a sample on the
+  Cortex-M33 against the or pass's 4).
+- the FFT's last stage (radix 5, one block) as one plain loop over k
+  whose twiddle indices run past one turn of the table rather than wrap
+  (`last_stage`, findings O26 and O26b), which the compiler vectorises
+  with each m's twiddles, m apart in the table, loaded as interleaved
+  vectors. On AArch64 `ld2`-`ld4` in `finish_row` (`ldn`, a floor of 12:
+  12 with rustc 1.93.0, 10 of them the stage's; 2 with the butterflies
+  side by side and their twiddles gathered lane by lane, 9 with the
+  index reduced mod N). On x86-64 the shortest loop in `finish_row` with
+  80 four-lane multiplies (`mulloop80`, a ceiling of 460: 450 with rustc
+  1.93.0; 699 gathered lane by lane, 629 with the segments between the
+  wraps taken at run time, none with the index reduced mod N). And
+  `finish_row`'s instructions (`insns`, a ceiling of 3 000 on AArch64
+  and 3 500 on x86-64: 2 882 and 3 364 with rustc 1.93.0; with the six
+  segments between the wraps compiled each as its own loop, O26's form,
+  5 898 and 7 394; taken at run time 3 703 and 4 296; with the index
+  reduced mod N 3 140 on AArch64), so that the stage stays one loop.
+- a row's levels at the floor and at the top counted in one pass in
+  16-bit counts (`level_counts`, findings O26): two-lane `.2d`
+  instructions in `finish_row` (`vec2`, a ceiling of 32: 16 with rustc
+  1.93.0, from the transform; 170 with two counts in `usize`, which
+  widened each byte to 64-bit lanes).
+- the powers of a row's bins on thumbv8m.main with the cfg at opt-level
+  "s" out of line and with indexed slices (`bin_powers_out_of_line`, findings
+  O26): the shortest loop with four `f32` adds, a ceiling of 35 (34 with
+  rustc 1.93.0; 37 with the zipped iterators out of line, 42 inlined
+  into `finish_row`, where the function is not found).
+- the frequency correction's four 64-bit lanes in the subtraction's
+  reference blocks (`Correction::lanes` out of line, findings O27):
+  two-lane 64-bit vector adds in `blocks` (`add2d`, a floor of 8 on
+  AArch64 and 4 as a release build compiles it, `a64r`: 8 and 4 with
+  rustc 1.93.0, two blocks' loops of four adds against the one out of
+  line in the release form; 0 with the lanes' setup inlined, whose
+  loop was 24 scalar instructions a group of four against 10).
+- `sumloop3` in `select` (thumbv8m.main at opt-level "s"): the sync search's running sums (findings O25) read three levels a bin (the expected tone's, and tone 7's and tone 0's entering and leaving the sum), 15 instructions with rustc 1.93.0 (a ceiling of 16; the eight tones added afresh, 24 instructions with nine byte loads, have no such loop). The rows passed to `costas_scores` by value or `Rows::row` inlined into it leave that loop at 15 (findings O25b; the loop of nine loads they lengthened is gone).
