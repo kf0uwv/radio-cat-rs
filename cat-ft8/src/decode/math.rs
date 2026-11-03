@@ -284,7 +284,7 @@ const C4: f32 = 62.962_955;
 /// that.
 #[inline(always)]
 pub(crate) fn cos_sin_turns_times(phase: u32, w: f32) -> (f32, f32) {
-    cos_sin_turns_times_as::<VECTOR>(phase, w)
+    cos_sin_turns_times_as::<{ !SCALAR_FORMS }>(phase, w)
 }
 
 /// `(cos, sin)` of `2π · phase / 2³²`: [`cos_sin_turns_times`] with the

@@ -421,7 +421,7 @@ impl Synth {
         let last = SYMBOL_COUNT - 1;
         let tone = |m: usize| f32::from(self.symbols[m.min(last)]);
         let base = self.base_hz;
-        let step = |dev: f32| step(base, dev);
+        let incr = |dev: f32| step(base, dev);
         // The stored increments' sum from `p`: their running sum in place,
         // or, with `SUM_ONLY`, their total.
         let sum = |p: u32, xs: &mut [u32]| {
@@ -452,12 +452,12 @@ impl Synth {
             if a > s0 {
                 let g = &pulse[NS + s0 - PF..NS + a - PF];
                 let h = &pulse[NS + 1 - a - PF..NS + 1 - s0 - PF];
-                p = overlap::<SUM_ONLY>(p, o1, g.iter(), h.iter().rev(), (cur, prev), step, sum);
+                p = overlap::<SUM_ONLY>(p, o1, g.iter(), h.iter().rev(), (cur, prev), incr, sum);
             }
             // s in a..c: the current pulse alone, and exactly 1.0, so
-            // `cur · g` is `cur` and every increment is `step(cur)`.
+            // `cur · g` is `cur` and every increment is `incr(cur)`.
             if c > a {
-                let inc = step(cur);
+                let inc = incr(cur);
                 if !SUM_ONLY {
                     let mut q = p;
                     for y in o2.iter_mut() {
@@ -471,7 +471,7 @@ impl Synth {
             if s1 > c {
                 let g = &pulse[2 * NS + 1 - s1 - PF..2 * NS + 1 - c - PF];
                 let h = &pulse[c - PF..s1 - PF];
-                p = overlap::<SUM_ONLY>(p, o4, g.iter().rev(), h.iter(), (cur, next), step, sum);
+                p = overlap::<SUM_ONLY>(p, o4, g.iter().rev(), h.iter(), (cur, next), incr, sum);
             }
             at += s1 - s0;
         }

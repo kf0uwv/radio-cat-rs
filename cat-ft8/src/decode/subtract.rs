@@ -1863,9 +1863,10 @@ impl Correction {
     /// `IN_LANES`; else one at a time. (Without a vector unit, the
     /// Cortex-M33 build, opt-level "s" with rustc 1.93.0, kept the lanes'
     /// 64-bit phases and steps in memory.) `apply` keys it on [`VECTOR`],
-    /// not on [`GROUP`] as the reference's loops do: the correction does not
-    /// touch the reference's layout, so the group-of-one tests keep the
-    /// lanes here, and the tests call both forms directly.
+    /// not on [`SCALAR_FORMS`](super::math::SCALAR_FORMS) as the reference
+    /// and the time search do: the correction does not touch their layout,
+    /// so the group-of-one tests keep the lanes here, and the tests call
+    /// both forms directly.
     #[inline(always)]
     #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
     fn apply_as<const IN_LANES: bool>(&mut self, phase: &mut [u32]) {
