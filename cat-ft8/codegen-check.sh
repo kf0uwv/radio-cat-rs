@@ -31,14 +31,23 @@
 # thumbv8m.main built with `--cfg cat_ft8_minmaxnm` (the Cortex-M33
 # measured) the clamp is `vmaxnm`/`vminnm`; on thumbv7em
 # (no such cfg) it must not call `fmaxf`/`fminf`, the library's `max` and
-# `min`. This emits the release library's assembly (one codegen unit; no
-# std for the microcontrollers) for each target and fails if a
-# function's count is past its bound:
+# `min`. This emits the release library's assembly (one codegen unit, and
+# for AArch64 also the release profile's 16; no std for the
+# microcontrollers) for each target and fails if a function's count is
+# past its bound:
 # - four-lane `.4s` instructions, a floor: with rustc 1.93
-#   sum_product_round has 696 and min_sum_round 156; forms that lost the
-#   gain counted 115-452 (passes of 4 to 32 values, 32 not unrolled) and
-#   29 (min-sum check by check). The margin under the passes of 4 values
-#   is thin: 452 against the floor of 500;
+#   sum_product_round has 696 and min_sum_round 165 (156 before O27);
+#   forms that lost the gain counted 115-452 (passes of 4 to 32 values,
+#   32 not unrolled) and 29 (min-sum check by check). The margin under
+#   the passes of 4 values is thin: 452 against the floor of 500.
+#   min_sum_round also as a release build compiles it (`a64r`, findings
+#   O27): with 16 codegen units the local ThinLTO pipeline inlines and
+#   unrolls the round again before the vectorisers, and with each row's
+#   inputs first in a local array and its gathers bounds-checked it left
+#   the groups scalar, 14 with rustc 1.93.0, while the one-unit build
+#   counted 156 and passed; with each row's inputs taken in place and the
+#   variables' indices taken no further than the last, 162 (a floor of
+#   100);
 # - single-lane moves in sum_product_round, a ceiling: 15 with rustc
 #   1.93; 46 with the group products written in place row by row, 38
 #   with the products check by check;
@@ -194,13 +203,16 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 target_dir="${CARGO_TARGET_DIR:-$here/../target/codegen-check}"
 # The builds: a name, the target, cargo's features option, a `--cfg`
-# for rustc (`-` for none) and an opt-level (`-` for the release
-# profile's).
-builds=("a64 aarch64-unknown-linux-gnu - - -"
-  "x64 x86_64-unknown-linux-gnu - - -"
-  "m33 thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm -"
-  "m33s thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm s"
-  "m4 thumbv7em-none-eabihf --no-default-features - -")
+# for rustc (`-` for none), an opt-level (`-` for the release
+# profile's) and the codegen units (`1`, or `-` for the release
+# profile's 16: `a64r` is AArch64 as a release build compiles it, whose
+# code the one-unit `a64` need not be).
+builds=("a64 aarch64-unknown-linux-gnu - - - 1"
+  "a64r aarch64-unknown-linux-gnu - - - -"
+  "x64 x86_64-unknown-linux-gnu - - - 1"
+  "m33 thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm - 1"
+  "m33s thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm s 1"
+  "m4 thumbv7em-none-eabihf --no-default-features - - 1")
 # Each check: the build, the function, what is counted, and its bound. The function
 # is a name, or a mangled path segment as it appears in the symbol (its
 # length first) where the name alone is ambiguous. `vec4` counts
@@ -258,7 +270,7 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # the name (the subtraction's closures are named only by the function
 # that holds them, so another closure in it could pass for the products).
 checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
-  "a64 min_sum_round vec4 100"
+  "a64 min_sum_round vec4 100" "a64r min_sum_round vec4 100"
   "a64 7Removal4refs minmax 2" "a64 correlation_whole minmax 2"
   "a64 7Removal4refs selects 2"
   "a64 7Removal4refs interleaved 0" "a64 4Fit410add_all_as interleaved 0"
@@ -287,6 +299,11 @@ for b in "${builds[@]}"; do
   [ "$cargo_opt" = - ] && cargo_opt=""
   [ "$4" = - ] || rustc_opt="--cfg $4"
   [ "$5" = - ] || rustc_opt="$rustc_opt -C opt-level=$5"
+  # One unit's assembly is one file; with 16, named here because rustc
+  # takes one unit for `--emit=asm` unless told, one file a unit, read
+  # as one.
+  units=$6
+  [ "$units" = - ] && units=16
   dir="$target_dir/$key"
   # Clean the library first: cargo would otherwise see it as fresh, run
   # no compiler and write no assembly.
@@ -294,8 +311,13 @@ for b in "${builds[@]}"; do
     --manifest-path "$here/Cargo.toml"
   # shellcheck disable=SC2086 # the options are deliberately split
   CARGO_TARGET_DIR="$dir" cargo rustc -q --release -p cat-ft8 --lib --target "$target" \
-    $cargo_opt --manifest-path "$here/Cargo.toml" -- --emit=asm -C codegen-units=1 $rustc_opt
-  asm[$key]=$(ls "$dir/$target/release/deps/"cat_ft8-*.s)
+    $cargo_opt --manifest-path "$here/Cargo.toml" -- --emit=asm -C codegen-units="$units" $rustc_opt
+  if [ "$units" = 1 ]; then
+    asm[$key]=$(ls "$dir/$target/release/deps/"cat_ft8-*.s)
+  else
+    cat "$dir/$target/release/deps/"cat_ft8-*.rcgu.s > "$dir/units.s"
+    asm[$key]="$dir/units.s"
+  fi
 done
 
 fail=0

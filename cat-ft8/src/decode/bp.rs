@@ -708,21 +708,29 @@ fn min_sum_check<const ONE_PASS: bool>(total: &[f32; N], v: &[u8], row: &mut [f3
 /// those of one check alone, and the group's K checks take the K lanes of
 /// each step. The branches that keep the two smallest magnitudes are
 /// selects here, which choose the same values.
+///
+/// Each row's inputs replace its messages in the step that compares
+/// them, and a variable's index is taken no further than the last
+/// variable, which every index already is, so the row has no
+/// bounds-check branch. Under the release profile (16 codegen units,
+/// local ThinLTO), with the inputs first in a local array and the indices
+/// checked, the group compiled to scalar code on AArch64 (14 four-lane
+/// instructions in `min_sum_round`; findings O27).
 #[inline(always)]
 fn group_min_sum<const D: usize, const K: usize>(total: &[f32; N], vars: &[u8], group: &mut [f32]) {
-    let mut x = [[0.0f32; K]; MAX_DEGREE];
-    for (j, xj) in x.iter_mut().enumerate().take(D) {
-        for l in 0..K {
-            xj[l] = total[usize::from(vars[j * K + l])] - group[j * K + l];
-        }
-    }
     let (mut min1, mut min2) = ([f32::MAX; K], [f32::MAX; K]);
     let (mut at, mut negatives) = ([0u32; K], [0u32; K]);
-    for (j, xj) in x.iter().enumerate().take(D) {
+    let rows = group.chunks_exact_mut(K).zip(vars.chunks_exact(K));
+    for (j, (row, v)) in rows.enumerate().take(D) {
+        let row: &mut [f32; K] = row.try_into().unwrap();
+        let v: &[u8; K] = v.try_into().unwrap();
         for l in 0..K {
-            let v = xj[l];
-            let a = if v < 0.0 { -v } else { v };
-            negatives[l] += u32::from(v < 0.0);
+            row[l] = total[usize::from(v[l]).min(N - 1)] - row[l];
+        }
+        for l in 0..K {
+            let x = row[l];
+            let a = if x < 0.0 { -x } else { x };
+            negatives[l] += u32::from(x < 0.0);
             let (below1, below2) = (a < min1[l], a < min2[l]);
             min2[l] = if below1 {
                 min1[l]
@@ -735,11 +743,12 @@ fn group_min_sum<const D: usize, const K: usize>(total: &[f32; N], vars: &[u8], 
             at[l] = if below1 { j as u32 } else { at[l] };
         }
     }
-    for (j, xj) in x.iter().enumerate().take(D) {
+    for (j, row) in group.chunks_exact_mut(K).enumerate().take(D) {
+        let row: &mut [f32; K] = row.try_into().unwrap();
         for l in 0..K {
-            let others_negative = negatives[l] - u32::from(xj[l] < 0.0);
+            let others_negative = negatives[l] - u32::from(row[l] < 0.0);
             let mag = ALPHA * if at[l] == j as u32 { min2[l] } else { min1[l] };
-            group[j * K + l] = if others_negative % 2 == 1 { -mag } else { mag };
+            row[l] = if others_negative % 2 == 1 { -mag } else { mag };
         }
     }
 }
