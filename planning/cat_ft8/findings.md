@@ -12949,9 +12949,13 @@ round's other loops).
 
 ### Identity
 
-831e9a5 and 6f89e49 leave the x86-64 and AArch64 sections equal to
-da69ed4's, so the hosts' identity at 6f89e49 is theirs too; each commit's
-thumbv8m sections differ and each was run.
+The references are b93516e's outputs (x86-64 records and WAV lines, the
+A76's compared with them) and 68634cc's (M33 dumps and residuals), which no
+round since has changed, b335b0a included: equal to them is equal to
+b335b0a's. The x86-64 and A76 runs were made at 6f89e49 only and stand for
+da69ed4 and 831e9a5 as well, whose x86-64 and AArch64 sections equal
+6f89e49's (below); each commit's thumbv8m sections differ and the M33 runs
+were made at each.
 
 - **Records, x86-64:** the 73 800 `paired_bench run` records of 6f89e49
   equal b93516e's (host, one pass, small: 24 600 each, 0 differ; the records
@@ -13125,6 +13129,145 @@ a2, a8, b6 and c3 are equivalent by design (they change only the work).
   only.
 - A placement variation on the A76 (the untouched stages moved by at most
   0.13%).
+- The clamped forms end to end on a target: every identity slot and set is
+  within ±1, so the x86-64, A76 and M33 identity runs take the forms
+  without the clamp only, and the clamped forms (`IN_LIMIT` false) and the
+  check's second pass ran only in the host unit tests; no M4F run at all.
+  (O25b adds one M33 emulated run with samples out of the limit.)
 - Off-air recordings; the M33 or A76 with audio out of the limit (the
   clamped forms' timing is unchanged code, not re-measured).
 - After a toolchain change: the bounds above.
+
+## Review follow-ups (O25b, 2026-11-03; every section of all eight binaries unchanged)
+
+On top of O25 (307d68f): b6a62a8 (the subtraction's within-limit forms and
+tests), 6bb996c (the code-generation check's header and the sync search's
+note) and 3cc7ca8 (min-sum's comment), then this record. Section hashes of
+all eight binaries were taken at each commit (one scratch path, rustc
+1.93.0, thumbv8m with `--cfg cat_ft8_minmaxnm`): every `.text` and
+`.rodata` equals 307d68f's (whose code is 6f89e49's), so O25's timing,
+counts and identity stand for them.
+
+- **b6a62a8.** `input_branch_as::<IN_LIMIT>` beside `input_as`, used by
+  the fit's single samples instead of the choice spelled in place; the
+  check's first comparison written `(any & MAGNITUDE) <= limit`.
+  `within_limit_is_where_input_is_the_identity` also holds the check
+  against `input` (the target's form) and `input_select`, not only
+  `input_branch`. The out-of-limit test has a sixth place, `skip − 1`,
+  just outside the checked audio: the results equal those without the bad
+  sample, and the sample is left as it was. Its count's `− 3` is explained
+  in place: at dt 2.0 the place after the signal is past the slot's end, so
+  its three values are not run.
+- **6bb996c.** The check's header states each bound's current count and
+  the form it catches, without the earlier counts (those stay here). It
+  says that the loop metrics take the shortest loop and so bound only the
+  forms without the clamp (the fit 14 of 15, the products 30 of 31, the
+  time search's whole lanes 107 of 110, the removal 20 of 21); the clamped
+  forms (20, 36, 137, 26) carry no loop bound. That is accepted: they run
+  only on audio with a sample beyond ±2¹⁶ or not finite, which a receiver's
+  samples scaled to ±1 never are; their results are the tests' (each form
+  against the other, bit for bit); and the count metrics (floors and
+  ceilings on instructions) are summed over both forms, so a ceiling such
+  as the M4F's library calls binds each form, a floor the two together.
+  `m33s within_limit shortloop 4` stays exact: 4 is the least a loop of one
+  sample a turn has (a load that steps its pointer, the or, the count, the
+  branch), each instruction more is a quarter more on that pass, and a
+  faster loop unrolled to several samples a turn would be longer and fail,
+  to be measured then; no notch of headroom has a form it should pass.
+  The branch form of the clamp (`INPUT_SELECT` false), forced on a copy:
+  the removal's four-lane `fmaxnm`/`fminnm` 1 (floor 2), the time search's
+  0 (floor 2), the M33's `vmaxnm`/`vminnm` 0 (floor 8), each failing; the
+  removal's selects 0 (the O18 branch form had 18; the floors catch it
+  now).
+- **The rows by value.** With `costas_scores` taking the rows by
+  value through a `Copy` view, as O21 measured it: the running sums' loop
+  is 15 instructions as with the reference (`sumloop3`), and with
+  `Rows::row` inlined also 15, so neither form fails the check now (O21's
+  +3.4% was the nine-load loop's). M33 emulated instructions, s0086, staged
+  images:
+
+  | form | small slot | sync search | host slot | sync search (three passes) | decodes |
+  |---|---|---|---|---|---|
+  | by reference (307d68f) | 172 570 220 | 19 214 187 | 1 437 845 369 | 64 388 354 | 23 / 40 |
+  | by value | 173 226 180 (+0.38%) | 19 212 758 (−1 429) | 1 439 712 608 (+0.13%) | 64 384 067 (−4 287) | 23 / 40 |
+
+  The rise is in the feed, +635 719 a pass (+0.71%: other code moved; the
+  subtraction's counts are equal), not the sync search. The reference stays;
+  the note on `costas_scores` gives this number instead of O21's.
+- **One min-sum loop on every target, measured, not adopted.**
+  `min_sum_check` as one loop for every target, without `ONE_PASS`, the
+  `take!` macro or the sizes as constants (`min_sum_round` without `V`):
+  the M33's four images are 6f89e49's to the byte; x86-64 `.text` the same
+  size, other code; AArch64 +64 B.
+  - A76, `slotcost small small 200 5`, six alternated runs each (12 sides a
+    build), every run valid (504 throttle samples and 60 in the warm-ups,
+    all 0x0, 2 400 MHz, peak 52.7 °C): belief propagation 4.02 ms in all 12
+    sides at 6f89e49, 4.02–4.04 one loop (median 4.03, 9 of 12 above 4.02,
+    none below); the pass 12.83 ms median for both (12.82–12.84,
+    12.83–12.85). About +0.25% of belief propagation, at the bench's
+    resolution of 0.01 ms, and in one direction.
+  - x86-64, core 5, `perf stat` user cycles of the whole program, builds
+    alternated, none void: `slotcost small small 200 5`, six rounds,
+    95.84 → 95.75 G (−0.09%; ranges 95.22–96.23 and 95.27–96.12),
+    instructions 295.10 → 295.18 G; `slotcost host host,passes=1 200 5`,
+    four rounds, 309.29 → 308.97 G (−0.10%; 308.51–309.39 and
+    308.02–310.01), instructions equal (870.70 G). Within noise.
+  Not faster on either and slower on the A76 by one step of its
+  resolution every time it differed, so the hosts keep their two loops;
+  the comment in `min_sum_check` gives these numbers.
+- **The clamped path end to end on the M33.** The multi-pass host
+  image (first pass fed as i16, further passes on the slot as `f32`) with
+  four samples written out of the limit before the further passes (a NaN
+  at 30 011, +∞ at 77 777, −10⁶ at 120 001 and 7·10⁴ at 150 003, all in
+  the usable audio, so `within_limit` is false and the clamped forms and
+  the second pass run), s0086, emulated: the residual of b335b0a and of
+  307d68f equal byte for byte (180 000 samples). The four samples come back
+  taken and subtracted (−0.0386, 0.0705, −64 940.6, 64 922.3); no residual
+  sample is non-finite or beyond 2¹⁶. 3cc7ca8's thumbv8m sections equal
+  307d68f's.
+- **Accepted as is:** `in_limit` as a parameter, a wrapper and a field, with
+  the 2×2 match of `Removal::run`: consistent with `report`;
+  another flag of the kind would call for measuring one top-level
+  monomorphisation instead.
+- **Follow-up, not this round:** the front end's `checked_copy` is a second
+  spelling of the within-limit check (a compare fold, 7–8 instructions a
+  sample on the M33 against the or pass's 4); one shared helper may trim
+  the feed (48.7% of the M33 small slot).
+
+### Checks (3cc7ca8)
+
+- Local CI passes at 3cc7ca8: fmt; clippy `-D warnings` (workspace, all
+  targets and features, thumbv8m); workspace, profile, no-std and release
+  tests with the ignored ones (221); the group-one step (212 run, 9
+  ignored); the bulk run; MSRV 1.75; docs with and without `std`;
+  `check.sh --stack` (flash and static RAM as at 6f89e49); the
+  code-generation check (33 of 33, the counts of O25's head).
+- A76 release library tests with the ignored ones, cross-built at 3cc7ca8:
+  220 pass, 0 fail, the source-tree test skipped (the Raspberry Pi holds no
+  sources); 241 throttle samples, start and end included, all 0x0.
+
+### Mutants (3cc7ca8)
+
+Fresh copies of 3cc7ca8's tree, release library tests (212), one log each
+with the tree, the edit and cargo's exit status:
+
+| mutant | failing |
+|---|---|
+| none (control) | 0 |
+| `input_branch_as` inverted | 2 (the out-of-limit test, the fit's sums) |
+| `input_branch_as` always the sample | 2 (the same) |
+| `input_branch_as` always clamped | 0: equivalent (the same values; the fit's few edge samples a block take the clamp, speed only) |
+| the select form without its upper clamp | 6 (the identity test among them, through `input` and `input_select`) |
+| the check from `skip − 1` | 0: equivalent (the clamped forms, the same results) |
+| the usable audio from `skip − 1` | 4 (the out-of-limit test's new place among them) |
+
+### Not measured
+
+- As in O25; no code generation changed, so its timing, counts and identity
+  stand.
+- The one-loop min-sum on the M33 (its images unchanged) and on the A76's
+  host configuration; the by-value rows on the hosts (no host form uses
+  the running sums).
+- The out-of-limit M33 run is one slot, the host image only, and compares
+  residuals (not the decode lists); no M4F or A76 run with audio out of
+  the limit.

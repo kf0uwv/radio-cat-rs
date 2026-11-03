@@ -2110,3 +2110,26 @@
   instructions a sample: half the subtraction's gain); running sums two bins
   at a time and by `step_by` (longer M33 loops); min-sum's one-pass loop
   shared with the hosts (changed their binaries).
+
+### O25b
+
+- Review follow-ups in three commits, every section of all eight binaries
+  equal to 307d68f's: `input_branch_as` beside `input_as`; the check's
+  comparison parenthesised; the identity test also against `input` and
+  `input_select`; an out-of-limit case at `skip − 1` (outside the check:
+  results and sample unchanged) and the count's `− 3` explained; the
+  code-generation check's header as current bounds (the clamped forms carry
+  no loop bound, and why; the `shortloop` ceiling of 4 exact, and why); the
+  sync search's note and `sumloop3` text re-measured (the rows by value:
+  loop 15 as by reference, sync the same, M33 small slot +0.38% in the
+  feed; inlined `Rows::row` 15 too).
+- Min-sum as one loop on every target measured and not adopted: A76 small
+  belief propagation 4.02 → 4.03 ms (12 sides, never faster), x86-64
+  −0.09% / −0.10% (noise); the hosts keep two loops, the comment says why.
+- One M33 emulated run with four samples out of the limit (s0086, multi-pass
+  host image): b335b0a's and 307d68f's residuals identical.
+- O25's findings: identity references worded as b93516e's / 68634cc's
+  outputs (unchanged since), the hosts' runs at 6f89e49 standing for
+  da69ed4 and 831e9a5; "Not measured" lists the clamped forms end to end.
+  `in_limit`'s plumbing accepted; a shared within-limit helper with the
+  front end's `checked_copy` is a follow-up.
