@@ -2054,3 +2054,23 @@
   at a time (slower on the A76), an in-register prefix sum on the hosts (not
   vectorised by rustc 1.93.0), the fused generator by a const parameter
   (moved x86-64 code).
+
+### O24b
+
+- 7176be1 doc back on `cos_sin_turns_times_as`; 1292abc one predicate,
+  `SCALAR_FORMS`, for `GROUP`, `FUSED_SUM` and the time search's form (the
+  group-one step now runs the M33's time search end to end), const
+  parameters `VECTOR_FORM`; 1a17c90 the check's comments (14, `memsums` m33
+  and `ldr` only); d2213d1 whole-lane assertion; 8a0a9d7 one `step` (as a
+  method it moved host code); f8e1a95 `cos_sin_turns_weight_signed_as`,
+  `scaled_cos_sin` reference-only. All eight binaries' sections equal
+  eb210f9's at each.
+- b81a05c one `overlap` function: AArch64 and thumbv8m identical,
+  `memsums` 0; x86-64 two `lea` moved, timed and identity rerun.
+- Measured, not adopted: the reference's vector form with the sign on the
+  weight (A76 reference +2.1%: weight 1.0 then needs a product); the
+  mirrored sum filled when a span is taken (M33 +0.0014%, A76 equal; kept
+  on a side branch).
+- Mutants: a first rerun reused stale test binaries (the archive's
+  mtimes older than the shared target's builds; the controls failed);
+  rerun with fresh mtimes, controls 0, every mutant caught.

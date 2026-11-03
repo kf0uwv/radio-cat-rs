@@ -12445,3 +12445,148 @@ samples, start and end included, all 0x0.
 - x86-64 stage times (the virtual machine's clock); x86-64 timing on real
   recordings. The x86-64 profiles are one run each.
 - After a toolchain change: the bounds above.
+
+## Review follow-ups (O24b, 2026-11-03; one commit moves two x86-64 instructions, the rest leave every section unchanged)
+
+On top of O24 (184c9c0), one concern per commit: 7176be1, 1292abc, 1a17c90,
+d2213d1, 8a0a9d7, f8e1a95 and b81a05c, then this record. Section hashes of
+all eight binaries were taken at each commit (one scratch path, rustc
+1.93.0, thumbv8m with `--cfg cat_ft8_minmaxnm`): every one equals eb210f9's
+except b81a05c's x86-64 `.text`.
+
+- **7176be1: `cos_sin_turns_times_as`' doc back on it.** ee64690 had put
+  `reduced` between the doc and the function, so rustdoc joined the doc to
+  `reduced`'s.
+- **1292abc: one predicate.** `SCALAR_FORMS` (math.rs: `!VECTOR`, or the
+  tests built with `--cfg cat_ft8_test_group_one`) now decides the
+  reference's group (`GROUP`), the generator's fused overlap runs
+  (`FUSED_SUM`) and the time search's sums one lane at a time
+  (`correlation`). Before, `GROUP` and `FUSED_SUM` each spelled the test
+  cfg and `correlation` keyed on `VECTOR` alone, so the group-one tests ran
+  the fused generator with the hosts' time search. The group-one step now
+  runs the M33's time-search form end to end: a mutant of the one-lane form
+  fails 4 tests there (1 in the default build, the direct test). The const
+  parameters for "the form for a vector unit" are all `VECTOR_FORM` (were
+  `BITS` and `SIDE_BY_SIDE`). `CHAINS` and `GROUPED_SUM` unchanged.
+- **1a17c90: the check's comments.** The time search's four-lane
+  `fmaxnm`/`fminnm` count is 14 in `correlation_whole` (8 was
+  `symbol_correlations`' before O24); `memsums` counts `ldr` mnemonics only
+  (not `ldm`) and is valid for the m33 builds only (it reads "no mnemonic
+  starting with v" as "no floating point").
+- **d2213d1:** `correlation_whole` asserts (debug builds) that it is given
+  whole lanes.
+- **8a0a9d7: one expression for the generator's increment**, `step(base,
+  dev)`, used by `Synth::phases` and `Synth::transition_increment`. Tried
+  first as a method (`self.step(dev)`): the closure in `phases` then
+  captured the generator instead of its base frequency and the hosts'
+  `.text` changed (x86-64 and AArch64); the free function leaves all eight
+  unchanged.
+- **f8e1a95:** `cos_sin_turns_signed_as` is `cos_sin_turns_weight_signed_as`,
+  its doc's first line saying the weight is signed, not the parts;
+  `scaled_cos_sin`'s doc says it serves only the reference.
+- **b81a05c: one function for the overlap runs** (`overlap`, holding the
+  `FUSED_SUM` choice once; each run passes its two pulse slices in their
+  directions and the other tone). AArch64 and thumbv8m sections unchanged,
+  `memsums` 0 for `fill_phase_only` and `skip_with`; on x86-64 two `lea`
+  instructions move (one in `fill_phase_only`, one in `fill_phase`; no
+  other instruction differs once the `.llvm.` symbol suffixes are set
+  aside). A first form passing one iterator of pulse pairs changed every
+  binary and was not kept.
+
+### Measured, not adopted
+
+- **The reference's vector form with the sign on the weight** (the
+  BITS arm of `cos_sin_turns_times_as` replaced by
+  `cos_sin_turns_weight_signed_as::<true>`). AArch64 blocks of 16
+  (library, rustc 1.93.0): with an envelope 108 / 111 → 104 / 108, but
+  without one (all but the ramps' blocks) 100 / 101 → 102 / 104: with a
+  weight of 1.0 the parts need no product, and the signed form needs one
+  by ±1. A76 microbenchmark (two alternated cycles, all valid): the
+  reference (`F2`) 8.006 → 8.171 cycles a sample (+2.1%), the subtraction
+  17.550 → 17.683 (+0.8%). Not adopted; the BITS arm stays.
+- **A skipped span's sum filling its mirrored pair's when taken** (built
+  as 387a4c6, kept on a side branch, not on o24): the third branch goes,
+  but every generated span whose mirror is never met now costs two
+  increments. M33 emulated instructions: the subtraction +10 579 (s0086)
+  and +9 298 (s0407), +0.0014%; every other stage the same; decodes the
+  same. A76 (`slotcost`, four alternated cycles against eb210f9, all 8 runs valid): the subtraction 38.505 → 38.500 ms (spreads 0.030 and 0.020), the slot 84.30 both; the microbenchmark's time search 7.444 → 7.467 cycles a core sample, within the 1.3% its untouched generator parts moved in the same binaries (placement). x86-64: −0.24% user cycles, within the ranges (below), instructions +0.03 G. Not adopted (more work, if
+  very little); eb210f9's form stays.
+
+### x86-64 (b81a05c; core 5, `perf stat` user counters, `slotcost host host,passes=1 200 5`, four alternated rounds, none void)
+
+| build | cycles (median, range) | instructions |
+|---|---|---|
+| eb210f9 (the sections of 7176be1 to f8e1a95) | 314.33 G (313.81–314.74) | 891.36 G |
+| b81a05c | 314.46 G (314.06–314.72), +0.04% | 891.36 G |
+| 387a4c6 (the mirrored fill, not adopted) | 313.58 G (312.61–314.28), −0.24% | 891.39 G |
+
+b81a05c's two moved instructions cost nothing measurable (within eb210f9's
+range, instructions equal). eb210f9 reads 314.33 G here against 313.81 G in
+O24's session: the machine's drift between sessions; within a session the
+builds alternate.
+
+### Identity and checks (b81a05c)
+
+- x86-64: the 73 800 records equal b93516e's (exit 0 each); the 800 WAV
+  slots × 3 × 3 give the 93 091 identical lines and the 2 400 `--profile`
+  lines of O21's rule (exit 0).
+- AArch64 and thumbv8m: the sections equal eb210f9's, whose A76 identity
+  (records and WAVs) and M33 identity O24 recorded. The M33 dump and
+  residual images were rebuilt and run at b81a05c anyway (16 of 16 equal
+  68634cc's, exit 0), for the comparators' forced run.
+- Encoder: the 45 WAV files equal 70be604's.
+- Comparators: unforced 0; a record's field, a decode's frequency, a
+  `--profile` line's `peak_bytes`, one M33 dump bit and one encoder byte
+  each give 1. (A first forced run had no M33 outputs at b81a05c yet and
+  its M33 lines failed for that reason; rerun after them.)
+- Local CI passes at b81a05c: fmt; clippy `-D warnings` (workspace, all
+  targets and features, thumbv8m); workspace, profile, no-std and release
+  tests with the ignored ones (219); the group-one step (210 run, 9
+  ignored), which now runs the time search one lane at a time; the bulk
+  run; MSRV 1.75; docs with and without `std`; `check.sh --stack` (flash
+  and frames as at eb210f9); the code-generation check (137/140, 7/8,
+  36/37, `memsums` 0 and 0). A76 release library tests with the ignored
+  ones, cross-built at b81a05c (`cat-ft8` tree 71dedf67…): 218 pass, 0
+  fail, the source-tree test skipped; 50 throttle samples, all 0x0.
+- The A76 runs of this round (the two measurements above, 8 timed runs and
+  12 microbenchmark runs): every throttle sample 0x0 (976 during the timed
+  runs and 40 in their warm-ups, 96 in the microbenchmarks), every sample during a run at
+  2 400 MHz; peak 54.3 °C.
+
+### Mutants
+
+Fresh copies of b81a05c's tree (`cat-ft8` tree 71dedf67…), release
+library tests (210), g1 with `--cfg cat_ft8_test_group_one`; one log each
+with the tree, the edit and cargo's exit status:
+
+| mutant | mode | failing |
+|---|---|---|
+| none (control) | release / g1 | 0 / 0 |
+| one lane at a time: the lane's first sample one on | release / g1 | 1 / **4** |
+| the select form: the weight's sign inverted | g1 | 3 |
+| `SCALAR_FORMS` without the test cfg | g1 | 1 (`the_group_follows_the_target_and_the_test_cfg`) |
+| `overlap`, fused: the phase stored after its increment | g1 | 7 |
+| `overlap`, fused: the phase not stored | g1 | 41 |
+| `overlap`, stored: not summed | release | 32 |
+| the last run with the previous tone | release / g1 | 14 / 14 |
+| the first run's previous pulse not reversed | release | 15 |
+| `transition_increment`'s `step` without the base | release | 4 |
+
+The first mutant's g1 count (4, against 1 in the default build, where only
+the direct test reaches the one-lane form) is 1292abc's point. A first run
+of this set reused stale test binaries: the copies' files carried the
+commit's time, older than an earlier run's builds in the shared target
+directory, so cargo rebuilt nothing for some and both controls failed.
+The script now gives each copy fresh times; the run above is the rerun
+(its controls 0). O24's mutant run was not affected (each copy's path was
+new to its target directory, and its controls and equivalent mutants read
+0 after mutants that failed).
+
+### Not measured
+
+- As in O24. b81a05c's AArch64 and thumbv8m sections equal eb210f9's, so
+  O24's A76 and M33 timing, counts and identity stand for them; only its
+  x86-64 code was measured again.
+- The reference's signed form was measured by the library's assembly and
+  the microbenchmark only (no `slotcost`, no M33 counts: its select form
+  was unchanged).
