@@ -85,7 +85,7 @@ use super::decoder::Decode;
 use super::frontend::INPUT_LIMIT;
 use super::math::{
     atan2_turns, cos_sin_turns_signed_as, cos_sin_turns_times, log2_power, phase_of_ratio, LANES,
-    VECTOR,
+    SCALAR_FORMS, VECTOR,
 };
 use crate::waveform::{cos_turns, sin_turns, Placement, Synth, RAMP_SAMPLES, TRANSITION};
 use crate::{
@@ -617,10 +617,10 @@ fn add_lane(acc: &mut [f32; LANES], i: usize, v: f32) {
 /// bit for bit ([`cos_sin_turns_signed_as`]: the weight is finite).
 #[inline(always)]
 fn correlation(i0: usize, phase: &[u32], xs: &[f32]) -> (f32, f32) {
-    correlation_as::<VECTOR>(i0, phase, xs)
+    correlation_as::<{ !SCALAR_FORMS }>(i0, phase, xs)
 }
 
-/// [`correlation`] with the four lanes side by side (`SIDE_BY_SIDE`: where
+/// [`correlation`] with the four lanes side by side (`VECTOR_FORM`: where
 /// the target has a vector unit, so that each lane's sums are a vector's
 /// lane), or one lane at a time, its two sums in locals over the block.
 /// Each lane takes the same samples in the same order either way, so the
@@ -628,12 +628,12 @@ fn correlation(i0: usize, phase: &[u32], xs: &[f32]) -> (f32, f32) {
 /// with rustc 1.93.0, kept the eight sums in memory: findings O22.)
 #[inline(always)]
 #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
-fn correlation_as<const SIDE_BY_SIDE: bool>(i0: usize, phase: &[u32], xs: &[f32]) -> (f32, f32) {
+fn correlation_as<const VECTOR_FORM: bool>(i0: usize, phase: &[u32], xs: &[f32]) -> (f32, f32) {
     let n = phase.len().min(xs.len());
     let (phase, xs) = (&phase[..n], &xs[..n]);
-    let product = |k: usize| cos_sin_turns_signed_as::<SIDE_BY_SIDE>(phase[k], input(xs[k]));
+    let product = |k: usize| cos_sin_turns_signed_as::<VECTOR_FORM>(phase[k], input(xs[k]));
     let (mut re, mut im) = ([0.0f32; LANES], [0.0f32; LANES]);
-    if SIDE_BY_SIDE {
+    if VECTOR_FORM {
         // Single samples up to the first whole lane, the whole lanes, then
         // single samples after them.
         let (m0, m1) = lane_bounds(i0, i0 + n);
@@ -1306,17 +1306,12 @@ const PAIR: usize = 8;
 /// Reference samples stored together: a group's cosine parts in slot
 /// order, then its sine parts ([`slot`]). [`LANES`] where the target has a
 /// vector unit, so that each part of a group of lanes loads and stores as
-/// one vector; one elsewhere (a sample's two parts side by side). The
-/// tests built with `--cfg cat_ft8_test_group_one` take one on every
-/// target, so that a host runs the layout of the targets without one. That
-/// covers this layout only: `CHAINS` and the other `VECTOR` choices (such as
-/// belief propagation's) keep the host's, so it is not the Cortex-M33's
-/// build on a host.
-const GROUP: usize = if VECTOR && !cfg!(all(test, cat_ft8_test_group_one)) {
-    LANES
-} else {
-    1
-};
+/// one vector; one elsewhere (a sample's two parts side by side), and in
+/// the tests built with `--cfg cat_ft8_test_group_one`, so that a host runs
+/// the layout of the targets without one ([`SCALAR_FORMS`]). `CHAINS` and
+/// the other `VECTOR` choices (such as belief propagation's) keep the
+/// host's, so that is not the Cortex-M33's build on a host.
+const GROUP: usize = if SCALAR_FORMS { 1 } else { LANES };
 // Whole lanes and whole blocks are whole groups.
 #[allow(clippy::modulo_one)] // GROUP is 1 on some targets
 const _: () = assert!(LANES % GROUP == 0 && BLOCK % LANES == 0);

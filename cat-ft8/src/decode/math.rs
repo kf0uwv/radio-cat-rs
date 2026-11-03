@@ -240,9 +240,18 @@ pub(crate) const LANES: usize = 4;
 /// AArch64, which always have SSE2 or NEON (the targets measured). Not on
 /// the Cortex-M33, and not on 32-bit ARM with NEON, whose vector floating
 /// point is not IEEE, so these loops stay scalar there. Where a loop's form
-/// depends on it, the form is a const parameter, so that the tests run both
-/// on any host.
+/// depends on it, the form is a const parameter (`VECTOR_FORM`), so that
+/// the tests run both on any host.
 pub(crate) const VECTOR: bool = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
+/// Whether the subtraction's per-target forms take their side for targets
+/// without a vector unit: the reference's layout (a group of one), the time
+/// search's sums (one lane at a time) and the generator's fused overlap
+/// runs. That is `!VECTOR`, and also the tests built with
+/// `--cfg cat_ft8_test_group_one`, so that a host runs those forms end to
+/// end. (`CHAINS`, the grouped running sum and the other `VECTOR` choices,
+/// such as belief propagation's, keep the host's.)
+pub(crate) const SCALAR_FORMS: bool = !VECTOR || cfg!(all(test, cat_ft8_test_group_one));
 
 // sin(2πt) = t·(S1 + S3·t² + S5·t⁴) and cos(2πt) = C0 + C2·t² + C4·t⁴:
 // fitted for this crate by linear programming (minimax absolute error on
@@ -303,7 +312,7 @@ fn reduced(phase: u32) -> (u32, f32, f32) {
 }
 
 /// [`cos_sin_turns_times`] with the quarter's swap and signs by bit
-/// operations before the weight (`BITS`: where the target has a vector
+/// operations before the weight (`VECTOR_FORM`: where the target has a vector
 /// unit, so a loop over samples vectorises), or else the swap by `f32`
 /// selects and the half turn's sign by an exclusive or after the weight.
 /// On the Cortex-M33 the selects stay in floating-point registers (`vsel`,
@@ -315,13 +324,13 @@ fn reduced(phase: u32) -> (u32, f32, f32) {
 /// same bits for every finite weight. (A NaN weight, or an infinite one
 /// times a zero part, gives a NaN whose sign bit can differ between them.)
 #[inline(always)]
-fn cos_sin_turns_times_as<const BITS: bool>(phase: u32, w: f32) -> (f32, f32) {
+fn cos_sin_turns_times_as<const VECTOR_FORM: bool>(phase: u32, w: f32) -> (f32, f32) {
     let (u, c, s) = reduced(phase);
     // Quarter k: (cos, sin) = (c, s), (−s, c), (−c, −s), (s, −c): an odd
     // k swaps the parts and negates the sine's, then k ≥ 2 (`u`'s top bit)
     // negates both.
     let half = u & 0x8000_0000;
-    if BITS {
+    if VECTOR_FORM {
         // The sign before the weight: after it (the select form's tail),
         // AArch64's blocks of 16 with an envelope take one and two
         // instructions more (findings O23b).
@@ -343,15 +352,15 @@ fn cos_sin_turns_times_as<const BITS: bool>(phase: u32, w: f32) -> (f32, f32) {
 /// for finite w and x (the product's sign is the exclusive or of the
 /// factors', its magnitude rounds the same), so the parts are those of
 /// [`cos_sin_turns_times`] for every finite weight. The swap by bit
-/// operations (`BITS`, where the target has a vector unit) or by `f32`
+/// operations (`VECTOR_FORM`, where the target has a vector unit) or by `f32`
 /// selects, as there; the sign by an exclusive or, or by a select of the
 /// negated weight (`vneg` and `vsel` on the Cortex-M33, where the parts
 /// then stay in floating-point registers).
 #[inline(always)]
-pub(crate) fn cos_sin_turns_signed_as<const BITS: bool>(phase: u32, w: f32) -> (f32, f32) {
+pub(crate) fn cos_sin_turns_signed_as<const VECTOR_FORM: bool>(phase: u32, w: f32) -> (f32, f32) {
     let (u, c, s) = reduced(phase);
     let half = u & 0x8000_0000;
-    if BITS {
+    if VECTOR_FORM {
         let w = f32::from_bits(w.to_bits() ^ half);
         let swap = 0u32.wrapping_sub((u >> 30) & 1);
         let (sb, nb, cb) = (s.to_bits(), (-s).to_bits(), c.to_bits());

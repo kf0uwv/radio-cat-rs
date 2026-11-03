@@ -517,14 +517,14 @@ impl Synth {
 }
 
 /// Whether [`Synth::phases`] sums the overlap runs' increments as it takes
-/// them: where the target has no vector unit (the Cortex-M33), whose loop
-/// is scalar either way, so the increments need not go through memory; and
-/// in the tests built with `--cfg cat_ft8_test_group_one`, so that a host
-/// runs that form. Where the target has a vector unit, the increments are
+/// them ([`SCALAR_FORMS`](crate::decode::math::SCALAR_FORMS)): where the
+/// target has no vector unit (the Cortex-M33), whose loop is scalar either
+/// way, so the increments need not go through memory, and in the
+/// group-one tests. Where the target has a vector unit, the increments are
 /// taken in a loop that vectorises, stored, and then summed
 /// ([`running_sum`]). Integer addition modulo 2³² is associative, so both
 /// give the same phases.
-const FUSED_SUM: bool = !crate::decode::math::VECTOR || cfg!(all(test, cat_ft8_test_group_one));
+const FUSED_SUM: bool = crate::decode::math::SCALAR_FORMS;
 
 /// Whether [`running_sum`] takes four entries at a time: measured faster
 /// on the Cortex-A76, neutral on x86-64, more instructions on the M33.
