@@ -91,27 +91,20 @@
 #   the correction's `apply` out of line, `blocks` keeps 15 carry adds,
 #   under the ceiling, so the count alone would pass). The forms were run
 #   in findings O22 and O22b.
-# - the polynomial of the subtraction's reference and of the time search's
-#   products (`cos_sin_turns_times`): its remainder by one shift and its
-#   quarter by one sign word, and on the Cortex-M33 the quarter's swap as
-#   `f32` selects and the half turn's sign after the weight, in integer
-#   registers. With rustc 1.93.0 the shortest loop with four conversions
-#   (`scvtf`) has 100 instructions in `blocks` on AArch64 (a ceiling of
-#   104; 107 with the remainder by mask, 112 with two sign words) and 137
-#   in symbol_correlations (a ceiling of 142; 148 and 157); on thumbv8m.main
-#   with the cfg at opt-level "s" the shortest loop with a conversion
-#   (`vcvt`) has 30 in `blocks` (a ceiling of 31; 32 with the swap by bit
-#   operations, 32 with the sign before the weight) and 39 in the
-#   subtraction's closure, where the time search's products are inlined (a
-#   ceiling of 40; 45 and 41), and `blocks` has no `vneg` (a ceiling of 0;
-#   12 with the sign before the weight). The forms were run in findings
-#   O23. The remainder's one instruction a sample on the Cortex-M33 is
-#   within these ceilings' margin there; AArch64's bounds catch it.
 #   It misses: the radix-2 stage alone as loops (234 passes), the form of
 #   the twiddle index (`% N` and a subtraction both pass), a zero fill by
 #   `__aeabi_memclr8` or a tail call, and what link-time optimisation does
 #   to the image. A first stage as loops with no division and no zero fill
 #   was not run, and the floor would not be expected to catch it.
+# - the polynomial of the subtraction's reference and of the time search's
+#   products (`cos_sin_turns_times`): on AArch64 its remainder by one shift
+#   and quarter by one sign word (`cvtloop4` in `blocks` and
+#   symbol_correlations); on thumbv8m.main with the cfg at opt-level "s"
+#   also the quarter's swap as `vsel` and the half turn's sign after the
+#   weight (`cvtloop1` in `blocks` and in the subtraction's one closure,
+#   which holds the products; `fpneg` in `blocks`). The ceilings sit one
+#   to five instructions above rustc 1.93.0's code; the forms they catch,
+#   and what they miss, are in findings O23 and O23b.
 # The multiplication by an envelope of 1.0 that the reference leaves out
 # (the weight folded by the compiler) is not checked: findings O18b.
 # A bound that fails means: re-measure before changing it (planning/
