@@ -506,10 +506,28 @@ impl<'a> Spectrogram<'a> {
                 }
             },
         );
-        self.floored += row.iter().filter(|&&l| l == 0).count();
-        self.top += row.iter().filter(|&&l| l == u8::MAX).count();
+        let (floored, top) = level_counts(row);
+        self.floored += floored;
+        self.top += top;
         self.rows.count += 1;
     }
+}
+
+/// How many of `levels` (one row: at most [`BINS`], so the counts fit in
+/// 16 bits) are at the floor (0) and at the top (255), in one pass. In
+/// 16-bit counts the compiler vectorises it as byte compares and widening
+/// subtractions (rustc 1.93.0; counts in `usize` took 64-bit lanes, a
+/// pass for each).
+fn level_counts(levels: &[u8]) -> (usize, usize) {
+    const _: () = assert!(BINS <= u16::MAX as usize);
+    // A row's stored bins end below Nyquist (`Band::from_hz`).
+    debug_assert!(levels.len() <= BINS);
+    let (mut floored, mut top) = (0u16, 0u16);
+    for &l in levels {
+        floored += u16::from(l == 0);
+        top += u16::from(l == u8::MAX);
+    }
+    (usize::from(floored), usize::from(top))
 }
 
 #[cfg(test)]

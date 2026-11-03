@@ -451,6 +451,41 @@ fn the_block_check_is_where_classify_is_the_identity() {
     }
 }
 
+/// [`level_counts`] counts the levels at 0 and at 255 as filtering does,
+/// over rows of several widths up to [`BINS`], with no
+/// level, every level and random mixes at either end.
+#[test]
+fn level_counts_equal_the_filtered_counts() {
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for width in [0usize, 1, 15, 16, 17, 31, 32, 33, 255, 256, 880, 976, BINS] {
+        for kind in 0..5 {
+            let row: Vec<u8> = (0..width)
+                .map(|_| {
+                    let r = next();
+                    match kind {
+                        0 => 0,
+                        1 => 255,
+                        2 => (r % 3) as u8 * 127,
+                        3 => (r >> 8) as u8,
+                        _ => 1 + (r % 254) as u8,
+                    }
+                })
+                .collect();
+            let want = (
+                row.iter().filter(|&&l| l == 0).count(),
+                row.iter().filter(|&&l| l == u8::MAX).count(),
+            );
+            assert_eq!(level_counts(&row), want, "width {width} kind {kind}");
+        }
+    }
+}
+
 #[test]
 fn floor_and_top_levels_are_counted() {
     let mut front = FrontEnd::new();

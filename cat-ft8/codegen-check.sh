@@ -158,6 +158,11 @@
 #   m apart in the table, loaded as interleaved vectors: `ld2`-`ld4` in
 #   `finish_row` (`ldn`, a floor of 48: 62 with rustc 1.93.0; 3 with the
 #   butterflies side by side and their twiddles gathered lane by lane).
+# - a row's levels at the floor and at the top counted in one pass in
+#   16-bit counts (`level_counts`, findings O26): two-lane `.2d`
+#   instructions in `finish_row` (`vec2`, a ceiling of 32: 16 with rustc
+#   1.93.0, from the transform; 170 with two counts in `usize`, which
+#   widened each byte to 64-bit lanes).
 # The multiplication by an envelope of 1.0 that the reference leaves out
 # (the weight folded by the compiler) is not checked: findings O18b.
 # A bound that fails means: re-measure before changing it (planning/
@@ -219,6 +224,7 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # `orr` on vector registers, at least the bound;
 # `checks` counts calls of `within_limit`, at least the bound;
 # `ldn` counts `ld2`, `ld3` and `ld4`, at least the bound;
+# `vec2` counts instructions with a two-lane `.2d` operand, at most the bound;
 # `absent` passes only if no function's label holds the name (the bound is
 # unused), that is, if it was inlined everywhere; it sees only a type's own
 # methods (`10Correction`), not a trait's (`Clone` for it, say) left out of
@@ -246,7 +252,8 @@ checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "m33s fill_phase_only memsums 0" "m33s 9skip_with memsums 0"
   "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit410add_all_as libcalls 0"
   "a64 within_limit vecor 2" "m33s within_limit shortloop 4" "m33s 7Removal4refs fploop4 21"
-  "a64 4feed checks 2" "m33s 4feed checks 2" "a64 10finish_row ldn 48")
+  "a64 4feed checks 2" "m33s 4feed checks 2" "a64 10finish_row ldn 48"
+  "a64 10finish_row vec2 32")
 
 declare -A asm
 for b in "${builds[@]}"; do
@@ -318,6 +325,7 @@ for entry in "${checks[@]}"; do
     metric == "vecor" && /^\torr\tv[0-9]+\./ { n++ }
     metric == "checks" && /^\tbl\t.*within_limit/ { n++ }
     metric == "ldn" && /^\tld[234]\t/ { n++ }
+    metric == "vec2" && /^\t[a-z][^\t]*\t.*\.2d/ { n++ }
     END {
       if (!found) print "missing"
       else if (only == "one" && found > 1) print "many"
@@ -376,6 +384,7 @@ for entry in "${checks[@]}"; do
     vecor) what="vector ors (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     checks) what="calls of within_limit (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     ldn) what="interleaving loads (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
+    vec2) what="two-lane .2d instructions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     *) what="unknown metric $metric"; ok=0 ;;
   esac
   if [ $ok = 1 ]; then
