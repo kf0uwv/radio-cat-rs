@@ -10431,3 +10431,284 @@ identity stand, and the decoders were not rerun.
   target; the M33 dumps and residuals remain the only end-to-end evidence
   there, and they were not rerun because the images are unchanged.
 
+## One storage for the sync scores and the FFT, twenty-first round (O21, bit-identical, 2026-11-02)
+
+Base: e4cfa58. The target is candidate (A) 3 of the profile above. Three
+commits: 499b196 (the change and its tests), df98a1b (a code-generation
+check), 725c433 (a comment rewrapped, the same number of lines).
+
+### The profile's claim and its estimate
+
+**The liveness claim holds on one path only.** The profile said that the
+front end, the sync scratch and the candidate scratch are never live
+together, and that holding the other two in the front end's 30 720 B saves
+16 404 B. By reading the code, then by test:
+
+| buffer | live in `decode_passes`, `decode` (HOST: 3 passes, OSD-1; SMALL: 1 pass, OSD off) | live in the split API | carries anything between |
+|---|---|---|---|
+| FFT work (15 360 B) | inside one row's transform | the same | nothing: a transform writes every cell before it reads one, on each lane count (tested) |
+| input window (15 360 B) | from a slot's first feed to its last | **from one feed to the next, across any search and candidates between them** | the samples of the next row, within a slot |
+| sync scratch (11 532 / 10 380 B) | one search | the same | nothing: `select` fills each row before reading it (tested) |
+| candidate scratch (4 872 B) | one candidate, then the rounds read at once | **one per worker, all live together** (`decode_candidate(&self, ..)`) | `last_rounds()` and the `Work` tag, between candidates only |
+| levels | feed to the last candidate; working storage in a subtraction | the same | a pass's rows |
+
+- On `pass()`, for both presets, the three are never live together and
+  no scratch carries a result between passes or slots. So the claim is true
+  of that path.
+- It is not true of the decoder's API, which documents feeding after a
+  search. The profile's caveat named one slot's candidates against the next
+  slot's feed; the case is within one slot. Keeping the scores in the window
+  fails 2 tests (below). `CandidateScratch` per worker is ADR 0024's design.
+- **The window need not be touched.** The FFT work alone has room for either
+  of the other two, and neither is live with it or with the other, so the
+  profile's total did not depend on the window.
+
+**The estimate of 16 404 B did not hold; 11 532 B did (10 380 B on the small
+band).** The other 4 872 B is the candidate scratch, not built:
+
+- It has fields of `u8`, `u16`, `f32` and 32- or 64-bit words, so without
+  `unsafe` it needs an enum with the FFT buffer, and each change of variant
+  writes the whole new variant.
+- The one-thread entry points would lose their scratch argument, while the
+  split API keeps its own for workers.
+- A probe of the fills alone, in a scratch copy (one fill of the FFT buffer
+  and one of the candidate scratch a pass; no tag checks, no API change), s0086
+  against 499b196: `__aeabi_memclr4` small +7 399, host +22 197 instructions;
+  slot small +253 653 (+0.14%), host +952 313 (+0.05%), most of it code moving
+  in `Decoder::pass` rather than the fills; stack high water small 10 200 →
+  10 656 B (+456 B), host unchanged. That is 4 868 B on the M33 for a fill, a
+  stack rise and a second way to call the decoder.
+- **An error in the profile:** its small figure subtracted 16 404 B too. Both
+  buffers on the small band are 15 252 B (214 116 → 198 864 B, not 197 712 B).
+
+### The change
+
+- `FftBuffer` is one `[f32; 3 840]`, which the transform takes as its two
+  parts and the search takes as cells.
+- A scratch cell holds a score's bits (`f32::from_bits`, `to_bits`). Small
+  scores are subnormals as `f32` and negative ones NaNs; no floating-point
+  arithmetic touches them. rustc 1.93.0 folds the conversions into integer
+  loads and stores: the M33's summing loop has no `vmov`.
+- `Spectrogram` holds its levels, band and row count in a field `Rows`, so
+  that the rows can be read while the cells are written.
+- `Decoder::sync_scratch_len(band)` is 0 for up to 1 280 base bins (3 975 Hz
+  through `Band::from_hz`, whose widths are multiples of 25 Hz). A `const`
+  assertion covers both presets and another the check image's band, so that
+  image passes `&mut []` and has no buffer. A wider band still passes a scratch.
+
+**API change.** `Decoder::new`'s `sync_scratch` and `sync::find_candidates`'
+`scratch` become `&mut [f32]`, and `Decoder::sync_scratch_len` means that
+argument's length, so `--profile`'s `sync_scratch_bytes` reads 0. Nothing has
+been released, so no compatibility is kept. Recorded in ADR 0024.
+
+### Sizes and stack
+
+From `check.sh --stack` (Cortex-M33), rustc 1.93.0, `--cfg cat_ft8_minmaxnm`:
+
+| image | flash e4cfa58 → 725c433 (B) | static RAM (B) |
+|---|---|---|
+| small | 91 978 → 92 082 (+104) | 212 048 → **201 668** (−10 380) |
+| host | 104 274 → 104 318 (+44) | 241 616 → **230 084** (−11 532) |
+| small, OSD on | 91 978 → 92 082 | 212 048 → 201 668 |
+| host, OSD off | 104 274 → 104 318 | 241 616 → 230 084 |
+| encoder only | 35 286 (unchanged) | 0 |
+
+- Headroom under the host image's 245 760 B ceiling: 4 144 → 15 676 B.
+- Cortex-M4F (thumbv7em, no cfg): small flash 92 340 → 92 348, static RAM
+  212 048 → 201 668; host flash 104 804 → 104 812, static RAM 241 616 →
+  230 084. No `f64` helper, no fused multiply-add, `fmaxf`/`fminf` calls
+  unchanged.
+- `.rodata` of the images: unchanged in size. No fused multiply-add on the
+  M33; `vmla` unchanged (128 small, 211 host).
+- **Stack rises by 8 B, far less than the saving.** `decode_a_slot`'s frame
+  2 512 → 2 520 B in every decoder image; every other frame listed unchanged
+  (host `subtract_one` 4 808, `_start` 4 104, the subtraction's closure 2 864,
+  `finish_row` 464, `osd_decode` 272). Paint high water of the staged images:
+  small 10 192 → 10 200 B, host 10 308 → 10 308 B.
+- Host `size_of::<Decoder>()` 208 → 208 B: the field stays, for wide bands.
+- Host decoder memory, from `--profile`'s `peak_bytes`: host 956 004 → 944 472
+  B (−1.2%), small 214 116 → 203 736 B (−4.8%).
+
+### Time
+
+**Cortex-M33** (emulated instructions, setup excluded, images of 725c433, whose
+sections equal 499b196's; same decodes). No copy or fill was added.
+
+| slot, image | e4cfa58 | 725c433 | change |
+|---|---|---|---|
+| s0086 small (23 decodes) | 183 674 197 | 183 016 779 | −657 418 (−0.36%) |
+| s0407 small (30) | 176 494 671 | 175 802 888 | −691 783 (−0.39%) |
+| s0086 host (40) | 1 955 479 134 | 1 953 607 521 | −1 871 613 (−0.10%) |
+| s0407 host (38) | 1 951 533 085 | 1 949 658 625 | −1 874 460 (−0.10%) |
+
+| stage, s0086 | small e4cfa58 | small 725c433 | host e4cfa58 | host 725c433 |
+|---|---|---|---|---|
+| feed | 89 771 131 | 89 135 405 | 274 744 453 | 272 837 275 |
+| sync | 27 472 214 | 27 472 192 | 91 956 611 | 91 956 545 |
+| soft bits | 9 212 930 | 9 294 742 | 24 502 583 | 24 720 202 |
+| belief propagation | 54 265 018 | 54 255 300 | 365 407 067 | 365 388 008 |
+| SNR | 2 265 451 | 2 171 445 | 3 953 121 | 3 789 803 |
+| subtract | — | — | 1 191 312 698 | 1 191 312 702 |
+
+- The search costs what it did, to 22 instructions in 27.5 M.
+- **The feed's fall is not a saving of this design.** The search is not in
+  it. All of it is in `Decoder::pass`, where the front end, soft bits and SNR
+  are inlined, and soft bits rise while SNR falls. The two regressed forms
+  below have the feed at 89 771 124, so it follows the same register choices.
+  An application's own image may not get it.
+
+**x86-64** (Threadripper 3970X, core 5, `perf stat` user cycles; builds aligned,
+from one source path, alternated; each sample `cat-ft8-decode` 20 times or one
+`slotcost`; medians; nothing else running, checked around every sample, none
+void):
+
+| run | e4cfa58 cycles | 499b196 cycles | change | spread of samples |
+|---|---|---|---|---|
+| s0086 small (6 samples) | 29 611 550 | 29 537 978 | −0.25% | 2.2%, 3.7% |
+| s0407 small (6) | 28 862 698 | 28 883 390 | +0.07% | 3.2%, 3.1% |
+| s0086 host (6) | 231 787 966 | 231 331 080 | −0.20% | 1.4%, 2.9% |
+| s0407 host (6) | 230 925 788 | 231 130 403 | +0.09% | 2.4%, 1.4% |
+| `slotcost` host, one pass (4) | 328 476 646 832 | 328 054 970 628 | −0.13% | 0.4%, 0.8% |
+| `slotcost` small (4) | 95 467 735 636 | 96 038 872 832 | +0.60% | 0.9%, 0.5% |
+| `slotcost` small, second run (6) | 96 069 657 917 | 95 942 230 881 | −0.13% | 1.1%, 1.1% |
+
+Instructions fall by at most 0.003%. The +0.60% did not repeat: a second run
+of six alternated samples, with its stage times kept, gives −0.13%, and every
+stage equal within its spread. These differences are noise; no rise is shown.
+
+**Cortex-A76** (Raspberry Pi 5; `.text` changed, so timed). Core 3, builds
+aligned from one source path, alternated, four runs each; 16 runs, 1 357
+samples during them, all 0x0 at start, during and end; clock 2 400 MHz during
+every run; peak 53.8 °C. One warm-up sample read 1.5 GHz (the first run's).
+
+| ms per slot (medians) | host, three passes | host, one pass | small |
+|---|---|---|---|
+| slot | 89.60 → 89.60 | 18.40 → 18.30 | 12.80 → 12.80 |
+| feed | 19.265 → 19.210 | 6.51 → 6.46 | 6.355 → 6.370 |
+| sync | 4.670 → 4.680 | 1.54 → 1.54 | 1.38 → 1.38 |
+| soft bits (placement check) | 2.38 → 2.38 | 1.19 → 1.19 | 0.89 → 0.89 |
+| belief propagation (placement check) | 19.050 → 19.060 | 8.94 → 8.94 | 4.020 → 4.015 |
+| subtract (placement check) | 43.735 → 43.720 | — | — |
+
+The stages this change does not touch agree within 0.015 ms, so placement did
+not move the comparison. Slots agree within the bench's 0.1 ms print resolution.
+
+### Identity
+
+Decoder runs used 499b196's sources; x86-64, AArch64 and M33 `.text` and
+`.rodata` of all eight binaries at 725c433 equal 499b196's (one source path,
+compared section by section). The M33 identity was also rerun at 725c433.
+
+- **Records, x86-64 and A76:** 73 800 `paired_bench run` records equal
+  b93516e's (host, one pass, small: 24 600 each, 0 differ).
+- **800 WAV slots** × 3 configurations × 3 modes (7 200 runs, 78 690 decode
+  lines), x86-64 and A76: 93 091 lines byte-identical to b93516e's and 2 400
+  `--profile` lines differ as designed, only in `sync_scratch_bytes` N → 0 and
+  `peak_bytes` P → P − N, with N the band's 11 532 or 10 380 B. **So this output
+  is not byte-identical, unlike earlier rounds', and a new comparator is used.**
+- **A76 throttle:** one benchmark at a time; 314 samples, start and end 0x0,
+  none non-zero.
+- **Encoder:** the 45 WAV files equal 70be604's.
+- **Cortex-M33 (emulated):** the small and host images on seven slots (14 of 14)
+  and the residuals of s0086 and s0407 equal 68634cc's, at 499b196 and at 725c433.
+- **Comparators on a forced difference:** a record field → 1 differ, DIFFERENT; a
+  digit of a decode, `peak_bytes` off by one, `sync_scratch_bytes` 4, another
+  memory figure off by one → WAVCMP-DIFFERENT and exit 1 each; a bit of one M33
+  dump → M33ID-FAILED and exit 1. Unforced they pass.
+
+### Tests and mutants
+
+New: `successive_slots_on_one_decoder_match_fresh_decoders` (six different slots,
+one of them cut short, on one decoder and scratch against fresh ones; list, reports,
+residual and rows; HOST, one pass, SMALL);
+`a_search_and_candidates_mid_slot_leave_the_feeding_undisturbed`;
+`what_the_shared_cells_held_does_not_reach_the_result`;
+`a_search_finds_the_same_wherever_its_scores_are_kept`;
+`a_transform_does_not_read_what_its_cells_held` (every lane count);
+`select_takes_any_scores_and_ignores_what_its_scratch_held`;
+`a_score_survives_a_cell_bit_for_bit`;
+`sync_scores_stay_in_the_front_end_up_to_the_fft_cells`.
+
+Faults in a copy of 499b196, host library tests, failing tests per fault:
+
+| fault | failing tests |
+|---|---|
+| none (control) | 0 |
+| scores kept in the input window, the profile's form | 2 |
+| a search spoils a held window sample of weight (cell 1 000) | 2 |
+| the transform adds what a cell held | 10 |
+| a score row not cleared before it is summed | 32 |
+| row q + 1 read unfilled at q = 2 | 2 |
+| no score written as score 0 | 1 |
+| scaling a cell in floating point | 1 |
+| a cell loses its sign | 34 |
+| a new slot keeps the samples held | 16 |
+| the search always uses the work area, wide bands too | 1 |
+| the search always uses the separate scratch | 21 |
+| the limit one cell lower | 1 |
+| the limit a row's worth of cells higher | 3 |
+| the limit one part, not both | does not compile (the `const` assertion) |
+
+Three faults pass, each for a reason that was checked: spoiling the window's last
+cell (it holds nothing once a row is taken) and its first (its Hann weight is 0, and
+the next shift discards it), and real and imaginary parts stored the other way round
+throughout (only their place changes). The first two were first written as faults
+that should fail; they were wrong faults, and the cell 1 000 one replaces them.
+
+Local CI passes at 725c433 (and at 499b196): fmt; clippy `-D warnings`; workspace,
+profile, no-std and release tests with the ignored ones (213); the group-one step
+(205 run, 8 ignored); the bulk run; MSRV 1.75; docs; `check.sh --stack`; the
+code-generation check. A76 release library tests with the
+ignored ones, cross-built at 725c433: 212 pass, 0 fail, the source-tree test skipped
+(the Raspberry Pi holds no sources); 48 throttle samples, start and end 0x0, none
+non-zero. A first run at 499b196, also passing, sampled only at its start and end, so
+it does not count and was repeated.
+
+### The code-generation check (df98a1b)
+
+How the rows reach the search matters more than the storage. With the rows passed
+by value through a `Copy` view, or with `Rows::row` inlined, the sum's loop loses
+registers: M33 small s0086 189 319 709 (by value), 189 319 772 (inlined) against
+183 016 779, +3.44% (+3.07% against e4cfa58), the same decodes. The sync stage alone
+rises 5.65 M, about a fifth. No test sees that. The check `m33s 6select sumloop 26`
+counts the shortest loop with nine byte loads in the library at opt-level "s":
+
+| form | loop instructions | check |
+|---|---|---|
+| 725c433 | 24 | passes |
+| rows by value | 29 | fires |
+| `Rows::row` inlined | 29 | fires |
+
+What it misses:
+
+- Up to two instructions: each costs about 1.1 M, so up to about 1.2% of the
+  small slot passes under the ceiling.
+- Anything outside that loop: the rest of `select`, the sync's other loops, and
+  what the feed, soft bits and SNR do when `Decoder::pass` is compiled otherwise.
+- It reads the library alone, not a linked image. It reads opt-level "s" only: in the
+  release profile's build no loop of that shape was found, so it could not be counted.
+- Slower instructions of the same number; it is a count, not a time.
+- Other targets. The A76, x86-64 and the M4 have no such check.
+
+### Other storage that could share (not built; from reading the code)
+
+| what | saving | what it costs |
+|---|---|---|
+| Subtraction's stack frames in the idle FFT cells, window or levels beyond the 46 080 B | about 7.4 KB of stack (the deepest path), which raises the static ceiling | a change of `subtract`'s internals; the largest stack lever found |
+| Candidate buffer sized by `candidate_capacity()` rather than `CANDIDATES` | 800 B host, 1 000 B small; no sharing | the image's and CLI's callers only |
+| Candidate scratch in the FFT buffer | 4 872 B | see above |
+| The noise histogram in belief propagation's idle storage | 512 B | a re-initialisation of that storage after each decode |
+| No input window where the slot is already in memory | 15 360 B, host only | the samples must be sanitised first; pass 1 can no longer be fed in blocks on that path |
+
+### Not measured
+
+- Any run on hardware for the Cortex-M33 or M4: emulated instructions and link
+  sizes only, so cycles, wait states and cache effects are unknown.
+- M33 slots but s0086 and s0407 for counts. M4 instruction counts and any decoder
+  identity on the M4.
+- The enum for the candidate scratch: only its fills were probed, not built.
+- Bands wider than 3 975 Hz beyond the tests: none is in the identity sets, so the
+  separate-scratch path has unit tests and no corpus run.
+- x86-64 and A76 timing on real recordings other than s0086 and s0407 (x86-64) and
+  crowded synthetic slots (A76). Sparse and empty slots were not timed.
+- The saving on any linked application's image; those figures are the check images'.

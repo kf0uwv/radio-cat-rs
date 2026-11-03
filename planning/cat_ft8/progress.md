@@ -1878,3 +1878,31 @@
 - All eight binaries' `.text` and `.rodata` unchanged, so the decoders were
   not rerun. Local CI passes.
 
+## Session: 2026-11-02 (O21 the sync scores in the FFT's work area)
+
+- Liveness: the profile's claim holds on `pass()` only. The input window is
+  live across any search and candidates between two feeds, and workers each
+  hold a candidate scratch at once. The FFT work alone is free throughout.
+- 499b196: the sync scores in the FFT's cells, as bits, no fill and no `unsafe`;
+  `Decoder::sync_scratch_len` 0 up to 1 280 base bins, checked at compile time.
+  The scratch argument becomes `f32` (ADR 0024; nothing released).
+- **The estimate did not hold: 11 532 B on host, 10 380 B on small, not 16 404 B.**
+  The candidate scratch (4 872 B) needs an enum, fills and a second way to
+  call the decoder, with +456 B of stack on small in a probe; not built. The
+  profile's small figure was also an arithmetic slip.
+- M33 static RAM: small 212 048 → 201 668, host 241 616 → 230 084 B; headroom
+  4 144 → 15 676 B. Flash +104 and +44 B. `decode_a_slot`'s frame +8 B.
+  CLI host 956 004 → 944 472, small 214 116 → 203 736 B.
+- M33 (emulated): small −0.36%, −0.39%, host −0.10% on s0086, s0407; sync
+  unchanged to 22 instructions; the feed's fall follows register choices in
+  `Decoder::pass`, not the design. x86-64 cycles and A76 stages within noise.
+- Identity: records and WAVs on x86-64 and the A76, encoder, M33 dumps and
+  residuals. The WAVs' 2 400 `--profile` lines differ as designed. All eight
+  binaries' sections at 725c433 as at 499b196. Local CI passes.
+- df98a1b: a code-generation check. The rows by value cost M33 small +3.44%
+  and no test saw it; the summing loop's ceiling of 26 (24 now, 29 regressed)
+  fires on it. 725c433: a comment rewrapped.
+- One A76 test run sampled no throttle during it and was repeated. One x86-64
+  `slotcost` figure, +0.60%, did not repeat (−0.13%).
+- Reported, not built: subtraction's frames in idle storage (about 7.4 KB of
+  stack), the candidate buffer's size, the histogram, the window on a host.
