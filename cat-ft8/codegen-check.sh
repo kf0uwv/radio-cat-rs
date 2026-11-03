@@ -61,9 +61,10 @@
 #   on its vector instructions (the thumbv7em `fmaxf`/`fminf` ceilings
 #   have none). `Removal::refs` has its `fmaxnm`/`fminnm` floor;
 #   `Fit4::add_all_as` a floor of 12 `.4s` instructions (18 with rustc
-#   1.93; 8 with its four-lane step `add4` out of line) and `blocks` 400
-#   (443 with rustc 1.93 since O23's cheaper polynomial, 549 before it; 0
-#   with `scaled_cos_sin` out of line).
+#   1.93 in one form, 28 in its two since O25; 8 with its four-lane step
+#   `add4` out of line) and `blocks` 400 (443 with rustc 1.93 since O23's
+#   cheaper polynomial, 440 since O25, 549 before O23; 0 with
+#   `scaled_cos_sin` out of line).
 # - thumbv8m.main with the cfg: `vmaxnm`/`vminnm` in the removal, a
 #   floor: 20 with rustc 1.93, 0 without the cfg;
 # - thumbv7em: calls of `fmaxf`/`fminf` in the removal,
