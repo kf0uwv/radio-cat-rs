@@ -681,6 +681,8 @@ fn correlation_whole(phase: &[u32], xs: &[f32], re: &mut [f32; LANES], im: &mut 
     const W: usize = if CHAINS > LANES { CHAINS } else { LANES };
     let (mut a, mut b) = (*re, *im);
     let n = phase.len().min(xs.len());
+    // Whole lanes only (`lane_bounds`): a remainder would be dropped.
+    debug_assert!(n % LANES == 0, "{n} samples are not whole lanes");
     let wide = n - n % W;
     let chains = phase[..wide]
         .chunks_exact(W)
