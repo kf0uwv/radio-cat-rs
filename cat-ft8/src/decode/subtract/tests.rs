@@ -1043,12 +1043,11 @@ fn skipped_spans_depend_only_on_the_two_tones() {
     }
 }
 
-/// A set of skipped spans' sums serves one generator only: debug builds
-/// panic when it is used with another (another base frequency here).
+/// Runs one set of skipped spans' sums with a generator at 1 234.5 Hz,
+/// then with one at `base_hz` whose tone 10 (a data symbol) is moved up by
+/// `step`.
 #[cfg(debug_assertions)]
-#[test]
-#[should_panic(expected = "another generator")]
-fn skipped_spans_serve_one_generator() {
+fn skips_with_two_generators(base_hz: f32, step: u8) {
     let audio = noisy_slot();
     let tones = encode_payload(&decode_near(1_234.5, 0.31).payload);
     let usable = Usable {
@@ -1059,8 +1058,27 @@ fn skipped_spans_serve_one_generator() {
     let mut skips = Skips::new();
     let a = Synth::new(&tones, 1_234.5, 1.0).unwrap();
     symbol_correlations(&audio, usable, &a, 6_000, &mut work, &mut skips);
-    let b = Synth::new(&tones, 1_240.0, 1.0).unwrap();
+    let mut other = tones;
+    other[10] = (other[10] + step) % 8;
+    let b = Synth::new(&other, base_hz, 1.0).unwrap();
     symbol_correlations(&audio, usable, &b, 6_000, &mut work, &mut skips);
+}
+
+/// A set of skipped spans' sums serves one generator only: debug builds
+/// panic when it is used with another base frequency.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "another generator")]
+fn skipped_spans_serve_one_generator() {
+    skips_with_two_generators(1_240.0, 0);
+}
+
+/// Likewise with the same base frequency and one other tone.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "another generator")]
+fn skipped_spans_serve_one_generator_of_one_tone_sequence() {
+    skips_with_two_generators(1_234.5, 1);
 }
 
 /// Random 32-bit words, from the tests' generator.
