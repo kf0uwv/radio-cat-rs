@@ -10049,7 +10049,7 @@ measured in each position. Slot instructions, s0086:
   which counted `itt` and its kin as well.
 - This section first kept the subtraction because "only the second row
   ships". That overstated it: the second row is the staged measurement
-  image, and a firmware image's sign is unknown. The changes are +0.69%,
+  image, and an application's linked image's sign is unknown. The changes are +0.69%,
   −0.64% and +0.56% of the small slot, noise around zero. O20b removes
   the subtraction, for `% N`, the shorter form.
 
@@ -10365,10 +10365,8 @@ not run. A floor of 235 would catch radix 2 alone, with a margin of 3.
 - **x86-64 and AArch64:** `.text` and `.rodata` as at 70be604, so O20's
   records and WAV runs carry over. They do not execute the one-lane code.
 - **Encoder:** the 45 WAV files are identical to 70be604's.
-- A residual mismatch in the out-of-tree comparison used to print no
-  DIFFER word and still end as done. It now prints DIFFER and exits
-  non-zero, confirmed with one byte flipped in a copy of a residual. All 16
-  comparisons above ran with the fixed form.
+- The residual comparison was confirmed to fail on one flipped byte in a
+  copy of a residual. All 16 comparisons above ran after that confirmation.
 - O20's copies of the staged images had been overwritten by a build at
   another path. The head's were built once, from a fresh tree.
 
@@ -10392,7 +10390,7 @@ not run. A floor of 235 would catch radix 2 alone, with a margin of 3.
 - Any M33 slot but s0086 and s0407; M33 decoder identity beyond the seven
   slots.
 - M4 instruction counts, stack, frames and any decoder identity run.
-- The index's sign in a real firmware image.
+- The index's sign in an application's linked image.
 - A76 and x86-64 timing, and their record and WAV runs at this head: their
   sections are unchanged, so they were not repeated.
 - Other one-lane targets.
