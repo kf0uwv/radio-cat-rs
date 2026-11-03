@@ -2186,3 +2186,34 @@
 - Identity at ff43e16 (x86-64, A76, encoder, M33), comparators failing when
   forced, mutants caught (two equivalent, their forms failing the check),
   local CI passes, A76 library tests pass.
+
+## Session: 2026-11-03 (O27 min-sum in the release form, the correction's lanes, the inputs' blocks)
+
+- Profiled 958f04e (A76 PC samples host and small, x86-64 `perf`, M33
+  per-function and per-block counts on s0086). The A76 small slot's
+  `min_sum_round` (30.4%) was scalar in the measured binaries: under the
+  release profile's 16 codegen units and local ThinLTO its groups lost
+  their vector form (14 four-lane instructions against 156 in the
+  code-generation check's one-unit build, which therefore passed).
+- c2a99ed: each row of a group takes its inputs in place in the step that
+  compares them, the gather index taken no further than the last
+  variable (no bounds-check branch); codegen-check gains `a64r`, AArch64
+  built as the release profile builds it. 2491a13: the correction's lanes
+  set up out of line, so their loop is vectorised (`add2d`). 66d99a4: the
+  sum-product inputs' blocks with the same clamped index (`sumloop8`).
+  11a783b: a count in the check's comment.
+- A76 small slot 12.1 → 10.4 ms (−14.0%; belief propagation 4.020 → 2.370
+  ms, −41%); crowded host slot 78.6 → 76.5 ms (−2.7%; subtraction −5.0%,
+  belief propagation −1.5%). x86-64 user cycles of the whole program
+  −0.57% host, −0.78% small (ranges overlap). M33 unchanged (identical
+  images).
+  Hosts' `.text` −3.8 KB (x86-64) and −4.4 KB (AArch64); RAM, scratch,
+  slot storage, M33 and M4F flash unchanged.
+- Identity at 11a783b (x86-64, A76, encoder, M33 16/16), comparators
+  failing when forced, mutants caught (three equivalent by design), four
+  forced code-generation forms (three fail, one equivalent and unbounded),
+  local CI passes, A76 library tests pass.
+- Tried, not kept: the last group of three checks padded to a group
+  (t124: no A76 gain, +832 B AArch64 code); the correction's lanes as
+  32-bit halves or two pairs; the M33 min-sum's scaled magnitudes taken
+  once a check (same code).

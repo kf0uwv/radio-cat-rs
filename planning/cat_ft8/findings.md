@@ -13896,3 +13896,394 @@ Fresh copies of ff43e16's tree, release library tests (215), one log each:
   x86-64 per-function shares; d-cache misses of the larger table (24 KB
   of 64 KB L1d on the A76; the stage reads 3 069 entries a transform).
 - After a toolchain change: the bounds above.
+
+## Min-sum vectorised as a release build compiles it, the correction's lanes vectorised, the sum-product inputs without branches, twenty-seventh round (O27, bit-identical, 2026-11-03)
+
+Base: 958f04e (the code of O26b). A short profile first (A76 PC samples,
+M33 per-function and per-block counts, x86-64 `perf`), then three code
+commits, one optimisation each: c2a99ed (min-sum's groups vectorised as a
+release build compiles them, and the code-generation check's AArch64 build
+in that form), 2491a13 (the frequency correction's lanes set up out of
+line, so their loop is vectorised) and 66d99a4 (the sum-product inputs'
+blocks without bounds-check branches); then 11a783b (a count in the
+check's comment). Each code commit carries its code-generation bounds.
+Decodes, records, residuals and encoder output are identical. No memory
+is added: static RAM, scratch, slot storage and the M33 stack's high
+water are unchanged; every thumbv8m and thumbv7em section is unchanged;
+the hosts' code shrinks (AArch64 `cat-ft8-decode` −4 352 B, x86-64
+−3 840 B, `.rodata` unchanged).
+
+| target | measure | 958f04e | 66d99a4 | change |
+|---|---|---|---|---|
+| Cortex-A76, `slotcost small small 200 5` | belief propagation (medians of 4) | 4.020 ms | 2.370 ms | **−41.0%** |
+| | slot | 12.1 ms | 10.4 ms | **−14.0%** |
+| Cortex-A76, crowded host slot | subtraction | 35.085 ms | 33.315 ms | **−5.0%** |
+| | belief propagation | 19.060 ms | 18.780 ms | −1.5% |
+| | slot | 78.6 ms | 76.5 ms | **−2.7%** |
+| Cortex-A76, one pass | slot (belief propagation) | 17.6 (8.940) ms | 17.4 (8.810) ms | −1.1% (−1.5%) |
+| x86-64, user cycles of the whole program (medians of 4) | `slotcost small small 200 5` | 92.50 G | 91.78 G | −0.78% (ranges overlap) |
+| | `slotcost host host,passes=1 200 5` | 302.40 G | 300.67 G | **−0.57%** |
+| Cortex-M33 | every count | | | 0 (sections identical) |
+
+The M33 runs none of the changed code: its images are identical at every
+commit, and its counts at 11a783b equal 958f04e's to the instruction
+(s0086 small 169 188 866, host 1 427 092 090; s0407 162 318 338,
+1 423 827 980).
+
+### The profile at 958f04e
+
+#### Method
+
+- One build per target of 958f04e from one scratch path (aligned hosts,
+  `-align-loops=64 -align-all-functions=6`; thumbv8m with `--cfg
+  cat_ft8_minmaxnm`), rustc 1.93.0; every section's size equals O26b's
+  ff43e16 (the head's code).
+- **A76 PC samples** (Raspberry Pi 5, core 3, one benchmark at a time,
+  throttle 0x0 throughout): O25's sampler in a scratch copy of
+  `paired_bench` over `slotcost host host 200 5` (100 µs, 1 609 990
+  samples in the decoder's steps) and `slotcost small small 200 5` (50 µs,
+  503 986). Loops attributed by their backward branches.
+- **x86-64** (Threadripper 3970X, core 5): `perf record -e cycles:u` of
+  the same two programs, and the sampler on the host one (its small run
+  overlapped this round's builds and is left out).
+- **Cortex-M33** (unicorn, the staged images): per stage, function and
+  basic block, s0086 small and host. Counts equal O26's to the
+  instruction (small 169 188 866, host 1 427 092 090).
+
+#### Ranked
+
+| target | where | share | lever |
+|---|---|---|---|
+| A76 small | `min_sum_round`: the groups of degree 6 (a loop of 604 instructions a group, scalar) and 7 (723) | 16.2% + 8.3% of the slot; the function 30.4% | **c2a99ed**: the groups were scalar in the release build (below) |
+| A76 host | `sum_product_round`: tanh and atanh passes / the inputs' blocks (61 a block of 8, 9 branches) / the sums | 8.8 + 7.7% / 2.8% / 2.3% | the passes: none bit-identical found; **66d99a4** the inputs |
+| A76 host | `subtract::run`: the reference's block / the frequency correction's lanes (24 scalar instructions a group of four) | 10.0% / 4.9% | **2491a13** the lanes |
+| A76 host, small | `power_bins` (the FFT: the radix-5 loop 4.7% / 10.1%) | 20.7% / 44.3% | none this round (O26's next candidates) |
+| A76 host | `fill_phase_only`, `correlation_whole`, `Removal::refs`, `Fit4` | 8.8, 5.5, 4.8, 4.6% | none |
+| A76 small | `soft_bits_at`, the Costas sums, `search_rows` | 7.4, 6.6, 4.7% | none |
+| x86-64 host (perf) | `sum_product_round` 29.0%, `power_bins` 16.0%, `fill_phase_only` 11.3%, `run` 10.9% | | 2491a13 |
+| x86-64 small (perf) | `power_bins` 26.1%, `min_sum_round` 11.4% (vectorised there), the Costas sums 10.1%, `search_rows` 7.2%; the bench's synthesis and classification about a quarter | | |
+| M33 small | the feed (`Decoder::pass` 52.1%), `min_sum_round` 29.6% (blocks of 16 and 17 instructions an edge, 7.8% and 6.9%), the Costas sums 8.5% | | none found (below) |
+| M33 host | `sum_product_round` 25.2%, `blocks` 17.3%, the feed 18.3%, `Removal::refs` 7.9%, `fill_phase_only` 7.7% | | none found |
+
+
+### What the release build did to min-sum (c2a99ed)
+
+The code-generation check builds the library with one codegen unit
+(`--emit=asm` takes one unless told otherwise). The release profile builds
+it with 16 and local ThinLTO, whose pipeline inlines and unrolls the round
+a second time before the vectorisers run. In that form min-sum's groups
+(`group_min_sum`, four checks in the lanes of a vector since O17) were
+scalar on AArch64: `min_sum_round` held 14 four-lane instructions in the
+measured binaries (`cat-ft8-decode`, `paired_bench`) against 156 in the
+check's build, and its group loops were 604 and 723 scalar instructions a
+group (degree 6 and 7) with a bounds-check branch per gather. A build of
+958f04e with `cat-ft8` at one codegen unit (trial, timed beside the base
+for two cycles) read belief propagation 4.01 → 2.69 ms on the A76 small
+slot. x86-64 was vectorised in both forms.
+
+The cause, from the IR before the SLP vectoriser in the ThinLTO pipeline
+(`-print-before=slp-vectorizer`, then `opt` alone on that module): the
+group's 24–28 gathers each sat in its own basic block behind a
+bounds-check branch, and the rows' chains of selects (j fully unrolled)
+reached past the vectoriser's tree depth from the stores (`opt
+-slp-recursion-max-depth=20` vectorised the same IR: 258 vector operations
+against 15). Forms tried in the release form (`min_sum_round` four-lane
+instructions):
+
+| form | `.4s` | group loop (degree 6 / 7) |
+|---|---|---|
+| 958f04e: inputs into a local array, then the rows, gathers checked | 14 | 604 / 723 scalar |
+| inputs stored into the group first, a loop of their own | 14 | 689 / 835 |
+| the local array as `[[f32; K]; D]`, rows copied out | 14 | 613 / 745 |
+| that, the magnitude by a sign-bit exclusive or | 14 | 697 / 832 |
+| inputs stored into the group first, the magnitude by exclusive or | 100 | 518 / 625 |
+| the gathers' index clamped, inputs into the local array | 14 | 598 / 727 |
+| out of line, the rows at run time (`degree` an argument) | 91 / 103 (clamped) | 404 / 310 |
+| **each row's inputs in place in the step that compares them, the index clamped** (kept) | **162** | **259 / 301** |
+| the same, the index checked | 166 | 322 / … |
+
+The kept form: each row of four lanes takes its inputs into the group in
+place (as the M33's one-pass check does) and compares them in the same
+step; a variable's index is taken no further than the last variable,
+`total[usize::from(v).min(N - 1)]`, which every index already is, so the
+row has no branch. Values are unchanged (the same subtractions,
+comparisons and messages; an index is never clamped). The M33 keeps
+`min_sum_check` (groups of one); its images are unchanged.
+
+`min_sum_round` on AArch64 in the release form: 1 933 → 877 instructions,
+its two group loops 259 and 301 instructions a group of four checks.
+
+The check: a sixth build, `a64r`, AArch64 with the release profile's 16
+units (`-C codegen-units=16` named, one assembly file a unit, read as
+one), and `a64r min_sum_round vec4 100` (162; 14 at 958f04e).
+
+### The correction's lanes (2491a13)
+
+`Correction::lanes` built four 64-bit lanes from one state. Inlined, the
+compiler saw each lane's step as the first's plus a multiple of the
+acceleration, shared one running sum and kept the lanes scalar: 24
+instructions a group of four samples on AArch64, 23 on x86-64 (O25's
+"4.6% of the crowded slot"). A micro-crate reproduced it and showed the
+cost model's margin (`-slp-threshold=-4` vectorised it); with the lanes'
+setup opaque (out of line, or from memory) the loop is two-lane 64-bit
+adds and one `uzp2`: 10 instructions a group of four on AArch64, 24 a
+group of eight on x86-64. `lanes` is now `#[inline(never)]`, one call a
+block. Tried first: the lanes as 32-bit halves with carries (O25's
+candidate): 36 instructions on AArch64 (half vectorised) and a 96
+instruction loop with spills on x86-64; as two pairs: 23. The M33 never
+uses the lanes (`apply_as::<false>`).
+
+New metric `add2d` (two-lane 64-bit vector adds), a floor: `a64 6blocks`
+8, `a64r 6blocks` 4 (0 with the setup inlined).
+
+### The sum-product inputs (66d99a4)
+
+On AArch64 the round takes its inputs eight edges a block
+(`INPUT_BLOCK`); each gather was bounds-checked by a branch: 61
+instructions a block in the release form, 2.8% of the crowded host slot.
+With the index clamped as above, a select replaces each branch and the
+block's subtractions become two four-lane ones: 46 instructions. x86-64
+and the M33 use the plain loop (`INPUT_BLOCK` one) and are unchanged
+(their sections identical). Bound: `sumloop8` in `sum_product_round`, a
+ceiling of 50 (48 one-unit, 46 release; 63 and 61 with the branches).
+
+### Cortex-A76 (Raspberry Pi 5; medians of 4 alternated cycles)
+
+Aligned builds of 958f04e, trial t12 (whose `.text` and `.rodata` in all
+eight binaries equal 66d99a4's and 11a783b's) and trial t124 (below,
+dropped) from one scratch path; core 3, the throttle, clock and
+temperature sampled once a second from core 0, a 5 s sampled busy loop on
+core 3 before each run; per cycle `slotcost host host,passes=1 200 5` then
+`slotcost small small 200 5` of each build, forward on odd cycles and
+reversed on even.
+
+| ms (median, spread) | 958f04e | 66d99a4 (t12) | t124 |
+|---|---|---|---|
+| small: belief propagation | 4.020 (0.000) | **2.370 (0.000)** | 2.370 (0.000) |
+| small: slot / worst | 12.1 / 12.5 | **10.4 / 10.7** | 10.4 / 10.6 |
+| small: feed / sync / soft bits | 5.595 / 1.380 / 0.900 | 5.590 / 1.380 / 0.900 | 5.580 / 1.380 / 0.900 |
+| host: subtract | 35.085 (0.040) | **33.315 (0.090)** | 33.305 (0.020) |
+| host: belief propagation | 19.060 (0.000) | **18.780 (0.000)** | 18.810 (0.000) |
+| host: feed / sync / soft bits | 16.835 / 4.680 / 2.380 | 16.835 / 4.680 / 2.380 | 16.810 / 4.680 / 2.380 |
+| host: slot / worst | 78.6 / 83.2 | **76.5 / 81.0** | 76.5 / 81.0 |
+| one pass: slot, belief propagation | 17.6, 8.940 | 17.4, 8.810 | 17.5, 8.830 |
+
+- **Placement check.** The stages no commit touches (feed, sync, soft
+  bits, SNR, OSD-1, refine) agree within 0.005 ms between 958f04e and
+  66d99a4 in both configurations. Belief propagation's gain on the small
+  slot is 1.65 ms with spreads of 0; the subtraction's 1.77 ms is 20 times
+  its spread. No placement variation was run.
+- Attribution by stage: the subtraction is 2491a13 alone; small belief
+  propagation (min-sum) c2a99ed alone; host belief propagation
+  (sum-product) 66d99a4 alone (c2a99ed changes only min-sum, which the
+  host configuration does not run).
+- **Validity.** All 24 timed runs valid: 1 842 samples during the runs and
+  the warm-ups, every one 0x0, the end checks included; every sample
+  during a run at 2 400 MHz; peak 54.3 °C. The trial session (958f04e
+  against the one-unit build, two cycles, 8 runs) likewise all 0x0.
+
+### x86-64 (Threadripper 3970X, core 5, `perf stat` user counters over the whole `slotcost` program)
+
+Aligned builds of 958f04e and 11a783b from the same scratch path, per
+round `slotcost host host,passes=1 200 5` then `slotcost small small 200
+5` of each build, four alternated rounds (forward, then reversed); a check
+for other local jobs of the round before and after each sample: none void.
+
+| build | small: cycles (median, range) | instructions | host: cycles (median, range) | instructions |
+|---|---|---|---|---|
+| 958f04e | 92.50 G (91.83–92.65) | 279.21 G | 302.40 G (301.66–303.52) | 838.34 G |
+| 11a783b | 91.78 G (91.52–92.38), −0.78% | 280.96 G (+0.63%) | **300.67 G (300.24–300.71), −0.57%** | 824.89 G (−1.60%) |
+
+x86-64's min-sum groups were vectorised before (the release form too), so
+the small configuration gains little: its cycles' ranges overlap, and its
+instructions rise by 0.6% (the one-pass rows and the clamp's compare and
+select a gather). The host configuration's range clears the base's by
+0.95 G (the correction's lanes; the inputs' blocks are AArch64 only). The
+whole program includes the bench's slot synthesis and classification.
+
+### Sizes (one scratch path, aligned; `.text` + `.rodata`, B)
+
+| binary | 958f04e | c2a99ed | 2491a13 | 66d99a4 = 11a783b | against 958f04e |
+|---|---|---|---|---|---|
+| x86-64 `cat-ft8-decode` | 468 678 + 93 504 | 464 774 | 464 838 | 464 838 + 93 504 | −3 840 |
+| x86-64 `paired_bench` | 1 422 966 + 156 428 | 1 419 062 | 1 419 126 | 1 419 126 + 156 428 | −3 840 |
+| AArch64 `cat-ft8-decode` | 402 280 + 85 840 | 398 056 | 397 992 | 397 928 + 85 840 | −4 352 |
+| AArch64 `paired_bench` | 1 174 872 + 147 132 | 1 170 648 | 1 170 584 | 1 170 520 + 147 132 | −4 352 |
+
+- Cortex-M33 (`check.sh --stack` at 11a783b): flash small 92 038 B, host
+  104 738 B, encoder 35 190 B; static RAM 201 668 / 230 084 / 0 B; paint
+  high water 10 304 / 10 276 B: all as at 958f04e (the images are the
+  same). No fused multiply-add; `vmla` 128 / 241 / 17. M4F: flash 92 304
+  / 105 332 B, static RAM unchanged, `fmaxf`/`fminf` 10 and 14, no `f64`
+  helper, no fused multiply-add, the same library calls.
+- Scratch and slot storage: no type changes size (`BpScratch`, the
+  subtraction's scratch). The hosts' frames were not measured.
+
+### Sections of all eight binaries
+
+| binary | c2a99ed against 958f04e | 2491a13 against c2a99ed | 66d99a4 against 2491a13 | 11a783b against 66d99a4 |
+|---|---|---|---|---|
+| x86-64 `cat-ft8-decode`, `paired_bench` | differ | differ | **identical** | identical |
+| AArch64 `cat-ft8-decode`, `paired_bench` | differ | differ | differ | identical |
+| M33 check and staged, small and host | identical | identical | identical | identical |
+
+### The code-generation check
+
+New bounds (above): `a64r min_sum_round vec4 100`, `a64 6blocks add2d
+8`, `a64r 6blocks add2d 4`, `a64 sum_product_round sumloop8 50`, `a64r
+sum_product_round sumloop8 50`. Each form below is a fresh copy of
+11a783b's tree with one edit, its own log and the check's exit status:
+
+| form | a64 / a64r `min_sum_round` vec4 (≥ 100) | a64 / a64r `6blocks` add2d (≥ 8 / 4) | a64 / a64r inputs `sumloop8` (≤ 50) | exit |
+|---|---|---|---|---|
+| head (11a783b) | 165 / 162 | 8 / 4 | 48 / 46 | 0 (46 of 46) |
+| g1: the min-sum group as at 958f04e (inputs into a local array, gathers checked) | 156 / **14** | 8 / 4 | 48 / 46 | 1 |
+| g2: the group's index checked, in place (equivalent by value) | 143 / 166 | 8 / 4 | 48 / 46 | 0 |
+| g3: the correction's lanes' setup inlined | 165 / 162 | **0 / 0** | 48 / 46 | 1 |
+| g4: the inputs' index checked | 165 / 162 | 8 / 4 | **63 / 61** | 1 |
+
+No other check failed in any form. g1 shows why the one-unit bound alone
+missed it (156 passes). g2 passes: the clamp in the group is not bounded;
+without it the group still vectorises in the release form (322 against
+259 instructions a group of degree 6, objects of the release build), so
+only its cost, not the form, is unguarded. What the check misses: the
+x86-64 forms (no new bounds; x86-64 min-sum was vectorised before), the
+linked binaries (it reads the library), dependents' other profiles.
+
+### Identity (11a783b)
+
+The references are b93516e's outputs (x86-64 records and WAV lines, the
+A76's compared with them), 68634cc's (M33 dumps and residuals) and
+70be604's (encoder WAVs), unchanged by every round since.
+
+- **Records, x86-64:** the 73 800 `paired_bench run` records equal
+  b93516e's (host, one pass, small: 24 600 each, 0 differ; exit 0 each).
+  The trial t12 (66d99a4's sections) likewise.
+- **800 WAV slots** × 3 × 3, x86-64: 93 091 lines byte-identical, 2 400
+  `--profile` lines differing only by the sync scratch and
+  `static_table_bytes` 39 429 → 48 621 (O26b's comparison; exit 0).
+- **A76:** the records of 11a783b's AArch64 `paired_bench` equal x86-64
+  b93516e's (73 800, 0 differ; exit 0 each), and the 800 WAV slots × 3 ×
+  3 with its `cat-ft8-decode` give the same 93 091 identical lines and
+  2 400 `--profile` lines (exit 0). One benchmark at a time; 1 495
+  throttle samples, start and end included, all 0x0.
+- **Encoder:** the 45 `cat-ft8-encode` WAVs equal 70be604's.
+- **Cortex-M33 (emulated):** the small and host dump images on seven slots
+  and the multi-pass residuals of s0086 and s0407 equal 68634cc's (16 of
+  16; exit 0).
+- **Comparators on a forced difference:** (copies of 11a783b's outputs; each its own exit status) the records
+comparison 0 unforced, 1 with one record's SNR changed in its last digit;
+the WAV comparison 0 unforced, 1 with a decode line's frequency one
+higher, 1 with a `--profile` line's `peak_bytes` one higher; the M33
+comparison 0 unforced (16 identical), 1 with one bit of one dump flipped
+(15 identical, 1 differ); `cmp` of an encoder WAV 0 unforced, 1 with one
+byte changed.
+
+### Tests and mutants
+
+No test changes: the existing bit-for-bit tests cover the forms
+(`the_min_sum_round_matches_its_first_form_bit_for_bit` runs the groups of
+four on any host with ties and NaN, infinity and −0 inputs;
+`the_inputs_are_the_same_in_blocks_of_any_size` runs `inputs` at several
+block sizes; `correction_in_lanes_and_in_closed_form_follows_the_sequence`
+the lanes).
+
+Mutants in fresh copies of 11a783b's tree, release library tests (215);
+g1 with `--cfg cat_ft8_test_group_one`. One log each with the tree, the
+edit and cargo's exit status:
+
+| mutant | mode | failing (of 215) |
+|---|---|---|
+| none (control) | release | 0 |
+| m1 the group's index clamped one short (`N - 2`) | release | 3 |
+| m2 the group's last row not compared | release | 6 |
+| m3 the group's inputs not stored (the messages' sign from the old message) | release | 6 |
+| m4 the group's index checked, not clamped (equivalent; g2) | release | 0 |
+| l1 the lanes' setup inlined (equivalent; g3 fails the check) | release | 0 |
+| l2 the lanes' step with 5 accelerations, not 6 | release / g1 | 3 / 3 |
+| i1 the inputs' index clamped one short | release | 1 |
+| i2 the inputs' index checked (equivalent; g4 fails the check) | release | 0 |
+
+m4, l1 and i2 are equivalent by design.
+
+### Checks
+
+- **Local CI** passes at 11a783b, 17 of 17 steps: fmt; clippy `-D
+  warnings` (workspace, all targets and features, thumbv8m); workspace,
+  profile, no-std and release tests with the ignored ones; the group-one
+  step; the bulk run; MSRV 1.75; docs with and without `std`;
+  `check.sh --stack`; codegen-check (46 of 46).
+- **A76 release library tests** with the ignored ones, cross-built at
+  11a783b: 223 pass, 0 fail (the source-tree test filtered out); 241
+  throttle samples, all 0x0.
+
+### Tried, not kept
+
+- **The last group padded (O26's question; trial t124).** The 3 checks of
+  degree 6 left over after the groups of four laid out as a last group of
+  three (`place` with stride r = 59 mod 4), taken by the group forms with
+  the other lane as padding (inputs 0 or products 1, never stored), so the
+  hosts no longer run `min_sum_check`'s two-loop form, its macro or the
+  `V` parameter (−32 source lines; layout tests and bit-for-bit tests
+  passed, the M33's images unchanged). A76: small belief propagation 2.370
+  against 2.370 ms, host 18.810 against 18.780 (4 cycles, above); AArch64
+  `.text` +832 B and `.rodata` +144 B, `min_sum_round` 877 → 1 118
+  instructions in the release form. No gain and more code: not kept.
+- **The correction's lanes as 32-bit halves with carries** and **as two
+  pairs** (above).
+- **min-sum's scaled magnitudes taken once a check** (`ALPHA` times the
+  two smallest before the output loop) on the M33: the same 17
+  instructions an edge (the compiler already sinks them back); not kept.
+- The one-unit build of `cat-ft8` (`[profile.release.package.cat-ft8]
+  codegen-units = 1`) as a fix: belief propagation 2.69 ms small, but it
+  is a build setting a dependent crate does not inherit, and the
+  source-level form is faster (2.37).
+
+### What bounds the stages now (A76)
+
+PC samples of the head's code (the trial t12, 66d99a4's sections), as at
+958f04e (all 0x0, 2 400 MHz):
+
+- **Small** (shares of the decoder's samples): the feed 53.6%
+  (`power_bins` 51.3%), belief propagation 22.7% (`min_sum_round` 19.4%:
+  the degree-6 groups 8.5%, the degree-7 groups 4.1%, the sums loop 5.5%,
+  20 instructions a variable with three bounds-check branches; the three
+  checks left over about 1.3%), the sync search 13.3% (the Costas sums
+  7.7%, `search_rows` 5.5%), soft bits 8.7%.
+- **Crowded host:** the subtraction 43.5% (the reference's block 10.3%, the
+  correction's lanes 2.5%, from 4.9%), belief propagation 24.5%
+  (`sum_product_round` 23.4%: tanh 9.0%, atanh 7.9%, the inputs' blocks
+  2.5%, the sums 2.4%), the feed 21.9%, `fill_phase_only` 9.1%.
+
+### Next candidates (not built)
+
+| candidate | estimate | cost |
+|---|---|---|
+| The sum-product round's tanh and atanh passes (A76 host 16.4% at 958f04e) | none bit-identical found | — |
+| The FFT's radix-5 twiddles m = 3, 4 as whole loads (O26) | up to a third of 10% (A76 small) | no load form known |
+| `soft_bits_at`, the Costas sums, `search_rows` (A76 small 7.4, 6.6, 4.7%) | uncertain | — |
+| The rounds' sums (`sums`: three bounds-checked gathers a variable) | A76 small 5.5%, host 2.4% at the head | a clamp or a layout the compiler can prove; not tried |
+| The code-generation check's other bounds in the release form | the one-unit build may pass forms the release build does not take: only min-sum differed at 958f04e (per-function `.4s` counts compared) | more builds |
+
+### Risks
+
+- The release form's vectorisation of min-sum rests on the SLP vectoriser's
+  cost and depth limits under local ThinLTO; it is bounded (`a64r`), but a
+  toolchain change or a change of the crate's codegen units (a dependent's
+  profile) can move it. Dependents building with other profiles (LTO
+  `fat`, one unit) were not measured.
+- The clamped index (`min(N - 1)`) is a no-op only while every entry of
+  `EDGE_VARS` is a variable; the tables are built at compile time and the
+  layout test checks every entry. A wrong index would read the last
+  variable rather than panic.
+- `lanes` out of line rests on the compiler not seeing through the call;
+  inlined by a later compiler, the check's `add2d` fails.
+
+### Not measured
+
+- Cortex-M33 cycles (no code changed for it); M4F counts.
+- The hosts' stack frames; sparse and empty slots; off-air recordings.
+- The x86-64 per-function shares after the commits; the A76 per-loop
+  profile after the commits.
+- A placement variation on the A76.
+- Other dependents' build profiles (above).
