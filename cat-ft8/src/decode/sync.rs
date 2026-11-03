@@ -87,6 +87,9 @@ pub const fn scratch_len(base_bins: usize) -> usize {
     3 * base_bins
 }
 
+/// The scratch's element: a score's bits ([`cell_of`]).
+pub(crate) type ScoreCell = f32;
+
 /// A score as a scratch cell. The scratch is `f32` because the decoder
 /// keeps it in the FFT's work area ([`Decoder`](super::Decoder)). A cell
 /// holds the score's bits, and a cell is only ever loaded, stored and
@@ -94,13 +97,13 @@ pub const fn scratch_len(base_bins: usize) -> usize {
 /// floating-point arithmetic touches it, so it does not matter that small
 /// scores are subnormals as `f32` and negative ones NaNs.
 #[inline(always)]
-fn cell_of(score: i32) -> f32 {
+fn cell_of(score: i32) -> ScoreCell {
     f32::from_bits(score as u32)
 }
 
 /// The score in a scratch cell ([`cell_of`]).
 #[inline(always)]
-fn score_of(cell: f32) -> i32 {
+fn score_of(cell: ScoreCell) -> i32 {
     cell.to_bits() as i32
 }
 
@@ -111,7 +114,7 @@ fn score_of(cell: f32) -> i32 {
 pub fn find_candidates(
     spec: &Spectrogram<'_>,
     min_score: i32,
-    scratch: &mut [f32],
+    scratch: &mut [ScoreCell],
     out: &mut [Candidate],
 ) -> Result<SyncReport, Error> {
     search_rows(spec.rows(), min_score, scratch, out)
@@ -121,7 +124,7 @@ pub fn find_candidates(
 pub(crate) fn search_rows(
     rows: &Rows<'_>,
     min_score: i32,
-    scratch: &mut [f32],
+    scratch: &mut [ScoreCell],
     out: &mut [Candidate],
 ) -> Result<SyncReport, Error> {
     let cols = rows.band().base_bins();
@@ -146,7 +149,7 @@ pub(crate) fn search_rows(
 /// added in another order (exact), a row of the spectrogram at a time so the
 /// inner loop runs along the bins and vectorises.
 // `spec` by reference keeps the M33 sum's registers: findings O21, codegen-check `sumloop`.
-fn costas_scores(spec: &Rows<'_>, start_row: i32, out: &mut [f32]) {
+fn costas_scores(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
     let cols = out.len();
     let rows = spec.len() as i32;
     out.fill(cell_of(0));
@@ -265,12 +268,12 @@ pub(crate) fn select<T, S, M>(
     cols: usize,
     score: S,
     min_score: i32,
-    scratch: &mut [f32],
+    scratch: &mut [ScoreCell],
     out: &mut [T],
     make: M,
 ) -> Result<SyncReport, Error>
 where
-    S: Fn(usize, &mut [f32]),
+    S: Fn(usize, &mut [ScoreCell]),
     M: Fn(usize, usize, i32) -> T,
     T: Copy + HasScore,
 {
@@ -279,7 +282,7 @@ where
     }
     let mut report = SyncReport::default();
     let mut count = 0usize;
-    let fill = |scratch: &mut [f32], q: usize| {
+    let fill = |scratch: &mut [ScoreCell], q: usize| {
         score(q, &mut scratch[(q % 3) * cols..(q % 3 + 1) * cols]);
     };
     if rows == 0 {
