@@ -10394,3 +10394,40 @@ not run. A floor of 235 would catch radix 2 alone, with a margin of 3.
 - A76 and x86-64 timing, and their record and WAV runs at this head: their
   sections are unchanged, so they were not repeated.
 - Other one-lane targets.
+
+## Closure follow-ups (O20c, 2026-11-02; no code generation change on the measured targets)
+
+`.text` and `.rodata` of all eight binaries are unchanged: x86-64 and
+AArch64 as at 70be604, the M33 images as at a35a698 (rustc 1.93.0; M33
+`--cfg cat_ft8_minmaxnm`). So O20b's counts, sizes, frames and M33
+identity stand, and the decoders were not rerun.
+
+- **14c5edb: a coverage gap closed.** No host test ran `spectrum`'s
+  one-lane branch, so a fault there would have passed on every host. The
+  choice is now `spectrum_lanes::<L>`, which `spectrum` calls with `LANES`,
+  and `spectrum_is_the_same_for_every_lane_count` compares one, two and four
+  lanes bit for bit over the first stage's test windows. `GROUP` had no
+  other use and is gone.
+- **Faults in that branch,** each caught by the new test alone: the later
+  stages' or the first stage's real and imaginary parts swapped, the later
+  stages run twice, the later stages omitted. Only the last also fails the
+  code-generation check, which looks at the code's shape, not its results.
+  An unmutated control passes, and passing two lanes in place of `LANES`
+  passes, as it must, since the results are the same. A fault in the vector
+  branch is caught by 16 tests.
+- ffca661, 3beaf24, f068f0f, ecd5110: comments, macro parameter names, a
+  redundant check and the guard's header. The floor stays 230.
+- O20's "superseded" notice is widened, and the radix-4 floor of 100 is
+  stated. Both radix-4 stages merge the m = 2 terms, so it applies to all
+  176 640 of their butterflies: 42 393 600 − 4 × 176 640 = 41 687 040.
+- O20b's mutants other than those of `spectrum_lanes` ran before its macro
+  trims. A review re-ran equivalents on the trimmed code, with the same
+  results.
+
+### Not measured
+
+- As in O20b. In addition, the new test runs on hosts only, so it shows
+  that the branch computes the right values on a host, not on a one-lane
+  target; the M33 dumps and residuals remain the only end-to-end evidence
+  there, and they were not rerun because the images are unchanged.
+

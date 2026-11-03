@@ -1867,3 +1867,14 @@
   m = 2 terms); stack paint attributed; radix 5's mutant run and logged.
 - x86-64 and AArch64 sections as at 70be604. M33 14 of 14 and both
   residuals identical on the final tree; local CI passes.
+
+## Session: 2026-11-02 (O20c closure follow-ups)
+
+- 14c5edb: `spectrum_lanes::<L>`, with a test of every lane count; no host
+  test ran the one-lane branch before. Four faults there are caught by it
+  alone. `GROUP` removed.
+- Comments, macro names and the guard's header; floor stays 230. Findings
+  wording, and the radix-4 floor of 100 (total 41 687 040) stated.
+- All eight binaries' `.text` and `.rodata` unchanged, so the decoders were
+  not rerun. Local CI passes.
+
