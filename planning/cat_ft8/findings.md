@@ -12505,7 +12505,7 @@ except b81a05c's x86-64 `.text`.
   reference (`F2`) 8.006 → 8.171 cycles a sample (+2.1%), the subtraction
   17.550 → 17.683 (+0.8%). Not adopted; the BITS arm stays.
 - **A skipped span's sum filling its mirrored pair's when taken** (built
-  as 387a4c6, kept on a side branch, not on o24): the third branch goes,
+  as a trial commit, not kept): the third branch goes,
   but every generated span whose mirror is never met now costs two
   increments. M33 emulated instructions: the subtraction +10 579 (s0086)
   and +9 298 (s0407), +0.0014%; every other stage the same; decodes the
@@ -12518,7 +12518,7 @@ except b81a05c's x86-64 `.text`.
 |---|---|---|
 | eb210f9 (the sections of 7176be1 to f8e1a95) | 314.33 G (313.81–314.74) | 891.36 G |
 | b81a05c | 314.46 G (314.06–314.72), +0.04% | 891.36 G |
-| 387a4c6 (the mirrored fill, not adopted) | 313.58 G (312.61–314.28), −0.24% | 891.39 G |
+| the mirrored fill (not adopted) | 313.58 G (312.61–314.28), −0.24% | 891.39 G |
 
 b81a05c's two moved instructions cost nothing measurable (within eb210f9's
 range, instructions equal). eb210f9 reads 314.33 G here against 313.81 G in
@@ -12578,9 +12578,10 @@ of this set reused stale test binaries: the copies' files carried the
 commit's time, older than an earlier run's builds in the shared target
 directory, so cargo rebuilt nothing for some and both controls failed.
 The script now gives each copy fresh times; the run above is the rerun
-(its controls 0). O24's mutant run was not affected (each copy's path was
-new to its target directory, and its controls and equivalent mutants read
-0 after mutants that failed).
+(its controls 0). O24's mutant run was not affected: every one of its logs shows
+`cat-ft8` compiled, and a mutation's edit gives the edited file a fresh
+time, so only unedited copies (the controls) could have run a stale
+binary; O24's controls read 0 with the binary rebuilt.
 
 ### Not measured
 
@@ -12590,3 +12591,18 @@ new to its target directory, and its controls and equivalent mutants read
 - The reference's signed form was measured by the library's assembly and
   the microbenchmark only (no `slotcost`, no M33 counts: its select form
   was unchanged).
+
+## O24c: closure follow-ups (no code generation change)
+
+- The reference's polynomial form follows `SCALAR_FORMS`, like the time
+  search's, so the group-of-one tests run the select form there too; no
+  shipped binary changes (`SCALAR_FORMS` is `!VECTOR` outside tests).
+- `Correction::apply_as`'s doc compares against `SCALAR_FORMS`; the
+  generator's closure no longer shares the name `step`; `Cargo.toml` says
+  what the group-of-one cfg now switches.
+- The O24b record no longer cites the trial commit of the mirrored fill,
+  and gives the right reason O24's mutant run read current binaries.
+- All 8 binaries' `.text` and `.rodata` identical to b81a05c's (thumbv8m
+  with `--cfg cat_ft8_minmaxnm`). Local tests: debug 244, release 242, the
+  group-one step 210 run, 9 ignored; clippy and the code-generation check
+  pass.

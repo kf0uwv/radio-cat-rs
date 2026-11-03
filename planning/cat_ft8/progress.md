@@ -2069,8 +2069,14 @@
   `memsums` 0; x86-64 two `lea` moved, timed and identity rerun.
 - Measured, not adopted: the reference's vector form with the sign on the
   weight (A76 reference +2.1%: weight 1.0 then needs a product); the
-  mirrored sum filled when a span is taken (M33 +0.0014%, A76 equal; kept
-  on a side branch).
+  mirrored sum filled when a span is taken (M33 +0.0014%, A76 equal; not
+  kept).
 - Mutants: a first rerun reused stale test binaries (the archive's
   mtimes older than the shared target's builds; the controls failed);
   rerun with fresh mtimes, controls 0, every mutant caught.
+
+### O24c
+
+- Reference polynomial form on `SCALAR_FORMS`; docs and a closure name;
+  the record's trial-commit citation and mutant reasoning corrected. All 8
+  binaries' sections identical to b81a05c.
