@@ -142,11 +142,6 @@ impl<const G: usize> Group<G> {
     );
 }
 
-/// Blocks per group in [`first_stage`]: four where the target has SSE2 or
-/// NEON, one where it has neither (the Cortex-M33 measured slower and
-/// larger with four).
-const GROUP: usize = LANES;
-
 /// A complex value (the reference transform in the tests).
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -237,8 +232,9 @@ impl<const L: usize> Lanes<L> {
 }
 
 /// Butterflies computed side by side: four where the target has 128-bit
-/// vectors of `f32`, else one (a Cortex-M then runs `straight_stages`). The
-/// result is the same for any value: lanes are independent butterflies.
+/// vectors of `f32`, else one (a Cortex-M then runs `straight_stages`; the
+/// Cortex-M33 measured slower and larger with a first-stage group of four).
+/// The result is the same for any value: lanes are independent butterflies.
 const LANES: usize = if cfg!(any(target_feature = "sse2", target_feature = "neon")) {
     4
 } else {
@@ -572,12 +568,21 @@ pub(crate) fn fft_reference(buf: &mut [Complex; N]) {
 /// The windowed spectrum of `samples`: the complex transform of the
 /// packed samples (Z[k], k = 0..1 920) in `buf`.
 fn spectrum(samples: &[f32; WINDOW], buf: &mut FftBuffer) {
-    if LANES == 1 {
+    spectrum_lanes::<LANES>(samples, buf);
+}
+
+/// [`spectrum`] with `L` lanes: with one, the stages written out term by
+/// term; with more, groups of `L` blocks in the first stage and `L`
+/// butterflies side by side after it. The lane count is a parameter so that
+/// the tests run every form on any host.
+#[inline(always)]
+fn spectrum_lanes<const L: usize>(samples: &[f32; WINDOW], buf: &mut FftBuffer) {
+    if L == 1 {
         straight_first_stage(samples, &mut buf.re, &mut buf.im);
         straight_stages(&mut buf.re, &mut buf.im);
     } else {
-        first_stage::<GROUP>(samples, &mut buf.re, &mut buf.im);
-        side_by_side_stages::<LANES>(&mut buf.re, &mut buf.im);
+        first_stage::<L>(samples, &mut buf.re, &mut buf.im);
+        side_by_side_stages::<L>(&mut buf.re, &mut buf.im);
     }
 }
 

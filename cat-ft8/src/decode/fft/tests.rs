@@ -533,6 +533,26 @@ fn first_stage_equals_the_stored_window_and_stage_for_every_group_size() {
 }
 
 #[test]
+fn spectrum_is_the_same_for_every_lane_count() {
+    // Each lane count's whole branch, as the decoder calls it: one lane is
+    // what a Cortex-M runs, and no other test reaches its branch on a host.
+    // Every bit, the sign of zero included.
+    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
+    for (n, x) in test_windows().iter().enumerate() {
+        let (mut one, mut two, mut four) = (FftBuffer::new(), FftBuffer::new(), FftBuffer::new());
+        spectrum_lanes::<1>(x, &mut one);
+        spectrum_lanes::<2>(x, &mut two);
+        spectrum_lanes::<4>(x, &mut four);
+        for (lanes, b) in [(2, &two), (4, &four)] {
+            assert!(
+                bits(&one.re) == bits(&b.re) && bits(&one.im) == bits(&b.im),
+                "window {n}: one lane against {lanes}"
+            );
+        }
+    }
+}
+
+#[test]
 fn straight_first_stage_equals_first_stage_with_a_group_of_one() {
     // The form the decoder runs with one lane against the looped form, every
     // bit including the sign of zero.
