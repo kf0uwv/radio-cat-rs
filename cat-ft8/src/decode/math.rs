@@ -285,18 +285,6 @@ pub(crate) fn cos_sin_turns(phase: u32) -> (f32, f32) {
     cos_sin_turns_times(phase, 1.0)
 }
 
-/// [`cos_sin_turns_times`] with the quarter's swap and signs by bit
-/// operations before the weight (`BITS`: where the target has a vector
-/// unit, so a loop over samples vectorises), or else the swap by `f32`
-/// selects and the half turn's sign by an exclusive or after the weight.
-/// On the Cortex-M33 the selects stay in floating-point registers (`vsel`,
-/// `vnmul`), and the exclusive or is taken in the integer registers the
-/// parts go to for their stores; bit operations for the swap would take
-/// both parts there and back. Negation flips only the sign bit, and
-/// w · (−x) = −(w · x) bit for bit (the product's sign is the exclusive or
-/// of the factors', its magnitude rounds the same), so both forms give the
-/// same bits for every finite weight. (A NaN weight, or an infinite one
-/// times a zero part, gives a NaN whose sign bit can differ between them.)
 /// The phase reduced to the nearest quarter turn: `u`, the phase plus an
 /// eighth of a turn (quarter k is `u >> 30`), and the polynomials' cosine
 /// and sine of the remainder.
@@ -314,6 +302,18 @@ fn reduced(phase: u32) -> (u32, f32, f32) {
     (u, c, s)
 }
 
+/// [`cos_sin_turns_times`] with the quarter's swap and signs by bit
+/// operations before the weight (`BITS`: where the target has a vector
+/// unit, so a loop over samples vectorises), or else the swap by `f32`
+/// selects and the half turn's sign by an exclusive or after the weight.
+/// On the Cortex-M33 the selects stay in floating-point registers (`vsel`,
+/// `vnmul`), and the exclusive or is taken in the integer registers the
+/// parts go to for their stores; bit operations for the swap would take
+/// both parts there and back. Negation flips only the sign bit, and
+/// w · (−x) = −(w · x) bit for bit (the product's sign is the exclusive or
+/// of the factors', its magnitude rounds the same), so both forms give the
+/// same bits for every finite weight. (A NaN weight, or an infinite one
+/// times a zero part, gives a NaN whose sign bit can differ between them.)
 #[inline(always)]
 fn cos_sin_turns_times_as<const BITS: bool>(phase: u32, w: f32) -> (f32, f32) {
     let (u, c, s) = reduced(phase);
