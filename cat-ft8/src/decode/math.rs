@@ -298,7 +298,7 @@ pub(crate) fn cos_sin_turns(phase: u32) -> (f32, f32) {
 /// same bits for every finite weight. (A NaN weight, or an infinite one
 /// times a zero part, gives a NaN whose sign bit can differ between them.)
 #[inline(always)]
-pub(crate) fn cos_sin_turns_times_as<const BITS: bool>(phase: u32, w: f32) -> (f32, f32) {
+fn cos_sin_turns_times_as<const BITS: bool>(phase: u32, w: f32) -> (f32, f32) {
     let u = phase.wrapping_add(1 << 29);
     // The remainder r in [−2²⁹, 2²⁹) is the phase's low 30 bits read as
     // signed, so 4r is `phase << 2` read as signed: one shift. One
@@ -496,8 +496,9 @@ mod tests {
     }
 
     /// Phases where both forms of [`cos_sin_turns_times`] (weight 1.0) and
-    /// [`cos_sin_turns`]' first form are compared: every `stride`-th, and each quarter turn's neighbours and
-    /// the ends of its reduced range. Returns how many.
+    /// [`cos_sin_turns`]' first form are compared: every `stride`-th, and
+    /// each quarter turn's neighbours and the ends of its reduced range.
+    /// Returns how many.
     fn cos_sin_turns_is_its_first_form(stride: usize) -> u64 {
         let bits = |(c, s): (f32, f32)| (c.to_bits(), s.to_bits());
         let mut n = 0u64;

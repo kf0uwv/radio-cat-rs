@@ -1336,6 +1336,9 @@ fn scaled_cos_sin<const W: usize, X: Copy>(
     let n = phase.len().min(xs.len());
     let one = |out: &mut [u8], i: usize| {
         let w = weight(xs[i]);
+        // A local, not inlined into the call: `k0` first used before
+        // `phase` lays out this closure's captures differently and
+        // changes the hosts' code.
         let cs = cos_sin_turns_times(phase[i], w);
         put(out, k0 + i, cs);
     };
