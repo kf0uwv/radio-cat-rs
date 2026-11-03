@@ -9954,9 +9954,12 @@ x86-64 and AArch64 identity runs do not execute the new code. The
 one-lane path is covered end to end only by the 14 M33 dumps and 2
 residuals (seven slots), plus the host unit tests.
 
-**Superseded in part.** O20b, below, removes e9bb614's change. The
-e9bb614 columns here describe that commit; the head's figures, the
-stage table and the guard's bounds are restated in O20b.
+**Superseded in part.** O20b, below, removes e9bb614's change. In this
+section "head" and "now" mean 55ec0d8, and the e9bb614 columns describe
+that commit. The current figures, stage table, frames, test counts and
+guard bounds are in O20b. This section's account of how a form is selected
+(const parameters `L` and `G`) and of the first stage's test coverage is
+superseded by O20b and O20c.
 
 ### Changes
 
@@ -10069,7 +10072,8 @@ and one store of every output, with no loop control.
   radix-4 reference is 104, not 112 (total 42 393 600, not 43 806 720). A
   radix-4 butterfly has 64 arithmetic instructions, not 72: the m = 2
   twiddle is the same table entry for q and q + 2, so those outputs share
-  one product and the compiler merges them, exactly. This section first
+  one product and the compiler merges them, exactly. (104 still counts 4
+  twiddle loads the compiler need not make: see O20b.) This section first
   put the whole shortfall in loads, which was wrong. The arithmetic and
   the loads and stores are the bound there, and they cannot fall with the
   same operations in the same order.
@@ -10295,7 +10299,10 @@ the blocks.
 
 - The m = 2 twiddle of radix 4 is the same table entry for q and q + 2, so
   two outputs share a product and the compiler merges them (64, not 72).
-  Those 4 twiddle values need not load. On the main path each radix-4
+  The reference of 104 still counts the 4 twiddle loads the compiler need
+  not make, so 100 is the tighter floor for both radix-4 stages, a total
+  of 41 687 040. The conclusion for the first four later stages stands. On
+  the main path each radix-4
   butterfly has 19 `vldr`: 8 inputs and 11 twiddle values, the rest being
   the merged ones or held in registers across blocks.
 - The first four later stages are at the reference. **Radix 5 holds the
