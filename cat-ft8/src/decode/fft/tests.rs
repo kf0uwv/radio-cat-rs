@@ -528,7 +528,34 @@ fn first_stage_equals_the_stored_window_and_stage_for_every_group_size() {
         }
         let mut buf = FftBuffer::new();
         spectrum(x, &mut buf);
-        assert!(bits(&buf.re) == bits(&fr) && bits(&buf.im) == bits(&fi));
+        let (re, im) = buf.parts();
+        assert!(bits(re) == bits(&fr) && bits(im) == bits(&fi));
+    }
+}
+
+#[test]
+fn a_transform_does_not_read_what_its_cells_held() {
+    // Between transforms the cells hold the sync search's scores. Every
+    // lane count's branch, from cells set to values that would show in the
+    // result if any were read before being written.
+    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
+    for (n, x) in test_windows().iter().enumerate() {
+        let mut clean = FftBuffer::new();
+        spectrum_lanes::<1>(x, &mut clean);
+        for stale in [f32::NAN, 1.0e30, -1.0] {
+            let mut buf = FftBuffer::new();
+            let mut lanes = |run: &dyn Fn(&mut FftBuffer), name: &str| {
+                buf.cells().fill(stale);
+                run(&mut buf);
+                assert!(
+                    bits(&buf.cells) == bits(&clean.cells),
+                    "window {n}, {name} lanes, cells held {stale}"
+                );
+            };
+            lanes(&|b| spectrum_lanes::<1>(x, b), "one");
+            lanes(&|b| spectrum_lanes::<2>(x, b), "two");
+            lanes(&|b| spectrum_lanes::<4>(x, b), "four");
+        }
     }
 }
 
@@ -545,7 +572,7 @@ fn spectrum_is_the_same_for_every_lane_count() {
         spectrum_lanes::<4>(x, &mut four);
         for (lanes, b) in [(2, &two), (4, &four)] {
             assert!(
-                bits(&one.re) == bits(&b.re) && bits(&one.im) == bits(&b.im),
+                bits(&one.cells) == bits(&b.cells),
                 "window {n}: one lane against {lanes}"
             );
         }

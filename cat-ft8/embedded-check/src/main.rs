@@ -79,6 +79,11 @@ mod setup {
     pub const DECODES: usize = HOST_DECODES;
 }
 
+// This image's band keeps its sync scores in the front end, so it has no
+// sync scratch to place.
+#[cfg(not(feature = "encoder-only"))]
+const _: () = assert!(Decoder::sync_scratch_len(setup::BAND) == 0);
+
 // Decoder buffers live in statics (`.bss`), as on a real target.
 #[cfg(not(feature = "encoder-only"))]
 mod buffers {
@@ -86,8 +91,6 @@ mod buffers {
     use super::*;
     pub static mut FRONT: FrontEnd = FrontEnd::new();
     pub static mut LEVELS: [u8; BAND.spectrogram_len()] = [0; BAND.spectrogram_len()];
-    pub static mut SYNC_SCRATCH: [i32; Decoder::sync_scratch_len(BAND)] =
-        [0; Decoder::sync_scratch_len(BAND)];
     pub static mut CANDIDATE_LIST: [Candidate; CANDIDATES] = [Candidate {
         score: 0,
         start_row: 0,
@@ -167,11 +170,10 @@ fn decode_a_slot(table: &mut CallTable<16>, sink: &mut f32, rows: &mut usize) {
     // SAFETY: `_start` is the only code that runs, it is not re-entered,
     // and it calls this once, so these are the only references to the
     // statics.
-    let (front, levels, sync_scratch, cands, scratch, decodes) = unsafe {
+    let (front, levels, cands, scratch, decodes) = unsafe {
         (
             &mut *addr_of_mut!(FRONT),
             &mut *addr_of_mut!(LEVELS),
-            &mut *addr_of_mut!(SYNC_SCRATCH),
             &mut *addr_of_mut!(CANDIDATE_LIST),
             &mut *addr_of_mut!(SCRATCH),
             &mut *addr_of_mut!(DECODES_LIST),
@@ -181,7 +183,7 @@ fn decode_a_slot(table: &mut CallTable<16>, sink: &mut f32, rows: &mut usize) {
     let Ok(mut dec) = Decoder::new(
         front,
         &mut levels[..],
-        sync_scratch,
+        &mut [],
         cands,
         setup::BAND,
         setup::CONFIG,

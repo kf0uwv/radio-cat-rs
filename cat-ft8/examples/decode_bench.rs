@@ -295,7 +295,7 @@ fn busy_errors(
     let band = Band::DEFAULT;
     let mut front = Box::new(FrontEnd::new());
     let mut levels = vec![0u8; band.spectrogram_len()];
-    let mut scratch = vec![0i32; Decoder::sync_scratch_len(band)];
+    let mut scratch = vec![0.0f32; Decoder::sync_scratch_len(band)];
     let mut cands = vec![Candidate::default(); cfg.candidates];
     let mut dec =
         Decoder::new(&mut front, &mut levels, &mut scratch, &mut cands, band, cfg).unwrap();
@@ -356,7 +356,7 @@ fn decode_slot(samples: &[f32], truth: Option<Truth>, cfg: DecodeConfig) -> Tall
     let band = Band::DEFAULT;
     let mut front = Box::new(FrontEnd::new());
     let mut levels = vec![0u8; band.spectrogram_len()];
-    let mut scratch = vec![0i32; Decoder::sync_scratch_len(band)];
+    let mut scratch = vec![0.0f32; Decoder::sync_scratch_len(band)];
     let mut cands = vec![Candidate::default(); cfg.candidates];
     let mut dec =
         Decoder::new(&mut front, &mut levels, &mut scratch, &mut cands, band, cfg).unwrap();
@@ -411,7 +411,7 @@ fn decode_low(samples: &[f32], truth: Option<Truth>, cfg: DecodeConfig, path: Pa
     let mut levels = vec![0u8; band.spectrogram_len()];
     let mut spec = Spectrogram::new(&mut front, &mut levels, band).unwrap();
     spec.feed(samples);
-    let mut scratch = vec![0i32; sync::scratch_len(band.base_bins())];
+    let mut scratch = vec![0.0f32; sync::scratch_len(band.base_bins())];
     let mut cands = vec![Candidate::default(); cfg.candidates];
     let rep = find_candidates(&spec, cfg.min_score, &mut scratch, &mut cands).unwrap();
     let mut bp = Box::new(BpScratch::new());
@@ -733,7 +733,7 @@ fn main() {
             let mut levels = vec![0u8; band.spectrogram_len()];
             let mut spec = Spectrogram::new(&mut front, &mut levels, band).unwrap();
             spec.feed(&samples);
-            let mut scratch = vec![0i32; sync::scratch_len(band.base_bins())];
+            let mut scratch = vec![0.0f32; sync::scratch_len(band.base_bins())];
             let mut cands = vec![Candidate::default(); CANDIDATES];
             let kept = find_candidates(&spec, 0, &mut scratch, &mut cands)
                 .unwrap()
@@ -785,7 +785,7 @@ fn main() {
                 spec.feed(&samples);
             }
             let t_feed = t.elapsed().as_secs_f64() / f64::from(reps);
-            let mut scratch = vec![0i32; sync::scratch_len(band.base_bins())];
+            let mut scratch = vec![0.0f32; sync::scratch_len(band.base_bins())];
             let mut cands = vec![Candidate::default(); CANDIDATES];
             let t = Instant::now();
             let mut kept = 0;
@@ -860,7 +860,7 @@ fn main() {
             for (name, cfg) in [("HOST", DecodeConfig::HOST), ("SMALL", DecodeConfig::SMALL)] {
                 let mut front = Box::new(FrontEnd::new());
                 let mut levels = vec![0u8; band.spectrogram_len()];
-                let mut scratch = vec![0i32; Decoder::sync_scratch_len(band)];
+                let mut scratch = vec![0.0f32; Decoder::sync_scratch_len(band)];
                 let mut cands = vec![Candidate::default(); cfg.candidates];
                 let mut dec =
                     Decoder::new(&mut front, &mut levels, &mut scratch, &mut cands, band, cfg)

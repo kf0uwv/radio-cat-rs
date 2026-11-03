@@ -519,7 +519,7 @@ pub fn decode_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &Setup) 
     let band = setup.band;
     let mut front = Box::new(FrontEnd::new());
     let mut levels = vec![0u8; band.spectrogram_len()];
-    let mut sync_buf = vec![0i32; Decoder::sync_scratch_len(band)];
+    let mut sync_buf = vec![0.0f32; Decoder::sync_scratch_len(band)];
     let mut cands = vec![Candidate::default(); CANDIDATES.max(setup.config.candidates)];
     let mut dec = Decoder::new(
         &mut front,
@@ -626,7 +626,7 @@ pub fn decode_passes_input(samples: &[f32], skip: usize, sent: &[Sent], setup: &
     let band = setup.band;
     let mut front = Box::new(FrontEnd::new());
     let mut levels = vec![0u8; band.spectrogram_len()];
-    let mut sync_buf = vec![0i32; Decoder::sync_scratch_len(band)];
+    let mut sync_buf = vec![0.0f32; Decoder::sync_scratch_len(band)];
     let mut cands = vec![Candidate::default(); CANDIDATES.max(setup.config.candidate_capacity())];
     let mut dec = Decoder::new(
         &mut front,
@@ -788,7 +788,7 @@ fn classify(
     }
     let mut dropped_peaks: Vec<(f32, f32)> = Vec::new();
     if found > dec.candidates().len() {
-        let mut scratch = vec![0i32; Decoder::sync_scratch_len(setup.band)];
+        let mut scratch = vec![0.0f32; sync::scratch_len(setup.band.base_bins())];
         let mut all = vec![Candidate::default(); found];
         let rep = sync::find_candidates(spec, setup.config.min_score, &mut scratch, &mut all)
             .expect("sync scratch and list are sized");

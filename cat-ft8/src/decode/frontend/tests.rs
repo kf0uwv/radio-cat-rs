@@ -86,6 +86,24 @@ fn geometry_constants() {
 }
 
 #[test]
+fn sync_scores_stay_in_the_front_end_up_to_the_fft_cells() {
+    use crate::decode::Decoder;
+    let bins = |base_bins: u16| Band {
+        lo_bin: 32,
+        hi_bin: 32 + base_bins - 1,
+    };
+    assert_eq!(FftBuffer::CELLS, 3 * 1_280);
+    assert_eq!(Decoder::sync_scratch_len(bins(1_280)), 0);
+    assert_eq!(Decoder::sync_scratch_len(bins(1_281)), 3 * 1_281);
+    // In whole multiples of 25 Hz, the widths `Band::from_hz` takes.
+    let wide = |hz: u32| Band::from_hz(100, 100 + hz).unwrap();
+    assert_eq!(Decoder::sync_scratch_len(wide(3_975)), 0);
+    assert_eq!(Decoder::sync_scratch_len(wide(4_000)), 3 * 1_281);
+    assert_eq!(Decoder::sync_scratch_len(Band::DEFAULT), 0);
+    assert_eq!(Decoder::sync_scratch_len(Band::SMALL), 0);
+}
+
+#[test]
 fn level_scales() {
     assert_eq!(level_of(0.0), 255);
     // −10 dB = log2 power −3.3219: 20 steps below the top for u8.

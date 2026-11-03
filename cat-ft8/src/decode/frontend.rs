@@ -47,7 +47,9 @@
 //!
 //! The caller owns every buffer: the [`FrontEnd`] (input window and FFT
 //! work, 30 720 bytes, const-constructible) and the level slice of
-//! [`Band::spectrogram_len`] entries.
+//! [`Band::spectrogram_len`] entries. The window holds samples from one
+//! feed to the next. The FFT work is free between rows, and the decoder's
+//! sync search uses it then.
 
 use super::fft::{power_bins, FftBuffer, BINS, WINDOW};
 use super::math::{abs, log2_power};
@@ -229,9 +231,9 @@ impl core::fmt::Debug for FrontEnd {
 impl core::fmt::Debug for Spectrogram<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Spectrogram")
-            .field("band", &self.band)
+            .field("band", &self.rows.band)
             .field("samples_consumed", &self.consumed)
-            .field("rows_filled", &self.rows)
+            .field("rows_filled", &self.rows.count)
             .field("sanitised", &self.sanitised)
             .field("clamped", &self.clamped)
             .field("skipped", &self.skipped)
@@ -247,17 +249,47 @@ impl Default for FrontEnd {
     }
 }
 
+/// A spectrogram's levels and how many rows of them are filled: apart from
+/// the [`FrontEnd`], so that the rows can be read while its FFT work area is
+/// used for something else.
+pub(crate) struct Rows<'a> {
+    levels: &'a mut [u8],
+    band: Band,
+    /// Rows complete so far.
+    count: usize,
+}
+
+impl Rows<'_> {
+    /// Rows complete so far.
+    pub(crate) fn len(&self) -> usize {
+        self.count
+    }
+
+    /// The band.
+    pub(crate) fn band(&self) -> Band {
+        self.band
+    }
+
+    /// Row `r`'s levels, one per stored bin, or `None` if the row is not
+    /// filled yet.
+    pub(crate) fn row(&self, r: usize) -> Option<&[u8]> {
+        if r >= self.count {
+            return None;
+        }
+        let width = self.band.stored_bins();
+        Some(&self.levels[r * width..(r + 1) * width])
+    }
+}
+
 /// A slot's spectrogram, filled block by block from 12 kHz samples. Borrows
 /// the caller's [`FrontEnd`] and level slice.
 pub struct Spectrogram<'a> {
     front: &'a mut FrontEnd,
-    levels: &'a mut [u8],
-    band: Band,
+    rows: Rows<'a>,
     /// Slot samples taken so far (fed or skipped).
     consumed: usize,
     /// Samples in the front end's window.
     filled: usize,
-    rows: usize,
     sanitised: usize,
     clamped: usize,
     skipped: usize,
@@ -275,11 +307,13 @@ impl<'a> Spectrogram<'a> {
         }
         Ok(Spectrogram {
             front,
-            levels,
-            band,
+            rows: Rows {
+                levels,
+                band,
+                count: 0,
+            },
             consumed: 0,
             filled: 0,
-            rows: 0,
             sanitised: 0,
             clamped: 0,
             skipped: 0,
@@ -293,7 +327,7 @@ impl<'a> Spectrogram<'a> {
     pub fn start_slot(&mut self) {
         self.consumed = 0;
         self.filled = 0;
-        self.rows = 0;
+        self.rows.count = 0;
         self.sanitised = 0;
         self.clamped = 0;
         self.skipped = 0;
@@ -308,7 +342,7 @@ impl<'a> Spectrogram<'a> {
     /// [`Band::spectrogram_len`].
     pub(crate) fn idle_levels(&mut self) -> &mut [u8] {
         self.start_slot();
-        &mut *self.levels
+        &mut *self.rows.levels
     }
 
     /// Feeds 12 kHz samples (full scale ±1.0). Returns how many were
@@ -345,7 +379,7 @@ impl<'a> Spectrogram<'a> {
 
     /// Rows complete so far (0..=184).
     pub fn rows_filled(&self) -> usize {
-        self.rows
+        self.rows.count
     }
 
     /// Slot samples taken so far, fed or skipped.
@@ -380,17 +414,26 @@ impl<'a> Spectrogram<'a> {
 
     /// The band.
     pub fn band(&self) -> Band {
-        self.band
+        self.rows.band
     }
 
     /// Row `r`'s levels, one per stored bin, or `None` if the row is not
     /// filled yet.
     pub fn row(&self, r: usize) -> Option<&[u8]> {
-        if r >= self.rows {
-            return None;
-        }
-        let width = self.band.stored_bins();
-        Some(&self.levels[r * width..(r + 1) * width])
+        self.rows.row(r)
+    }
+
+    /// The filled rows.
+    #[cfg(any(test, feature = "profile"))]
+    pub(crate) fn rows(&self) -> &Rows<'a> {
+        &self.rows
+    }
+
+    /// The filled rows and the FFT's work area, free until the next row is
+    /// computed (see [`FftBuffer::cells`]). The input window is not part of
+    /// it: it holds samples from one feed to the next.
+    pub(crate) fn rows_and_work(&mut self) -> (&Rows<'a>, &mut [f32]) {
+        (&self.rows, self.front.fft.cells())
     }
 
     /// The core loop: takes up to `n` samples. `fill(i, dst)` writes
@@ -432,12 +475,13 @@ impl<'a> Spectrogram<'a> {
 
     /// Computes the next row from the full window.
     fn finish_row(&mut self) {
-        let width = self.band.stored_bins();
-        let row = &mut self.levels[self.rows * width..(self.rows + 1) * width];
+        let width = self.rows.band.stored_bins();
+        let r = self.rows.count;
+        let row = &mut self.rows.levels[r * width..(r + 1) * width];
         power_bins(
             &self.front.window,
             &mut self.front.fft,
-            self.band.first_bin(),
+            self.rows.band.first_bin(),
             width,
             |i, p| {
                 for (level, &p) in row[i..i + p.len()].iter_mut().zip(p) {
@@ -447,7 +491,7 @@ impl<'a> Spectrogram<'a> {
         );
         self.floored += row.iter().filter(|&&l| l == 0).count();
         self.top += row.iter().filter(|&&l| l == u8::MAX).count();
-        self.rows += 1;
+        self.rows.count += 1;
     }
 }
 

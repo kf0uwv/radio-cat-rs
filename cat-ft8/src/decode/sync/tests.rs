@@ -37,16 +37,99 @@ impl HasScore for P {
 /// Runs `select` over a grid given as rows of scores (`None` = no score).
 fn run(grid: &[Vec<Option<i32>>], k: usize) -> (Vec<P>, SyncReport) {
     let (rows, cols) = (grid.len(), grid[0].len());
-    let mut scratch = vec![0i32; 3 * cols];
+    let mut scratch = vec![0.0f32; 3 * cols];
     let mut out = vec![P::default(); k];
-    let fill = |q: usize, row: &mut [i32]| {
+    let fill = |q: usize, row: &mut [f32]| {
         for (b, s) in row.iter_mut().enumerate() {
-            *s = grid[q][b].unwrap_or(i32::MIN);
+            *s = cell_of(grid[q][b].unwrap_or(NONE));
         }
     };
     let r = select(rows, cols, fill, 0, &mut scratch, &mut out, P).unwrap();
     out.truncate(r.kept);
     (out, r)
+}
+
+#[test]
+fn a_score_survives_a_cell_bit_for_bit() {
+    // Scores that are subnormal, normal and NaN as `f32`, among them the
+    // one that means no score (negative zero).
+    let mut scores = vec![0, 1, -1, 2, 1_000, -1_000, 85_680, -85_680, NONE, i32::MAX];
+    scores.extend((0..32).map(|shift| 1i32 << shift));
+    scores.extend((0..32).map(|shift| -(1i32 << shift).max(1)));
+    // Through memory, as the scratch is.
+    let cells: Vec<f32> = scores.iter().map(|&s| cell_of(s)).collect();
+    let cells = std::hint::black_box(cells);
+    let back: Vec<i32> = cells.iter().map(|&c| score_of(c)).collect();
+    assert_eq!(back, scores);
+    assert_eq!(cell_of(0).to_bits(), 0);
+}
+
+/// The local maxima of `grid` at or above `min_score`, from the rules in
+/// the module's docs, without any rolling buffer.
+fn maxima_by_definition(grid: &[Vec<Option<i32>>], min_score: i32) -> Vec<P> {
+    let (rows, cols) = (grid.len() as isize, grid[0].len() as isize);
+    let at = |q: isize, b: isize| {
+        if q < 0 || q >= rows || b < 0 || b >= cols {
+            return None;
+        }
+        grid[q as usize][b as usize]
+    };
+    let mut kept = Vec::new();
+    for q in 0..rows {
+        for b in 0..cols {
+            let Some(s) = at(q, b).filter(|&s| s >= min_score) else {
+                continue;
+            };
+            let holds = (-1..=1isize).all(|dq| {
+                (-1..=1isize).all(|db| match at(q + dq, b + db) {
+                    Some(n) if dq != 0 || db != 0 => {
+                        if dq < 0 || (dq == 0 && db < 0) {
+                            s > n
+                        } else {
+                            s >= n
+                        }
+                    }
+                    _ => true,
+                })
+            });
+            if holds {
+                kept.push(P(q as usize, b as usize, s));
+            }
+        }
+    }
+    kept.sort_by_key(|p| (-i64::from(p.2), p.0, p.1));
+    kept
+}
+
+#[test]
+fn select_takes_any_scores_and_ignores_what_its_scratch_held() {
+    // Negative scores are NaNs as cells and small positive ones subnormals.
+    let mut noise = crate::decode::testutil::Noise(5);
+    let grid: Vec<Vec<Option<i32>>> = (0..12)
+        .map(|_| {
+            (0..9)
+                .map(|_| {
+                    let u = noise.uniform();
+                    (u > 0.1).then_some(((u - 0.5) * 2_000.0) as i32)
+                })
+                .collect()
+        })
+        .collect();
+    let fill = |q: usize, row: &mut [f32]| {
+        for (b, s) in row.iter_mut().enumerate() {
+            *s = cell_of(grid[q][b].unwrap_or(NONE));
+        }
+    };
+    for min_score in [i32::MIN + 1, -300, 0, 300] {
+        let want = maxima_by_definition(&grid, min_score);
+        assert!(!want.is_empty());
+        for stale in [0.0, f32::NAN, cell_of(i32::MAX), cell_of(NONE)] {
+            let mut scratch = vec![stale; 3 * 9];
+            let mut out = vec![P::default(); 200];
+            let r = select(12, 9, fill, min_score, &mut scratch, &mut out, P).unwrap();
+            assert_eq!(&out[..r.kept], &want[..], "min {min_score}, held {stale}");
+        }
+    }
 }
 
 /// A 6 × 7 grid of score 1 with the given points set to 10.
@@ -114,7 +197,7 @@ fn dt(start_row: i32) -> f32 {
 fn candidates(samples: &[f32], k: usize) -> (Vec<Candidate>, SyncReport) {
     let mut built = Built::new(Band::DEFAULT);
     built.with(samples, |spec| {
-        let mut scratch = vec![0i32; scratch_len(spec.band().base_bins())];
+        let mut scratch = vec![0.0f32; scratch_len(spec.band().base_bins())];
         let mut out = vec![Candidate::default(); k];
         let r = find_candidates(spec, 0, &mut scratch, &mut out).unwrap();
         out.truncate(r.kept);
@@ -239,7 +322,7 @@ fn refinement_moves_towards_sub_grid_offsets() {
         );
         let mut built = Built::new(Band::DEFAULT);
         let (got, want) = built.with(&slot, |spec| {
-            let mut scratch = vec![0i32; scratch_len(spec.band().base_bins())];
+            let mut scratch = vec![0.0f32; scratch_len(spec.band().base_bins())];
             let mut out = vec![Candidate::default(); 4];
             find_candidates(spec, 0, &mut scratch, &mut out).unwrap();
             let c = out[0];
@@ -294,12 +377,13 @@ fn row_scores_equal_the_single_scores() {
             let mut built = Built::new(band);
             built.with(&slot[..samples], |spec| {
                 let cols = band.base_bins();
-                let mut row = vec![0i32; cols];
+                let mut row = vec![0.0f32; cols];
                 let first = NOMINAL_START_ROW - MAX_START_OFFSET - 3;
                 for start in first..first + START_ROWS as i32 + 6 {
-                    costas_scores(spec, start, &mut row);
+                    costas_scores(spec.rows(), start, &mut row);
                     for (b, &got) in row.iter().enumerate() {
-                        let want = costas_score(spec, start, b).unwrap_or(i32::MIN);
+                        let want = costas_score(spec, start, b).unwrap_or(NONE);
+                        let got = score_of(got);
                         assert_eq!(got, want, "samples {samples} start {start} base {b}");
                     }
                 }

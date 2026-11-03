@@ -413,7 +413,7 @@ fn run(a: &Args) -> Result<(), String> {
     let band = a.setup.band;
     let mut front = Box::new(FrontEnd::new());
     let mut levels = vec![0u8; band.spectrogram_len()];
-    let mut sync = vec![0i32; Decoder::sync_scratch_len(band)];
+    let mut sync = vec![0.0f32; Decoder::sync_scratch_len(band)];
     let mut candidates = vec![Candidate::default(); CANDIDATES];
     let mut decoder = Decoder::new(
         &mut front,

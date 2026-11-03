@@ -53,7 +53,7 @@ use crate::{parse_config, Setup};
 struct Bufs {
     front: Box<FrontEnd>,
     levels: Vec<u8>,
-    sync: Vec<i32>,
+    sync: Vec<f32>,
     cands: Vec<Candidate>,
 }
 
@@ -63,7 +63,7 @@ impl Bufs {
         Bufs {
             front: Box::new(FrontEnd::new()),
             levels: vec![0; band.spectrogram_len()],
-            sync: vec![0; Decoder::sync_scratch_len(band)],
+            sync: vec![0.0; Decoder::sync_scratch_len(band)],
             cands: vec![Candidate::default(); CANDIDATES.max(setup.config.candidate_capacity())],
         }
     }

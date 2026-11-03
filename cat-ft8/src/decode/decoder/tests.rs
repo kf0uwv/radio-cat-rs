@@ -31,7 +31,7 @@ use crate::SLOT_SAMPLES;
 struct Bufs {
     front: Box<FrontEnd>,
     levels: Vec<u8>,
-    scratch: Vec<i32>,
+    scratch: Vec<f32>,
     cands: Vec<Candidate>,
     band: Band,
 }
@@ -41,7 +41,7 @@ impl Bufs {
         Bufs {
             front: Box::new(FrontEnd::new()),
             levels: vec![0; band.spectrogram_len()],
-            scratch: vec![0; Decoder::sync_scratch_len(band)],
+            scratch: vec![0.0; Decoder::sync_scratch_len(band)],
             cands: vec![Candidate::default(); CANDIDATES],
             band,
         }
@@ -165,13 +165,16 @@ fn configuration_and_buffer_sizes_are_checked() {
         big,
     );
     assert_eq!(r.err(), Some(Error::BufferTooSmall));
-    let short = &mut b.scratch[..Decoder::sync_scratch_len(band) - 1];
+    // A band whose sync scores do not fit in the front end needs a scratch.
+    let wide = Band::from_hz(100, 4_100).unwrap();
+    let mut w = Bufs::new(wide);
+    let short = &mut w.scratch[..Decoder::sync_scratch_len(wide) - 1];
     let r = Decoder::new(
-        &mut b.front,
-        &mut b.levels,
+        &mut w.front,
+        &mut w.levels,
         short,
-        &mut b.cands,
-        band,
+        &mut w.cands,
+        wide,
         DecodeConfig::HOST,
     );
     assert_eq!(r.err(), Some(Error::BufferTooSmall));
@@ -556,6 +559,240 @@ fn the_snr_estimate_tracks_the_signal_level() {
         assert!(e.snr_db > last);
         last = e.snr_db;
     }
+}
+
+/// Everything a decode leaves, as text, so that a difference in any bit of
+/// a number (the sign of zero included) shows: the list, the report and
+/// each pass's counts. The residual is compared by `same_bits`.
+fn outcome(list: &DecodeList<'_>, report: &PassesReport, per: &[PassReport]) -> String {
+    std::format!("{:?} {report:?} {per:?}", list.finish_payloads())
+}
+
+/// The slots of the tests below, different in content and length: a
+/// crowded slot, an empty one, noise alone, a slot cut short, a busy one.
+fn varied_slots() -> Vec<Vec<f32>> {
+    let mut noise = empty_slot();
+    add_noise(&mut noise, NOISE_RMS, 11);
+    let short = busy_slot(13)[..11 * 12_000].to_vec();
+    vec![
+        crowded_slot(20, 12).0,
+        empty_slot(),
+        noise,
+        short,
+        busy_slot(14),
+        crowded_slot(8, 15).0,
+    ]
+}
+
+#[test]
+fn successive_slots_on_one_decoder_match_fresh_decoders() {
+    let slots = varied_slots();
+    let configs = [
+        (DecodeConfig::HOST, Band::DEFAULT),
+        (DecodeConfig::HOST.with_passes(1), Band::DEFAULT),
+        (DecodeConfig::SMALL, Band::SMALL),
+    ];
+    for (config, band) in configs {
+        let mut b = Bufs::new(band);
+        let mut reused = b.decoder(config);
+        let mut scratch = Box::new(CandidateScratch::new());
+        let mut decoded = 0;
+        for (n, slot) in slots.iter().enumerate() {
+            // One decoder and one scratch for every slot.
+            let mut store = vec![Decode::EMPTY; HOST_DECODES];
+            let mut list = DecodeList::new(&mut store);
+            let mut audio = slot.clone();
+            let mut per = Vec::new();
+            let report = reused.decode_passes_staged(&mut audio, 0, &mut scratch, &mut list, |e| {
+                if let PassEvent::Done(r) = e {
+                    per.push(*r);
+                }
+                ControlFlow::Continue(())
+            });
+            // Fresh buffers for this slot alone.
+            let mut b2 = Bufs::new(band);
+            let mut fresh = b2.decoder(config);
+            let mut store2 = vec![Decode::EMPTY; HOST_DECODES];
+            let mut list2 = DecodeList::new(&mut store2);
+            let mut audio2 = slot.clone();
+            let mut per2 = Vec::new();
+            let report2 = fresh.decode_passes_staged(
+                &mut audio2,
+                0,
+                &mut Box::new(CandidateScratch::new()),
+                &mut list2,
+                |e| {
+                    if let PassEvent::Done(r) = e {
+                        per2.push(*r);
+                    }
+                    ControlFlow::Continue(())
+                },
+            );
+            assert_eq!(
+                outcome(&list, &report, &per),
+                outcome(&list2, &report2, &per2),
+                "{config:?} slot {n}"
+            );
+            assert!(same_bits(&audio, &audio2), "{config:?} slot {n}");
+            // The rows the last pass left.
+            for r in 0..crate::decode::ROWS {
+                assert_eq!(
+                    reused.spectrogram().row(r),
+                    fresh.spectrogram().row(r),
+                    "{config:?} slot {n} row {r}"
+                );
+            }
+            decoded += report.report.decoded;
+        }
+        assert!(decoded >= 20, "{config:?}: {decoded} decodes");
+    }
+}
+
+/// `decode` on `dec`, returning what it listed and reported.
+fn decode_text(dec: &mut Decoder<'_>) -> String {
+    let mut store = vec![Decode::EMPTY; HOST_DECODES];
+    let mut list = DecodeList::new(&mut store);
+    let report = dec.decode(&mut CandidateScratch::new(), &mut list);
+    std::format!("{:?} {report:?}", list.finish_payloads())
+}
+
+#[test]
+fn a_search_and_candidates_mid_slot_leave_the_feeding_undisturbed() {
+    // The split API may search whenever it likes, so the samples held for
+    // the next row have to survive a search and candidates. Stops before
+    // the row origin, inside the first window, inside a later one, on a row
+    // boundary and after the last row.
+    let slot = crowded_slot(12, 21).0;
+    for band in [Band::DEFAULT, Band::SMALL] {
+        let mut b = Bufs::new(band);
+        let mut whole = b.decoder(DecodeConfig::HOST);
+        whole.feed(&slot);
+        let want = decode_text(&mut whole);
+        let want_rows: Vec<Vec<u8>> = (0..crate::decode::ROWS)
+            .map(|r| whole.spectrogram().row(r).unwrap().to_vec())
+            .collect();
+        for stop in [100, 2_000, 90_123, 240 + 960 * 100 + 3_840, 179_900] {
+            let mut b2 = Bufs::new(band);
+            let mut interrupted = b2.decoder(DecodeConfig::HOST);
+            interrupted.feed(&slot[..stop]);
+            let mid = decode_text(&mut interrupted);
+            // What a decoder fed only this far finds.
+            let mut b3 = Bufs::new(band);
+            let mut prefix = b3.decoder(DecodeConfig::HOST);
+            prefix.feed(&slot[..stop]);
+            assert_eq!(mid, decode_text(&mut prefix), "stop {stop}");
+            // The rest of the slot, as if nothing had happened.
+            interrupted.feed(&slot[stop..]);
+            for (r, row) in want_rows.iter().enumerate() {
+                assert_eq!(
+                    interrupted.spectrogram().row(r),
+                    Some(&row[..]),
+                    "stop {stop} row {r}"
+                );
+            }
+            assert_eq!(want, decode_text(&mut interrupted), "stop {stop}");
+        }
+    }
+}
+
+/// The FFT work area, set to `stale`.
+fn spoil_work_area(dec: &mut Decoder<'_>, stale: f32) {
+    dec.spec.rows_and_work().1.fill(stale);
+}
+
+#[test]
+fn what_the_shared_cells_held_does_not_reach_the_result() {
+    // The cells hold scores between rows and transform values during one.
+    // Set to values that would show if read, at every point of a slot they
+    // are free: between all rows, before a search, before a further pass's
+    // feed. Each is compared with a decoder left alone.
+    let slot = crowded_slot(12, 22).0;
+    for config in [DecodeConfig::HOST, DecodeConfig::SMALL] {
+        let mut b = Bufs::new(Band::DEFAULT);
+        let mut plain = b.decoder(config);
+        plain.feed(&slot);
+        let want = decode_text(&mut plain);
+        for stale in [f32::NAN, f32::INFINITY, 1.0e30, -1.0, f32::from_bits(1)] {
+            let mut b2 = Bufs::new(Band::DEFAULT);
+            let mut dec = b2.decoder(config);
+            for block in slot.chunks(960) {
+                spoil_work_area(&mut dec, stale);
+                dec.feed(block);
+            }
+            spoil_work_area(&mut dec, stale);
+            assert_eq!(want, decode_text(&mut dec), "{stale}");
+        }
+    }
+    // Passes: from `decode_further_passes`, with the cells spoiled between
+    // the first pass and the rest.
+    let config = DecodeConfig::HOST;
+    let (want, want_report, want_residual, _) = passes(&slot, 0, config);
+    let mut b = Bufs::new(Band::DEFAULT);
+    let mut dec = b.decoder(config);
+    dec.feed(&slot);
+    let mut store = vec![Decode::EMPTY; HOST_DECODES];
+    let mut list = DecodeList::new(&mut store);
+    let mut scratch = Box::new(CandidateScratch::new());
+    dec.decode(&mut scratch, &mut list);
+    spoil_work_area(&mut dec, f32::NAN);
+    let mut audio = slot.clone();
+    let report = dec.decode_further_passes(&mut audio, 0, &mut scratch, &mut list);
+    assert_eq!(list.finish_payloads(), &want[..]);
+    assert_eq!(report, want_report);
+    assert!(same_bits(&audio, &want_residual));
+}
+
+#[test]
+fn a_search_finds_the_same_wherever_its_scores_are_kept() {
+    // The presets' bands: the front end against a separate scratch.
+    let slot = crowded_slot(12, 23).0;
+    for band in [Band::DEFAULT, Band::SMALL] {
+        let mut b = Bufs::new(band);
+        let mut dec = b.decoder(DecodeConfig::HOST);
+        dec.feed(&slot);
+        let report = dec.find_candidates();
+        let mut separate = vec![f32::NAN; sync::scratch_len(band.base_bins())];
+        let mut out = vec![Candidate::default(); DecodeConfig::HOST.candidates];
+        let other = sync::find_candidates(dec.spectrogram(), 0, &mut separate, &mut out).unwrap();
+        assert_eq!(report, other);
+        assert_eq!(dec.candidates(), &out[..other.kept]);
+        assert!(other.kept > 0);
+    }
+    // Either side of the limit: the widest band `Band::from_hz` keeps in
+    // the front end, the narrowest it does not. Signals in both bands
+    // decode the same, and the wider one's scratch is all that it uses:
+    // it does not read what the scratch held.
+    let (narrower, wider) = (
+        Band::from_hz(100, 4_075).unwrap(),
+        Band::from_hz(100, 4_100).unwrap(),
+    );
+    assert_eq!(Decoder::sync_scratch_len(narrower), 0);
+    assert_eq!(Decoder::sync_scratch_len(wider), 3 * wider.base_bins());
+    let mut slot = busy_slot(24);
+    add_signal(
+        &mut slot,
+        &symbols_of("CQ W1AW FN31"),
+        3_500.0,
+        0.1,
+        amplitude_for(-12.0),
+    );
+    let mut text = Vec::new();
+    for (band, stale) in [(narrower, 0.0), (wider, 0.0), (wider, f32::NAN)] {
+        let mut b = Bufs::new(band);
+        b.scratch.fill(stale);
+        let mut dec = b.decoder(DecodeConfig::SMALL);
+        dec.feed(&slot);
+        let mut store = vec![Decode::EMPTY; HOST_DECODES];
+        let mut list = DecodeList::new(&mut store);
+        dec.decode(&mut CandidateScratch::new(), &mut list);
+        let mut found = texts(&list);
+        found.sort();
+        text.push(found);
+    }
+    assert!(text[0].iter().any(|t| t == "CQ W1AW FN31"), "{text:?}");
+    assert_eq!(text[0].len(), 4);
+    assert_eq!(text[0], text[1]);
+    assert_eq!(text[1], text[2]);
 }
 
 #[test]

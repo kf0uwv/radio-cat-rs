@@ -216,7 +216,7 @@ fn decode_top(samples: &[f32], skip: usize, setup: &Setup, passes: u8, limit: us
     let config = setup.config.with_passes(passes).with_osd(None);
     let mut front = Box::new(FrontEnd::new());
     let mut levels = vec![0u8; band.spectrogram_len()];
-    let mut sync_buf = vec![0i32; Decoder::sync_scratch_len(band)];
+    let mut sync_buf = vec![0.0f32; Decoder::sync_scratch_len(band)];
     let mut cands = vec![Candidate::default(); CANDIDATES.max(config.candidate_capacity())];
     let mut dec = Decoder::new(
         &mut front,

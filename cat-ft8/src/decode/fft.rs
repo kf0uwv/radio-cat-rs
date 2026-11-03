@@ -179,19 +179,39 @@ impl Complex {
 /// Working storage for one transform: 1 920 complex values as separate
 /// real and imaginary parts (15 360 bytes), caller-owned so it can live
 /// in a `static`.
+///
+/// A transform writes every cell before it reads one, and nothing reads
+/// them after [`power_bins`] returns, so between transforms the cells are
+/// free for other working storage ([`FftBuffer::cells`]).
 #[derive(Debug, Clone)]
 pub(crate) struct FftBuffer {
-    re: [f32; N],
-    im: [f32; N],
+    cells: [f32; FftBuffer::CELLS],
 }
 
 impl FftBuffer {
+    /// The cells: both parts.
+    pub(crate) const CELLS: usize = 2 * N;
+
     /// A zeroed buffer (usable in a `static` initialiser).
     pub(crate) const fn new() -> Self {
         FftBuffer {
-            re: [0.0; N],
-            im: [0.0; N],
+            cells: [0.0; Self::CELLS],
         }
+    }
+
+    /// The real and imaginary parts.
+    #[inline(always)]
+    fn parts(&mut self) -> (&mut [f32; N], &mut [f32; N]) {
+        let (re, im) = self.cells.split_at_mut(N);
+        match (re.try_into(), im.try_into()) {
+            (Ok(re), Ok(im)) => (re, im),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Every cell, for use between transforms. A transform overwrites them.
+    pub(crate) fn cells(&mut self) -> &mut [f32] {
+        &mut self.cells
     }
 }
 
@@ -577,12 +597,13 @@ fn spectrum(samples: &[f32; WINDOW], buf: &mut FftBuffer) {
 /// the tests run every form on any host.
 #[inline(always)]
 fn spectrum_lanes<const L: usize>(samples: &[f32; WINDOW], buf: &mut FftBuffer) {
+    let (re, im) = buf.parts();
     if L == 1 {
-        straight_first_stage(samples, &mut buf.re, &mut buf.im);
-        straight_stages(&mut buf.re, &mut buf.im);
+        straight_first_stage(samples, re, im);
+        straight_stages(re, im);
     } else {
-        first_stage::<L>(samples, &mut buf.re, &mut buf.im);
-        side_by_side_stages::<L>(&mut buf.re, &mut buf.im);
+        first_stage::<L>(samples, re, im);
+        side_by_side_stages::<L>(re, im);
     }
 }
 
@@ -773,11 +794,12 @@ pub(crate) fn power_bins<F: FnMut(usize, &[f32])>(
 ) {
     assert!(first_bin + count <= BINS, "bins beyond the transform");
     spectrum(samples, buf);
+    let (re, im) = buf.parts();
     let mut p = [0.0f32; POWER_CHUNK];
     let mut i = 0;
     while i < count {
         let n = (count - i).min(POWER_CHUNK);
-        bin_powers(&buf.re, &buf.im, first_bin + i, &mut p[..n]);
+        bin_powers(re, im, first_bin + i, &mut p[..n]);
         f(i, &p[..n]);
         i += n;
     }

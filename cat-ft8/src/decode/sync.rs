@@ -34,7 +34,7 @@
 //! - **Order.** Score descending, then start row, then base bin. The list
 //!   keeps the best `out.len()`; the rest are counted as dropped.
 
-use super::frontend::Spectrogram;
+use super::frontend::{Rows, Spectrogram};
 use crate::symbols::{COSTAS, COSTAS_POSITIONS};
 use crate::Error;
 
@@ -87,21 +87,49 @@ pub const fn scratch_len(base_bins: usize) -> usize {
     3 * base_bins
 }
 
+/// A score as a scratch cell. The scratch is `f32` because the decoder
+/// keeps it in the FFT's work area ([`Decoder`](super::Decoder)). A cell
+/// holds the score's bits, and a cell is only ever loaded, stored and
+/// turned back with [`score_of`], none of which changes bits. No
+/// floating-point arithmetic touches it, so it does not matter that small
+/// scores are subnormals as `f32` and negative ones NaNs.
+#[inline(always)]
+fn cell_of(score: i32) -> f32 {
+    f32::from_bits(score as u32)
+}
+
+/// The score in a scratch cell ([`cell_of`]).
+#[inline(always)]
+fn score_of(cell: f32) -> i32 {
+    cell.to_bits() as i32
+}
+
 /// Searches `spec` (its filled rows) and fills `out` with the best
 /// candidates scoring at least `min_score`, in order. `scratch` needs
 /// [`scratch_len`] entries.
+#[cfg(any(test, feature = "profile"))]
 pub fn find_candidates(
     spec: &Spectrogram<'_>,
     min_score: i32,
-    scratch: &mut [i32],
+    scratch: &mut [f32],
     out: &mut [Candidate],
 ) -> Result<SyncReport, Error> {
-    let cols = spec.band().base_bins();
+    search_rows(spec.rows(), min_score, scratch, out)
+}
+
+/// [`find_candidates`] over the filled rows.
+pub(crate) fn search_rows(
+    rows: &Rows<'_>,
+    min_score: i32,
+    scratch: &mut [f32],
+    out: &mut [Candidate],
+) -> Result<SyncReport, Error> {
+    let cols = rows.band().base_bins();
     let first_row = NOMINAL_START_ROW - MAX_START_OFFSET;
     select(
         START_ROWS,
         cols,
-        |q, out| costas_scores(spec, first_row + q as i32, out),
+        |q, out| costas_scores(rows, first_row + q as i32, out),
         min_score,
         scratch,
         out,
@@ -114,13 +142,13 @@ pub fn find_candidates(
 }
 
 /// [`costas_score`] at every base bin `0..out.len()` of one start row, into
-/// `out` (`i32::MIN` where there is none): the same integer sums, added in
-/// another order (exact), a row of the spectrogram at a time so the inner
-/// loop runs along the bins and vectorises.
-fn costas_scores(spec: &Spectrogram<'_>, start_row: i32, out: &mut [i32]) {
+/// `out` as cells ([`NONE`] where there is none): the same integer sums,
+/// added in another order (exact), a row of the spectrogram at a time so the
+/// inner loop runs along the bins and vectorises.
+fn costas_scores(spec: &Rows<'_>, start_row: i32, out: &mut [f32]) {
     let cols = out.len();
-    let rows = spec.rows_filled() as i32;
-    out.fill(0);
+    let rows = spec.len() as i32;
+    out.fill(cell_of(0));
     let mut present = 0i32;
     for &pos in COSTAS_POSITIONS.iter() {
         let first = start_row + 2 * pos as i32;
@@ -132,7 +160,7 @@ fn costas_scores(spec: &Spectrogram<'_>, start_row: i32, out: &mut [i32]) {
             let Some(row) = spec.row((first + 2 * j as i32) as usize) else {
                 // Unreachable (rows below `rows_filled` are filled); as
                 // `costas_score`, no score.
-                out.fill(i32::MIN);
+                out.fill(cell_of(NONE));
                 return;
             };
             // The eight tones' levels at every base bin, as slices along
@@ -150,19 +178,19 @@ fn costas_scores(spec: &Spectrogram<'_>, start_row: i32, out: &mut [i32]) {
                     + i32::from(t5[b])
                     + i32::from(t6[b])
                     + i32::from(t7[b]);
-                out[b] += 8 * i32::from(sent[b]) - all;
+                out[b] = cell_of(score_of(out[b]) + 8 * i32::from(sent[b]) - all);
             }
         }
         present += 1;
     }
     if present < 2 {
-        out.fill(i32::MIN);
+        out.fill(cell_of(NONE));
         return;
     }
     // 6 / n with n = 2 or 3: × 3 or × 2, exact.
     let scale = 6 / present;
     for s in out.iter_mut() {
-        *s *= scale;
+        *s = cell_of(score_of(*s) * scale);
     }
 }
 
@@ -222,32 +250,35 @@ pub fn refine(spec: &Spectrogram<'_>, c: &Candidate) -> (f32, f32) {
     (fr, vertex(left, right))
 }
 
+/// No score at this point of the grid.
+const NONE: i32 = i32::MIN;
+
 /// Local-maximum suppression and top-K selection over a `rows × cols`
-/// score grid whose row q `score(q, row)` fills (`i32::MIN` for no
+/// score grid whose row q `score(q, row)` fills with cells ([`NONE`] for no
 /// score), visited row by row with a rolling
-/// three-row buffer. Keeps points scoring at least `min_score`, ordered by
+/// three-row buffer. Every row is filled before it is read, so the scratch's
+/// earlier contents do not matter and it holds nothing afterwards. Keeps points scoring at least `min_score`, ordered by
 /// score descending, then (q, b) ascending; `make` builds the entries.
 pub(crate) fn select<T, S, M>(
     rows: usize,
     cols: usize,
     score: S,
     min_score: i32,
-    scratch: &mut [i32],
+    scratch: &mut [f32],
     out: &mut [T],
     make: M,
 ) -> Result<SyncReport, Error>
 where
-    S: Fn(usize, &mut [i32]),
+    S: Fn(usize, &mut [f32]),
     M: Fn(usize, usize, i32) -> T,
     T: Copy + HasScore,
 {
     if scratch.len() < 3 * cols {
         return Err(Error::BufferTooSmall);
     }
-    const NONE: i32 = i32::MIN;
     let mut report = SyncReport::default();
     let mut count = 0usize;
-    let fill = |scratch: &mut [i32], q: usize| {
+    let fill = |scratch: &mut [f32], q: usize| {
         score(q, &mut scratch[(q % 3) * cols..(q % 3 + 1) * cols]);
     };
     if rows == 0 {
@@ -263,7 +294,7 @@ where
             if qq < 0 || qq >= rows as isize || b < 0 || b >= cols as isize {
                 return NONE;
             }
-            scratch[(qq as usize % 3) * cols + b as usize]
+            score_of(scratch[(qq as usize % 3) * cols + b as usize])
         };
         for b in 0..cols {
             let s = at(0, b as isize);

@@ -60,10 +60,11 @@
 //! let band = Band::DEFAULT;
 //! let mut front = Box::new(FrontEnd::new());
 //! let mut levels = vec![0u8; band.spectrogram_len()];
-//! let mut sync = vec![0i32; Decoder::sync_scratch_len(band)];
 //! let mut candidates = vec![Candidate::default(); CANDIDATES];
+//! // This band's sync scores fit in the front end, so no sync scratch.
+//! assert_eq!(Decoder::sync_scratch_len(band), 0);
 //! let mut decoder =
-//!     Decoder::new(&mut front, &mut levels, &mut sync, &mut candidates, band, DecodeConfig::HOST)
+//!     Decoder::new(&mut front, &mut levels, &mut [], &mut candidates, band, DecodeConfig::HOST)
 //!         .unwrap();
 //! for block in slot.chunks(1_920) {
 //!     decoder.feed(block);
@@ -81,6 +82,7 @@
 use core::ops::ControlFlow;
 
 use super::bp::{decode_soft, BpDecode, BpFailure, BpScratch, CheckRule};
+use super::fft::FftBuffer;
 use super::frontend::BIN_HZ;
 use super::frontend::{Band, FrontEnd, Spectrogram};
 use super::osd::{self, OsdScratch};
@@ -565,6 +567,11 @@ impl core::fmt::Debug for CandidateScratch {
     }
 }
 
+// Both presets' bands keep their sync scores in the front end.
+const _: () = assert!(
+    Decoder::sync_scratch_len(Band::DEFAULT) == 0 && Decoder::sync_scratch_len(Band::SMALL) == 0
+);
+
 // The smallest level buffer (one base bin) holds a subtraction's least
 // working storage.
 const _: () =
@@ -649,15 +656,25 @@ pub struct DecodeReport {
     pub top_levels: usize,
 }
 
-/// The decoder: a spectrogram over the caller's buffers, the sync scratch
-/// and candidate list (also the caller's), and the configuration.
+/// The decoder: a spectrogram over the caller's buffers, the candidate list
+/// (also the caller's), any sync scratch the band needs, and the
+/// configuration.
 ///
 /// A `Decoder` holds a slot's rows as they are fed, so it must live across
 /// the whole slot: from [`Decoder::start_slot`] (or `new`) through the
 /// last `feed` to the decode. One decoder serves every slot.
+///
+/// **Storage shared in time.** The sync search keeps its scores in the
+/// [`FrontEnd`]'s FFT work area, which is free between rows, so a search
+/// may run at any point of a slot and feeding may continue after it. The
+/// front end's input window is not shared: it holds samples from one feed
+/// to the next, across any search and candidates run between them. Nor is
+/// the [`CandidateScratch`], of which threads running candidates need one
+/// each.
 pub struct Decoder<'a> {
     spec: Spectrogram<'a>,
-    scratch: &'a mut [i32],
+    /// The sync scores when the band's do not fit in the FFT work area.
+    scratch: &'a mut [f32],
     candidates: &'a mut [Candidate],
     config: DecodeConfig,
     sync: SyncReport,
@@ -666,13 +683,14 @@ pub struct Decoder<'a> {
 impl<'a> Decoder<'a> {
     /// A decoder for `band` at the start of a slot. `levels` needs
     /// [`Band::spectrogram_len`] entries, `sync_scratch`
-    /// [`Decoder::sync_scratch_len`] and `candidates` at least
+    /// [`Decoder::sync_scratch_len`] (none, `&mut []`, for any band up to
+    /// 3 975 Hz wide given to [`Band::from_hz`]) and `candidates` at least
     /// [`DecodeConfig::candidate_capacity`] ([`Error::BufferTooSmall`]
     /// otherwise); [`Error::InvalidConfig`] for a bad configuration.
     pub fn new(
         front: &'a mut FrontEnd,
         levels: &'a mut [u8],
-        sync_scratch: &'a mut [i32],
+        sync_scratch: &'a mut [f32],
         candidates: &'a mut [Candidate],
         band: Band,
         config: DecodeConfig,
@@ -692,10 +710,22 @@ impl<'a> Decoder<'a> {
         })
     }
 
-    /// Entries the sync scratch needs for `band` (usable to size a
-    /// `static`).
+    /// Whether `band`'s sync scores fit in the FFT work area: bands of at
+    /// most 1 280 base bins.
+    const fn scores_fit_front_end(band: Band) -> bool {
+        sync::scratch_len(band.base_bins()) <= FftBuffer::CELLS
+    }
+
+    /// Entries the `sync_scratch` buffer of [`Decoder::new`] needs for
+    /// `band` (usable to size a `static`, or to check in a `const` that a
+    /// band needs none): 0 for a band whose sync scores fit in the
+    /// [`FrontEnd`], otherwise three rows of scores.
     pub const fn sync_scratch_len(band: Band) -> usize {
-        sync::scratch_len(band.base_bins())
+        if Self::scores_fit_front_end(band) {
+            0
+        } else {
+            sync::scratch_len(band.base_bins())
+        }
     }
 
     /// The configuration.
@@ -764,9 +794,12 @@ impl<'a> Decoder<'a> {
         // `new` checked the buffer holds `candidate_capacity()` entries,
         // at least either limit.
         let out = &mut self.candidates[..limit];
+        let fits = Self::scores_fit_front_end(self.spec.band());
+        let (rows, work) = self.spec.rows_and_work();
+        let scratch = if fits { work } else { &mut *self.scratch };
         // The buffer sizes were checked in `new`, so this cannot fail.
-        self.sync = sync::find_candidates(&self.spec, self.config.min_score, self.scratch, out)
-            .unwrap_or_default();
+        self.sync =
+            sync::search_rows(rows, self.config.min_score, scratch, out).unwrap_or_default();
         self.sync
     }
 

@@ -187,7 +187,7 @@ pub fn random_slot(snr_db: f64, seed: u64) -> (Vec<f32>, Payload) {
 pub struct Work {
     front: Box<FrontEnd>,
     levels: Vec<u8>,
-    sync: Vec<i32>,
+    sync: Vec<f32>,
     cands: Vec<Candidate>,
     band: Band,
 }
@@ -197,7 +197,7 @@ impl Work {
         Work {
             front: Box::new(FrontEnd::new()),
             levels: vec![0; band.spectrogram_len()],
-            sync: vec![0; Decoder::sync_scratch_len(band)],
+            sync: vec![0.0; Decoder::sync_scratch_len(band)],
             cands: vec![Candidate::default(); CANDIDATES],
             band,
         }

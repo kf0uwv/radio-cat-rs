@@ -101,7 +101,7 @@ fn decode_k(slot: &Slot, setup: &Setup, k: u8) -> (Vec<u128>, u8, Vec<Failed>, u
     let config = setup.config.with_passes(k).with_osd(None);
     let mut front = Box::new(FrontEnd::new());
     let mut levels = vec![0u8; band.spectrogram_len()];
-    let mut sync_buf = vec![0i32; Decoder::sync_scratch_len(band)];
+    let mut sync_buf = vec![0.0f32; Decoder::sync_scratch_len(band)];
     let mut cands = vec![Candidate::default(); CANDIDATES.max(config.candidate_capacity())];
     let mut dec = Decoder::new(
         &mut front,
