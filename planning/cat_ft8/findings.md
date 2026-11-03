@@ -12606,3 +12606,525 @@ binary; O24's controls read 0 with the binary rebuilt.
   with `--cfg cat_ft8_minmaxnm`). Local tests: debug 244, release 242, the
   group-one step 210 run, 9 ignored; clippy and the code-generation check
   pass.
+
+## A whole-slot profile; the input checked once, and the M33's Costas sums and min-sum, twenty-fifth round (O25, bit-identical, 2026-11-03)
+
+Base: b335b0a (the code of O24c). After O22–O24 cut the A76's subtraction
+from 43.7 to 38.5 ms, about half of the crowded host slot was elsewhere. The
+whole slot was profiled first, per stage and per function, on all three
+targets; the ranking below chose the round's changes. Three code commits, one
+optimisation each: da69ed4 (the subtraction's input checked once, its loops
+without the clamp when every sample is within the limit), 831e9a5 (the sync
+search's Costas sums by running sums along the bins without a vector unit)
+and 6f89e49 (min-sum's inputs taken in its magnitude loop without a vector
+unit). Each carries its own tests and code-generation bounds. Decodes,
+records, residuals and encoder output are identical. No memory is added:
+static RAM, the slot's storage and the scratch are unchanged; the M33 stack's
+high water rises by 32 B; flash grows on the host image (below).
+
+| target | measure | b335b0a | 6f89e49 | change |
+|---|---|---|---|---|
+| Cortex-M33, s0086 host | slot, emulated instructions (setup excluded) | 1 519.83 M | 1 437.85 M | **−5.40%** |
+| | subtraction, a call | 20.474 M | 19.003 M | −7.18% |
+| | sync search (three passes) | 91.96 M | 64.39 M | −30.0% |
+| Cortex-M33, s0086 small | slot | 183.02 M | 172.57 M | **−5.71%** |
+| Cortex-M33, s0407 host / small | slot | 1 516.38 / 175.80 M | 1 434.58 / 165.67 M | −5.40% / −5.76% |
+| Cortex-A76, crowded host slot | subtraction (medians of 4) | 38.515 ms | 35.075 ms | **−8.93%** |
+| | slot | 84.30 ms | 80.80 ms | **−4.15%** |
+| x86-64, `slotcost host host,passes=1 200 5` | user cycles, the whole program (medians of 4) | 313.56 G | 308.85 G | **−1.50%** |
+
+The M33's small slot gains from the sync search (831e9a5) and min-sum
+(6f89e49), its host slot from the subtraction (da69ed4) and the sync
+search; the hosts' code changes only in da69ed4 (the A76 and x86-64 figures
+are da69ed4's binaries, whose sections 6f89e49's equal).
+
+### The profile at b335b0a
+
+#### Method
+
+- **One build per target** of b335b0a from one scratch path (aligned hosts,
+  `-align-loops=64 -align-all-functions=6`; thumbv8m with `--cfg
+  cat_ft8_minmaxnm`), rustc 1.93.0. The scratch path differs from O24's,
+  so the hashes are not comparable with O24's (path strings), but the
+  `.text` and `.rodata` sizes of all eight binaries equal b81a05c's (O24b),
+  and the M33 counts equal O24's to the instruction (s0086 host 1 519.83 M,
+  s0407 1 516.38 M).
+- **A76 stages** (Raspberry Pi 5, core 3, one benchmark at a time, the
+  throttle, clock and temperature sampled once a second from core 0, a 5 s
+  sampled busy loop first): four cycles of `slotcost host host,passes=1 200
+  5` and `slotcost small small 200 5`; medians of the four runs.
+- **A76 and x86-64 PC samples by stage.** An out-of-tree sampler in a
+  scratch copy of `paired_bench` (a `SIGPROF` timer every 100 µs, 50 µs for
+  small; each sample keeps its PC and the number of the decoder's step it
+  fell in, the step named by the staged callback that ends it), over
+  `slotcost host host 200 5` and `slotcost small small 200 5`: 1 726 579 and
+  535 547 samples in the decoder's steps on the A76, the bench's own work
+  (slot synthesis, outcome classification) left out by label. Loops are
+  attributed by their backward branches. On x86-64 (a virtual machine whose
+  clock source is `acpi_pm`) the bench's clock reads between steps run in
+  the kernel; their samples (14.3% host, 22.2% small, almost all in the
+  short steps: refine, soft bits, SNR) are left out of the x86-64 shares
+  below. The A76's clock is read in user space (0.5% outside the binary).
+- **x86-64** (Threadripper 3970X, core 5, nothing else of this round
+  running; checked before and after each run): the sampler above, and
+  `perf record -e cycles:u` of the same two programs for the function
+  ranking.
+- **Cortex-M33** (emulated instructions, unicorn; the staged images of
+  O13–O24): s0086 and s0407, host and small, per stage, per function within
+  each stage, and per basic block (small, s0086).
+
+#### Crowded slots, by stage
+
+| stage | A76 host (ms) | share | A76 small (ms) | share | x86-64 host | x86-64 small | M33 host s0086 (M) | share | M33 small s0086 (M) | share |
+|---|---|---|---|---|---|---|---|---|---|---|
+| subtract | 38.505 | 45.7% | — | — | 41.8% | — | 757.54 | 49.8% | — | — |
+| feed | 19.120 | 22.7% | 6.355 | 49.6% | 20.5% | 50.1% | 272.84 | 18.0% | 89.14 | 48.7% |
+| belief propagation | 19.050 | 22.6% | 4.020 | 31.4% | 26.2% | 21.8% | 365.39 | 24.0% | 54.26 | 29.6% |
+| sync | 4.680 | 5.6% | 1.380 | 10.8% | 6.6% | 14.6% | 91.96 | 6.1% | 27.47 | 15.0% |
+| soft bits | 2.380 | 2.8% | 0.890 | 7.0% | 3.8% | 11.1% | 24.72 | 1.6% | 9.29 | 5.1% |
+| SNR, OSD-1, refine | 0.530 | 0.6% | 0.180 | 1.4% | 1.2% | 2.4% | 7.24 | 0.5% | 2.77 | 1.5% |
+| **slot** | **84.30** | | **12.80** | | | | **1 519.83** | | **183.02** | |
+
+(The x86-64 columns are shares of the sampler's decoder samples, the clock
+reads left out; the A76 PC samples give the A76 times' shares within 0.2
+points. A76 one pass: 18.30 ms. M33 s0407: host 1 516.38 M, the same shares
+within 0.1 points; small 175.80 M: feed 50.7%, belief propagation 26.3%,
+sync 15.6%, soft bits 5.3%.)
+
+#### Inside the stages
+
+**A76, host** (PC samples, share of the decoder's samples):
+
+| where | share | what bounds it |
+|---|---|---|
+| subtraction: `run` (the reference's block of 16 samples 9.4%, the frequency correction's lanes 4.6%) | 15.3% | the reference: O23's polynomial; the correction: 24 integer instructions a group of four samples, scalar (the four 64-bit lanes were not vectorised) |
+| subtraction: `fill_phase_only` | 8.3% | the generator (O24: no form without `unsafe` intrinsics) |
+| subtraction: `Fit4::add_all` (its loop 20 instructions a group of four, 15 vector) | 6.5% | 5 of the 15 are the clamp |
+| subtraction: `correlation_whole` (140 a block of 16, 124 vector) | 6.2% | 20 of the 124 are the clamp |
+| subtraction: `Removal::refs` (21 a group of four, 15 vector) | 6.1% | 5 of the 15 are the clamp |
+| subtraction: `score`, `skip_with` | 1.7%, 1.1% | |
+| feed: `power_bins` | 21.4% | the last stage (radix 5) 6.0%: 150 instructions a step, 63 vector of which about 37 move lanes to gather its twiddles (stride m in the table); the first stage (window, digit-reversed loads) 3.3%; no other loop over 2.6% |
+| belief propagation: `sum_product_round` | 21.5% | its tanh and atanh passes (263 and 240 instructions a loop) 15.4%, the inputs' gather 2.6%, the sums 2.1% |
+| sync: the Costas sums (`select`'s closure; 41 instructions a vector of 16 bins) | 3.2% | vectorised byte sums |
+| sync: `search_rows` (the local maxima, branches) | 2.3% | |
+| soft bits: `soft_bits_at` | 2.8% | spread; no loop over 0.3% |
+
+**A76, small:** `power_bins` 46.5% (the radix-5 stage's loop 13.1%, the
+first stage 7.4%), `min_sum_round` 28.6% (its loops over groups of four
+checks 15.3% and 7.8%, the sums 4.4%), `soft_bits_at` 7.0%, the Costas sums
+6.3%, `search_rows` 4.4%, `decode_soft` 2.5%, `Spectrogram::feed` 2.4%.
+
+**x86-64** (sampler, clock reads left out): host `sum_product_round` 24.8%,
+`power_bins` 19.7%, `fill_phase_only` 12.8%, `run` 12.3% (the correction's
+lanes, 23 integer instructions, a quarter of it), `correlation_whole` 4.8%,
+`Removal::refs` 4.3%, the Costas sums 4.0%, `Fit4::add_all` 3.7%,
+`soft_bits_at` 3.5%, `search_rows` 2.6%; small `power_bins` 47.9% (the radix-5
+loop a quarter), `min_sum_round` 18.0%, `soft_bits_at` 10.9%, the Costas sums
+8.5%, `search_rows` 6.1%, `decode_soft` 3.6%. `perf record` agrees within a
+point for the decoder's functions; it also counts the bench's slot synthesis
+(`Synth::mix`, `fill_phase`, the noise: 5–20%) and its outcome
+classification (`costas_score` 5.8% of small), which the sampler leaves out.
+
+**Cortex-M33** (s0086, emulated instructions, share of the slot): host:
+`subtract::blocks` (the reference and the correction) 16.3%, `Removal::refs`
+9.6%, `Fit4::add_all` 7.7%, `fill_phase_only` 7.1%, the products' closure
+6.8%, `sum_product_round` 23.7%, the feed (`Decoder::pass`, the transform
+inlined) 17.4%, the Costas sums 5.0%, `Decoder::search` 1.0%. Small: the feed
+47.1%, `min_sum_round` 28.5%, the Costas sums 12.4% (**one block of 24
+instructions a bin, 931 392 times: 22.35 M, the slot's largest block**),
+`Decoder::search` 2.4%, soft bits 5.1%. The clamp is about 6 of the
+removal's, the fit's and the products' instructions a sample. Min-sum takes
+each check's inputs in one loop (7 an edge) and their magnitudes in a second
+(22–25).
+
+#### Ranked (bit-identical candidates by gain on each target)
+
+| target | candidate | cost now | estimate | outcome |
+|---|---|---|---|---|
+| A76, x86-64, M33 | **the clamp checked once per subtraction** (O24's next candidate) | the clamp: about a third of the fit's and the removal's vector operations, a sixth of the products'; M33 6 a sample in each | A76 −10% of the subtraction less the check (−4% of the slot); M33 −2.5 M a call less the check | **built, da69ed4** |
+| M33 | **the Costas sums by running sums** (prof19's candidate 4) | 22.35 M, 12.2% of the small slot; 75.7 M host | −35 to −40% of the loop: small −4 to −5% | **built, 831e9a5** |
+| M33 | **min-sum's inputs in its magnitude loop** | the inputs' loop, 7 an edge | −2 to −3 an edge: small −1% | **built, 6f89e49** |
+| A76, x86-64 | the radix-5 stage's twiddle gathers (lane moves) | A76 6.0% host, 13.1% small; x86-64 a quarter of `power_bins` | up to half of the loop: small −5%, host −2.5% | not built: the gathers are the compiler's lowering of strided table reads; a layout read whole needs a copy of the twiddles per stride (46 KB more memory), and forms it might lower to whole-vector loads were not tried |
+| A76, x86-64 | the correction's 64-bit lanes in vector registers | A76 4.6% host (24 integer instructions a group of four) | 1.5–2 cycles a group of four as 32-bit halves with carries: −1% host | not built (small; two compare-and-carry steps a lane a step) |
+| A76, x86-64 | the sync search's local maxima (`search_rows`) | A76 2.3% host, 4.4% small | uncertain | not built |
+| all | belief propagation's passes, the reference, the generator | 21.5%, 9.4%, 8.3% (A76 host) | none bit-identical found beyond O17, O23 and O24 | — |
+
+On the A76 the subtraction remains the only stage where a bit-identical
+change gains over 2% of a crowded slot; the feed (the FFT) and belief
+propagation are each about a fifth of it, with no bit-identical lever found
+beyond the twiddle gathers above. On the M33 small slot, the feed (48.7%) is
+O20's butterflies, and belief propagation and the sync search were the
+levers.
+
+### Changes
+
+1. **da69ed4: the subtraction's input checked once, loops without the
+   clamp.**
+   - The subtraction reads each sample as the front end takes it
+     (`input`: a non-finite value as 0.0, a finite one beyond ±2¹⁶
+     clamped), in the time search's products, the fit and the removal: on
+     the A76 5 of the fit's and the removal's 15 vector operations a group
+     of four and 20 of the products' 124 a block of 16; on the M33 about 6
+     instructions a sample in each.
+   - `run` now checks the usable audio once a call (`within_limit`). Where
+     every sample is finite and within the limit, `input` is the identity
+     on them, so the three loops take a second form without it
+     (`input_as::<IN_LIMIT>`: `correlation`, `correlation_whole`,
+     `Fit4::add_all_as`, `Removal::run_as`, `remove_one`); otherwise the
+     clamped forms run as before. Each sample the subtraction reads is read
+     before it writes it, so one check holds for every read. The result is
+     the same bit for bit either way.
+   - The check: the samples' bits without the sign, as unsigned integers,
+     order the finite magnitudes and put the infinities and NaNs above
+     them. Their bitwise or is at least the largest and, for audio within
+     ±1, below the limit's bits, so one pass decides; otherwise the largest
+     decides in a second pass. On AArch64 the first pass is 8 samples a
+     loop of 6 instructions (`orr` on two vectors); on the M33 (opt-level
+     "s") 4 instructions a sample. Not inlined, so its loops are checked
+     on their own.
+   - Loops (rustc 1.93.0, the library): AArch64 the whole lanes 107
+     instructions a block of 16 without the clamp (137 with it), the fit 15
+     a group of four, 10 of them vector (20 and 15); M33
+     (opt-level "s") the products 30 a core sample (36), the fit 14 (20),
+     the removal 20 unreported (26) and 27 reported (33).
+   - Flash grows by the second forms: M33 host image +1 800 B `.text`;
+     the hosts' `.text` +8.2 KB (x86-64) and +6.3 KB (AArch64).
+2. **831e9a5: the Costas sums by running sums without a vector unit.** The
+   sync search adds, for every base bin of a Costas symbol's row,
+   8 · the expected tone's level − the eight tones' levels. The eight-tone
+   sum at bin b is the one at b − 2 less tone 0's level there and plus
+   tone 7's at b, so on the `SCALAR_FORMS` side (`add_row_running`) the
+   sums run along the even and the odd bins: three byte loads a bin
+   instead of nine, 15 instructions instead of 24 (M33, opt-level "s").
+   Integers: the same scores. Hosts keep each bin's eight tones added
+   afresh (it vectorises); their binaries are unchanged. Tried first: two
+   bins at a time over `chunks_exact` pairs (22 instructions a bin: the
+   remainders' bounds checks stayed in the loop) and `step_by` iterators
+   (37); the index form is kept.
+3. **6f89e49: min-sum's inputs in its magnitude loop without a vector
+   unit.** `min_sum_check` took a check's inputs (the variable's total
+   less the message) in one loop and their magnitudes, signs and two
+   smallest in a second. With `ONE_PASS` (the decoder's `VECTOR` false)
+   each input is taken in the second loop, stored as before and then
+   compared: 32 instructions an edge instead of 10 + 25 (M33, opt-level
+   "s"). Hosts keep the two loops (a macro holds the shared body, so their
+   code is unchanged: a first form with one loop shape for both changed the
+   hosts' binaries).
+
+### Cortex-M33 (emulated instructions; staged images as built, rustc 1.93.0, `--cfg cat_ft8_minmaxnm`)
+
+| commit | s0086 host slot | subtraction (37 calls) | s0086 small slot | s0407 host slot | s0407 small slot |
+|---|---|---|---|---|---|
+| b335b0a | 1 519 833 890 | 757 539 071 | 183 016 805 | 1 516 383 326 | 175 802 921 |
+| da69ed4 | 1 465 413 560 (−3.58%) | 703 118 741 (−7.18%) | 183 016 805 (0) | 1 462 146 854 (−3.58%) | 175 802 921 (0) |
+| 831e9a5 | 1 437 845 369 (−1.88%) | 703 118 741 | 174 758 800 (−4.51%) | 1 434 578 663 (−1.89%) | 167 544 916 (−4.70%) |
+| **6f89e49** | **1 437 845 369 (−5.40% in all)** | **703 118 741 (−7.18%)** | **172 570 220 (−1.25%; −5.71% in all)** | **1 434 578 663 (−5.40%)** | **165 674 168 (−1.12%; −5.76% in all)** |
+
+- A subtraction on s0086: 20.474 → 19.003 M. Per decode, host s0086 38.0 →
+  35.9 M; small 7.96 → 7.50 M (s0086, 23 decodes).
+- Same decodes (40 and 38 host; 23 and 30 small). Every other stage's count
+  is the same to the instruction: da69ed4 changes only the subtraction,
+  831e9a5 only the sync search (−27 568 191 host, three passes; −8 258 005
+  small), 6f89e49 only small's belief propagation (−2 188 580 and −1 870 748;
+  the host decodes by sum-product). `setup` unchanged.
+- Functions (s0086 host, M): the fit 116.55 → 85.08, the removal 145.63 →
+  112.10, the products' closure 102.82 → 86.15, the check (`within_limit`,
+  new) 26.64 (0.72 M a call: 4 a sample over the 180 000); the Costas sums
+  75.67 → 48.10 (831e9a5); `min_sum_round` (small) 52.25 → 50.06 (6f89e49).
+- The trial builds these were counted on have the commits' sections (each
+  of the eight binaries' `.text` and `.rodata` equal), and the commits'
+  own images were counted again: the same counts.
+- Paint high water: host 10 244 → 10 276 B (da69ed4), small 10 304 B
+  unchanged.
+
+### Cortex-A76 (Raspberry Pi 5; `slotcost host host,passes=1 200 5`, medians of 4 alternated runs)
+
+Aligned builds of b335b0a and da69ed4 from one scratch path (831e9a5's and
+6f89e49's AArch64 sections equal da69ed4's), core 3, the throttle, clock and
+temperature sampled once a second from core 0, a 5 s sampled busy loop on
+core 3 before each run, alternated (forward, then reversed), four cycles.
+
+| ms per slot (median, spread) | b335b0a | da69ed4 |
+|---|---|---|
+| **subtract** | 38.515 (0.040) | **35.075 (0.010): −3.440, −8.93%** |
+| pass 2 / pass 3 subtract | 26.825 / 11.680 | 24.435 / 10.640 |
+| slot | 84.30 | **80.80 (−4.15%)** |
+| worst slot | 89.40 | 85.50 |
+| feed (placement check) | 19.125 (0.020) | 19.100 (0.010) |
+| belief propagation / sync / soft bits / SNR / OSD-1 / refine | 19.050 / 4.680 / 2.380 / 0.240 / 0.200 / 0.090 | 19.060 / the same |
+| one pass: slot, feed | 18.30, 6.460 | 18.30, 6.450 |
+
+- **Placement check.** The untouched stages agree within 0.025 ms (the feed,
+  0.13%); the subtraction's gain is about 140 times that and 86 times its
+  spread. No placement variation was run.
+- A trial build with the check by the largest magnitude alone (inlined; the
+  same forms otherwise) read 35.105 ms in an earlier session of four
+  alternated cycles (base 38.520): the A76 is indifferent to the check's
+  form (both vectorise); the M33 is not (below, "Tried").
+- **Validity.** All 8 timed runs are valid: 964 samples during the runs
+  and 40 in the warm-ups, every one 0x0, the 8 end checks included; every
+  sample during a run at 2 400 MHz; one warm-up sample at 1.6 GHz (the
+  first). Peak 53.8 °C. The profile's 10 runs and the trial session's 8
+  likewise (894 and 964 samples, all 0x0).
+
+### x86-64 (Threadripper 3970X, core 5, `perf stat` user counters over the whole `slotcost` program)
+
+Aligned builds of b335b0a and da69ed4 (831e9a5's and 6f89e49's x86-64
+sections equal da69ed4's) from the same scratch path, four alternated rounds
+(forward, then reversed), `slotcost host host,passes=1 200 5`; a check for
+other jobs of the round (builds, emulators, comparators, the A76 drivers)
+before and after each sample: none void.
+
+| build | cycles (median, range) | instructions | subtract stage (ms) |
+|---|---|---|---|
+| b335b0a | 313.56 G (312.59–314.96) | 891.36 G | 22.435 |
+| da69ed4 | **308.85 G (307.69–309.57), −1.50%** | 870.70 G (−2.32%) | 21.210 (−5.5%) |
+
+da69ed4's range clears the base's by 3.0 G. Stage times are the virtual
+machine's clock, for scale only. The whole program includes the bench's
+slot synthesis and the one-pass configuration (no subtraction).
+
+
+### Sizes and stack (`check.sh --stack`, thumbv8m)
+
+| image | flash b335b0a → da69ed4 → 831e9a5 → 6f89e49 (B) | static RAM (B) |
+|---|---|---|
+| small, small with OSD on | 91 982 → 91 982 → 91 966 → **91 954 (−28)** | 201 668 (unchanged) |
+| host, host with OSD off | 102 954 → 104 754 → 104 738 → **104 726 (+1 772)** | 230 084 (unchanged) |
+| encoder only | 35 186 → 35 186 → 35 190 → 35 190 (+4: `.rodata`, its `.text` unchanged) | 0 |
+
+- Frames: host `subtract_one` 4 920 → 4 928 B (da69ed4); `_start` 4 104,
+  the subtraction's closure 2 528, `decode_a_slot` 2 520 B unchanged. No
+  scratch or storage added: `SUBTRACT_STACK_BYTES` and
+  `SUBTRACT_SCRATCH_BYTES` unchanged. Paint high water above (+32 B host).
+- No fused multiply-add (0 `vfma`/`vfms`/`vfnma`/`vfnms`); `vmla` small 128
+  and encoder 17 unchanged, host 217 → 241 (da69ed4: the forms without the
+  clamp). No `f64` helper in any image.
+- Cortex-M4F (thumbv7em, embedded-check images, no cfg): flash small 92 248
+  → 92 248 → 92 228 → 92 220 B, host 103 400 → 105 348 → 105 328 → 105 320
+  B; static RAM unchanged; no `f64` helper, no fused multiply-add;
+  `fmaxf`/`fminf` calls 10 and 14, unchanged.
+- Hosts' `.text` (one scratch path, aligned): x86-64 `cat-ft8-decode`
+  456 774 → 464 966 B, `paired_bench` 1 411 190 → 1 419 254; AArch64
+  `cat-ft8-decode` 398 376 → 404 712, `paired_bench` 1 170 904 → 1 177 240
+  (da69ed4; unchanged after).
+
+### Sections of all eight binaries
+
+| binary | da69ed4 against b335b0a | 831e9a5 against da69ed4 | 6f89e49 against 831e9a5 |
+|---|---|---|---|
+| x86-64 and AArch64 `cat-ft8-decode`, `paired_bench` | differ | identical | identical |
+| M33 check, small | identical | differ | differ |
+| M33 check, host; staged small and host | differ | differ | differ |
+
+### The code-generation check (in each commit)
+
+da69ed4's gains rest on the check's first pass vectorising on the hosts
+and costing four instructions a sample on the M33, and on the three loops'
+forms without the clamp; 831e9a5's on the running sums' loop (M33). New
+metrics: `shortloop` (the function's shortest loop, a ceiling) and `vecor`
+(`orr` on vector registers, a floor); `sumloop` takes its byte loads from
+its name (`sumloop3`). The fit's checks follow its renamed function
+(`Fit4::add_all_as`); the time search's `eor` ceiling covers its two forms
+(16). Each forced form below is applied to a copy of 6f89e49's tree with
+its own check (one log each, the check's own exit status):
+
+| form | a64 `correlation_whole` loop (≤ 110) | a64 `within_limit` `vecor` (≥ 2) | m33s `within_limit` `shortloop` (≤ 4) | m33s products / fit / removal loops (≤ 31 / 15 / 21) | m33s `select` `sumloop3` (≤ 16) | exit |
+|---|---|---|---|---|---|---|
+| head (6f89e49) | 107 | 4 | 4 | 30 / 14 / 20 | 15 | 0 |
+| g1: no form without the clamp (`in_limit` false) | **137** | **not found** | **not found** | 30 / 14 / 20 | 15 | 1 |
+| g2: the first pass with an early exit (`all`) | 107 | **0** | **6** | 30 / 14 / 20 | 15 | 1 |
+| g3: the largest magnitude alone | 107 | **0** | **7** | 30 / 14 / 20 | 15 | 1 |
+| g4: the Costas sums' vector form on every target | 107 | 4 | 4 | 30 / 14 / 20 | **no loop** | 1 |
+| g5: the forms without the clamp keep it | **137** | 4 | 4 | **36 / 20 / 26** | 15 | 1 |
+
+No other check failed in any form. g1 leaves the M33 loops (at opt-level
+"s" the flag reaches them through calls that are not inlined, so both
+forms are still compiled); g5 is their revert. What it misses: the x86-64
+and M4F code (no bounds); the linked images (it reads the library at opt-level
+"s"); min-sum's one pass (6f89e49), whose loop is a source-level fusion
+with no bound (32 instructions an edge against 10 + 25; a revert is a
+second loop that the shortest-loop metrics would not tell from the
+round's other loops).
+
+### Identity
+
+831e9a5 and 6f89e49 leave the x86-64 and AArch64 sections equal to
+da69ed4's, so the hosts' identity at 6f89e49 is theirs too; each commit's
+thumbv8m sections differ and each was run.
+
+- **Records, x86-64:** the 73 800 `paired_bench run` records of 6f89e49
+  equal b93516e's (host, one pass, small: 24 600 each, 0 differ; the records
+  comparison exits 0 each).
+- **800 WAV slots** × 3 configurations × 3 modes, x86-64 (7 200 runs, 78 690
+  decode lines): 93 091 lines byte-identical to b93516e's, and the 2 400
+  `--profile` lines differ only by the sync scratch, as at O21 (the WAV
+  comparison exits 0).
+- **A76:** the records of 6f89e49's AArch64 `paired_bench` equal x86-64
+  b93516e's (73 800, 0 differ; exit 0 each), and the 800 WAV slots × 3 × 3
+  with its `cat-ft8-decode` give the same 93 091 identical lines and 2 400
+  `--profile` lines (exit 0). One benchmark at a time, in fresh directories;
+  1 548 throttle samples, once a second, start and end included, all 0x0.
+- **Encoder:** the 45 `cat-ft8-encode` WAV files of each commit equal
+  70be604's.
+- **Cortex-M33 (emulated):** at each of da69ed4, 831e9a5 and 6f89e49 the
+  small and host dump images on seven slots (14 of 14) and the multi-pass
+  residuals of s0086 and s0407 equal 68634cc's (16 of 16; the M33
+  comparison exits 0 each).
+- **Comparators on a forced difference** (copies; each line its own exit
+  status): the records comparison 0 unforced, 1 with one record's field
+  changed; the WAV comparison 0 unforced, 1 with a decode line's frequency
+  one higher, 1 with a `--profile` line's `peak_bytes` one higher; the M33
+  comparison 0 unforced, 1 with one bit of one dump flipped (15 identical, 1
+  differ); `cmp` of an encoder WAV 0 unforced, 1 with one byte changed.
+
+### Tests and mutants
+
+New: `within_limit_is_where_input_is_the_identity` (the check against
+`input`'s identity over the values the front end treats specially and
+their neighbours, every exponent with random mantissas and signs, and one
+sample out of the limit at each place in slices of 13 lengths) and
+`a_sample_out_of_the_limit_anywhere_is_taken_as_the_front_end_takes_it`
+(one NaN, infinity or −2¹⁷ at the usable audio's first sample, inside the
+signal, after it and at the slot's last sample with a signal cut short:
+the same residual and report as the audio with that sample as the front
+end takes it). Extended: the time search's correlation, its blocks, the
+fit and the removal (and its zero-sign test) in the forms without the
+clamp on the audio as the front end takes it; the Costas row sums in both
+forms on every band down to the narrowest (nine base bins).
+
+Mutants in fresh copies of 6f89e49's tree (`cat-ft8` tree 914795c8…),
+release library tests (212); g1
+with `--cfg cat_ft8_test_group_one`. One log each with the tree, the edit
+and cargo's exit status; failing tests read from the logs:
+
+| mutant | mode | failing (of 212) |
+|---|---|---|
+| none (control) | release / g1 | 0 / 0 |
+| a1 the check's second pass: `<` for `<=` | release | 1 |
+| a2 the check's first pass: `<` for `<=` (equivalent: the second pass decides) | release | 0 |
+| a3 the check's second pass with the sign kept | release | 2 |
+| a4 the check always true | release | 2 |
+| a5 the check inverted | release | 2 |
+| a6 the check from the second usable sample | release | 1 |
+| a7 the check to the last sample but one | release | 1 |
+| a8 the time search's clamped form within the limit (equivalent: work only) | release | 0 |
+| a9 the time search's form without the clamp out of the limit | release / g1 | 2 / 2 |
+| a10 the fit's form without the clamp out of the limit | release | 3 |
+| a11 the removal's form without the clamp out of the limit (reporting) | release | 2 |
+| a12 `input_as` inverted | release | 5 |
+| a13 the fit's single samples without the clamp | release | 2 |
+| b1 running sums: the leaving level one bin on | release / g1 | 1 / 3 |
+| b2 running sums: tone 6's level entering | release | 1 |
+| b3 running sums: seven tones to start | release | 1 |
+| b4 running sums: one bin past the end | release | 1 |
+| b5 running sums: the even bins only | release | 1 |
+| b6 running sums on the hosts too (equivalent: the same integers) | release | 0 |
+| c1 min-sum in one pass: the message taken before the input | release | 1 |
+| c2 min-sum in one pass: the input not stored | release | 1 |
+| c3 the scalar form in two passes (equivalent: work only) | release | 0 |
+
+a2, a8, b6 and c3 are equivalent by design (they change only the work).
+
+### Checks
+
+- **Local CI** passes at 6f89e49: fmt; clippy `-D warnings` (workspace, all
+  targets and features, thumbv8m); workspace, profile, no-std and release
+  tests with the ignored ones (221, the exhaustive comparisons included);
+  the group-one step (212 run, 9 ignored), which runs the time search one
+  lane at a time and the running Costas sums end to end; the bulk run; MSRV
+  1.75; docs with and without `std`; `check.sh --stack`; the
+  code-generation check (above). The check passes at 6d6ba7b too (comments
+  only after 6f89e49).
+- **A76 release library tests** with the ignored ones, cross-built at
+  6f89e49 (`cat-ft8` tree 914795c8…): 220 pass, 0 fail, the
+  source-tree test skipped, the exhaustive comparisons included; 241
+  throttle samples, once a second, start and end included, all 0x0.
+
+### Tried, not kept
+
+- **The check by the largest magnitude alone** (the first form built; it
+  was also inlined into `run`): on the M33 a loop of 7–8 instructions a
+  sample (compare and conditional move), 53.4 M a host slot, which took
+  half of the subtraction's gain (−3.67% a call instead of −7.18%; the
+  three loops' savings were the same). The bitwise-or pass is 4 a sample.
+  On the A76 both forms vectorise and the subtraction read 35.105 against
+  35.075 ms (separate sessions).
+- **Running Costas sums two bins at a time** (`chunks_exact` pairs of the
+  bins, the sent tone's levels and the levels entering and leaving): 44
+  instructions a pair (22 a bin; the chunks' bounds checks stayed in the
+  loop); **by `step_by` iterators**: 37 a bin. The index form, 15, is kept.
+- **Min-sum's one-pass loop for both forms** (the hosts' fixed-size checks
+  through it too): it changed the x86-64 (`.text` −128 B) and AArch64
+  binaries, which were not timed; the hosts keep their two loops and the
+  shared body is a macro, so their binaries are those of 831e9a5.
+
+### What bounds the stages now (6f89e49)
+
+- **Subtraction, A76:** the reference's block of 16 (O23's polynomial),
+  the generator's increments and running sums, the frequency correction's
+  scalar 64-bit lanes (4.6% of a crowded slot at b335b0a), then the fit,
+  the removal and the time search without the clamp (the check's own share
+  was not sampled).
+- **Subtraction, M33:** `blocks` (247 M a host slot: the reference and the
+  correction's carries), the removal (112 M), `fill_phase_only` (107 M),
+  the products (86 M), the fit (85 M), the check (27 M).
+- **Sync, M33:** the running sums, 15 instructions a bin and Costas symbol;
+  the local maxima (`Decoder::search`, 4.5 M small).
+- **Min-sum, M33:** 32 instructions an edge for the inputs and two
+  smallest, 17 for the messages.
+
+### Next candidates (not built)
+
+| candidate | estimate | cost |
+|---|---|---|
+| **The radix-5 stage's twiddles without lane gathers** (hosts) | A76 up to half of a 6.0% (host) / 13.1% (small) loop | a layout read whole needs a copy of the twiddles per stride (46 KB of tables) or forms the compiler lowers to whole-vector loads (none tried) |
+| **The correction's lanes as 32-bit halves with carries** (hosts) | A76 about a third of a 4.6% loop: −1.5% of a crowded slot | two compare-and-carry steps a lane a step; whether rustc vectorises it is untried |
+| **The check over the waveform's reach only** | M33 −0.1 M a call (the 180 000 samples to about 157 500) | a bound on the time search's moves that the code must keep |
+| **Min-sum's magnitude selects on the M33** (prof19's candidate 5) | −15 to −25% of `min_sum_round` | NaN and −0 cases must keep their results |
+
+### Risks
+
+- The forms without the clamp rest on the check: a sample out of the limit
+  anywhere in the usable audio must send the call to the clamped forms. The
+  check covers every usable sample (the subtraction reads none outside),
+  the test puts one at the first and last usable samples, inside and after
+  the signal, and the mutants that narrow the check or invert it fail.
+- The A76 and x86-64 gains of da69ed4 rest on the check's first pass
+  vectorising (`vecor`) and on the forms without the clamp; the M33's on the
+  check's four-instruction loop (`shortloop`) and the three loops' lengths:
+  checked; a toolchain change can lose them with every test passing.
+- The audio's scale: audio whose magnitudes are all below 2 (a slot is
+  within ±1) is decided by the first pass. Audio with samples of 2 or more
+  beside smaller ones takes the second pass too (the or of their exponents
+  can exceed the limit's), and audio with any sample out of the limit
+  takes the clamped forms: correct, but slower than before by the check
+  (on the M33 up to about 2 M a call when both passes run: 4 and 7
+  instructions a sample).
+- The running Costas sums run on a host only in the group-one tests and
+  the direct test of both forms; min-sum's one pass only in the direct test
+  of the scalar round (the group-one cfg does not switch belief
+  propagation's forms). The M33 identity runs are their end-to-end
+  evidence.
+- Flash: +1 772 B on the M33 host image (the second forms), −28 B small.
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instructions only); M33 counts on any slot
+  but s0086 and s0407 (seven slots for identity); any M4F count or identity
+  (sizes and library calls only).
+- Sparse and empty slots on any target (the A76 timing is the crowded
+  `main` block; the subtraction runs only after a decode, so a quiet slot
+  gains nothing from da69ed4; the sync and min-sum changes are per pass on
+  the M33 and were counted on two crowded slots only).
+- The A76 small configuration after the commits: its binaries' sections
+  equal da69ed4's, whose subtraction it never runs (no small-slot timing
+  was rerun).
+- The x86-64 and A76 stage shares inside the commits (only the subtraction
+  and the whole program were timed); the PC sampler was run at b335b0a
+  only.
+- A placement variation on the A76 (the untouched stages moved by at most
+  0.13%).
+- Off-air recordings; the M33 or A76 with audio out of the limit (the
+  clamped forms' timing is unchanged code, not re-measured).
+- After a toolchain change: the bounds above.

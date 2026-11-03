@@ -2080,3 +2080,33 @@
 - Reference polynomial form on `SCALAR_FORMS`; docs and a closure name;
   the record's trial-commit citation and mutant reasoning corrected. All 8
   binaries' sections identical to b81a05c.
+
+## Session: 2026-11-03 (O25 a whole-slot profile; the input checked once)
+
+- Profiled the whole slot at b335b0a on all three targets, per stage and per
+  function (A76 stage times and PC samples tagged by decoder step; x86-64 the
+  same sampler and `perf record`; M33 per-stage, per-function and per-block
+  emulated counts, s0086 and s0407, host and small). A76 crowded host slot
+  84.30 ms: subtraction 45.7%, feed 22.7%, belief propagation 22.6%, sync
+  5.6%; small 12.80 ms: feed 49.6%, min-sum 31.4%, sync 10.8%. M33 small:
+  the Costas sums' loop is the slot's largest block (12.2%).
+- da69ed4: the subtraction's input checked once a call (`within_limit`: a
+  bitwise-or pass, the largest magnitude only if it fails); the time
+  search's products, the fit and the removal without the clamp when every
+  usable sample is within the limit (`input_as::<IN_LIMIT>`). 831e9a5: the
+  Costas sums by running sums along the bins on the `SCALAR_FORMS` side
+  (hosts unchanged). 6f89e49: min-sum's inputs taken in its magnitude loop
+  where it does not vectorise (hosts unchanged). Each with its tests and
+  code-generation bounds (`shortloop`, `vecor`, `sumloopN`).
+- M33 s0086 host slot −5.40% (subtraction −7.18% a call, sync search
+  −30%), small −5.71% (s0407 −5.40%, −5.76%); A76 subtraction 38.515 →
+  35.075 ms (−8.93%), slot 84.30 → 80.80 (−4.15%); x86-64 user cycles
+  −1.50%. Flash +1 772 B (M33 host), −28 B (small); static RAM unchanged;
+  M33 stack high water +32 B. Identity (x86-64, A76, encoder, M33 at each
+  commit), comparators failing when forced, mutants caught (four equivalent
+  by design), local CI and A76 tests pass; five forced code-generation
+  forms each fail (exit 1). 6d6ba7b: the check's comments only.
+- Tried, not kept: the check by the largest magnitude alone (M33 8
+  instructions a sample: half the subtraction's gain); running sums two bins
+  at a time and by `step_by` (longer M33 loops); min-sum's one-pass loop
+  shared with the hosts (changed their binaries).
