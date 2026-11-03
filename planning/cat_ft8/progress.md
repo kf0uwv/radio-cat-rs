@@ -1906,3 +1906,19 @@
   `slotcost` figure, +0.60%, did not repeat (−0.13%).
 - Reported, not built: subtraction's frames in idle storage (about 7.4 KB of
   stack), the candidate buffer's size, the histogram, the window on a host.
+
+## Session: 2026-11-02 (O21b review follow-ups)
+
+- 4a58a5f: comments name the Cortex-M33 dependency at `Rows::row` and
+  `costas_scores`. 3c08f8e: `ScoreCell`, the scratch's element type.
+  5147404: the summing-loop check fails with its own message when there is no
+  loop, and ends a function at any global label. 88fb444: signalling-NaN
+  patterns in the round-trip test.
+- All eight binaries' `.text` and `.rodata` as at 725c433; only panic line
+  numbers in the hosts' `.data.rel.ro`. x86-64 and A76 timed anyway: within
+  noise.
+- Corrections to O21: the second x86-64 small run, now checked for other jobs,
+  −0.42% (the +0.60% did not recur); the A76 small feed, A +1.0% and B +0.24%,
+  repeats and is unexplained; the comparators' exit statuses, now their own; the
+  WAV comparison now fails a `--profile` line left unchanged.
+- Wide bands kept. Local CI and the A76 library tests pass.

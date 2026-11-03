@@ -10570,11 +10570,14 @@ void):
 | s0407 host (6) | 230 925 788 | 231 130 403 | +0.09% | 2.4%, 1.4% |
 | `slotcost` host, one pass (4) | 328 476 646 832 | 328 054 970 628 | −0.13% | 0.4%, 0.8% |
 | `slotcost` small (4) | 95 467 735 636 | 96 038 872 832 | +0.60% | 0.9%, 0.5% |
-| `slotcost` small, second run (6) | 96 069 657 917 | 95 942 230 881 | −0.13% | 1.1%, 1.1% |
+| `slotcost` small, second run (6; O21b) | 96 271 811 428 | 95 865 852 551 | −0.42% | 0.8%, 0.9% |
 
 Instructions fall by at most 0.003%. The +0.60% did not repeat: a second run
-of six alternated samples, with its stage times kept, gives −0.13%, and every
-stage equal within its spread. These differences are noise; no rise is shown.
+of six alternated samples, checked for other jobs around each sample like the
+rest and with its stage times kept, gives −0.42%, and every stage equal within
+its spread. These differences are noise; no rise is shown. (Correction, O21b:
+the second run first given here, −0.13%, was not checked for other jobs; it is
+replaced.)
 
 **Cortex-A76** (Raspberry Pi 5; `.text` changed, so timed). Core 3, builds
 aligned from one source path, alternated, four runs each; 16 runs, 1 357
@@ -10583,15 +10586,25 @@ every run; peak 53.8 °C. One warm-up sample read 1.5 GHz (the first run's).
 
 | ms per slot (medians) | host, three passes | host, one pass | small |
 |---|---|---|---|
-| slot | 89.60 → 89.60 | 18.40 → 18.30 | 12.80 → 12.80 |
-| feed | 19.265 → 19.210 | 6.51 → 6.46 | 6.355 → 6.370 |
+| slot | 89.60 → 89.60 | 18.40 → 18.30 | 12.80 → 12.80 (B); 12.80 → 12.90 (A) |
+| feed | 19.265 → 19.210 | 6.51 → 6.46 | 6.355 → 6.370 (B); 6.350 → 6.415 (A) |
 | sync | 4.670 → 4.680 | 1.54 → 1.54 | 1.38 → 1.38 |
 | soft bits (placement check) | 2.38 → 2.38 | 1.19 → 1.19 | 0.89 → 0.89 |
 | belief propagation (placement check) | 19.050 → 19.060 | 8.94 → 8.94 | 4.020 → 4.015 |
 | subtract (placement check) | 43.735 → 43.720 | — | — |
 
 The stages this change does not touch agree within 0.015 ms, so placement did
-not move the comparison. Slots agree within the bench's 0.1 ms print resolution.
+not move the comparison.
+
+**Correction (O21b): the small configuration's feed rose.** `slotcost small
+small` measures the same configuration twice, interleaved, as A and B; this table
+first gave B alone. A: the feed 6.350 → 6.415 ms (+1.0%) and the slot 12.80 →
+12.90 ms, in each of the four runs (feed 6.40–6.42 against 6.34–6.36); B: the
+feed 6.355 → 6.370 ms (+0.24%). At e4cfa58 A and B agree; at 499b196 A reads
+0.04–0.05 ms above B in every run. The front end's AArch64 code is the same
+length but not the same bytes, so a cost of 0.2–1.0% of the small feed (0.1–0.5%
+of the slot) on the A76 is not excluded, and its cause is not known. The host
+configurations' feeds fell.
 
 ### Identity
 
@@ -10611,10 +10624,12 @@ compared section by section). The M33 identity was also rerun at 725c433.
 - **Encoder:** the 45 WAV files equal 70be604's.
 - **Cortex-M33 (emulated):** the small and host images on seven slots (14 of 14)
   and the residuals of s0086 and s0407 equal 68634cc's, at 499b196 and at 725c433.
-- **Comparators on a forced difference:** a record field → 1 differ, DIFFERENT; a
-  digit of a decode, `peak_bytes` off by one, `sync_scratch_bytes` 4, another
-  memory figure off by one → WAVCMP-DIFFERENT and exit 1 each; a bit of one M33
-  dump → M33ID-FAILED and exit 1. Unforced they pass.
+- **Comparators on a forced difference:** a record field → reported as different;
+  a digit of a decode, `peak_bytes` off by one, `sync_scratch_bytes` 4, another
+  memory figure off by one → the WAV comparison reports a difference and exits 1
+  each; a bit of one M33 dump → the M33 comparison fails and exits 1. Unforced they
+  pass. (Correction, O21b: the exit statuses first given here were not the
+  comparators' own; see O21b.)
 
 ### Tests and mutants
 
@@ -10712,3 +10727,82 @@ What it misses:
 - x86-64 and A76 timing on real recordings other than s0086 and s0407 (x86-64) and
   crowded synthetic slots (A76). Sparse and empty slots were not timed.
 - The saving on any linked application's image; those figures are the check images'.
+
+## Review follow-ups (O21b, 2026-11-02; no code generation change)
+
+Four code commits, then this record: 4a58a5f (comments at `Rows::row` and
+`costas_scores` naming the Cortex-M33 dependency), 3c08f8e (the sync scratch's
+element type named `ScoreCell`, a crate-internal alias of `f32`), 5147404 (the
+summing-loop check's own message, scoping and header), 88fb444
+(signalling-NaN patterns in the score round-trip test).
+
+**Sections.** `.text` and `.rodata` of all eight binaries (x86-64 and AArch64
+`paired_bench` and `cat-ft8-decode`, M33 check and staged images, small and
+host) are byte-identical at 88fb444 and 725c433, one source path, rustc 1.93.0.
+So are `.data` and `.bss`, and the M33 images' every section. On x86-64 and
+AArch64 `.data.rel.ro` differs in 10 words of the same size: the panic
+locations' line numbers, which moved with the added comment lines. Nothing runs
+differently, so the M33 identity and counts stand. The x86-64 and A76 binaries
+were timed anyway:
+
+- x86-64, `slotcost`, core 5, alternated, four samples each, checked for other
+  jobs around each, none void: small 95 865 477 829 → 96 029 175 967 cycles (+0.17%; spreads 0.6%, 1.5%); host, one pass, 329 209 873 703 → 328 922 989 767 (−0.09%; 0.5%, 0.5%).
+  Instructions equal to within 0.01%.
+- A76: the same `slotcost` runs as O21 (host three passes and one pass,
+  small as A and B), alternated, four runs each; 16 runs, 1 353 samples during
+  them, all 0x0 at start, during and end, 2 400 MHz throughout, peak 53.8 °C.
+  Every stage agrees within 0.01 ms, and every slot within the 0.1 ms print
+  resolution. The small A feed reads 6.41 ms in both, as at 499b196: that rise
+  repeats across sessions.
+
+**Wide bands stay.** A review proposed limiting `Band::from_hz` to 1 280 base
+bins and removing the separate scratch. Declined: it would refuse band widths of
+4 000 to 5 950 Hz that the decoder now accepts.
+
+**Corrections to O21** (made in its text above):
+
+- **The second x86-64 `slotcost small` run was not checked for other jobs.**
+  Rerun with the same check around each sample, alternated, six samples each,
+  none void: 96 271 811 428 → 95 865 852 551 cycles (−0.42%; spreads 0.8%,
+  0.9%; every stage equal within its spread). The +0.60% did not recur. The
+  row is replaced.
+- **The A76 small figures were one of two.** `slotcost small small` times the
+  same configuration as A and B, interleaved, and O21 gave only B. A shows the
+  feed +1.0% (6.350 → 6.415 ms) and the slot 12.80 → 12.90 ms in all four runs;
+  B +0.24%. Both are now given. Not explained.
+- **Exit statuses.** O21 said each forced WAV and M33 comparison exits 1. The
+  figures printed then were a pipeline's, not the comparators'. Rerun, the
+  comparators' own: unforced 0; a decode digit, `peak_bytes` off by one,
+  `sync_scratch_bytes` 4, another memory figure off by one, and a `--profile`
+  line left as before → 1 each; one M33 dump bit → 1. The records comparison
+  used then printed its verdict but always exited 0; a copy that exits 1 on a
+  difference gives 0 unforced and 1 on a forced field.
+- **The WAV comparison accepted a `--profile` line that did not change.** Only the
+  count of 2 400 showed the change. It now fails such a line; rerun on the x86-64
+  and A76 outputs, both still pass, with the 2 400 lines.
+- The M33 image scripts kept the cfg only when their flags variable was unset, not
+  when it was set and empty; they now keep it in both cases and print the flags
+  into their logs. This round's images were built with the cfg (`vmaxnm` present,
+  no `fmaxf` calls).
+
+**The check (5147404).** A function with no loop of nine byte loads now fails
+with "no loop with nine byte loads (moved or unrolled?)" rather than a count of
+9999. A function ends at its `.Lfunc_end` label or at the next global label;
+before, only at the next mangled one. Run on the committed form at opt-level "s"
+(24, passes), on both regressed forms (29, fails), and at the release profile's
+opt-level, where there is no such loop (fails with that message).
+
+**Tests.** The round trip now includes the signalling-NaN patterns 0x7F800001,
+0x7FBFFFFF, 0xFF800001 and 0xFFBFFFFF; no score can take them (a score's magnitude is at most 74 970: 7 × 255 a Costas symbol, 21 symbols, × 2),
+so the test covers storage, not the decoder. Local CI passes at 88fb444
+(fmt, clippy, the tests with the ignored ones (213), the group-one step (205 run, 8 ignored), the bulk run, MSRV 1.75, docs, `check.sh --stack`, and the code-generation check with the summing loop at 24). A76 release library
+tests with the ignored ones, cross-built at 88fb444: 212 pass, 0 fail, the
+source-tree test skipped; 48 throttle samples, start and end 0x0, none non-zero.
+
+**Not done this round:** splitting 499b196 into its refactor and its change, and
+the `as_flattened_mut` form of the transform's buffer, which needs MSRV 1.80.
+
+### Not measured
+
+- As in O21. The A76 small feed's +0.24–1.0% is unexplained; no profile of the
+  front end on the A76 was taken.
