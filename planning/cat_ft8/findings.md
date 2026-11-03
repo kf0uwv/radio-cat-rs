@@ -11891,7 +11891,7 @@ and 4bb9e6e (one scratch path, rustc 1.93.0); ee2b5c7 and f633ecb change only
   turn's neighbours (0 to 3 away) and the ends of its reduced range now go
   through all 64 weights, not only random phases. A mutant that leaves the
   half turn's sign off zero products in the select form fails it (and the
-  first-form test); log `o23b-mut-zero-skip.log`.
+  first-form test); checked by a mutant run.
 - **4bb9e6e:** `cos_sin_turns_times_as` is private; a test comment wrapped.
   The products in `scaled_cos_sin` stay a local (`cs`) before `put`: inlined,
   `k0` is used before `phase` and the closure's captures are laid out in
