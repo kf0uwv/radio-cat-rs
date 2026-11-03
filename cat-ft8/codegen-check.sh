@@ -78,6 +78,15 @@
 #   and 1 zero-fill call (`__aeabi_memclr4`, `__aeabi_memclr`, `memset`; a
 #   ceiling of 1).
 #   The forms it was run against are listed in findings O20b.
+# - thumbv8m.main with the cfg at opt-level "s": the subtraction's sums
+#   where a group is one sample, taken one lane at a time with the sums in
+#   registers. With rustc 1.93.0 the shortest loop with five `f32`
+#   multiply-accumulates or adds in `Fit4::add_all` has 20 instructions
+#   (a ceiling of 22; 25 with the four lanes side by side) and the
+#   shortest with two in `whole_lane_sums` 9 (a ceiling of 11; 14 side by
+#   side); the frequency correction one sample at a time leaves 19 carry
+#   adds (`adc`) in the two `blocks` (a ceiling of 24; 37 with the
+#   correction in lanes). The forms were run in findings O22.
 #   It misses: the radix-2 stage alone as loops (234 passes), the form of
 #   the twiddle index (`% N` and a subtraction both pass), a zero fill by
 #   `__aeabi_memclr8` or a tail call, and what link-time optimisation does
@@ -120,7 +129,11 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # `memset`, at most the bound; `sumloop` counts the instructions of the
 # shortest loop with nine byte loads, the eight tones' levels and the
 # expected tone's, at most the bound, and a function with no such loop fails
-# it with its own message. The sum's speed depends on what else is live
+# it with its own message; `fploopN` counts the instructions of the shortest
+# loop with at least N `f32` multiply-accumulates or adds (`vmla`, `vmls`,
+# `vadd`, `vsub`), at most the bound, and a function with no such loop
+# fails it likewise; `carries` counts `adc` (the high word of a 64-bit
+# add), at most the bound. The sum's speed depends on what else is live
 # around that loop, so it fails if the rows are passed to `costas_scores` by
 # value or `Rows::row` is inlined into it (findings O21). A function whose
 # label is not found, or an unknown metric, fails.
@@ -134,6 +147,7 @@ checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "m33 7Removal4refs vminmax 8"
   "m33s 10finish_row fpmul 230" "m33s 10finish_row divides 0" "m33s 10finish_row zerofills 1"
   "m33s 6select sumloop 26"
+  "m33s 4Fit47add_all fploop5 22" "m33s 15whole_lane_sums fploop2 11" "m33s 6blocks carries 24"
   "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit47add_all libcalls 0")
 
 declare -A asm
@@ -167,13 +181,17 @@ for entry in "${checks[@]}"; do
     /^\.Lfunc_end[0-9]+:/ { p = 0; next }
     /^[A-Za-z_][^ \t]*:$/ { p = index($0, f) > 0; if (p) found = 1; delete at; next }
     !p { next }
-    metric == "sumloop" && /^\.[A-Za-z0-9_$]+:/ {
-      sub(/:.*/, ""); at[$0] = k; atb[$0] = bytes; next
+    metric ~ /^(sumloop|fploop)/ && /^\.[A-Za-z0-9_$]+:/ {
+      sub(/:.*/, ""); at[$0] = k; atb[$0] = bytes; atf[$0] = fps; next
     }
-    metric == "sumloop" && /^\t[a-z]/ {
+    metric ~ /^(sumloop|fploop)/ && /^\t[a-z]/ {
       k++
       if ($1 ~ /^ldrb/) bytes++
-      if ($1 ~ /^(b[a-z]*(\.[nw])?|cbn?z)$/ && ($NF in at) && bytes - atb[$NF] == 9 &&
+      if ($1 ~ /^v(mla|mls|add|sub)\.f32$/) fps++
+      back = $1 ~ /^(b[a-z]*(\.[nw])?|cbn?z)$/ && ($NF in at)
+      if (back && metric == "sumloop" && bytes - atb[$NF] == 9 &&
+          (best == "" || k - at[$NF] < best)) best = k - at[$NF]
+      if (back && metric ~ /^fploop/ && fps - atf[$NF] >= substr(metric, 7) + 0 &&
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
     }
     metric == "vec4" && /^\t[a-z][^\t]*\t.*\.4s/ { n++ }
@@ -187,9 +205,10 @@ for entry in "${checks[@]}"; do
     metric == "fpmul" && /^\tv(mul|mla|mls)\.f32\t/ { n++ }
     metric == "divides" && /^\t(umull|udiv)\t/ { n++ }
     metric == "zerofills" && /^\tbl\t(__aeabi_memclr4|__aeabi_memclr|memset)$/ { n++ }
+    metric == "carries" && /^\tadc/ { n++ }
     END {
       if (!found) print "missing"
-      else if (metric == "sumloop") print (best == "" ? "noloop" : best)
+      else if (metric ~ /^(sumloop|fploop)/) print (best == "" ? "noloop" : best)
       else print n + 0
     }' "${asm[$key]}")
   if [ "$n" = missing ]; then
@@ -198,7 +217,10 @@ for entry in "${checks[@]}"; do
     continue
   fi
   if [ "$n" = noloop ]; then
-    echo "FAIL $key $name: no loop with nine byte loads (moved or unrolled?)"
+    case "$metric" in
+      sumloop) echo "FAIL $key $name: no loop with nine byte loads (moved or unrolled?)" ;;
+      *) echo "FAIL $key $name: no loop with ${metric#fploop} f32 adds (moved or unrolled?)" ;;
+    esac
     fail=1
     continue
   fi
@@ -215,6 +237,8 @@ for entry in "${checks[@]}"; do
     divides) what="divisions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     zerofills) what="zero-fill calls (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     sumloop) what="instructions in the summing loop (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    fploop*) what="instructions in the loop of ${metric#fploop} f32 adds (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    carries) what="carry adds (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     *) what="unknown metric $metric"; ok=0 ;;
   esac
   if [ $ok = 1 ]; then
