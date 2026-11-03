@@ -452,19 +452,7 @@ impl Synth {
             if a > s0 {
                 let g = &pulse[NS + s0 - PF..NS + a - PF];
                 let h = &pulse[NS + 1 - a - PF..NS + 1 - s0 - PF];
-                if FUSED_SUM {
-                    for ((y, &g), &h) in o1.iter_mut().zip(g).zip(h.iter().rev()) {
-                        if !SUM_ONLY {
-                            *y = p;
-                        }
-                        p = p.wrapping_add(step(cur * g + prev * h));
-                    }
-                } else {
-                    for ((y, &g), &h) in o1.iter_mut().zip(g).zip(h.iter().rev()) {
-                        *y = step(cur * g + prev * h);
-                    }
-                    p = sum(p, o1);
-                }
+                p = overlap::<SUM_ONLY>(p, o1, g.iter(), h.iter().rev(), (cur, prev), step, sum);
             }
             // s in a..c: the current pulse alone, and exactly 1.0, so
             // `cur · g` is `cur` and every increment is `step(cur)`.
@@ -483,19 +471,7 @@ impl Synth {
             if s1 > c {
                 let g = &pulse[2 * NS + 1 - s1 - PF..2 * NS + 1 - c - PF];
                 let h = &pulse[c - PF..s1 - PF];
-                if FUSED_SUM {
-                    for ((y, &g), &h) in o4.iter_mut().zip(g.iter().rev()).zip(h) {
-                        if !SUM_ONLY {
-                            *y = p;
-                        }
-                        p = p.wrapping_add(step(cur * g + next * h));
-                    }
-                } else {
-                    for ((y, &g), &h) in o4.iter_mut().zip(g.iter().rev()).zip(h) {
-                        *y = step(cur * g + next * h);
-                    }
-                    p = sum(p, o4);
-                }
+                p = overlap::<SUM_ONLY>(p, o4, g.iter().rev(), h.iter(), (cur, next), step, sum);
             }
             at += s1 - s0;
         }
@@ -524,6 +500,40 @@ impl Synth {
 /// ([`running_sum`]). Integer addition modulo 2³² is associative, so both
 /// give the same phases.
 const FUSED_SUM: bool = crate::decode::math::SCALAR_FORMS;
+
+/// A run where two pulses overlap: `out`'s phases from `p` (the phase
+/// before its first sample), sample k's increment `step(cur · g + other ·
+/// h)` with g and h the k-th of `g` and `h`; returns the phase after the
+/// run. With [`FUSED_SUM`] each increment is added as it is taken, the
+/// phase before it stored first (not with `SUM_ONLY`); otherwise the
+/// increments are stored (a loop that vectorises) and then summed by `sum`.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn overlap<'a, const SUM_ONLY: bool>(
+    p: u32,
+    out: &mut [u32],
+    g: impl Iterator<Item = &'a f32>,
+    h: impl Iterator<Item = &'a f32>,
+    (cur, other): (f32, f32),
+    step: impl Fn(f32) -> u32,
+    sum: impl Fn(u32, &mut [u32]) -> u32,
+) -> u32 {
+    if FUSED_SUM {
+        let mut p = p;
+        for ((y, &g), &h) in out.iter_mut().zip(g).zip(h) {
+            if !SUM_ONLY {
+                *y = p;
+            }
+            p = p.wrapping_add(step(cur * g + other * h));
+        }
+        p
+    } else {
+        for ((y, &g), &h) in out.iter_mut().zip(g).zip(h) {
+            *y = step(cur * g + other * h);
+        }
+        sum(p, out)
+    }
+}
 
 /// Whether [`running_sum`] takes four entries at a time: measured faster
 /// on the Cortex-A76, neutral on x86-64, more instructions on the M33.
