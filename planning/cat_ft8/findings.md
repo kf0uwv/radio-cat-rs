@@ -13271,3 +13271,393 @@ with the tree, the edit and cargo's exit status:
 - The out-of-limit M33 run is one slot, the host image only, and compares
   residuals (not the decode lists); no M4F or A76 run with audio out of
   the limit.
+
+## The feed: the input checked by the or pass, the FFT's last stage vectorised, the level counts in one pass, the bins' powers apart on the M33, twenty-sixth round (O26, bit-identical, 2026-11-03)
+
+Base: 669666d (the code of O25b; every section of all eight binaries as
+307d68f's). O25's profile put the feed (the front end's copy, the FFT, the
+bins' powers and levels) at about half of every small slot (A76 49.6%, M33
+48.7%, x86-64 50.1%) and a fifth of the crowded host slot. This round cuts
+it with four code commits, one optimisation each: 3ea1327 (the block check
+by the subtraction's or pass), 2a7ab53 (the FFT's last stage as loops the
+compiler vectorises), 129f934 (a row's floor and top levels counted in one
+pass) and 6db1324 (the bins' powers out of line and indexed without a vector
+unit). Each carries its tests and code-generation bounds. Decodes,
+records, residuals and encoder output are identical. No memory is added:
+static RAM, the slot's storage and the scratch are unchanged, the M33
+stack's high water is unchanged; flash grows by 84 B (M33 small) and 12 B
+(host), the hosts' `.text` by 26 KB (x86-64) and 11 KB (AArch64), almost
+all 2a7ab53's loops.
+
+| target | measure | 669666d | 6db1324 | change |
+|---|---|---|---|---|
+| Cortex-A76, `slotcost small small 200 5` | feed (medians of 4) | 6.350 ms | 5.670 ms | **−10.7%** |
+| | slot | 12.8 ms | 12.1 ms | **−5.5%** |
+| Cortex-A76, crowded host slot | feed | 19.100 ms | 17.040 ms | **−10.8%** |
+| | slot | 80.8 ms | 78.7 ms | **−2.6%** |
+| Cortex-A76, one pass | slot (feed) | 18.3 (6.450) ms | 17.6 (5.770) ms | −3.8% (−10.5%) |
+| Cortex-M33, s0086 small | slot, emulated instructions (setup excluded) | 172.57 M | 169.19 M | **−1.96%** |
+| | feed | 89.14 M | 85.68 M | −3.87% |
+| Cortex-M33, s0086 host | slot | 1 437.85 M | 1 427.09 M | **−0.75%** |
+| Cortex-M33, s0407 small / host | slot | 165.67 / 1 434.58 M | 162.32 / 1 423.83 M | −2.03% / −0.75% |
+| x86-64, user cycles of the whole program (medians of 5) | `slotcost small small 200 5` | 96.36 G | 93.93 G | **−2.52%** |
+| | `slotcost host host,passes=1 200 5` | 309.22 G | 305.61 G | **−1.17%** |
+
+(The A76 and x86-64 figures are 129f934's binaries; 6db1324's host code is
+129f934's instruction for instruction, below.)
+
+### The ranking used
+
+O25's profile at b335b0a (whose feed code is 669666d's), the feed's parts:
+
+| target | part | share | lever |
+|---|---|---|---|
+| A76 small / host | the FFT's last stage (radix 5): 150 instructions a step of the inner loop over q, 63 vector, about 37 of them lane moves gathering twiddles m apart in the table, and an index `% N` per twiddle | 13.1% / 6.0% of the slot | **2a7ab53** |
+| A76 small | the first stage (window, digit-reversed loads); the radix-4, -3, -2 stages' butterflies | 7.4%; 5.7%, 4.0%, 3.2%, 1.9% | butterflies only, no lane moves: not attempted |
+| A76 small | `Spectrogram::feed` (the copy and check, the window's shift, the level counts) | 2.4% | 3ea1327, **129f934** (the counts widened every byte to 64-bit lanes, two passes) |
+| x86-64 small / host | `power_bins` (a quarter of it the radix-5 loop) | 47.9% / 19.7% | 2a7ab53 |
+| M33 small | the feed: the transform's butterflies (O20's), the bins' powers 42 instructions a bin, the levels about 47 a bin, the block check 10 a sample, the level counts 2 × 6 a bin, the window's shift (`memmove`, 2.26 M) | 48.7% of the slot | **3ea1327, 129f934, 6db1324** |
+
+### Changes
+
+1. **3ea1327: the front end checks each block with the subtraction's or
+   pass.** `checked_copy` decided whether a fed block was within the input's
+   limit by a compare fold, `abs(x) <= INPUT_LIMIT` over every sample: on the
+   M33 10 instructions a sample (`vabs`, `vcmp`, `vmrs`, a conditional move,
+   an `and`). `within_limit`, O25's check for the subtraction (the
+   magnitudes' bitwise or, then their largest only when the or is past the
+   limit's bits), decides exactly the same samples, so it moves to the front
+   end (`pub(crate)`, still not inlined) and both call it: 4 instructions a
+   sample on the M33. The per-block contract is unchanged (a block that
+   passes is copied; any other is classified sample by sample and counted).
+   M33 small −0.94 M a slot (−0.54%), host −2.83 M (three feeds); A76 feed
+   −0.015 ms (small −0.01).
+2. **2a7ab53: the FFT's last stage as loops the compiler vectorises.** The
+   last stage (radix 5, l = 384, one block) ran four butterflies side by side
+   and read each twiddle where it was used; lane j of (m, q) is m entries
+   after lane j − 1, so the compiler built every twiddle vector lane by lane,
+   and each index took a remainder by N. Its index m·(k + q·l) mod N is m·k
+   plus a constant between the points where one of the 16 (m, r) pairs
+   reaches N; those points (k = 96, 128, 192, 256, 288) are computed at
+   compile time from `STAGES` (`LAST_BOUNDS`). Within each of the six
+   segments the stage is a plain loop over k, one butterfly an iteration
+   with `radix_sums`' operations in their order (one lane), which the loop
+   vectoriser takes four k at a time, loading m = 1's twiddles with `ld2`
+   and m = 2's with `ld4` (m = 3 and 4 by lanes still, without the index
+   arithmetic). Per four butterflies on AArch64: about 336 instructions
+   (each segment's last four k run a scalar loop of 232) instead of 5 × 143
+   + 44 = 759; x86-64 494 instead of 5 × 154 + 49 = 819. The M33
+   (`LANES` one) keeps `last_straight_stage`: its sections are unchanged.
+   A76 feed −1.545 ms host (−8.1%), −0.53 small; slot −1.6 / −0.5 ms.
+3. **129f934: a row's floor and top levels counted in one pass.**
+   `finish_row` counted the levels at 0 and at 255 with two filter counts
+   into `usize`: on AArch64 each widened every byte to 64-bit lanes (66
+   instructions a 32-byte step, two passes: about 4 instructions a level);
+   on the M33 two loops of 6 a level. `level_counts` takes both in one pass
+   in 16-bit counts (a row holds at most `BINS` levels): byte compares and
+   widening subtractions on AArch64 (32 instructions a 32-byte step); one
+   loop of 9 a level on the M33. A76 feed −0.50 ms host, −0.14 small; M33
+   small −0.49 M.
+4. **6db1324: the bins' powers out of line and indexed without a vector
+   unit.** On the M33 the powers' loop, inlined into the row, recomputed its
+   five addresses from the front end's base each bin (the base reloaded
+   from the stack) and checked the zipped iterators' lengths: 42
+   instructions a bin. Where `SCALAR_FORMS` holds, `bin_powers` calls
+   `bin_powers_apart` (not inlined), whose `powers` loop indexes its slices
+   (`INDEXED`): 35 instructions a bin (34 above bin 960). The hosts keep the
+   inlined zipped loop (the code of 129f934: below). M33 small −1.96 M a
+   slot (−1.14%), host −6.31 M.
+
+### Cortex-M33 (emulated instructions; staged images built from one scratch path, rustc 1.93.0, `--cfg cat_ft8_minmaxnm`)
+
+| commit | s0086 small slot | feed | s0086 host slot | feed (three passes) | s0407 small | s0407 host |
+|---|---|---|---|---|---|---|
+| 669666d | 172 570 220 | 89 135 405 | 1 437 845 369 | 272 837 275 | 165 674 168 | 1 434 578 663 |
+| 3ea1327 | 171 633 309 (−0.54%) | 88 198 574 | 1 435 018 167 (−0.20%) | 270 000 838 | 164 734 355 | 1 431 751 084 |
+| 2a7ab53 | as 3ea1327 (thumbv8m sections equal) | | | | | |
+| 129f934 | 171 146 812 (−0.28%) | 87 712 077 | 1 433 399 700 (−0.11%) | 268 382 371 | 164 247 858 | 1 430 132 617 |
+| **6db1324** | **169 188 866 (−1.14%; −1.96% in all)** | **85 682 937 (−3.87%)** | **1 427 092 090 (−0.44%; −0.75%)** | **261 963 199 (−3.99%)** | **162 318 338 (−2.03%)** | **1 423 827 980 (−0.75%)** |
+
+- 669666d's counts equal O25's at 6f89e49 to the instruction (small
+  172 570 220, host 1 437 845 369), as its sections do.
+- Same decodes (23 and 40 at s0086; 30 and 38 at s0407). The subtraction
+  and `setup` are the same to the instruction. Belief propagation, the
+  sync search and soft bits move by up to 0.03% (other code's placement:
+  min-sum's own count is equal, 50 057 880).
+- Functions (s0086 small, the feed): `within_limit` 0.72 M (4 a sample over
+  the 180 000, and a call a block); `bin_powers_apart` 5.83 M; the pass
+  (the rest of the transform and levels) 98.00 → 88.07 M; `memmove` (the
+  window's shift) 2.26 M unchanged.
+- Paint high water: small 10 304 B, host 10 276 B, unchanged at every
+  commit. Frames: `finish_row` 464 → 472 B; `bin_powers_apart` below the
+  largest listed.
+
+### Cortex-A76 (Raspberry Pi 5; medians of 4 alternated runs)
+
+Aligned builds of 669666d, 3ea1327, 2a7ab53 and 129f934 from one scratch
+path, core 3, the throttle, clock and temperature sampled once a second
+from core 0, a 5 s sampled busy loop on core 3 before each run; per cycle
+`slotcost host host,passes=1 200 5` then `slotcost small small 200 5` of
+each build, the builds forward on odd cycles and reversed on even, four
+cycles.
+
+| ms (median, spread) | 669666d | 3ea1327 | 2a7ab53 | 129f934 |
+|---|---|---|---|---|
+| host: feed | 19.100 (0.010) | 19.085 (0.020) | 17.540 (0.030) | **17.040 (0.020): −2.060, −10.8%** |
+| host: slot / worst | 80.8 / 85.5 | 80.8 / 85.5 | 79.2 / 83.9 | **78.7 / 83.4 (−2.6%)** |
+| host: subtract | 35.075 (0.030) | 35.085 | 35.000 | 35.010 (0.010) |
+| host: belief propagation / sync / soft bits | 19.060 / 4.680 / 2.380 | the same | the same | the same |
+| one pass: slot, feed | 18.3, 6.450 | 18.3, 6.450 | 17.8, 5.920 | **17.6, 5.770** |
+| small: feed | 6.350 (0.000) | 6.340 (0.010) | 5.810 (0.000) | **5.670 (0.010): −0.680, −10.7%** |
+| small: slot / worst | 12.8 / 13.2 | 12.8 / 13.2 | 12.3 / 12.7 | **12.1 / 12.6 (−5.5%)** |
+| small: belief propagation / sync / soft bits | 4.020 / 1.380 / 0.890 | the same | the same | the same |
+
+- **Placement check.** Belief propagation, the sync search and soft bits
+  agree within 0.01 ms in all four builds (both configurations); the
+  subtraction moves by −0.065 ms (−0.19%) with no change to its code
+  (layout). The feed's gains are 30 to 200 times their spreads.
+- **Validity.** All 32 timed runs are valid: 2 548 samples during the runs
+  and 160 in the warm-ups, every one 0x0, the 32 end checks included; every
+  sample during a run and every warm-up minimum at 2 400 MHz. Peak 55.4 °C.
+- 6db1324's AArch64 code is 129f934's (below); it was not timed.
+
+### x86-64 (Threadripper 3970X, core 5, `perf stat` user counters over the whole `slotcost` program)
+
+Aligned builds of 669666d, 3ea1327, 2a7ab53 and 129f934 from the same
+scratch path (6db1324's x86-64 code is 129f934's), per round `slotcost
+host host,passes=1 200 5` then `slotcost small small 200 5` of each build,
+four alternated rounds (forward, then reversed) and a fifth forward; a
+check for other jobs of the round (builds, emulators, comparators; not the
+A76 drivers' remote sessions, which wait on the network) before and after
+each sample. Two samples of 3ea1327 in the first round are void
+(the A76 identity's comparison and the A76 test build ran on this machine
+then); the medians are of the remaining samples (4 for 3ea1327, 5 for the
+others).
+
+| build | small: cycles (median, range) | instructions | host: cycles (median, range) | instructions | feed, host (ms) |
+|---|---|---|---|---|---|
+| 669666d | 96.36 G (95.27–96.53) | 295.11 G | 309.22 G (308.48–309.91) | 870.69 G | 11.05 |
+| 3ea1327 | 95.86 G (95.14–96.48) | 294.92 G | 309.22 G (308.72–310.28) | 870.34 G | 11.06 |
+| 2a7ab53 | 94.72 G (94.19–95.34) | 284.18 G (−3.70%) | 307.47 G (307.28–308.11) | 848.83 G (−2.51%) | 10.64 |
+| 129f934 | **93.93 G (93.34–94.47), −2.52%** | 281.57 G (−4.59%) | **305.61 G (304.25–306.23), −1.17%** | 843.03 G (−3.18%) | 10.37 (−6.2%) |
+
+129f934's ranges clear the base's by 0.80 G (small) and 2.25 G (host).
+3ea1327 is within noise on x86-64 (its check vectorises either way).
+Stage times are the virtual machine's clock, for scale only; the whole
+program includes the bench's slot synthesis and outcome classification
+(5–20% of it at O25), which this round does not change.
+
+### Sizes and stack (`check.sh --stack`, thumbv8m)
+
+| image | flash 669666d → 3ea1327 → 2a7ab53 → 129f934 → 6db1324 (B) | static RAM (B) |
+|---|---|---|
+| small, small with OSD on | 91 954 → 92 002 → 92 002 → 91 994 → **92 038 (+84)** | 201 668 (unchanged) |
+| host, host with OSD off | 104 726 → 104 702 → 104 702 → 104 694 → **104 738 (+12)** | 230 084 (unchanged) |
+| encoder only | 35 190 (unchanged) | 0 |
+
+- No scratch or storage added; the stack's high water unchanged (above).
+- No fused multiply-add (0 `vfma`/`vfms`/`vfnma`/`vfnms`); `vmla` small
+  128, host 241, encoder 17, unchanged. No `f64` helper in any image.
+- Cortex-M4F (thumbv7em, embedded-check images, no cfg): flash small 92 220
+  → 92 264 → 92 264 → 92 252 → 92 304 B, host 105 320 → 105 292 → 105 292
+  → 105 280 → 105 332 B; static RAM unchanged; no `f64` helper, no fused
+  multiply-add; the library calls (`fmaxf`/`fminf` 10 and 14 among them)
+  the same at every commit.
+- Hosts' `.text` (one scratch path, aligned): x86-64 `cat-ft8-decode`
+  464 966 → 464 582 → 489 990 → 491 142 B, `paired_bench` 1 419 254 →
+  1 445 558; AArch64 `cat-ft8-decode` 404 712 → 403 048 → 417 896 →
+  415 656, `paired_bench` 1 177 240 → 1 188 120. 2a7ab53's six segments
+  (a vector loop and the scalar loop for its last four k each) are +25.4 KB
+  on x86-64 and +14.8 KB on AArch64. `.rodata` within 48 B.
+
+### Sections of all eight binaries
+
+| binary | 3ea1327 against 669666d | 2a7ab53 against 3ea1327 | 129f934 against 2a7ab53 | 6db1324 against 129f934 |
+|---|---|---|---|---|
+| x86-64 and AArch64 `cat-ft8-decode`, `paired_bench` | differ | differ | differ | differ (sizes equal) |
+| M33 check and staged, small and host | differ | **identical** | differ | differ |
+
+6db1324's host binaries differ from 129f934's only in panic locations: the
+AArch64 `paired_bench` disassembly, addresses aside, differs in 13 `adr`
+operands that point at `Location` records within one `.rodata` block (their
+order), every other instruction equal; their `.text` and `.rodata` sizes
+are equal.
+
+### The code-generation check (in each commit)
+
+New metrics: `checks` (calls of `within_limit`, a floor), `ldn` (`ld2`–`ld4`,
+a floor), `vec2` (two-lane `.2d` instructions, a ceiling); and checks with
+existing ones. The FFT's multiply floor in `finish_row` (m33s) drops from
+230 to 199 because 6db1324 moves the powers' 31 multiplies out (207 now): a
+copy of the head with the radix-3 stage as loops (O20b's worst form, 218
+then) reads 187 and fails it, with the division and zero-fill ceilings.
+Each forced form below is a copy of the commit's tree with its own check
+(one log each, the check's own exit status):
+
+| form | a64 `feed` checks (≥ 2) | m33s `feed` checks (≥ 2) | a64 `finish_row` ldn (≥ 48) | a64 `finish_row` vec2 (≤ 32) | m33s `bin_powers_apart` fploop4 (≤ 35) | exit |
+|---|---|---|---|---|---|---|
+| head (6db1324) | 2 | 2 | 62 | 16 | 34 | 0 (38 of 38) |
+| f1: the block's compare fold | **0** | **0** | | | | 1 |
+| f2: the last stage side by side, lanes gathered | | | **3** | | | 1 |
+| f3: the counts by two filters | | | | **170** | | 1 |
+| f4a: the powers apart, zipped | | | | | **37** | 1 |
+| f4b: the powers inlined | | | | | **not found** | 1 |
+| f4c: the radix-3 stage as loops | | | 62 | 16 | 34 | 1 (fpmul 187, divisions 1, zero fills 2) |
+
+(f1–f3 were run at their commits, f4a–f4c at 6db1324. No other check failed
+in any form.) What it misses: the x86-64 code (no bounds; its loops were
+counted by hand above); the vectoriser's choice for m = 3 and 4 (lanes);
+the scalar loop at each segment's end; the linked images.
+
+### Identity
+
+The references are b93516e's outputs (x86-64 records and WAV lines, the
+A76's compared with them), 68634cc's (M33 dumps and residuals) and
+70be604's (encoder WAVs), which no round since has changed: equal to them
+is equal to 669666d's.
+
+- **Records, x86-64:** the 73 800 `paired_bench run` records of each of
+  3ea1327, 2a7ab53, 129f934 and 6db1324 equal b93516e's (host, one pass,
+  small: 24 600 each, 0 differ; the records comparison exits 0 each).
+- **800 WAV slots** × 3 configurations × 3 modes, x86-64, at each of the
+  four (7 200 runs, 78 690 decode lines): 93 091 lines byte-identical to
+  b93516e's, and the 2 400 `--profile` lines differ only by the sync
+  scratch, as at O21 (the WAV comparison exits 0).
+- **A76:** the records of 6db1324's AArch64 `paired_bench` equal x86-64
+  b93516e's (73 800, 0 differ; exit 0 each), and the 800 WAV slots × 3 × 3
+  with its `cat-ft8-decode` give the same 93 091 identical lines and 2 400
+  `--profile` lines (exit 0). One benchmark at a time, in fresh directories;
+  1 524 throttle samples, once a second, start and end included, all 0x0.
+  (2a7ab53's and 129f934's AArch64 code was run on the A76 only in the
+  timing; their x86-64 identity stands for their host code.)
+- **Encoder:** the 45 `cat-ft8-encode` WAV files of each commit equal
+  70be604's.
+- **Cortex-M33 (emulated):** at 3ea1327, 129f934 and 6db1324 (2a7ab53's
+  thumbv8m sections equal 3ea1327's) the small and host dump images on
+  seven slots (14 of 14) and the multi-pass residuals of s0086 and s0407
+  equal 68634cc's (16 of 16; the M33 comparison exits 0 each).
+- **Comparators on a forced difference** (copies of 129f934's outputs; each
+  line its own exit status): the records comparison 0 unforced, 1 with one
+  record's field changed; the WAV comparison 0 unforced, 1 with a decode
+  line's frequency one higher, 1 with a `--profile` line's `peak_bytes`
+  one higher; the M33 comparison 0 unforced, 1 with one bit of one dump
+  flipped (15 identical, 1 differ); `cmp` of an encoder WAV 0 unforced, 1
+  with one byte changed.
+
+### Tests and mutants
+
+New: `the_block_check_is_where_classify_is_the_identity` (the check
+against `classify`'s identity over the special values and every exponent
+with both signs; one bad sample at every place of 14 block lengths, where
+`checked_copy` counts one and writes `classify`'s values; a block with
+−2¹⁶ beside small samples, which the or pass alone refuses, taken whole),
+`last_twiddle_index_equals_the_stage_index` (every k, m and q of each
+segment against the remainder, and each segment's index m·k plus one
+constant), `level_counts_equal_the_filtered_counts` (13 widths up to
+`BINS`, five kinds of row). Extended: `powers_equal_the_reference_bit_for_bit`
+runs both loop forms of `powers` over each range. The existing
+`straight_stages_equal_the_side_by_side_stages_bit_for_bit` now compares
+the new last stage with `last_straight_stage`, every bit including the sign
+of zero, and `transform_equals_the_reference_bit_for_bit` the whole
+transform with one, two and four lanes against the reference.
+
+Mutants in fresh copies of 6db1324's tree, release library tests (215);
+g1 with `--cfg cat_ft8_test_group_one`. One log each with the tree, the
+edit and cargo's exit status:
+
+| mutant | mode | failing (of 215) |
+|---|---|---|
+| none (control) | release / g1 | 0 / 0 |
+| a1 the block check inverted | release | 4 |
+| a2 every block copied | release | 4 |
+| a3 the check from the block's second sample | release | 2 |
+| a4 every block classified (equivalent: work only) | release | 0 |
+| b1 the wrap past N rather than at it | release | 58 |
+| b2 the wrap decided per k (equivalent: the same index, not affine) | release | 0 |
+| b3 a segment left out | release | 10 |
+| b4 each segment one k short | release | 12 |
+| b5 a twiddle's parts swapped | release | 26 |
+| c1 the top at 254 | release | 2 |
+| c2 the floor at 0 and 1 | release | 1 |
+| c3 the first level left out | release | 2 |
+| e1 the indexed loop's c not reversed | release / g1 | 1 / 11 |
+| e2 the indexed loop's rotation without its sign | release | 1 |
+| e3 the powers apart, zipped (equivalent: work only) | release | 0 |
+| e4 the form's choice inverted (equivalent: the same values) | release | 0 |
+
+a4, b2, e3 and e4 are equivalent by design.
+
+### Checks
+
+- **Local CI** passes at 6db1324: fmt; clippy `-D warnings` (workspace, all
+  targets and features, thumbv8m); workspace, profile, no-std and release
+  tests with the ignored ones (224, the exhaustive comparisons included);
+  the group-one step (215 run, 9 ignored), which runs `bin_powers_apart`
+  and the other `SCALAR_FORMS` forms end to end on the host; the bulk run;
+  MSRV 1.75; docs with and without `std`; `check.sh --stack`; the
+  code-generation check (38 of 38).
+- **A76 release library tests** with the ignored ones, cross-built at
+  6db1324 (`cat-ft8` tree 1fd5d788…): 223 pass, 0 fail, the source-tree
+  test skipped (the Raspberry Pi holds no sources), the exhaustive
+  comparisons included; 241 throttle samples, once a second, start and end
+  included, all 0x0.
+
+### Tried, not kept
+
+- **The bins' powers indexed but inlined** (the M33): 38 instructions a bin
+  (the base still reloaded each bin); **out of line but zipped**: 37–39
+  (the iterators' length checks stay). Both together: 35.
+- **The level counts in runs of 255 with 8-bit counts**: on AArch64 the
+  runs unrolled to seven 32-byte steps plus tails (more code, the same
+  order of cost); the 16-bit counts are one loop.
+- **The last stage's twiddles from a copy laid out per stride** (O25's
+  first idea): 46 KB more memory; not built. The segments need none.
+
+### What bounds the feed now (6db1324)
+
+- **A76:** the transform's butterflies; the last stage now about 336
+  instructions a step of four butterflies, of which the m = 3 and m = 4
+  twiddles are still taken lane by lane (`ld1` to lanes, `zip`), and a
+  scalar loop of 232 for each segment's last four k (24 of 384); the first
+  stage's digit-reversed loads; the levels' `log2`.
+- **M33:** the butterflies (O20's), the levels (about 47 instructions a
+  bin), the powers (35), the window's shift (`memmove`, 2.26 M a small
+  slot), the check (4 a sample).
+
+### Next candidates (not built)
+
+| candidate | estimate | cost |
+|---|---|---|
+| The last stage's m = 3, 4 twiddles as whole loads (hosts) | up to a third of the stage's remaining loop | the vectoriser gathers factors 6 and 8 by lanes; a form it loads whole is not known |
+| The last stage's scalar tails (hosts) | 24 of 384 butterflies scalar | the interleaved loads read past the last k; code size too (+25 KB x86-64) |
+| The window's shift as a ring (all) | M33 2.26 M a small slot | the first stage's loads would wrap |
+| The levels' loop on the M33 | about 47 instructions a bin | `log2_power`'s division and the quantiser's branches |
+
+### Risks
+
+- 2a7ab53's gain rests on the loop vectoriser taking each segment's loop
+  with interleaved loads; the `ldn` floor holds it on AArch64, nothing holds
+  it on x86-64. Its results rest on the segments' boundaries, computed at
+  compile time and checked by the index test and the bit-for-bit stage
+  tests.
+- 6db1324 changes the M33's code only; on a host its form runs only in the
+  group-one tests and the direct test of both forms. The M33 identity runs
+  are its end-to-end evidence.
+- 3ea1327 takes a second pass over a block whose samples' or is past the
+  limit's bits (samples of 2 or more beside smaller ones; audio fed at
+  16-bit scale as `f32`): 4 + 7 instructions a sample on the M33 instead of
+  the fold's 10, and a block out of the limit is classified as before.
+- Code size: the hosts' `.text` +26 KB (x86-64), +11 KB (AArch64).
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instructions only); M33 counts on any slot but
+  s0086 and s0407; any M4F count or identity (sizes and library calls only).
+- 6db1324's host binaries timed (their instructions are 129f934's).
+- The A76 and x86-64 per-function shares after the commits (only stages and
+  the whole program were timed; no PC sampling this round).
+- Sparse and empty slots, off-air recordings; audio out of the limit or at
+  16-bit scale fed as `f32` (the check's second pass) on any target.
+- A placement variation on the A76 (the untouched stages moved by at most
+  0.01 ms, the subtraction 0.065 ms).
+- After a toolchain change: the bounds above.

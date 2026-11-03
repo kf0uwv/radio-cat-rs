@@ -2133,3 +2133,35 @@
   da69ed4 and 831e9a5; "Not measured" lists the clamped forms end to end.
   `in_limit`'s plumbing accepted; a shared within-limit helper with the
   front end's `checked_copy` is a follow-up.
+
+## Session: 2026-11-03 (O26 the feed)
+
+- Ranked the feed's parts from O25's profile (A76 and x86-64 PC samples by
+  loop, M33 per-block counts): the FFT's radix-5 last stage on the hosts
+  (A76 13.1% of a small slot, 6.0% of a crowded host slot; its twiddles
+  gathered lane by lane), and on the M33 the block check (10 instructions a
+  sample), the bins' powers (42 a bin) and the level counts (2 × 6 a bin).
+- 3ea1327: the front end's block check is the subtraction's `within_limit`
+  (moved to the front end; 4 instructions a sample on the M33). 2a7ab53:
+  the FFT's last stage, where vectors are used, as plain loops over k in six
+  segments between the points where a twiddle index wraps (`LAST_BOUNDS`,
+  computed at compile time), which the loop vectoriser takes with
+  interleaved twiddle loads (`ld2`/`ld4`). 129f934: a row's floor and top
+  levels counted in one pass in 16-bit counts. 6db1324: on the
+  `SCALAR_FORMS` side the bins' powers out of line with an indexed loop
+  (hosts unchanged). Each with its tests and code-generation bounds
+  (`checks`, `ldn`, `vec2`, `fploop4` on `bin_powers_apart`; the FFT's
+  multiply floor 230 → 199 for the 31 multiplies that moved out).
+- A76 feed −10.7% small (6.350 → 5.670 ms), −10.8% crowded host (19.100 →
+  17.040); slot −5.5% small (12.8 → 12.1), −2.6% host (80.8 → 78.7). M33
+  s0086 small −1.96%, host −0.75% (s0407 −2.03%, −0.75%); x86-64 user cycles of the whole program
+  −2.52% small, −1.17% host.
+  Static RAM, scratch, slot storage and the M33 stack's high water
+  unchanged; M33 flash +84 B small, +12 B host; hosts' `.text` +26 KB
+  (x86-64), +11 KB (AArch64), the last stage's six loops. Identity (x86-64
+  at each commit, A76 at the head, encoder, M33 at each commit whose
+  thumbv8m sections differ), comparators failing when forced, mutants caught
+  (four equivalent by design), local CI passes; six forced code-generation
+  forms each fail.
+- Tried, not kept: the powers indexed but inlined (38 a bin) or apart but
+  zipped (37); the level counts in 8-bit runs of 255 (unrolled, more code).
