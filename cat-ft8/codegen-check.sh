@@ -16,8 +16,9 @@
 # Checks that the belief-propagation rounds, the subtraction's input
 # clamp and its reference's loads and stores are still vectorised on
 # AArch64, that the clamp keeps its form on the microcontroller targets,
-# that the FFT stays written out butterfly by butterfly on the Cortex-M33,
-# and that the sync search's running sums keep their loop there.
+# that the FFT stays written out butterfly by butterfly on the Cortex-M33
+# and its last stage one vectorised loop on AArch64 and x86-64, and that
+# the sync search's running sums keep their loop there.
 # Their speed depends on code generation that no test sees: the
 # sum-product round's tanh and atanh passes 24 values at a time
 # (`PASS_LANES`), its products over four checks in the lanes of one
@@ -153,12 +154,22 @@
 #   "s": 2 with rustc 1.93.0, the row's first block and the others; 0
 #   with the block's own compare fold, 10 instructions a sample on the
 #   Cortex-M33 against the or pass's 4).
-# - the FFT's last stage (radix 5, one block) on AArch64 as plain loops over
-#   k between the points where a twiddle index wraps (`last_stage`,
-#   findings O26), which the compiler vectorises with each m's twiddles,
-#   m apart in the table, loaded as interleaved vectors: `ld2`-`ld4` in
-#   `finish_row` (`ldn`, a floor of 48: 62 with rustc 1.93.0; 3 with the
-#   butterflies side by side and their twiddles gathered lane by lane).
+# - the FFT's last stage (radix 5, one block) as one plain loop over k
+#   whose twiddle indices run past one turn of the table rather than wrap
+#   (`last_stage`, findings O26 and O26b), which the compiler vectorises
+#   with each m's twiddles, m apart in the table, loaded as interleaved
+#   vectors. On AArch64 `ld2`-`ld4` in `finish_row` (`ldn`, a floor of 12:
+#   12 with rustc 1.93.0, 10 of them the stage's; 2 with the butterflies
+#   side by side and their twiddles gathered lane by lane, 9 with the
+#   index reduced mod N). On x86-64 the shortest loop in `finish_row` with
+#   80 four-lane multiplies (`mulloop80`, a ceiling of 460: 450 with rustc
+#   1.93.0; 699 gathered lane by lane, 629 with the segments between the
+#   wraps taken at run time, none with the index reduced mod N). And
+#   `finish_row`'s instructions (`insns`, a ceiling of 3 000 on AArch64
+#   and 3 500 on x86-64: 2 882 and 3 364 with rustc 1.93.0; with the six
+#   segments between the wraps compiled each as its own loop, O26's form,
+#   5 898 and 7 394; taken at run time 3 703 and 4 296; with the index
+#   reduced mod N 3 140 on AArch64), so that the stage stays one loop.
 # - a row's levels at the floor and at the top counted in one pass in
 #   16-bit counts (`level_counts`, findings O26): two-lane `.2d`
 #   instructions in `finish_row` (`vec2`, a ceiling of 32: 16 with rustc
@@ -176,8 +187,9 @@
 # O17c, O18 and O19), by emulated instruction counts on the Cortex-M33 for
 # the opt-level "s" bounds (findings O20 and O20b).
 #
-# Needs: rustup targets aarch64-unknown-linux-gnu, thumbv8m.main-none-eabihf
-# and thumbv7em-none-eabihf (assembly only; nothing is linked).
+# Needs: rustup targets aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu,
+# thumbv8m.main-none-eabihf and thumbv7em-none-eabihf (assembly only;
+# nothing is linked).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 target_dir="${CARGO_TARGET_DIR:-$here/../target/codegen-check}"
@@ -185,6 +197,7 @@ target_dir="${CARGO_TARGET_DIR:-$here/../target/codegen-check}"
 # for rustc (`-` for none) and an opt-level (`-` for the release
 # profile's).
 builds=("a64 aarch64-unknown-linux-gnu - - -"
+  "x64 x86_64-unknown-linux-gnu - - -"
   "m33 thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm -"
   "m33s thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm s"
   "m4 thumbv7em-none-eabihf --no-default-features - -")
@@ -231,6 +244,10 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # `checks` counts calls of `within_limit`, at least the bound;
 # `ldn` counts `ld2`, `ld3` and `ld4`, at least the bound;
 # `vec2` counts instructions with a two-lane `.2d` operand, at most the bound;
+# `insns` counts the function's instructions, at most the bound;
+# `mulloopN` counts the instructions of the shortest loop with at least N
+# four-lane multiplies (`mulps`; x86-64 only), at most the bound, and a
+# function with no such loop fails it likewise;
 # `absent` passes only if no function's label holds the name (the bound is
 # unused), that is, if it was inlined everywhere; it sees only a type's own
 # methods (`10Correction`), not a trait's (`Clone` for it, say) left out of
@@ -258,7 +275,9 @@ checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "m33s fill_phase_only memsums 0" "m33s 9skip_with memsums 0"
   "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit410add_all_as libcalls 0"
   "a64 within_limit vecor 2" "m33s within_limit shortloop 4" "m33s 7Removal4refs fploop4 21"
-  "a64 4feed checks 2" "m33s 4feed checks 2" "a64 10finish_row ldn 48"
+  "a64 4feed checks 2" "m33s 4feed checks 2"
+  "a64 10finish_row ldn 12" "x64 10finish_row mulloop80 460"
+  "a64 10finish_row insns 3000" "x64 10finish_row insns 3500"
   "a64 10finish_row vec2 32" "m33s bin_powers_apart fploop4 35")
 
 declare -A asm
@@ -293,23 +312,27 @@ for entry in "${checks[@]}"; do
     /^\.Lfunc_end[0-9]+:/ { p = 0; next }
     /^[A-Za-z_][^ \t]*:$/ { p = index($0, f) > 0; if (p) found++; delete at; next }
     !p { next }
-    metric ~ /^(sumloop|fploop|cvtloop|memsums|shortloop)/ && /^\.[A-Za-z0-9_$]+:/ {
+    metric ~ /^(sumloop|fploop|cvtloop|memsums|shortloop|mulloop)/ && /^\.[A-Za-z0-9_$]+:/ {
       sub(/:.*/, ""); at[$0] = k; atb[$0] = bytes; atf[$0] = fps; atc[$0] = cvs
-      atl[$0] = lds; atv[$0] = vs; next
+      atl[$0] = lds; atv[$0] = vs; atm[$0] = muls; next
     }
-    metric ~ /^(sumloop|fploop|cvtloop|memsums|shortloop)/ && /^\t[a-z]/ {
+    metric ~ /^(sumloop|fploop|cvtloop|memsums|shortloop|mulloop)/ && /^\t[a-z]/ {
       k++
       if ($1 ~ /^ldrb/) bytes++
       if ($1 ~ /^v(mla|mls|add|sub)\.f32$/) fps++
       if ($1 ~ /^(scvtf|vcvt\.f32\.s32)$/) cvs++
       if ($1 ~ /^ldr/) lds++
       if ($1 ~ /^v/) vs++
-      back = $1 ~ /^(b[a-z]*(\.[nw])?|b\.[a-z]+|cbn?z|tbn?z)$/ && ($NF in at)
+      if ($1 == "mulps") muls++
+      # A back branch: AArch64 and Thumb, or x86-64 (`j` and a condition).
+      back = $1 ~ /^(b[a-z]*(\.[nw])?|b\.[a-z]+|cbn?z|tbn?z|j[a-z]+)$/ && ($NF in at)
       if (back && metric ~ /^sumloop/ && bytes - atb[$NF] == substr(metric, 8) + 0 &&
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
       if (back && metric ~ /^fploop/ && fps - atf[$NF] >= substr(metric, 7) + 0 &&
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
       if (back && metric ~ /^cvtloop/ && cvs - atc[$NF] >= substr(metric, 8) + 0 &&
+          (best == "" || k - at[$NF] < best)) best = k - at[$NF]
+      if (back && metric ~ /^mulloop/ && muls - atm[$NF] >= substr(metric, 8) + 0 &&
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
       if (back && metric == "memsums" && lds > atl[$NF] && vs == atv[$NF]) n++
       if (back && metric == "shortloop" && (best == "" || k - at[$NF] < best)) best = k - at[$NF]
@@ -330,12 +353,13 @@ for entry in "${checks[@]}"; do
     metric == "eors" && /^\teor\t/ { n++ }
     metric == "vecor" && /^\torr\tv[0-9]+\./ { n++ }
     metric == "checks" && /^\tbl\t.*within_limit/ { n++ }
+    metric == "insns" && /^\t[a-z]/ { n++ }
     metric == "ldn" && /^\tld[234]\t/ { n++ }
     metric == "vec2" && /^\t[a-z][^\t]*\t.*\.2d/ { n++ }
     END {
       if (!found) print "missing"
       else if (only == "one" && found > 1) print "many"
-      else if (metric ~ /^(sumloop|fploop|cvtloop|shortloop)/) print (best == "" ? "noloop" : best)
+      else if (metric ~ /^(sumloop|fploop|cvtloop|shortloop|mulloop)/) print (best == "" ? "noloop" : best)
       else print n + 0
     }' "${asm[$key]}")
   if [ "$metric" = absent ]; then
@@ -361,6 +385,7 @@ for entry in "${checks[@]}"; do
     case "$metric" in
       sumloop*) echo "FAIL $key $name: no loop with ${metric#sumloop} byte loads (moved or unrolled?)" ;;
       cvtloop*) echo "FAIL $key $name: no loop with ${metric#cvtloop} conversions (moved or unrolled?)" ;;
+      mulloop*) echo "FAIL $key $name: no loop with ${metric#mulloop} four-lane multiplies (not vectorised?)" ;;
       shortloop) echo "FAIL $key $name: no loop" ;;
       *) echo "FAIL $key $name: no loop with ${metric#fploop} f32 adds (moved or unrolled?)" ;;
     esac
@@ -389,6 +414,8 @@ for entry in "${checks[@]}"; do
     shortloop) what="instructions in the shortest loop (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     vecor) what="vector ors (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     checks) what="calls of within_limit (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
+    insns) what="instructions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    mulloop*) what="instructions in the loop of ${metric#mulloop} four-lane multiplies (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     ldn) what="interleaving loads (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     vec2) what="two-lane .2d instructions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     *) what="unknown metric $metric"; ok=0 ;;

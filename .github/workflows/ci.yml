@@ -205,8 +205,9 @@ jobs:
           # After a toolchain change, re-check the decoder's vectorised
           # code: cat-ft8/codegen-check.sh, and the A76 timings it names.
           toolchain: "1.93"
-          # For cat-ft8/codegen-check.sh's microcontroller assembly.
-          targets: thumbv8m.main-none-eabihf, thumbv7em-none-eabihf
+          # For cat-ft8/codegen-check.sh's x86-64 and microcontroller
+          # assembly.
+          targets: x86_64-unknown-linux-gnu, thumbv8m.main-none-eabihf, thumbv7em-none-eabihf
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
@@ -226,7 +227,7 @@ jobs:
       - name: cargo test (cat-ft8, no std)
         run: cargo test -p cat-ft8 --no-default-features
 
-      - name: cat-ft8 code generation (AArch64, thumbv8m and thumbv7em assembly)
+      - name: cat-ft8 code generation (AArch64, x86-64, thumbv8m and thumbv7em assembly)
         run: cat-ft8/codegen-check.sh
 
   windows-check:

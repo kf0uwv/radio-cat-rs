@@ -25,9 +25,9 @@
 //!   blocks) and applies the window as it loads them; the later stages
 //!   work in place. With vectors ([`LANES`] above one), independent
 //!   butterflies run side by side so that vector units take them together
-//!   (the last stage, whose twiddles are strided, as plain loops the
-//!   compiler vectorises); with one lane, each butterfly is written out
-//!   term by term. Each
+//!   (the last stage, whose twiddles are strided, as a plain loop the
+//!   compiler vectorises, over a table that runs past one turn); with one
+//!   lane, each butterfly is written out term by term. Each
 //!   butterfly keeps its own operations in the same order, so the result
 //!   does not depend on the group size, the lane count or the target.
 //! - **Real split.** The 3 840 real samples are packed as 1 920 complex
@@ -37,10 +37,11 @@
 //!   bin reads 1.0 (0 dB): the Hann window's coherent gain is 1 920 / 2.
 //!
 //! The twiddle, real-split and window tables are static data generated
-//! with `libm` and checked bit-for-bit by a test (`tables.rs`).
+//! with `libm` and checked bit-for-bit by a test (`tables.rs`; the twiddles
+//! as one turn, which [`TWIDDLES`] repeats).
 
 use super::math::SCALAR_FORMS;
-use super::tables::{HANN_HALF, SPLIT_TWIDDLES, TWIDDLES};
+use super::tables::{HANN_HALF, SPLIT_TWIDDLES, TWIDDLE_TURN};
 
 /// Samples in one analysis window (two symbols at 12 kHz).
 pub(crate) const WINDOW: usize = 3840;
@@ -287,7 +288,7 @@ fn later_stages<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
 }
 
 /// The stages after the first through [`stage`], `L` butterflies at a
-/// time.
+/// time, and the last through [`last_stage`].
 #[inline(always)]
 fn side_by_side_stages<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
     let () = Lanes::<L>::OK;
@@ -295,11 +296,12 @@ fn side_by_side_stages<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
     stage::<4, L, 16>(re, im);
     stage::<2, L, 64>(re, im);
     stage::<3, L, 128>(re, im);
-    stage::<5, L, 384>(re, im);
+    last_stage(re, im);
 }
 
 const _: () = {
-    let calls = [(4, 1), (4, 4), (4, 16), (2, 64), (3, 128), (5, 384)];
+    // The last is `last_stage`'s (`LAST_R`, `LAST_L`).
+    let calls = [(4, 1), (4, 4), (4, 16), (2, 64), (3, 128), (LAST_R, LAST_L)];
     let mut l = 1;
     let mut i = 0;
     while i < STAGES.len() {
@@ -318,8 +320,8 @@ const _: () = {
 /// tell.) The `L` butterflies of adjacent `k` run side by side.
 ///
 /// The twiddles depend only on `k`. With several blocks they are read once
-/// per group of `k` and reused. The last stage has one block, so each is
-/// read where it is used, and it runs as [`last_stage`] instead.
+/// per group of `k` and reused. (The last stage, which has one block, runs
+/// as [`last_stage`] where vectors are taken.)
 ///
 /// **Precondition: finite input.** Skipping the product equals computing it
 /// only for finite values: with an infinite component the product's
@@ -335,10 +337,6 @@ fn stage<const R: usize, const L: usize, const S: usize>(re: &mut [f32; N], im: 
     let l = S;
     let span = l * R;
     let step = N / span; // W_span^x = W_N^(x · step)
-    if span == N {
-        last_stage(re, im);
-        return;
-    }
     let mut k0 = 0;
     while k0 < l {
         // Row m = 0 is filled too, though unused: with every entry
@@ -426,86 +424,48 @@ fn butterflies<const R: usize, const L: usize, const S: usize>(
 const LAST_R: usize = STAGES[STAGES.len() - 1];
 const LAST_L: usize = N / LAST_R;
 
-/// The last stage's twiddle of (m, q) at k is W_N^(m·(k + q·`LAST_L`)),
-/// whose index m·k + `LAST_L`·(m·q mod `LAST_R`) is below 2N: it is the
-/// table's when below N and N less otherwise. Over k in `0..LAST_L` that
-/// changes where m·k reaches N − `LAST_L`·r for some m and r < `LAST_R`;
-/// these are the boundaries between which no index changes side, so that
-/// within a segment each one is m·k plus a constant. Computed at compile
-/// time: the ascending boundaries, `LAST_SEGMENTS` + 1 of them, from 0 to
-/// `LAST_L`.
-const LAST_BOUNDS: [usize; LAST_SEGMENTS + 1] = {
-    let mut b = [0usize; LAST_SEGMENTS + 1];
-    let mut n = 1;
-    let mut at = 1;
-    while at < LAST_L {
-        let mut edge = false;
-        let mut m = 1;
-        while m < LAST_R {
-            let mut r = 1;
-            while r < LAST_R {
-                // The first k with m·k + LAST_L·r ≥ N.
-                let first = (N - LAST_L * r).div_ceil(m);
-                edge |= first == at;
-                r += 1;
-            }
-            m += 1;
-        }
-        if edge {
-            assert!(n < LAST_SEGMENTS, "more boundaries than LAST_SEGMENTS");
-            b[n] = at;
-            n += 1;
-        }
-        at += 1;
-    }
-    assert!(n == LAST_SEGMENTS, "fewer boundaries than LAST_SEGMENTS");
-    b[n] = LAST_L;
-    b
-};
-/// The last stage's segments ([`LAST_BOUNDS`]); [`last_stage`] runs one
-/// call per segment.
-const LAST_SEGMENTS: usize = 6;
+/// One past the last stage's largest twiddle index ([`last_stage`]),
+/// m·k + `LAST_L`·(m·q mod `LAST_R`) at m = `LAST_R` − 1, k = `LAST_L` − 1
+/// and m·q mod `LAST_R` = `LAST_R` − 1: 3 069.
+const LAST_TWIDDLES: usize = (LAST_R - 1) * (LAST_L - 1) + LAST_L * (LAST_R - 1) + 1;
 
-/// Index into `TWIDDLES` of the last stage's (m, q) at k for k in the
-/// segment that starts at `lo`: m·(k + q·`LAST_L`) mod N, as m·k plus a
-/// constant ([`LAST_BOUNDS`]).
-#[inline(always)]
-fn last_twiddle_index(m: usize, q: usize, k: usize, lo: usize) -> usize {
-    let c = LAST_L * ((m * q) % LAST_R);
-    let wrap = if m * lo + c >= N { N } else { 0 };
-    m * k + c - wrap
-}
+/// Entries of [`TWIDDLES`]: one turn, `N`, where one lane is taken (a
+/// Cortex-M runs [`straight_stages`]); where vectors are, as far as
+/// [`last_stage`] reads, [`LAST_TWIDDLES`].
+const TWIDDLE_ENTRIES: usize = if LANES > 1 { LAST_TWIDDLES } else { N };
+
+/// The twiddles W_N^t = e^(−2πit/N) as [cos, −sin], t = 0..[`TWIDDLE_ENTRIES`]:
+/// `TWIDDLE_TURN` (one turn, generated) and past N its entries again, so
+/// that [`last_stage`] reads its index without reducing it mod N. Every
+/// other reader takes its index mod N.
+static TWIDDLES: [[f32; 2]; TWIDDLE_ENTRIES] = {
+    let mut table = [[0.0f32; 2]; TWIDDLE_ENTRIES];
+    let mut t = 0;
+    while t < TWIDDLE_ENTRIES {
+        table[t] = TWIDDLE_TURN[t % N];
+        t += 1;
+    }
+    table
+};
 
 /// The last stage (radix 5, `l` = 384, one block) where vectors are taken:
-/// one butterfly per k, each with its own operations in [`stage`]'s order
-/// ([`radix_sums`] with one lane), in a plain loop over k for each segment
-/// ([`LAST_BOUNDS`]), so that within a segment each twiddle index is m·k
-/// plus a constant. The compiler vectorises those loops across adjacent k
-/// and loads each m's twiddles, m apart in the table, as interleaved
-/// vectors (`ld2` and `ld4` on AArch64) rather than lane by lane (rustc
-/// 1.93.0): findings O26. The result is that of `stage` with any lane
-/// count, and of [`last_straight_stage`], bit for bit.
+/// one butterfly per k in a plain loop, each with its own operations in
+/// [`stage`]'s order ([`radix_sums`] with one lane). The twiddle of (m, q)
+/// at k, W_N^(m·(k + q·`LAST_L`)), is read at m·k + `LAST_L`·(m·q mod
+/// `LAST_R`), below [`LAST_TWIDDLES`] and not reduced mod N: [`TWIDDLES`]
+/// runs that far. Each index is m·k plus a constant, so the compiler
+/// vectorises the loop across adjacent k and loads each m's twiddles, m
+/// apart in the table, as interleaved vectors (`ld2` and `ld4` on AArch64)
+/// rather than lane by lane (rustc 1.93.0): findings O26 and O26b. The
+/// result is that of `stage` with any lane count, and of
+/// [`last_straight_stage`], bit for bit.
 #[inline(always)]
 fn last_stage(re: &mut [f32; N], im: &mut [f32; N]) {
-    last_segment::<0>(re, im);
-    last_segment::<1>(re, im);
-    last_segment::<2>(re, im);
-    last_segment::<3>(re, im);
-    last_segment::<4>(re, im);
-    last_segment::<5>(re, im);
-}
-
-const _: () = assert!(LAST_SEGMENTS == 6, "last_stage calls six segments");
-
-/// [`last_stage`] over the k of segment `SEG`.
-#[inline(always)]
-fn last_segment<const SEG: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
-    let (lo, hi) = (LAST_BOUNDS[SEG], LAST_BOUNDS[SEG + 1]);
-    for k in lo..hi {
+    for k in 0..LAST_L {
         let ar: [[f32; 1]; LAST_R] = core::array::from_fn(|m| [re[k + m * LAST_L]]);
         let ai: [[f32; 1]; LAST_R] = core::array::from_fn(|m| [im[k + m * LAST_L]]);
         radix_sums!(LAST_R, 1, ar, ai, (m, q) => {
-            let [wr, wi] = TWIDDLES[last_twiddle_index(m, q, k, lo)];
+            let [wr, wi] = TWIDDLES[m * k + LAST_L * ((m * q) % LAST_R)];
             ([wr], [wi])
         }, (sr, si) => {
             re[k + q * LAST_L] = sr[0];
@@ -949,7 +909,7 @@ fn bin_powers_as<const INDEXED: bool>(re: &[f32; N], im: &[f32; N], k0: usize, o
 
 /// Bytes of the static tables this module uses (twiddles, real-split
 /// twiddles, half window, digit-reversal permutation).
-pub const TABLE_BYTES: usize = core::mem::size_of::<[[f32; 2]; N]>()
+pub const TABLE_BYTES: usize = core::mem::size_of::<[[f32; 2]; TWIDDLE_ENTRIES]>()
     + core::mem::size_of::<[[f32; 2]; 961]>()
     + core::mem::size_of::<[f32; WINDOW / 2 + 1]>()
     + core::mem::size_of::<[u16; N]>();
