@@ -47,7 +47,10 @@
 #   the groups scalar, 14 with rustc 1.93.0, while the one-unit build
 #   counted 156 and passed; with each row's inputs taken in place and the
 #   variables' indices taken no further than the last, 162 (a floor of
-#   100);
+#   100). The sum-product round's inputs, eight edges a block, likewise
+#   without a branch (findings O27): its shortest loop with eight byte
+#   loads (`sumloop8`, a ceiling of 50: 48 with rustc 1.93.0, and 46 as
+#   a release build compiles it; 63 and 61 with the indices checked);
 # - single-lane moves in sum_product_round, a ceiling: 15 with rustc
 #   1.93; 46 with the group products written in place row by row, 38
 #   with the products check by check;
@@ -281,6 +284,7 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 min_sum_round vec4 100" "a64r min_sum_round vec4 100"
   "a64 6blocks add2d 8" "a64r 6blocks add2d 4"
+  "a64 sum_product_round sumloop8 50" "a64r sum_product_round sumloop8 50"
   "a64 7Removal4refs minmax 2" "a64 correlation_whole minmax 2"
   "a64 7Removal4refs selects 2"
   "a64 7Removal4refs interleaved 0" "a64 4Fit410add_all_as interleaved 0"

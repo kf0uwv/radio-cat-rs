@@ -448,7 +448,12 @@ const INPUT_BLOCK: usize = if cfg!(target_arch = "aarch64") { 8 } else { 1 };
 /// one, the round has the plain loop instead. `INPUT_BLOCK` is not a
 /// parameter of the round, so the round with blocked inputs is tested
 /// only where it is built, on AArch64; elsewhere the tests compare
-/// `inputs` itself at several block sizes with the plain loop.
+/// `inputs` itself at several block sizes with the plain loop. In a
+/// block a variable's index is taken no further than the last variable,
+/// which every index already is: a select rather than a bounds-check
+/// branch per edge, and the block's subtractions as two four-lane ones
+/// (46 instructions a block of eight on AArch64, 61 with the branches;
+/// findings O27).
 #[inline(always)]
 fn inputs<const U: usize>(total: &[f32; N], msg: &mut [f32; EDGES], edge_vars: &[u8; EDGES]) {
     let mut blocks = msg.chunks_exact_mut(U);
@@ -457,7 +462,7 @@ fn inputs<const U: usize>(total: &[f32; N], msg: &mut [f32; EDGES], edge_vars: &
         let block: &mut [f32; U] = block.try_into().unwrap();
         let v: &[u8; U] = v.try_into().unwrap();
         for k in 0..U {
-            block[k] = total[usize::from(v[k])] - block[k];
+            block[k] = total[usize::from(v[k]).min(N - 1)] - block[k];
         }
     }
     for (m, &i) in blocks.into_remainder().iter_mut().zip(vars.remainder()) {
