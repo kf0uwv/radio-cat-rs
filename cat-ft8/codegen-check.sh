@@ -16,8 +16,8 @@
 # Checks that the belief-propagation rounds, the subtraction's input
 # clamp and its reference's loads and stores are still vectorised on
 # AArch64, that the clamp keeps its form on the microcontroller targets,
-# and that the FFT stays written out butterfly by butterfly on the
-# Cortex-M33. Their speed depends on code generation that no test sees: the
+# that the FFT stays written out butterfly by butterfly on the Cortex-M33,
+# and that the sync search's summing loop keeps its registers there. Their speed depends on code generation that no test sees: the
 # sum-product round's tanh and atanh passes 24 values at a time
 # (`PASS_LANES`), its products over four checks in the lanes of one
 # vector (`group_products`), min-sum likewise (`group_min_sum`), the
@@ -116,8 +116,13 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # bound; `fpmul` counts `vmul`, `vmla` and `vmls` on `f32`, at least the
 # bound; `divides` counts `umull` and `udiv`, at most the bound;
 # `zerofills` counts calls of `__aeabi_memclr4`, `__aeabi_memclr` and
-# `memset`, at most the bound. A function whose label is not
-# found, or an unknown metric, fails.
+# `memset`, at most the bound; `sumloop` counts the instructions of the
+# shortest loop with nine byte loads, the eight tones' levels and the
+# expected tone's, at most the bound, and a function with no such loop fails
+# it. The sum's speed depends on what else is live around that loop, so it
+# fails if the rows are passed to `costas_scores` by value or `Rows::row` is
+# inlined into it (findings O21). A function whose label is not found, or an
+# unknown metric, fails.
 checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 min_sum_round vec4 100"
   "a64 7Removal4refs minmax 2" "a64 symbol_correlations minmax 2"
@@ -127,6 +132,7 @@ checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 6blocks shuffles 12" "a64 6blocks vec4 400"
   "m33 7Removal4refs vminmax 8"
   "m33s 10finish_row fpmul 230" "m33s 10finish_row divides 0" "m33s 10finish_row zerofills 1"
+  "m33s 6select sumloop 26"
   "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit47add_all libcalls 0")
 
 declare -A asm
@@ -156,8 +162,17 @@ for entry in "${checks[@]}"; do
   case "$name" in [0-9]*) seg=$name ;; *) seg="${#name}$name" ;; esac
   # Prints the count, or "missing" if no function's label holds `seg`.
   n=$(awk -v f="$seg" -v metric="$metric" '
-    /^_ZN.*:$/ { p = index($0, f) > 0; if (p) found = 1; next }
+    /^_ZN.*:$/ { p = index($0, f) > 0; if (p) found = 1; delete at; next }
     !p { next }
+    metric == "sumloop" && /^\.[A-Za-z0-9_$]+:/ {
+      sub(/:.*/, ""); at[$0] = k; atb[$0] = bytes; next
+    }
+    metric == "sumloop" && /^\t[a-z]/ {
+      k++
+      if ($1 ~ /^ldrb/) bytes++
+      if ($1 ~ /^(b[a-z]*(\.[nw])?|cbn?z)$/ && ($NF in at) && bytes - atb[$NF] == 9 &&
+          (best == "" || k - at[$NF] < best)) best = k - at[$NF]
+    }
     metric == "vec4" && /^\t[a-z][^\t]*\t.*\.4s/ { n++ }
     metric == "lanes" && /^\t(mov|ins|dup|ld1|st1)\t.*\.s\[/ { n++ }
     metric == "minmax" && /^\t(fmaxnm|fminnm)\t.*\.4s/ { n++ }
@@ -169,7 +184,11 @@ for entry in "${checks[@]}"; do
     metric == "fpmul" && /^\tv(mul|mla|mls)\.f32\t/ { n++ }
     metric == "divides" && /^\t(umull|udiv)\t/ { n++ }
     metric == "zerofills" && /^\tbl\t(__aeabi_memclr4|__aeabi_memclr|memset)$/ { n++ }
-    END { if (found) print n + 0; else print "missing" }' "${asm[$key]}")
+    END {
+      if (!found) print "missing"
+      else if (metric == "sumloop") print (best == "" ? 9999 : best)
+      else print n + 0
+    }' "${asm[$key]}")
   if [ "$n" = missing ]; then
     echo "FAIL $key $name: function not found"
     fail=1
@@ -187,6 +206,7 @@ for entry in "${checks[@]}"; do
     fpmul) what="f32 multiplies (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     divides) what="divisions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     zerofills) what="zero-fill calls (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    sumloop) what="instructions in the summing loop (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     *) what="unknown metric $metric"; ok=0 ;;
   esac
   if [ $ok = 1 ]; then
