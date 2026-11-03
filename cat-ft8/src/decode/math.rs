@@ -266,26 +266,38 @@ const C0: f32 = 0.999_990_05;
 const C2: f32 = -19.727_69;
 const C4: f32 = 62.962_955;
 
-/// `(cos, sin)` of `2π · phase / 2³²`, by polynomial: the phase is reduced
-/// in integer arithmetic to the nearest quarter turn k and a remainder of
-/// at most ⅛ turn, both polynomials are taken on the remainder, and k
-/// swaps them and sets the signs without a branch (on the targets
-/// measured), so a loop over samples vectorises. Not the waveform's table
-/// ([`sin_turns`](crate::waveform::sin_turns)): the encoder keeps that.
+/// `(w · cos, w · sin)` of `2π · phase / 2³²`, by polynomial: the phase is
+/// reduced in integer arithmetic to the nearest quarter turn k and a
+/// remainder of at most ⅛ turn, both polynomials are taken on the
+/// remainder, and k swaps them and sets the signs without a branch (on the
+/// targets measured), so a loop over samples vectorises. Not the waveform's
+/// table ([`sin_turns`](crate::waveform::sin_turns)): the encoder keeps
+/// that.
 #[inline(always)]
-pub(crate) fn cos_sin_turns(phase: u32) -> (f32, f32) {
-    cos_sin_turns_as::<VECTOR>(phase)
+pub(crate) fn cos_sin_turns_times(phase: u32, w: f32) -> (f32, f32) {
+    cos_sin_turns_times_as::<VECTOR>(phase, w)
 }
 
-/// [`cos_sin_turns`] with the quarter's swap and signs by bit operations
-/// (`BITS`: where the target has a vector unit, so a loop over samples
-/// vectorises) or by `f32` selects and negations (elsewhere: on the
-/// Cortex-M33 they stay in floating-point registers, `vsel` and `vneg`,
-/// where the bit operations take the parts to integer registers and back).
-/// Negation flips only the sign bit, as the bit operations' exclusive or
-/// does, so both give the same bits.
+/// `(cos, sin)` of `2π · phase / 2³²`: [`cos_sin_turns_times`] with the
+/// weight 1.0, which leaves each part as it is.
+#[cfg(test)]
+pub(crate) fn cos_sin_turns(phase: u32) -> (f32, f32) {
+    cos_sin_turns_times(phase, 1.0)
+}
+
+/// [`cos_sin_turns_times`] with the quarter's swap and signs by bit
+/// operations before the weight (`BITS`: where the target has a vector
+/// unit, so a loop over samples vectorises), or else the swap by `f32`
+/// selects and the half turn's sign by an exclusive or after the weight.
+/// On the Cortex-M33 the selects stay in floating-point registers (`vsel`,
+/// `vnmul`), and the exclusive or is taken in the integer registers the
+/// parts go to for their stores; bit operations for the swap would take
+/// both parts there and back. Negation flips only the sign bit, and
+/// w · (−x) = −(w · x) bit for bit (the product's sign is the exclusive or
+/// of the factors', its magnitude rounds the same), so both forms give the
+/// same bits for any weight that is not a NaN.
 #[inline(always)]
-pub(crate) fn cos_sin_turns_as<const BITS: bool>(phase: u32) -> (f32, f32) {
+pub(crate) fn cos_sin_turns_times_as<const BITS: bool>(phase: u32, w: f32) -> (f32, f32) {
     let u = phase.wrapping_add(1 << 29);
     // The remainder r in [−2²⁹, 2²⁹) is the phase's low 30 bits read as
     // signed, so 4r is `phase << 2` read as signed: one shift. One
@@ -298,20 +310,17 @@ pub(crate) fn cos_sin_turns_as<const BITS: bool>(phase: u32) -> (f32, f32) {
     // Quarter k: (cos, sin) = (c, s), (−s, c), (−c, −s), (s, −c): an odd
     // k swaps the parts and negates the sine's, then k ≥ 2 (`u`'s top bit)
     // negates both.
+    let half = u & 0x8000_0000;
     if BITS {
         let swap = 0u32.wrapping_sub((u >> 30) & 1);
-        let half = u & 0x8000_0000;
         let (sb, nb, cb) = (s.to_bits(), (-s).to_bits(), c.to_bits());
         let sin = ((cb & swap) | (sb & !swap)) ^ half;
         let cos = ((nb & swap) | (cb & !swap)) ^ half;
-        (f32::from_bits(cos), f32::from_bits(sin))
+        (w * f32::from_bits(cos), w * f32::from_bits(sin))
     } else {
         let (cos, sin) = if u & (1 << 30) != 0 { (-s, c) } else { (c, s) };
-        if (u as i32) < 0 {
-            (-cos, -sin)
-        } else {
-            (cos, sin)
-        }
+        let turn = |x: f32| f32::from_bits(x.to_bits() ^ half);
+        (turn(w * cos), turn(w * sin))
     }
 }
 
@@ -482,17 +491,21 @@ mod tests {
         (f32::from_bits(cos), f32::from_bits(sin))
     }
 
-    /// Phases where both forms of [`cos_sin_turns`] and its first form are
-    /// compared: every `stride`-th, and each quarter turn's neighbours and
+    /// Phases where both forms of [`cos_sin_turns_times`] (weight 1.0) and
+    /// [`cos_sin_turns`]' first form are compared: every `stride`-th, and each quarter turn's neighbours and
     /// the ends of its reduced range. Returns how many.
     fn cos_sin_turns_is_its_first_form(stride: usize) -> u64 {
         let bits = |(c, s): (f32, f32)| (c.to_bits(), s.to_bits());
         let mut n = 0u64;
         let mut check = |p: u32| {
             let want = bits(cos_sin_turns_first(p));
-            assert_eq!(bits(cos_sin_turns_as::<true>(p)), want, "bits, {p:#010x}");
             assert_eq!(
-                bits(cos_sin_turns_as::<false>(p)),
+                bits(cos_sin_turns_times_as::<true>(p, 1.0)),
+                want,
+                "bits, {p:#010x}"
+            );
+            assert_eq!(
+                bits(cos_sin_turns_times_as::<false>(p, 1.0)),
                 want,
                 "selects, {p:#010x}"
             );
@@ -508,6 +521,64 @@ mod tests {
             }
         }
         n
+    }
+
+    /// Both forms of [`cos_sin_turns_times`] give the first form's parts
+    /// times the weight, bit for bit, for weights of either sign, zeros,
+    /// subnormals and the largest finite ones (in the decoder, the envelope
+    /// and the clamped input: finite).
+    #[test]
+    fn cos_sin_turns_times_is_the_weight_times_the_parts() {
+        let bits = |(c, s): (f32, f32)| (c.to_bits(), s.to_bits());
+        let mut weights = [0.0f32; 64];
+        weights[..11].copy_from_slice(&[
+            1.0,
+            0.0,
+            -0.0,
+            0.5,
+            -2.5,
+            1.0e-30,
+            -f32::MIN_POSITIVE / 3.0,
+            f32::from_bits(1),
+            1.0e30,
+            -f32::MAX,
+            f32::MAX,
+        ]);
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let mut k = 11;
+        while k < weights.len() {
+            let w = f32::from_bits(next() as u32);
+            if w.is_finite() {
+                weights[k] = w;
+                k += 1;
+            }
+        }
+        let mut quarters = [0u32; 4];
+        for _ in 0..20_000 {
+            let p = next() as u32;
+            quarters[(p.wrapping_add(1 << 29) >> 30) as usize] += 1;
+            let (c, s) = cos_sin_turns_first(p);
+            for &w in &weights {
+                let want = bits((w * c, w * s));
+                assert_eq!(
+                    bits(cos_sin_turns_times_as::<true>(p, w)),
+                    want,
+                    "bits, {p:#010x} {w:e}"
+                );
+                assert_eq!(
+                    bits(cos_sin_turns_times_as::<false>(p, w)),
+                    want,
+                    "selects, {p:#010x} {w:e}"
+                );
+            }
+        }
+        assert!(quarters.iter().all(|&n| n > 4_000), "{quarters:?}");
     }
 
     #[test]

@@ -18,6 +18,7 @@ use std::vec::Vec;
 
 use super::*;
 use crate::decode::frontend::INPUT_LIMIT;
+use crate::decode::math::cos_sin_turns;
 use crate::decode::testutil::{
     add_noise, add_signal, amplitude_for, empty_slot, symbols_of, Noise,
 };

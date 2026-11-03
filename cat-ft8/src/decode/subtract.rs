@@ -83,7 +83,7 @@
 
 use super::decoder::Decode;
 use super::frontend::INPUT_LIMIT;
-use super::math::{atan2_turns, cos_sin_turns, log2_power, phase_of_ratio, LANES, VECTOR};
+use super::math::{atan2_turns, cos_sin_turns_times, log2_power, phase_of_ratio, LANES, VECTOR};
 use crate::waveform::{cos_turns, sin_turns, Placement, Synth, RAMP_SAMPLES, TRANSITION};
 use crate::{
     encode_payload, Error, SAMPLES_PER_SYMBOL, SAMPLE_RATE, SYMBOL_COUNT, WAVEFORM_SAMPLES,
@@ -1321,7 +1321,7 @@ const CHAINS: usize = if VECTOR { 16 } else { 1 };
 const _: () = assert!(CHAINS % GROUP == 0);
 
 /// For each sample, `weight(x)` times the cosine and sine of its phase
-/// (`cos_sin_turns`), stored in `out` from slot `k0` on by [`put`], over
+/// (`cos_sin_turns_times`), stored in `out` from slot `k0` on by [`put`], over
 /// the shorter of `phase` and `xs`: single samples up to a whole group,
 /// then `W` samples at a time (whole groups), then the rest one by one.
 /// With `W` 1 this is the plain loop.
@@ -1336,8 +1336,8 @@ fn scaled_cos_sin<const W: usize, X: Copy>(
     let n = phase.len().min(xs.len());
     let one = |out: &mut [u8], i: usize| {
         let w = weight(xs[i]);
-        let (c, s) = cos_sin_turns(phase[i]);
-        put(out, k0 + i, (w * c, w * s));
+        let cs = cos_sin_turns_times(phase[i], w);
+        put(out, k0 + i, cs);
     };
     // Up to the first whole group (none when `W` is 1).
     let head = if W > 1 {
@@ -1367,8 +1367,7 @@ fn scaled_cos_sin<const W: usize, X: Copy>(
             let (mut vc, mut vs) = ([0.0f32; W], [0.0f32; W]);
             for (((vc, vs), &q), &x) in vc.iter_mut().zip(&mut vs).zip(q).zip(x) {
                 let w = weight(x);
-                let (c, s) = cos_sin_turns(q);
-                (*vc, *vs) = (w * c, w * s);
+                (*vc, *vs) = cos_sin_turns_times(q, w);
             }
             for ((d, c), s) in d
                 .chunks_exact_mut(GROUP * PAIR)
@@ -1395,8 +1394,7 @@ fn scaled_cos_sin<const W: usize, X: Copy>(
             .zip(&xs[head + whole..n]);
         for ((d, &q), &x) in rest {
             let w = weight(x);
-            let (c, s) = cos_sin_turns(q);
-            put(d, 0, (w * c, w * s));
+            put(d, 0, cos_sin_turns_times(q, w));
         }
     } else {
         for i in head + whole..n {
