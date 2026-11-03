@@ -262,7 +262,6 @@ fn fft<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
 /// those of [`stage`]. (The decoder chooses in [`spectrum_lanes`].)
 #[cfg(test)]
 fn later_stages<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
-    let () = Lanes::<L>::OK;
     if L == 1 {
         straight_stages(re, im);
         return;
