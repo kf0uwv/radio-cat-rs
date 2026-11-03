@@ -346,8 +346,9 @@ fn cos_sin_turns_times_as<const VECTOR_FORM: bool>(phase: u32, w: f32) -> (f32, 
     }
 }
 
-/// [`cos_sin_turns_times`] with the half turn's sign taken on the weight
-/// before the products, one sign for both parts: for products that are
+/// [`cos_sin_turns_times`] with the half turn's sign applied to the weight
+/// (the weight is signed, not the parts), before the products, one sign
+/// for both parts: for products that are
 /// summed, not stored (the time search's). (−w) · x = −(w · x) bit for bit
 /// for finite w and x (the product's sign is the exclusive or of the
 /// factors', its magnitude rounds the same), so the parts are those of
@@ -357,7 +358,10 @@ fn cos_sin_turns_times_as<const VECTOR_FORM: bool>(phase: u32, w: f32) -> (f32, 
 /// negated weight (`vneg` and `vsel` on the Cortex-M33, where the parts
 /// then stay in floating-point registers).
 #[inline(always)]
-pub(crate) fn cos_sin_turns_signed_as<const VECTOR_FORM: bool>(phase: u32, w: f32) -> (f32, f32) {
+pub(crate) fn cos_sin_turns_weight_signed_as<const VECTOR_FORM: bool>(
+    phase: u32,
+    w: f32,
+) -> (f32, f32) {
     let (u, c, s) = reduced(phase);
     let half = u & 0x8000_0000;
     if VECTOR_FORM {
@@ -575,7 +579,7 @@ mod tests {
     }
 
     /// Both forms of [`cos_sin_turns_times`], and both of
-    /// [`cos_sin_turns_signed_as`] (the half turn's sign on the weight),
+    /// [`cos_sin_turns_weight_signed_as`] (the half turn's sign on the weight),
     /// give the first form's parts times the weight, bit for bit, at the
     /// quarter turns' edges and 20 000 random phases, for weights of either
     /// sign, zeros, subnormals and the largest finite ones (in the decoder,
@@ -627,12 +631,12 @@ mod tests {
                     "selects, {p:#010x} {w:e}"
                 );
                 assert_eq!(
-                    bits(cos_sin_turns_signed_as::<true>(p, w)),
+                    bits(cos_sin_turns_weight_signed_as::<true>(p, w)),
                     want,
                     "signed, bits, {p:#010x} {w:e}"
                 );
                 assert_eq!(
-                    bits(cos_sin_turns_signed_as::<false>(p, w)),
+                    bits(cos_sin_turns_weight_signed_as::<false>(p, w)),
                     want,
                     "signed, selects, {p:#010x} {w:e}"
                 );

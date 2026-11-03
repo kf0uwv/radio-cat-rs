@@ -84,8 +84,8 @@
 use super::decoder::Decode;
 use super::frontend::INPUT_LIMIT;
 use super::math::{
-    atan2_turns, cos_sin_turns_signed_as, cos_sin_turns_times, log2_power, phase_of_ratio, LANES,
-    SCALAR_FORMS, VECTOR,
+    atan2_turns, cos_sin_turns_times, cos_sin_turns_weight_signed_as, log2_power, phase_of_ratio,
+    LANES, SCALAR_FORMS, VECTOR,
 };
 use crate::waveform::{cos_turns, sin_turns, Placement, Synth, RAMP_SAMPLES, TRANSITION};
 use crate::{
@@ -614,7 +614,7 @@ fn add_lane(acc: &mut [f32; LANES], i: usize, v: f32) {
 /// 0.0 in sample order, the lanes then added in a fixed order
 /// ([`sum_lanes`]). The products are added as they are taken, not stored.
 /// Each product is [`cos_sin_turns_times`] of the phase and the weight,
-/// bit for bit ([`cos_sin_turns_signed_as`]: the weight is finite).
+/// bit for bit ([`cos_sin_turns_weight_signed_as`]: the weight is finite).
 #[inline(always)]
 fn correlation(i0: usize, phase: &[u32], xs: &[f32]) -> (f32, f32) {
     correlation_as::<{ !SCALAR_FORMS }>(i0, phase, xs)
@@ -631,7 +631,7 @@ fn correlation(i0: usize, phase: &[u32], xs: &[f32]) -> (f32, f32) {
 fn correlation_as<const VECTOR_FORM: bool>(i0: usize, phase: &[u32], xs: &[f32]) -> (f32, f32) {
     let n = phase.len().min(xs.len());
     let (phase, xs) = (&phase[..n], &xs[..n]);
-    let product = |k: usize| cos_sin_turns_signed_as::<VECTOR_FORM>(phase[k], input(xs[k]));
+    let product = |k: usize| cos_sin_turns_weight_signed_as::<VECTOR_FORM>(phase[k], input(xs[k]));
     let (mut re, mut im) = ([0.0f32; LANES], [0.0f32; LANES]);
     if VECTOR_FORM {
         // Single samples up to the first whole lane, the whole lanes, then
@@ -691,7 +691,7 @@ fn correlation_whole(phase: &[u32], xs: &[f32], re: &mut [f32; LANES], im: &mut 
         let (q, x): (&[u32; W], &[f32; W]) = (q.try_into().unwrap(), x.try_into().unwrap());
         let (mut vc, mut vs) = ([0.0f32; W], [0.0f32; W]);
         for (((vc, vs), &q), &x) in vc.iter_mut().zip(&mut vs).zip(q).zip(x) {
-            (*vc, *vs) = cos_sin_turns_signed_as::<true>(q, input(x));
+            (*vc, *vs) = cos_sin_turns_weight_signed_as::<true>(q, input(x));
         }
         // The chains' lanes in sample order.
         for g in 0..W / LANES {
@@ -706,7 +706,7 @@ fn correlation_whole(phase: &[u32], xs: &[f32], re: &mut [f32; LANES], im: &mut 
         .zip(xs[wide..n].chunks_exact(LANES));
     for (q, x) in rest {
         for l in 0..LANES {
-            let (c, s) = cos_sin_turns_signed_as::<true>(q[l], input(x[l]));
+            let (c, s) = cos_sin_turns_weight_signed_as::<true>(q[l], input(x[l]));
             a[l] += c;
             b[l] += s;
         }
@@ -1381,7 +1381,9 @@ const CHAINS: usize = if VECTOR { 16 } else { 1 };
 #[allow(clippy::modulo_one)] // GROUP is 1 on some targets
 const _: () = assert!(CHAINS % GROUP == 0);
 
-/// For each sample, `weight(x)` times the cosine and sine of its phase
+/// The reference's parts (only the reference stores them; the time search
+/// sums its products as it takes them, [`correlation`]): for each sample,
+/// `weight(x)` times the cosine and sine of its phase
 /// (`cos_sin_turns_times`), stored in `out` from slot `k0` on by [`put`], over
 /// the shorter of `phase` and `xs`: single samples up to a whole group,
 /// then `W` samples at a time (whole groups), then the rest one by one.
