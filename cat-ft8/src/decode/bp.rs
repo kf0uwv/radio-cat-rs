@@ -660,11 +660,14 @@ fn min_sum_check<const ONE_PASS: bool>(total: &[f32; N], v: &[u8], row: &mut [f3
     let (mut min1, mut min2, mut at) = (f32::MAX, f32::MAX, 0);
     let mut negatives = 0u32;
     // One input's magnitude and sign into the two smallest and the count.
-    // The hosts keep two loops: one loop there too measured the A76's small
-    // slot's belief propagation 4.02 → 4.03 ms (medians of 12 sides, never
-    // faster) and x86-64 within noise (−0.1%): findings O25b. (A macro
-    // rather than a closure: the hosts' two loops compile as they did
-    // before, their binaries unchanged.)
+    // On the hosts only the checks left over after the groups take this
+    // (3 of 83 a round). They keep two loops: one loop there too, with the
+    // sizes as constants dropped as well, measured the A76's small slot's
+    // belief propagation 4.02 → 4.03 ms (one step, never faster in 12
+    // sides), more likely placement than the loop, and x86-64 within
+    // noise (−0.1%): findings O25b. (A macro rather than a closure: the
+    // hosts' two loops compile as they did before, their binaries
+    // unchanged.)
     macro_rules! take {
         ($j:expr, $x:expr) => {{
             let (j, x): (usize, f32) = ($j, $x);
