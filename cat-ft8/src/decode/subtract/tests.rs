@@ -307,6 +307,57 @@ fn non_finite_and_huge_samples_are_taken_as_the_front_end_takes_them() {
     assert!(a.iter().all(|x| x.is_finite()) && ra.energy.is_finite());
 }
 
+/// The input is checked over every usable sample ([`within_limit`]): one
+/// sample out of the limit anywhere in it, at its first sample, inside
+/// the signal or after it, or at its last sample (with a signal cut short
+/// at the slot's end), gives what the same audio with that sample as the
+/// front end takes it gives, bit for bit, where the subtraction writes; a
+/// sample it does not write is left as it was.
+#[test]
+fn a_sample_out_of_the_limit_anywhere_is_taken_as_the_front_end_takes_it() {
+    let mut checked = 0;
+    for (freq, dt) in [(1_234.5, 0.31), (1_234.5, 2.0)] {
+        let start = Placement::slot(freq, dt).unwrap().start as usize;
+        let mut slot = noisy_slot();
+        add_signal(
+            &mut slot,
+            &symbols_of(MESSAGE),
+            freq,
+            dt,
+            amplitude_for(5.0),
+        );
+        let last = SLOT_SAMPLES - 1;
+        let skip = start + 5 * 1_920 + 600;
+        for (skip, at) in [
+            (0, 0),
+            (skip, skip),
+            (0, start + 3 * 1_920 + 900),
+            (0, start + WAVEFORM_SAMPLES),
+            (0, last),
+        ] {
+            if at >= SLOT_SAMPLES {
+                continue;
+            }
+            for junk in [f32::NAN, f32::INFINITY, -INPUT_LIMIT * 2.0] {
+                let (mut a, mut z) = (slot.clone(), slot.clone());
+                a[at] = junk;
+                z[at] = input_branch(junk);
+                let d = decode_near(freq, dt);
+                let ra = sub(&mut a, &d, skip, &SubtractConfig::DEFAULT).unwrap();
+                let rz = sub(&mut z, &d, skip, &SubtractConfig::DEFAULT).unwrap();
+                if a[at].to_bits() == junk.to_bits() {
+                    // Not written: left as it was.
+                    a[at] = z[at];
+                }
+                assert_eq!(hash(&a, &ra), hash(&z, &rz), "{dt} {skip} {at} {junk}");
+                assert!(ra.samples > 0, "{dt} {skip} {at} {junk}");
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 2 * 5 * 3 - 3);
+}
+
 #[test]
 fn a_clipped_signal_is_mostly_removed() {
     // A strong signal (peak 0.1) clipped at ±0.06 by the receiver, with
@@ -942,7 +993,11 @@ fn time_search_lanes_follow_the_sample_index_at_any_start() {
     // One set of skipped spans for every call, as the time search's steps
     // share it: the first call fills it, the others reuse it.
     let mut skips = Skips::new();
-    for start in [-1_001i64, 4_001, 4_002, 4_003, 4_004] {
+    assert!(within_limit(&audio));
+    for (start, in_limit) in [-1_001i64, 4_001, 4_002, 4_003, 4_004]
+        .into_iter()
+        .flat_map(|s| [(s, false), (s, true)])
+    {
         for r in 0..LANES as i64 {
             let lo_off = (T + CORE_START + 37) as i64 + r;
             let hi_off = (50 * T + CORE_START + 101) as i64 + 3 * r;
@@ -950,7 +1005,7 @@ fn time_search_lanes_follow_the_sample_index_at_any_start() {
                 lo: (start + lo_off).max(0),
                 hi: start + hi_off,
             };
-            let got = symbol_correlations(&audio, usable, &synth, start, &mut skips);
+            let got = symbol_correlations(&audio, usable, &synth, start, &mut skips, in_limit);
             let mut want = [(0.0f32, 0.0f32); SYMBOL_COUNT];
             let end = usable.range(start, 0, WAVEFORM_SAMPLES).1;
             blocks(&synth, end, core, |j0, phase, _| {
@@ -979,12 +1034,12 @@ fn time_search_lanes_follow_the_sample_index_at_any_start() {
             let bits = |v: &[(f32, f32)]| -> Vec<(u32, u32)> {
                 v.iter().map(|&(a, b)| (a.to_bits(), b.to_bits())).collect()
             };
-            assert_eq!(bits(&got), bits(&want), "start {start} r {r}");
+            assert_eq!(bits(&got), bits(&want), "start {start} r {r} {in_limit}");
             assert!(got.iter().any(|&(a, _)| a != 0.0), "start {start} r {r}");
             checked += 1;
         }
     }
-    assert_eq!(checked, 20);
+    assert_eq!(checked, 40);
 }
 
 /// [`correlation`] in both forms (the lanes side by side, and one lane at a
@@ -993,7 +1048,8 @@ fn time_search_lanes_follow_the_sample_index_at_any_start() {
 /// [`CHAINS`]' multiples, each sample's [`input_branch`] times the cosine
 /// and sine of its phase ([`cos_sin_turns`]), summed lane by lane in sample
 /// order from 0.0, the lanes added by [`sum_lanes`]. The audio holds the
-/// values the front end treats specially. Bit for bit.
+/// values the front end treats specially; the forms without [`input`]
+/// take it as the front end leaves it (within the limit). Bit for bit.
 #[test]
 fn time_search_correlation_is_the_lanes_sums_in_both_forms() {
     let mut n = Noise(4_242);
@@ -1017,19 +1073,90 @@ fn time_search_correlation_is_the_lanes_sums_in_both_forms() {
             let want = (sum_lanes(re).to_bits(), sum_lanes(im).to_bits());
             let bits = |(a, b): (f32, f32)| (a.to_bits(), b.to_bits());
             assert_eq!(
-                bits(correlation_as::<true>(i0, &phase, &xs)),
+                bits(correlation_as::<true, false>(i0, &phase, &xs)),
                 want,
                 "side by side, {i0} {len}"
             );
             assert_eq!(
-                bits(correlation_as::<false>(i0, &phase, &xs)),
+                bits(correlation_as::<false, false>(i0, &phase, &xs)),
                 want,
                 "by lane, {i0} {len}"
+            );
+            // As the front end takes it: the same sums without `input`.
+            let taken: Vec<f32> = xs.iter().map(|&x| input_branch(x)).collect();
+            assert!(within_limit(&taken));
+            assert_eq!(
+                bits(correlation_as::<true, true>(i0, &phase, &taken)),
+                want,
+                "side by side, within the limit, {i0} {len}"
+            );
+            assert_eq!(
+                bits(correlation_as::<false, true>(i0, &phase, &taken)),
+                want,
+                "by lane, within the limit, {i0} {len}"
             );
             checked += 1;
         }
     }
     assert_eq!(checked, 14 * (2 * LANES + 3));
+}
+
+/// [`within_limit`] holds exactly where [`input`] returns every sample
+/// unchanged (bit for bit): over the values the front end treats specially
+/// and their neighbours, every exponent with random mantissas and signs,
+/// and one sample out of the limit at each place in slices of several
+/// lengths.
+#[test]
+fn within_limit_is_where_input_is_the_identity() {
+    let unchanged = |x: f32| input_branch(x).to_bits() == x.to_bits();
+    let mut values: Vec<f32> = std::vec![
+        0.0,
+        -0.0,
+        f32::from_bits(1),
+        -f32::from_bits(1),
+        f32::MIN_POSITIVE,
+        INPUT_LIMIT,
+        -INPUT_LIMIT,
+        f32::from_bits(INPUT_LIMIT.to_bits() - 1),
+        f32::from_bits(INPUT_LIMIT.to_bits() + 1),
+        -f32::from_bits(INPUT_LIMIT.to_bits() + 1),
+        f32::MAX,
+        f32::MIN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NAN,
+        -f32::NAN,
+        f32::from_bits(0x7f80_0001),
+        f32::from_bits(0xff80_0001),
+        f32::from_bits(0x7fff_ffff),
+    ];
+    let mut n = Noise(3_141);
+    for e in 0..256u32 {
+        for _ in 0..8 {
+            let w = words(&mut n);
+            values.push(f32::from_bits(
+                (w & 0x8000_0000) | e << 23 | (w & 0x7f_ffff),
+            ));
+        }
+    }
+    let mut out = 0;
+    for &x in &values {
+        assert_eq!(within_limit(&[x]), unchanged(x), "{:#x}", x.to_bits());
+        out += usize::from(!unchanged(x));
+    }
+    assert!(out > 100 && out < values.len() - 100, "{out}");
+    assert!(within_limit(&[]));
+    for len in [1usize, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 33, 240] {
+        let ok: Vec<f32> = (0..len).map(|i| (i as f32 - 3.0) * 0.25).collect();
+        assert!(within_limit(&ok), "{len}");
+        for at in 0..len {
+            for bad in [f32::NAN, f32::INFINITY, -INPUT_LIMIT * 1.5] {
+                let mut v = ok.clone();
+                v[at] = bad;
+                assert!(!within_limit(&v), "{len} {at} {bad}");
+            }
+        }
+    }
 }
 
 /// The phase the generator adds between two symbols' cores depends only
@@ -1127,11 +1254,11 @@ fn skips_with_two_generators(base_hz: f32, step: u8) {
     };
     let mut skips = Skips::new();
     let a = Synth::new(&tones, 1_234.5, 1.0).unwrap();
-    symbol_correlations(&audio, usable, &a, 6_000, &mut skips);
+    symbol_correlations(&audio, usable, &a, 6_000, &mut skips, false);
     let mut other = tones;
     other[10] = (other[10] + step) % 8;
     let b = Synth::new(&other, base_hz, 1.0).unwrap();
-    symbol_correlations(&audio, usable, &b, 6_000, &mut skips);
+    symbol_correlations(&audio, usable, &b, 6_000, &mut skips, false);
 }
 
 /// A set of skipped spans' sums serves one generator only: debug builds
@@ -1481,27 +1608,39 @@ fn removal_ramp_is_its_first_form_bit_for_bit() {
                     .flat_map(|x| x.to_ne_bytes())
                     .collect();
                 for report in [false, true] {
-                    let mut a = Removal::new(T, (0.0, 0.0), report);
+                    let mut a = Removal::new(T, (0.0, 0.0), report, false);
                     a.from = from;
                     a.base = ((n.gauss() * 0.1) as f32, (n.gauss() * 0.1) as f32);
                     a.slope = ((n.gauss() * 1e-4) as f32, (n.gauss() * -1e-4) as f32);
                     a.energy = (n.uniform() * 3.0) as f32;
                     a.sums.add(0.25, -0.5, 0.75);
-                    let mut b = Removal::new(T, (0.0, 0.0), report);
+                    let mut b = Removal::new(T, (0.0, 0.0), report, false);
                     (b.from, b.base, b.slope, b.energy, b.sums) =
                         (a.from, a.base, a.slope, a.energy, a.sums);
+                    // Without `input`, on the audio as the front end takes it.
+                    let mut c = Removal::new(T, (0.0, 0.0), report, true);
+                    (c.from, c.base, c.slope, c.energy, c.sums) =
+                        (a.from, a.base, a.slope, a.energy, a.sums);
                     let mut ys = xs.clone();
+                    let mut zs: Vec<f32> = xs.iter().map(|&x| input_branch(x)).collect();
                     if report {
-                        a.run_as::<true>(j0, &mut xs, &refs, k0);
+                        a.run_as::<true, false>(j0, &mut xs, &refs, k0);
                         run_as_first::<true>(&mut b, j0, &mut ys, &refs, k0);
+                        c.run_as::<true, true>(j0, &mut zs, &refs, k0);
                     } else {
-                        a.run_as::<false>(j0, &mut xs, &refs, k0);
+                        a.run_as::<false, false>(j0, &mut xs, &refs, k0);
                         run_as_first::<false>(&mut b, j0, &mut ys, &refs, k0);
+                        c.run_as::<false, true>(j0, &mut zs, &refs, k0);
                     }
                     assert_eq!(
                         removal_bits(&a, &xs),
                         removal_bits(&b, &ys),
                         "from {from} j0 {j0} len {len} slot {k0} report {report}"
+                    );
+                    assert_eq!(
+                        removal_bits(&c, &zs),
+                        removal_bits(&b, &ys),
+                        "within the limit: from {from} j0 {j0} len {len} slot {k0} report {report}"
                     );
                     checked += 1;
                 }
@@ -1530,22 +1669,25 @@ fn removal_ramp_is_plus_zero_at_and_before_the_centre() {
                 .map(|k| 0.25 + k as f32 / 64.0)
                 .flat_map(|x| x.to_ne_bytes())
                 .collect();
-            for report in [false, true] {
-                let mut a = Removal::new(T, (0.0, 0.0), report);
+            for (report, in_limit) in [(false, false), (true, false), (false, true), (true, true)] {
+                let mut a = Removal::new(T, (0.0, 0.0), report, in_limit);
                 (a.from, a.base, a.slope) = (from, (-0.0, -0.0), (1e-3, 2e-3));
-                let mut b = Removal::new(T, (0.0, 0.0), report);
+                let mut b = Removal::new(T, (0.0, 0.0), report, false);
                 (b.from, b.base, b.slope) = (a.from, a.base, a.slope);
                 let (mut got, mut want) = (xs.clone(), xs.clone());
+                a.run(j0, &mut got, &refs, k0);
                 if report {
-                    a.run_as::<true>(j0, &mut got, &refs, k0);
                     run_as_first::<true>(&mut b, j0, &mut want, &refs, k0);
                 } else {
-                    a.run_as::<false>(j0, &mut got, &refs, k0);
                     run_as_first::<false>(&mut b, j0, &mut want, &refs, k0);
                 }
                 // Samples j0..=from are at or before the centre.
                 for (j, x) in (j0..).zip(&got).take_while(|&(j, _)| j <= from) {
-                    assert_eq!(x.to_bits(), (-0.0f32).to_bits(), "j {j} report {report}");
+                    assert_eq!(
+                        x.to_bits(),
+                        (-0.0f32).to_bits(),
+                        "j {j} {report} {in_limit}"
+                    );
                 }
                 assert_eq!(
                     removal_bits(&a, &got),
@@ -1556,7 +1698,7 @@ fn removal_ramp_is_plus_zero_at_and_before_the_centre() {
             }
         }
     }
-    assert_eq!(checked, 10 * 5 * 2);
+    assert_eq!(checked, 10 * 5 * 4);
 }
 
 /// The fit's lane sums bit for bit.
@@ -1600,7 +1742,11 @@ fn fit_sums_follow_the_sample_index_bit_for_bit() {
                 (got.cs[l], got.ss[l]) = ((n.gauss()) as f32, 0.125);
             }
             let mut want = got;
-            got.add_all(i0, &xs, &refs, k0);
+            // Without `input`, on the audio as the front end takes it.
+            let mut taken_got = got;
+            let taken: Vec<f32> = xs.iter().map(|&x| input_branch(x)).collect();
+            got.add_all(false, i0, &xs, &refs, k0);
+            taken_got.add_all(true, i0, &taken, &refs, k0);
             // Lane by lane, each in sample order. (Not a store indexed by
             // `(i0 + k) % LANES` in one loop over the samples: the loop
             // vectoriser of LLVM 20 and 21 miscompiled that form here;
@@ -1621,6 +1767,11 @@ fn fit_sums_follow_the_sample_index_bit_for_bit() {
                 fit4_bits(&got),
                 fit4_bits(&want),
                 "i0 {i0} len {len} slot {k0}"
+            );
+            assert_eq!(
+                fit4_bits(&taken_got),
+                fit4_bits(&want),
+                "within the limit: i0 {i0} len {len} slot {k0}"
             );
             checked += 1;
         }

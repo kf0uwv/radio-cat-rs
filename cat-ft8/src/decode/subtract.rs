@@ -69,7 +69,10 @@
 //! are read as the decoder's front end takes them (a non-finite value as
 //! 0.0, a finite one beyond ±2¹⁶ clamped), and a sample the subtraction
 //! changes is written as that value less the estimate, so the residual is
-//! what the next pass would see, less the signal.
+//! what the next pass would see, less the signal. The usable audio is
+//! checked once a call: where every sample is finite and within the limit,
+//! as a slot's audio almost always is, taking a sample so is the identity,
+//! and the loops that read the audio leave it out.
 //!
 //! All arithmetic is `f32` `+ − × ÷`, comparisons, integer phase and the
 //! crate's polynomial helpers, in a fixed order, so the result is
@@ -491,13 +494,15 @@ impl Skips {
 /// Per symbol, the audio times the conjugate unit reference starting at
 /// `start`, summed over the symbol's middle half ([`correlation`], block by
 /// block). `skips` holds the skipped spans' phases of `synth` (see
-/// [`Skips`]).
+/// [`Skips`]). `in_limit`: every usable sample is within the input's limit
+/// ([`within_limit`]), so [`input`] is left out.
 fn symbol_correlations(
     audio: &[f32],
     usable: Usable,
     synth: &Synth,
     start: i64,
     skips: &mut Skips,
+    in_limit: bool,
 ) -> [(f32, f32); SYMBOL_COUNT] {
     // Reference sample j is sample j % T of symbol j / T: the waveform is
     // whole symbols and the generator starts at its first sample.
@@ -514,7 +519,11 @@ fn symbol_correlations(
         }
         let (a, b) = (a - j0, b - j0);
         let xs = &audio[(start + (j0 + a) as i64) as usize..][..b - a];
-        let (re, im) = correlation(a, &phase[a..b], xs);
+        let (re, im) = if in_limit {
+            correlation::<true>(a, &phase[a..b], xs)
+        } else {
+            correlation::<false>(a, &phase[a..b], xs)
+        };
         let k = j0 / T;
         // The conjugate's sine part: the sum's sign turned.
         c[k].0 += re;
@@ -615,9 +624,12 @@ fn add_lane(acc: &mut [f32; LANES], i: usize, v: f32) {
 /// ([`sum_lanes`]). The products are added as they are taken, not stored.
 /// Each product is [`cos_sin_turns_times`] of the phase and the weight,
 /// bit for bit ([`cos_sin_turns_weight_signed_as`]: the weight is finite).
+///
+/// `IN_LIMIT`: every sample of `xs` is within the input's limit, so
+/// [`input`] (the identity there) is left out ([`input_as`]).
 #[inline(always)]
-fn correlation(i0: usize, phase: &[u32], xs: &[f32]) -> (f32, f32) {
-    correlation_as::<{ !SCALAR_FORMS }>(i0, phase, xs)
+fn correlation<const IN_LIMIT: bool>(i0: usize, phase: &[u32], xs: &[f32]) -> (f32, f32) {
+    correlation_as::<{ !SCALAR_FORMS }, IN_LIMIT>(i0, phase, xs)
 }
 
 /// [`correlation`] with the four lanes side by side (`VECTOR_FORM`: where
@@ -628,10 +640,16 @@ fn correlation(i0: usize, phase: &[u32], xs: &[f32]) -> (f32, f32) {
 /// with rustc 1.93.0, kept the eight sums in memory: findings O22.)
 #[inline(always)]
 #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
-fn correlation_as<const VECTOR_FORM: bool>(i0: usize, phase: &[u32], xs: &[f32]) -> (f32, f32) {
+fn correlation_as<const VECTOR_FORM: bool, const IN_LIMIT: bool>(
+    i0: usize,
+    phase: &[u32],
+    xs: &[f32],
+) -> (f32, f32) {
     let n = phase.len().min(xs.len());
     let (phase, xs) = (&phase[..n], &xs[..n]);
-    let product = |k: usize| cos_sin_turns_weight_signed_as::<VECTOR_FORM>(phase[k], input(xs[k]));
+    let product = |k: usize| {
+        cos_sin_turns_weight_signed_as::<VECTOR_FORM>(phase[k], input_as::<IN_LIMIT>(xs[k]))
+    };
     let (mut re, mut im) = ([0.0f32; LANES], [0.0f32; LANES]);
     if VECTOR_FORM {
         // Single samples up to the first whole lane, the whole lanes, then
@@ -643,7 +661,7 @@ fn correlation_as<const VECTOR_FORM: bool>(i0: usize, phase: &[u32], xs: &[f32])
             add_lane(&mut im, i, s);
         }
         let whole = m0 - i0..m1 - i0;
-        correlation_whole(&phase[whole.clone()], &xs[whole], &mut re, &mut im);
+        correlation_whole::<IN_LIMIT>(&phase[whole.clone()], &xs[whole], &mut re, &mut im);
         for i in m1..i0 + n {
             let (c, s) = product(i - i0);
             add_lane(&mut re, i, c);
@@ -675,7 +693,12 @@ fn correlation_as<const VECTOR_FORM: bool>(i0: usize, phase: &[u32], xs: &[f32])
 /// registers over the call. One call per block of at most 240 samples.
 #[inline(never)]
 #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
-fn correlation_whole(phase: &[u32], xs: &[f32], re: &mut [f32; LANES], im: &mut [f32; LANES]) {
+fn correlation_whole<const IN_LIMIT: bool>(
+    phase: &[u32],
+    xs: &[f32],
+    re: &mut [f32; LANES],
+    im: &mut [f32; LANES],
+) {
     // `CHAINS` where the lanes are side by side (16); at least a lane's
     // worth on any target, where this is compiled but not called.
     const W: usize = if CHAINS > LANES { CHAINS } else { LANES };
@@ -691,7 +714,7 @@ fn correlation_whole(phase: &[u32], xs: &[f32], re: &mut [f32; LANES], im: &mut 
         let (q, x): (&[u32; W], &[f32; W]) = (q.try_into().unwrap(), x.try_into().unwrap());
         let (mut vc, mut vs) = ([0.0f32; W], [0.0f32; W]);
         for (((vc, vs), &q), &x) in vc.iter_mut().zip(&mut vs).zip(q).zip(x) {
-            (*vc, *vs) = cos_sin_turns_weight_signed_as::<true>(q, input(x));
+            (*vc, *vs) = cos_sin_turns_weight_signed_as::<true>(q, input_as::<IN_LIMIT>(x));
         }
         // The chains' lanes in sample order.
         for g in 0..W / LANES {
@@ -706,7 +729,7 @@ fn correlation_whole(phase: &[u32], xs: &[f32], re: &mut [f32; LANES], im: &mut 
         .zip(xs[wide..n].chunks_exact(LANES));
     for (q, x) in rest {
         for l in 0..LANES {
-            let (c, s) = cos_sin_turns_weight_signed_as::<true>(q[l], input(x[l]));
+            let (c, s) = cos_sin_turns_weight_signed_as::<true>(q[l], input_as::<IN_LIMIT>(x[l]));
             a[l] += c;
             b[l] += s;
         }
@@ -968,10 +991,21 @@ impl Fit4 {
     /// fit's block loop the compiler assembled the lanes from single-lane
     /// loads and moves and kept some sums as scalars; on its own the five
     /// sums stay in vector registers over the call. One call per block of
-    /// at most 240 samples.
+    /// at most 240 samples. `in_limit`: every sample of `xs` is within the
+    /// input's limit ([`within_limit`]), so [`input`] is left out.
+    #[inline(always)]
+    fn add_all(&mut self, in_limit: bool, i0: usize, xs: &[f32], refs: &[u8], k0: usize) {
+        if in_limit {
+            self.add_all_as::<true>(i0, xs, refs, k0);
+        } else {
+            self.add_all_as::<false>(i0, xs, refs, k0);
+        }
+    }
+
+    /// [`Fit4::add_all`], with `IN_LIMIT` its `in_limit` ([`input_as`]).
     #[inline(never)]
     #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
-    fn add_all(&mut self, i0: usize, xs: &[f32], refs: &[u8], k0: usize) {
+    fn add_all_as<const IN_LIMIT: bool>(&mut self, i0: usize, xs: &[f32], refs: &[u8], k0: usize) {
         debug_assert_eq!(k0 % LANES, i0 % LANES);
         let (m0, m1) = lane_bounds(i0, i0 + xs.len());
         // The single samples before and after the whole lanes take the
@@ -979,7 +1013,8 @@ impl Fit4 {
         // selected form there gave other code that was not measured.
         let one = |f: &mut Fit4, i: usize| {
             let (c, s) = get(refs, k0 + (i - i0));
-            f.add(i, input_branch(xs[i - i0]), c, s);
+            let x = xs[i - i0];
+            f.add(i, if IN_LIMIT { x } else { input_branch(x) }, c, s);
         };
         for i in i0..m0 {
             one(self, i);
@@ -1002,7 +1037,7 @@ impl Fit4 {
                 let (mut scs, mut sss) = (self.cs[l], self.ss[l]);
                 for (x, r) in whole.clone() {
                     let (c, s) = get(r, l);
-                    let w = input(x[l]);
+                    let w = input_as::<IN_LIMIT>(x[l]);
                     sxc += w * c;
                     sxs += w * s;
                     scc += c * c;
@@ -1018,7 +1053,7 @@ impl Fit4 {
                 for l in 0..LANES {
                     (c[l], s[l]) = get(r, l);
                 }
-                self.add4(input4(lanes(x)), c, s);
+                self.add4(input4::<IN_LIMIT>(lanes(x)), c, s);
             }
         }
         for i in m1..i0 + xs.len() {
@@ -1103,6 +1138,12 @@ fn run(
         return Ok(out);
     }
 
+    // Every usable sample within the input's limit: then `input`, the
+    // identity on them, is left out of the loops that read the audio. Each
+    // sample is read before this call writes it, so the check holds for
+    // every read.
+    let in_limit = within_limit(&audio[skip..]);
+
     // 1. Fine time. A start error within an eighth of a symbol keeps the
     // signal's tone changes out of the symbols' middle halves, so the
     // estimate is used as it is; a larger one is measured again at the
@@ -1113,7 +1154,7 @@ fn run(
     let mut skips = Skips::new();
     let mut sums_at = |at: i64| {
         step_sums(
-            &symbol_correlations(audio, usable, &synth, at, &mut skips),
+            &symbol_correlations(audio, usable, &synth, at, &mut skips, in_limit),
             &tones,
         )
     };
@@ -1207,7 +1248,7 @@ fn run(
                             let h = (j0 + i) % ring;
                             let stop = b.min(i + (ring - h));
                             reference(held, h, &phase[i..stop], env.map(|e| &e[i..stop]));
-                            f.add_all(i, &xs[i - a..stop - a], held, h);
+                            f.add_all(in_limit, i, &xs[i - a..stop - a], held, h);
                             i = stop;
                         }
                         written = j0 + b;
@@ -1216,7 +1257,7 @@ fn run(
                         // block at slot i): nothing held is needed once the
                         // fit is not fused.
                         reference(held, a, &phase[a..b], env.map(|e| &e[a..b]));
-                        f.add_all(a, xs, held, a);
+                        f.add_all(in_limit, a, xs, held, a);
                     }
                     c.skip(n - b);
                 }
@@ -1241,7 +1282,8 @@ fn run(
                     // The samples before centre k need amplitudes up to k.
                     if fused && first_valid.is_some() && k + 1 < segments {
                         let to = centre(seg, k).min(written);
-                        let r = removal.get_or_insert_with(|| Removal::new(seg, amp[0], report));
+                        let r = removal
+                            .get_or_insert_with(|| Removal::new(seg, amp[0], report, in_limit));
                         r.held(&amp, segments, held, ring, audio, start, done, to);
                         done = done.max(to);
                     }
@@ -1256,7 +1298,7 @@ fn run(
     for k in end.div_ceil(seg)..segments {
         amp[k] = amp[k - 1];
     }
-    let r = removal.get_or_insert_with(|| Removal::new(seg, amp[0], report));
+    let r = removal.get_or_insert_with(|| Removal::new(seg, amp[0], report, in_limit));
     if fused {
         r.held(&amp, segments, held, ring, audio, start, done, written);
     } else {
@@ -1516,15 +1558,45 @@ fn input(x: f32) -> f32 {
     }
 }
 
-/// [`input`] of four samples.
+/// [`input_as`] of four samples.
 #[inline(always)]
 #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
-fn input4(x: [f32; LANES]) -> [f32; LANES] {
+fn input4<const IN_LIMIT: bool>(x: [f32; LANES]) -> [f32; LANES] {
     let mut out = [0.0f32; LANES];
     for l in 0..LANES {
-        out[l] = input(x[l]);
+        out[l] = input_as::<IN_LIMIT>(x[l]);
     }
     out
+}
+
+/// [`input`] of `x`, or `x` itself where `IN_LIMIT`: the caller has found
+/// every sample it gives within the limit ([`within_limit`]), where `input`
+/// returns the sample unchanged.
+#[inline(always)]
+fn input_as<const IN_LIMIT: bool>(x: f32) -> f32 {
+    if IN_LIMIT {
+        x
+    } else {
+        input(x)
+    }
+}
+
+/// Whether every sample of `xs` is finite and within ±[`INPUT_LIMIT`], so
+/// that [`input`] returns each unchanged. A sample's bits without the sign,
+/// as an unsigned integer, order the finite magnitudes and put the
+/// infinities and NaNs above them. Their bitwise or is at least the largest
+/// of them, and for audio within ±1, as a slot's is, it is below the
+/// limit's: then that one pass decides. Otherwise their largest decides,
+/// in a second pass. (Folds over every sample rather than `all`, whose
+/// early exit keeps the loop from vectorising.) Not inlined: one call per
+/// subtraction, and its loops are checked on their own (`codegen-check.sh`).
+#[inline(never)]
+fn within_limit(xs: &[f32]) -> bool {
+    const MAGNITUDE: u32 = 0x7fff_ffff;
+    let limit = INPUT_LIMIT.to_bits();
+    let any = xs.iter().fold(0u32, |a, &x| a | x.to_bits());
+    any & MAGNITUDE <= limit
+        || xs.iter().fold(0u32, |m, &x| m.max(x.to_bits() & MAGNITUDE)) <= limit
 }
 
 /// The centre of segment `k` (a whole sample: segments are whole blocks).
@@ -1541,6 +1613,9 @@ struct Removal {
     seg: usize,
     /// Whether the energy and the residue's sums are taken.
     report: bool,
+    /// Whether every sample is within the input's limit ([`within_limit`]),
+    /// so that [`input`] is left out.
+    in_limit: bool,
     /// The interval's left centre once inside one (`None` before the first).
     k: Option<usize>,
     from: usize,
@@ -1560,10 +1635,11 @@ struct Removal {
 impl Removal {
     /// Before the first centre; `amp0` is the first segment's amplitude
     /// (final).
-    fn new(seg: usize, amp0: (f32, f32), report: bool) -> Self {
+    fn new(seg: usize, amp0: (f32, f32), report: bool, in_limit: bool) -> Self {
         Removal {
             seg,
             report,
+            in_limit,
             k: None,
             from: 0,
             base: amp0,
@@ -1629,17 +1705,25 @@ impl Removal {
     /// reporting, one segment (after [`Removal::enter`]).
     #[inline(always)]
     fn run(&mut self, j0: usize, xs: &mut [f32], refs: &[u8], k0: usize) {
-        if self.report {
-            self.run_as::<true>(j0, xs, refs, k0);
-        } else {
-            self.run_as::<false>(j0, xs, refs, k0);
+        match (self.report, self.in_limit) {
+            (true, true) => self.run_as::<true, true>(j0, xs, refs, k0),
+            (true, false) => self.run_as::<true, false>(j0, xs, refs, k0),
+            (false, true) => self.run_as::<false, true>(j0, xs, refs, k0),
+            (false, false) => self.run_as::<false, false>(j0, xs, refs, k0),
         }
     }
 
-    /// [`Removal::run`], with `REPORT` equal to [`Removal::report`]: the
-    /// energy and the residue's sums are taken only if it is true.
+    /// [`Removal::run`], with `REPORT` equal to [`Removal::report`] (the
+    /// energy and the residue's sums are taken only if it is true) and
+    /// `IN_LIMIT` to [`Removal::in_limit`] ([`input_as`]).
     #[inline(always)]
-    fn run_as<const REPORT: bool>(&mut self, j0: usize, xs: &mut [f32], refs: &[u8], k0: usize) {
+    fn run_as<const REPORT: bool, const IN_LIMIT: bool>(
+        &mut self,
+        j0: usize,
+        xs: &mut [f32],
+        refs: &[u8],
+        k0: usize,
+    ) {
         let (from, base, slope) = (self.from, self.base, self.slope);
         let mut energy = self.energy;
         let mut sums = self.sums;
@@ -1661,7 +1745,7 @@ impl Removal {
             let refs = &refs[k0 * PAIR..(k0 + n) * PAIR];
             for (i, (x, r)) in xs.iter_mut().zip(refs.chunks_exact(PAIR)).enumerate() {
                 let t = ramp_index(j0 + i as i32, from);
-                remove_one::<REPORT>(x, t, get(r, 0), line, &mut energy, &mut sums);
+                remove_one::<REPORT, IN_LIMIT>(x, t, get(r, 0), line, &mut energy, &mut sums);
             }
         } else {
             // Single samples up to a whole group, the whole groups, the
@@ -1670,7 +1754,14 @@ impl Removal {
             let whole = (n - head) - in_group(n - head);
             for (i, x) in xs[..head].iter_mut().enumerate() {
                 let t = ramp_index(j0 + i as i32, from);
-                remove_one::<REPORT>(x, t, get(refs, k0 + i), line, &mut energy, &mut sums);
+                remove_one::<REPORT, IN_LIMIT>(
+                    x,
+                    t,
+                    get(refs, k0 + i),
+                    line,
+                    &mut energy,
+                    &mut sums,
+                );
             }
             // In whole groups each lane's index before the clamp at 0 is
             // carried as an `f32`: an integer below 2²⁴ in magnitude
@@ -1689,7 +1780,7 @@ impl Removal {
             for (x, r) in groups {
                 for (l, x) in x.iter_mut().enumerate() {
                     let t = if index[l] > 0.0 { index[l] } else { 0.0 };
-                    remove_one::<REPORT>(x, t, get(r, l), line, &mut energy, &mut sums);
+                    remove_one::<REPORT, IN_LIMIT>(x, t, get(r, l), line, &mut energy, &mut sums);
                 }
                 for t in &mut index {
                     *t += GROUP as f32;
@@ -1698,7 +1789,14 @@ impl Removal {
             for (i, x) in xs[head + whole..].iter_mut().enumerate() {
                 let i = head + whole + i;
                 let t = ramp_index(j0 + i as i32, from);
-                remove_one::<REPORT>(x, t, get(refs, k0 + i), line, &mut energy, &mut sums);
+                remove_one::<REPORT, IN_LIMIT>(
+                    x,
+                    t,
+                    get(refs, k0 + i),
+                    line,
+                    &mut energy,
+                    &mut sums,
+                );
             }
         }
         self.energy = energy;
@@ -1780,9 +1878,9 @@ fn ramp_index(j: i32, from: i32) -> f32 {
 /// One sample of the removal at ramp index `t` with reference `r`:
 /// `x` less the estimate at the amplitude `base + t · slope` of
 /// `line = (base, slope)`; when `REPORT`, the estimate's energy and the
-/// residual's sums taken.
+/// residual's sums taken. `x` is taken by [`input_as`].
 #[inline(always)]
-fn remove_one<const REPORT: bool>(
+fn remove_one<const REPORT: bool, const IN_LIMIT: bool>(
     x: &mut f32,
     t: f32,
     r: (f32, f32),
@@ -1793,7 +1891,7 @@ fn remove_one<const REPORT: bool>(
     let ((rc, rs), (base, slope)) = (r, line);
     let (ra, rb) = (base.0 + t * slope.0, base.1 + t * slope.1);
     let est = ra * rc + rb * rs;
-    *x = input(*x) - est;
+    *x = input_as::<IN_LIMIT>(*x) - est;
     if REPORT {
         *energy += est * est;
         sums.add(*x, rc, rs);
