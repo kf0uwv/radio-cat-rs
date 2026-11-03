@@ -859,9 +859,9 @@ fn correction_skip_holds_for_any_count() {
 
 /// The frequency correction taken in closed form ([`Correction::skip`]),
 /// four lanes at a time ([`Correction::lanes`]) and added in place
-/// ([`Correction::apply`]) gives exactly the sample-by-sample sequence of
-/// [`Correction::next`], over random states (any phase, step and
-/// acceleration, wrapping included).
+/// ([`Correction::apply`], in both its forms) gives exactly the
+/// sample-by-sample sequence of [`Correction::next`], over random states
+/// (any phase, step and acceleration, wrapping included).
 #[test]
 fn correction_in_lanes_and_in_closed_form_follows_the_sequence() {
     let mut x = 0x9e37_79b9_7f4a_7c15u64;
@@ -895,13 +895,19 @@ fn correction_in_lanes_and_in_closed_form_follows_the_sequence() {
         }
         for n in [0usize, 1, 3, 4, 7, 240] {
             let phase: Vec<u32> = (0..n).map(|_| rnd() as u32).collect();
-            let mut q = phase.clone();
-            let (mut a, mut b) = (c0, c0);
-            a.apply(&mut q);
-            for (q, p) in q.iter().zip(&phase) {
-                assert_eq!(*q, p.wrapping_add(b.next()), "apply {n}");
+            for form in 0..3 {
+                let mut q = phase.clone();
+                let (mut a, mut b) = (c0, c0);
+                match form {
+                    0 => a.apply(&mut q),
+                    1 => a.apply_as::<true>(&mut q),
+                    _ => a.apply_as::<false>(&mut q),
+                }
+                for (q, p) in q.iter().zip(&phase) {
+                    assert_eq!(*q, p.wrapping_add(b.next()), "apply {n}, form {form}");
+                }
+                assert!(same(&a, &b), "apply {n}, form {form}");
             }
-            assert!(same(&a, &b), "apply {n}");
         }
     }
 }

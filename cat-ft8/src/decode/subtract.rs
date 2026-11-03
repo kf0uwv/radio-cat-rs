@@ -1679,11 +1679,28 @@ impl Correction {
         self.step = self.step.wrapping_add((n as i64).wrapping_mul(self.accel));
     }
 
-    /// Adds the correction's phases to `phase`, sample by sample (four at
-    /// a time, then single samples), and moves past them.
+    /// Adds the correction's phases to `phase`, sample by sample, and moves
+    /// past them: four at a time ([`Correction::lanes`]) where the target
+    /// has a vector unit, else one at a time ([`Correction::next`]). The
+    /// phases are the same.
+    #[inline(always)]
+    fn apply(&mut self, phase: &mut [u32]) {
+        self.apply_as::<VECTOR>(phase);
+    }
+
+    /// [`Correction::apply`]: four at a time, then single samples, if
+    /// `IN_LANES`; else one at a time. (Without a vector unit, the
+    /// Cortex-M33 build, opt-level "s" with rustc 1.93.0, kept the lanes'
+    /// 64-bit phases and steps in memory.)
     #[inline(always)]
     #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
-    fn apply(&mut self, phase: &mut [u32]) {
+    fn apply_as<const IN_LANES: bool>(&mut self, phase: &mut [u32]) {
+        if !IN_LANES {
+            for p in phase {
+                *p = p.wrapping_add(self.next());
+            }
+            return;
+        }
         let n = phase.len();
         let mut lanes = self.lanes();
         let mut four = phase.chunks_exact_mut(LANES);
