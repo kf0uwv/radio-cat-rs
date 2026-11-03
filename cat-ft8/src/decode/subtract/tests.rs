@@ -1043,6 +1043,26 @@ fn skipped_spans_depend_only_on_the_two_tones() {
     }
 }
 
+/// A set of skipped spans' sums serves one generator only: debug builds
+/// panic when it is used with another (another base frequency here).
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "another generator")]
+fn skipped_spans_serve_one_generator() {
+    let audio = noisy_slot();
+    let tones = encode_payload(&decode_near(1_234.5, 0.31).payload);
+    let usable = Usable {
+        lo: 0,
+        hi: audio.len() as i64,
+    };
+    let mut work = std::vec![0u8; SCRATCH_BYTES];
+    let mut skips = Skips::new();
+    let a = Synth::new(&tones, 1_234.5, 1.0).unwrap();
+    symbol_correlations(&audio, usable, &a, 6_000, &mut work, &mut skips);
+    let b = Synth::new(&tones, 1_240.0, 1.0).unwrap();
+    symbol_correlations(&audio, usable, &b, 6_000, &mut work, &mut skips);
+}
+
 /// Random 32-bit words, from the tests' generator.
 fn words(n: &mut Noise) -> u32 {
     (n.uniform() * 4_294_967_296.0) as u32

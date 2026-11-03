@@ -330,6 +330,13 @@ impl Synth {
         n
     }
 
+    /// Debug builds: whether `other` makes the same phases (the same tones
+    /// and base frequency).
+    #[cfg(debug_assertions)]
+    pub(crate) fn same_phases(&self, other: &Synth) -> bool {
+        self.symbols == other.symbols && self.base_hz.to_bits() == other.base_hz.to_bits()
+    }
+
     /// The tone of symbol `m`.
     pub(crate) fn tone(&self, m: usize) -> u8 {
         self.symbols[m]

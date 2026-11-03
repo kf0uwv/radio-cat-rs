@@ -138,12 +138,8 @@ const MIDDLE: f32 = WAVEFORM_SAMPLES as f32 / 2.0;
 /// temporaries and call overhead; the embedded link check reports them.)
 /// The held reference is not on the stack: it is in the caller's scratch
 /// ([`SUBTRACT_SCRATCH_BYTES`](SCRATCH_BYTES)).
-pub const STACK_BYTES: usize = SYMBOL_COUNT * 8
-    + GROUPS * 15 * 8
-    + 15 * 8
-    + MAX_SEGMENTS * 8
-    + BLOCK * 8
-    + core::mem::size_of::<Skips>();
+pub const STACK_BYTES: usize =
+    SYMBOL_COUNT * 8 + GROUPS * 15 * 8 + 15 * 8 + MAX_SEGMENTS * 8 + BLOCK * 8 + SKIPS_BYTES;
 
 /// Bytes of working storage with which [`subtract`] runs the reference
 /// once: a segment and a half of it held between the amplitude fit and the
@@ -439,19 +435,41 @@ fn blocks(
 /// tones (8 × the first + the second; [`TRANSITION`]). A pair's sum is
 /// taken by the generator when it is first met and reused after, so one
 /// `Skips` serves every step of the time search for one generator (its
-/// tones and base frequency) and must not be used with another.
+/// tones and base frequency) and must not be used with another. Debug
+/// builds keep the first generator it served and check every later one
+/// against it.
 struct Skips {
     sum: [u32; 64],
     /// Bit p is set once `sum[p]` is known.
     known: u64,
+    #[cfg(debug_assertions)]
+    owner: Option<Synth>,
 }
+
+/// [`Skips`]' bytes without its debug-only check: its sums and mask.
+const SKIPS_BYTES: usize = 64 * 4 + 8;
+#[cfg(not(debug_assertions))]
+const _: () = assert!(core::mem::size_of::<Skips>() == SKIPS_BYTES);
 
 impl Skips {
     fn new() -> Self {
         Skips {
             sum: [0; 64],
             known: 0,
+            #[cfg(debug_assertions)]
+            owner: None,
         }
+    }
+
+    /// Debug builds: panics unless `synth` makes the same phases as the
+    /// generator these sums were first taken from.
+    #[cfg(debug_assertions)]
+    fn check_owner(&mut self, synth: &Synth) {
+        let owner = self.owner.get_or_insert_with(|| synth.clone());
+        assert!(
+            owner.same_phases(synth),
+            "skipped spans' sums used with another generator"
+        );
     }
 }
 
@@ -472,6 +490,8 @@ fn symbol_correlations(
     // whole symbols and the generator starts at its first sample.
     const _: () = assert!(WAVEFORM_SAMPLES == SYMBOL_COUNT * T);
     debug_assert_eq!(synth.position(), 0);
+    #[cfg(debug_assertions)]
+    skips.check_owner(synth);
     let mut c = [(0.0f32, 0.0f32); SYMBOL_COUNT];
     let end = usable.range(start, 0, WAVEFORM_SAMPLES).1;
     let mut block = |j0: usize, phase: &[u32]| {
@@ -1019,6 +1039,8 @@ fn run(
     // estimate is used as it is; a larger one is measured again at the
     // moved start.
     let mut start = fixed.start.unwrap_or(nominal);
+    // The skipped spans' sums of `synth`, shared by every step of this time
+    // search and by no other generator (checked in debug builds).
     let mut skips = Skips::new();
     let mut sums_at = |at: i64, work: &mut [u8]| {
         step_sums(
