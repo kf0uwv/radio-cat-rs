@@ -295,7 +295,8 @@ pub(crate) fn cos_sin_turns(phase: u32) -> (f32, f32) {
 /// both parts there and back. Negation flips only the sign bit, and
 /// w · (−x) = −(w · x) bit for bit (the product's sign is the exclusive or
 /// of the factors', its magnitude rounds the same), so both forms give the
-/// same bits for any weight that is not a NaN.
+/// same bits for every finite weight. (A NaN weight, or an infinite one
+/// times a zero part, gives a NaN whose sign bit can differ between them.)
 #[inline(always)]
 pub(crate) fn cos_sin_turns_times_as<const BITS: bool>(phase: u32, w: f32) -> (f32, f32) {
     let u = phase.wrapping_add(1 << 29);
