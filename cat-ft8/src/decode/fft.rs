@@ -484,25 +484,25 @@ macro_rules! straight_twiddles {
     };
 }
 
-/// One radix-`$r` stage over sub-transforms of length `$s` (not the last
+/// One radix-`$radix` stage over sub-transforms of length `$l` (not the last
 /// stage, which has one block: see [`last_straight_stage`]), one butterfly
 /// at a time, as [`stage`] computes it with one lane: for each k, the
 /// twiddles of every (m ≥ 1, q) are read once from `TWIDDLES` into an
 /// array, then the butterfly at k runs in every block.
 macro_rules! straight_stage {
-    ($re:ident, $im:ident, $r:literal, $s:literal, $ms:tt, $qs:tt) => {{
-        const SPAN: usize = $r * $s;
+    ($re:ident, $im:ident, $radix:literal, $l:literal, $ms:tt, $qs:tt) => {{
+        const SPAN: usize = $radix * $l;
         const STEP: usize = N / SPAN;
-        for k in 0..$s {
+        for k in 0..$l {
             // Row m − 1 holds the twiddles of m.
-            let w: [[[f32; 2]; $r]; $r - 1] = straight_twiddles!($r, k * STEP, $ms, $qs);
+            let w: [[[f32; 2]; $radix]; $radix - 1] = straight_twiddles!($radix, k * STEP, $ms, $qs);
             let mut base = k;
             while base < N {
                 let (r, i) = (
-                    &mut $re[base..base + ($r - 1) * $s + 1],
-                    &mut $im[base..base + ($r - 1) * $s + 1],
+                    &mut $re[base..base + ($radix - 1) * $l + 1],
+                    &mut $im[base..base + ($radix - 1) * $l + 1],
                 );
-                straight_butterfly!(r, i, $s, $ms, $qs, (m, q) => w[m - 1][q]);
+                straight_butterfly!(r, i, $l, $ms, $qs, (m, q) => w[m - 1][q]);
                 base += SPAN;
             }
         }
