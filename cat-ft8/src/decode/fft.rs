@@ -453,7 +453,8 @@ static TWIDDLES: [[f32; 2]; TWIDDLE_ENTRIES] = {
 /// [`stage`]'s order ([`radix_sums`] with one lane). The twiddle of (m, q)
 /// at k, W_N^(m·(k + q·`LAST_L`)), is read at m·k + `LAST_L`·(m·q mod
 /// `LAST_R`), below [`LAST_TWIDDLES`] and not reduced mod N: [`TWIDDLES`]
-/// runs that far. Each index is m·k plus a constant, so the compiler
+/// runs that far where vectors are taken; where it holds one turn (only
+/// the tests run this stage there) the index is reduced mod N. Each index is m·k plus a constant, so the compiler
 /// vectorises the loop across adjacent k and loads each m's twiddles, m
 /// apart in the table, as interleaved vectors (`ld2` and `ld4` on AArch64)
 /// rather than lane by lane (rustc 1.93.0): findings O26 and O26b. The
@@ -465,7 +466,8 @@ fn last_stage(re: &mut [f32; N], im: &mut [f32; N]) {
         let ar: [[f32; 1]; LAST_R] = core::array::from_fn(|m| [re[k + m * LAST_L]]);
         let ai: [[f32; 1]; LAST_R] = core::array::from_fn(|m| [im[k + m * LAST_L]]);
         radix_sums!(LAST_R, 1, ar, ai, (m, q) => {
-            let [wr, wi] = TWIDDLES[m * k + LAST_L * ((m * q) % LAST_R)];
+            let t = m * k + LAST_L * ((m * q) % LAST_R);
+            let [wr, wi] = TWIDDLES[if TWIDDLE_ENTRIES > N { t } else { t % N }];
             ([wr], [wi])
         }, (sr, si) => {
             re[k + q * LAST_L] = sr[0];

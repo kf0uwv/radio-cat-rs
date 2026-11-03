@@ -13791,16 +13791,16 @@ the A76 feed. It is kept.
 ### Tried, not kept
 
 - **The segments at run time** (one loop over a list of bounds, the
-  segment a function with `lo`, `hi`): out of line (the reviewer's build)
-  the stage lost its vectorisation (no `ld2`/`ld4`, 10 bounds-check
+  segment a function with `lo`, `hi`): out of line (a trial build) the
+  stage lost its vectorisation (no `ld2`/`ld4`, 10 bounds-check
   calls); inlined (forced form g4 below) AArch64 kept 12 interleaved loads
   but `finish_row` grew to 3 703 instructions with 103 two-lane `.2d`
   instructions, x86-64 to 4 296 with its vector loop 629 instructions. Not
   timed.
-- **A table of 2N** (the reviewer's build, a second table beside the
+- **A table of 2N** (a trial build, a second table beside the
   turn): the same AArch64 loop, +30 KB `.rodata`; with the turn's own
   readers on the first half, 15 360 B more than the N + 1 149 table that
-  replaces the turn. The reviewer's x86-64 timing of it (feed −5.8%
+  replaces the turn. That build's x86-64 timing of it (feed −5.8%
   against 6db1324) had the hosts' bins' powers indexed as well.
 - **The index reduced mod N** (g2): no vector loop on x86-64, 9
   interleaved loads on AArch64; equal values (mutant t7).
