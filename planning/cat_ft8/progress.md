@@ -1933,3 +1933,33 @@
   6.39–6.41 at bad ones; the base too. Moving side A's buffers 2 KB removes it
   in both. Which address relation is slow is not known.
 - Wording: 0.03–0.05 ms; the O21b "repeats across sessions" corrected.
+
+## Session: 2026-11-02 (O22 the subtraction)
+
+- Profiled first: A76 microbenchmark with counters and PC samples, x86-64
+  `perf record`, M33 per-function and per-block emulated counts. The A76's
+  subtraction is vector-bound within 1.2–1.3× of its floor in its largest
+  parts; the correction is scalar integer on the A76; the M33
+  keeps the lanes' sums and the correction's 64-bit lanes in memory at
+  opt-level "s".
+- 564511b, d24eddc, c4ac43e: the fit's whole lanes, the correction and the
+  time search's lane sums one lane (or sample) at a time where a group is one
+  sample. 9d05162: the time search's skipped spans by tone pair, taken once a
+  subtraction (`Skips`, 264 B of stack). ec97574: the code-generation check's
+  M33 bounds (`fploopN`, `carries`), each shown to fire on its forced form.
+- M33 (emulated): subtraction −24.40% a call (s0086; −24.41% s0407), host slot
+  −14.88%; the small slot +25 instructions. A76: subtraction 43.720 → 42.635 ms (−2.48%), slot
+  89.60 → 88.50 ms; d24eddc's host change within noise. x86-64
+  cycles −1.29% (`slotcost`, whole program).
+- Identity: x86-64 records and WAVs, encoder, M33 dumps and residuals equal;
+  each comparator fails on a forced difference with its own exit status.
+  A76 records and WAVs equal; A76 library tests pass (213); local CI passes.
+- Mutants: every non-equivalent mutant caught (the one-lane ones with the
+  group-one cfg); never reusing a stored span is equivalent, as expected.
+- Tried, not kept: the correction vectorised on AArch64 (no safe form found
+  with rustc 1.93.0), the correction a chunk ahead of the reference (no
+  overlap), a shorter finite test (not generated).
+- Next: the clamp once (hold the clamped sample in the ring; scratch +23 040
+  B), the M33 reference's quarter selects.
+- Small staged image's stack high water +120 B (the subtraction's driver is
+  inlined into its `decode_a_slot`); check images' frames unchanged there.
