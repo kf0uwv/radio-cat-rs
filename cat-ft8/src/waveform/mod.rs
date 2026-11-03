@@ -127,6 +127,14 @@ const PREV_END: usize = SAMPLES_PER_SYMBOL + 1 - PULSE_FIRST;
 /// `PULSE_FLAT` to its centre, read directly before the centre and
 /// mirrored after it; tested).
 const _: () = assert!(PREV_END <= PULSE_FIRST);
+/// Within a symbol, the samples from `PULSE_FIRST` on carry only its own
+/// pulse and the next symbol's, and the samples before `PREV_END` only its
+/// own and the previous symbol's ([`Synth::phases`]). So over any samples
+/// from `TRANSITION.0` or later of symbol m to before `TRANSITION.1` of
+/// symbol m + 1, the generator's phase increments depend only on the two
+/// symbols' tones and the base frequency: they are the same for every m
+/// whose pair of tones is the same.
+pub(crate) const TRANSITION: (usize, usize) = (PULSE_FIRST, PREV_END);
 /// The first index of `PULSE_HALF` in the run `PREV_END..PULSE_FIRST`
 /// (the current pulse at `SAMPLES_PER_SYMBOL + s` for sample s).
 #[cfg(test)]
@@ -320,6 +328,35 @@ impl Synth {
         self.phase = self.phases::<true>(self.pos, buf, self.phase);
         self.pos += n;
         n
+    }
+
+    /// The tone of symbol `m`.
+    pub(crate) fn tone(&self, m: usize) -> u8 {
+        self.symbols[m]
+    }
+
+    /// [`skip_with`](Self::skip_with) over the next `n` samples (at most
+    /// [`remaining`](Self::remaining)), with `buf` (not empty) as working
+    /// storage; returns the phase it added, modulo 2³².
+    pub(crate) fn skip_by_sum(&mut self, n: usize, buf: &mut [u32]) -> u32 {
+        debug_assert!(n <= self.remaining() && !buf.is_empty());
+        let p = self.phase;
+        let mut left = n;
+        while left > 0 {
+            let k = left.min(buf.len());
+            left -= self.skip_with(&mut buf[..k]);
+        }
+        self.phase.wrapping_sub(p)
+    }
+
+    /// Moves over the next `n` samples (at most
+    /// [`remaining`](Self::remaining)) adding `by` to the phase: where `by`
+    /// is the phase [`skip_by_sum`](Self::skip_by_sum) adds over them, the
+    /// same state, without the generator.
+    pub(crate) fn advance(&mut self, n: usize, by: u32) {
+        debug_assert!(n <= self.remaining());
+        self.pos += n;
+        self.phase = self.phase.wrapping_add(by);
     }
 
     /// The phase of waveform samples `pos..pos + out.len()` (within the

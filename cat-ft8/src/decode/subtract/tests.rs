@@ -466,7 +466,7 @@ fn stack_storage_is_bounded() {
     {
         assert!(WAVEFORM_SAMPLES.div_ceil(seg) <= MAX_SEGMENTS, "{seg}");
     }
-    assert_eq!(STACK_BYTES, 4_656);
+    assert_eq!(STACK_BYTES, 4_920);
 }
 
 /// The reference's group: four lanes where the target has a vector unit,
@@ -939,6 +939,9 @@ fn time_search_lanes_follow_the_sample_index_at_any_start() {
     let mut work = std::vec![0u8; SCRATCH_BYTES];
     let core = |j0: usize| (CORE_START..CORE_END).contains(&(j0 % T));
     let mut checked = 0;
+    // One set of skipped spans for every call, as the time search's steps
+    // share it: the first call fills it, the others reuse it.
+    let mut skips = Skips::new();
     for start in [-1_001i64, 4_001, 4_002, 4_003, 4_004] {
         for r in 0..LANES as i64 {
             let lo_off = (T + CORE_START + 37) as i64 + r;
@@ -947,7 +950,7 @@ fn time_search_lanes_follow_the_sample_index_at_any_start() {
                 lo: (start + lo_off).max(0),
                 hi: start + hi_off,
             };
-            let got = symbol_correlations(&audio, usable, &synth, start, &mut work);
+            let got = symbol_correlations(&audio, usable, &synth, start, &mut work, &mut skips);
             let mut want = [(0.0f32, 0.0f32); SYMBOL_COUNT];
             let end = usable.range(start, 0, WAVEFORM_SAMPLES).1;
             blocks(&synth, end, core, |j0, phase, _| {
@@ -982,6 +985,62 @@ fn time_search_lanes_follow_the_sample_index_at_any_start() {
         }
     }
     assert_eq!(checked, 20);
+}
+
+/// The phase the generator adds between two symbols' cores depends only
+/// on the two symbols' tones ([`TRANSITION`]): over random messages and
+/// bases with every pair of tones, each skipped span's sum equals the
+/// first one with the same pair, and [`Synth::advance`] by it leaves the
+/// generator where [`Synth::skip_by_sum`] does.
+#[test]
+fn skipped_spans_depend_only_on_the_two_tones() {
+    let mut n = Noise(77);
+    let mut buf = [0u32; 7];
+    for round in 0..6 {
+        // Every pair of tones (a de Bruijn sequence of the eight tones: the
+        // Lyndon words of length one and two in order, then the first tone
+        // again), then random tones; random tones throughout in odd rounds.
+        let mut order = Vec::new();
+        for a in 0..8u8 {
+            order.push(a);
+            for b in a + 1..8 {
+                order.extend([a, b]);
+            }
+        }
+        order.push(0);
+        let mut tones = [0u8; SYMBOL_COUNT];
+        for (k, t) in tones.iter_mut().enumerate() {
+            *t = match order.get(k) {
+                Some(&o) if round % 2 == 0 => o,
+                _ => (words(&mut n) % 8) as u8,
+            };
+        }
+        let base = 200.0 + 450.0 * round as f32 + (words(&mut n) % 1000) as f32 * 0.01;
+        let synth = Synth::new(&tones, base, 1.0).unwrap();
+        let mut seen = [None::<u32>; 64];
+        let (mut a, mut b) = (synth.clone(), synth.clone());
+        a.skip_by_sum(CORE_END, &mut buf);
+        b.skip_by_sum(CORE_END, &mut buf);
+        for k in 0..SYMBOL_COUNT - 1 {
+            let sum = a.skip_by_sum(BETWEEN_CORES, &mut buf);
+            let pair = usize::from(tones[k]) * 8 + usize::from(tones[k + 1]);
+            assert_eq!(
+                *seen[pair].get_or_insert(sum),
+                sum,
+                "round {round} symbol {k}"
+            );
+            b.advance(BETWEEN_CORES, seen[pair].unwrap());
+            // The next core from both, and their states after it.
+            let (mut pa, mut pb) = ([0u32; CORE_END - CORE_START], [0u32; CORE_END - CORE_START]);
+            assert_eq!(a.fill_phase_only(&mut pa), pa.len());
+            assert_eq!(b.fill_phase_only(&mut pb), pb.len());
+            assert_eq!(pa, pb, "round {round} symbol {k}");
+            assert_eq!(a.position(), b.position());
+        }
+        if round % 2 == 0 {
+            assert!(seen.iter().all(Option::is_some), "round {round}");
+        }
+    }
 }
 
 /// Random 32-bit words, from the tests' generator.

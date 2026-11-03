@@ -84,7 +84,7 @@
 use super::decoder::Decode;
 use super::frontend::INPUT_LIMIT;
 use super::math::{atan2_turns, cos_sin_turns, log2_power, phase_of_ratio, LANES, VECTOR};
-use crate::waveform::{cos_turns, sin_turns, Placement, Synth, RAMP_SAMPLES};
+use crate::waveform::{cos_turns, sin_turns, Placement, Synth, RAMP_SAMPLES, TRANSITION};
 use crate::{
     encode_payload, Error, SAMPLES_PER_SYMBOL, SAMPLE_RATE, SYMBOL_COUNT, WAVEFORM_SAMPLES,
 };
@@ -108,6 +108,12 @@ const _: () = assert!(
 // `RAMP_SAMPLES`: the start of symbol 0 and the end of the last symbol),
 // so the envelope is exactly 1.0 there.
 const _: () = assert!(RAMP_SAMPLES <= CORE_START && CORE_END + RAMP_SAMPLES <= T);
+/// The samples between one symbol's core and the next symbol's, which the
+/// time search skips.
+const BETWEEN_CORES: usize = T - (CORE_END - CORE_START);
+// They lie within the two symbols' transition, so the phase the generator
+// adds over them depends only on the two symbols' tones ([`Skips`]).
+const _: () = assert!(TRANSITION.0 <= CORE_END && CORE_START <= TRANSITION.1);
 
 /// Most segments in one waveform (`run` uses `div_ceil` too).
 const MAX_SEGMENTS: usize = WAVEFORM_SAMPLES.div_ceil(SubtractConfig::MIN_SEGMENT);
@@ -126,13 +132,18 @@ const MIDDLE: f32 = WAVEFORM_SAMPLES as f32 / 2.0;
 
 /// Upper bound on [`subtract`]'s own stack storage, bytes: the per-symbol
 /// correlations, one set of per-group step sums and the 15 tone steps'
-/// rotations of the time search, the per-segment amplitudes and one block
-/// of reference phase and envelope. (The compiler's frames add scalars,
+/// rotations of the time search, the per-segment amplitudes, one block
+/// of reference phase and envelope, and the time search's skipped spans by
+/// tone pair. (The compiler's frames add scalars,
 /// temporaries and call overhead; the embedded link check reports them.)
 /// The held reference is not on the stack: it is in the caller's scratch
 /// ([`SUBTRACT_SCRATCH_BYTES`](SCRATCH_BYTES)).
-pub const STACK_BYTES: usize =
-    SYMBOL_COUNT * 8 + GROUPS * 15 * 8 + 15 * 8 + MAX_SEGMENTS * 8 + BLOCK * 8;
+pub const STACK_BYTES: usize = SYMBOL_COUNT * 8
+    + GROUPS * 15 * 8
+    + 15 * 8
+    + MAX_SEGMENTS * 8
+    + BLOCK * 8
+    + core::mem::size_of::<Skips>();
 
 /// Bytes of working storage with which [`subtract`] runs the reference
 /// once: a segment and a half of it held between the amplitude fit and the
@@ -423,16 +434,39 @@ fn blocks(
     }
 }
 
+/// The phase the generator adds over the samples the time search skips
+/// between two symbols' cores ([`BETWEEN_CORES`]), by the two symbols'
+/// tones (8 × the first + the second; [`TRANSITION`]). A pair's sum is
+/// taken by the generator when it is first met and reused after, so one
+/// `Skips` serves every step of the time search for one generator (its
+/// tones and base frequency) and must not be used with another.
+struct Skips {
+    sum: [u32; 64],
+    /// Bit p is set once `sum[p]` is known.
+    known: u64,
+}
+
+impl Skips {
+    fn new() -> Self {
+        Skips {
+            sum: [0; 64],
+            known: 0,
+        }
+    }
+}
+
 /// Per symbol, the audio times the conjugate unit reference starting at
 /// `start`, summed over the symbol's middle half. `work` (at least a
 /// block's [`PAIR`]s) holds a block's products between the loop that takes
-/// them and the sums, sample i of the block at slot i ([`slot`]).
+/// them and the sums, sample i of the block at slot i ([`slot`]). `skips`
+/// holds the skipped spans' phases of `synth` (see [`Skips`]).
 fn symbol_correlations(
     audio: &[f32],
     usable: Usable,
     synth: &Synth,
     start: i64,
     work: &mut [u8],
+    skips: &mut Skips,
 ) -> [(f32, f32); SYMBOL_COUNT] {
     // Reference sample j is sample j % T of symbol j / T: the waveform is
     // whole symbols and the generator starts at its first sample.
@@ -440,10 +474,7 @@ fn symbol_correlations(
     debug_assert_eq!(synth.position(), 0);
     let mut c = [(0.0f32, 0.0f32); SYMBOL_COUNT];
     let end = usable.range(start, 0, WAVEFORM_SAMPLES).1;
-    let core = |j0: usize| (CORE_START..CORE_END).contains(&(j0 % T));
-    blocks(synth, end, core, |j0, phase, env| {
-        // The middles are clear of the ramps: the envelope is 1.0 there.
-        debug_assert!(env.is_none());
+    let mut block = |j0: usize, phase: &[u32]| {
         let (a, b) = usable.range(start, j0, phase.len());
         if a == b {
             return;
@@ -458,7 +489,36 @@ fn symbol_correlations(
         // The conjugate's sine part: the sum's sign turned.
         c[k].0 += re;
         c[k].1 -= im;
-    });
+    };
+    // The generator over the cores, a block at a time, and over the rest
+    // only for its phase: up to the first core, then between cores by the
+    // skipped spans' sums. Nothing after the last core is needed, nor any
+    // block from `end` on.
+    let mut s = synth.clone();
+    let mut phase = [0u32; BLOCK];
+    s.skip_by_sum(CORE_START, &mut phase);
+    for k in 0..SYMBOL_COUNT {
+        let mut j0 = k * T + CORE_START;
+        while j0 < k * T + CORE_END {
+            if j0 >= end {
+                return c;
+            }
+            // The cores are clear of the ramps: the envelope is 1.0 there.
+            let n = s.fill_phase_only(&mut phase);
+            block(j0, &phase[..n]);
+            j0 += n;
+        }
+        if k + 1 == SYMBOL_COUNT || j0 + BETWEEN_CORES >= end {
+            break;
+        }
+        let pair = usize::from(s.tone(k)) * 8 + usize::from(s.tone(k + 1));
+        if skips.known & 1 << pair != 0 {
+            s.advance(BETWEEN_CORES, skips.sum[pair]);
+        } else {
+            skips.sum[pair] = s.skip_by_sum(BETWEEN_CORES, &mut phase);
+            skips.known |= 1 << pair;
+        }
+    }
     c
 }
 
@@ -955,9 +1015,10 @@ fn run(
     // estimate is used as it is; a larger one is measured again at the
     // moved start.
     let mut start = fixed.start.unwrap_or(nominal);
-    let sums_at = |at: i64, work: &mut [u8]| {
+    let mut skips = Skips::new();
+    let mut sums_at = |at: i64, work: &mut [u8]| {
         step_sums(
-            &symbol_correlations(audio, usable, &synth, at, work),
+            &symbol_correlations(audio, usable, &synth, at, work, &mut skips),
             &tones,
         )
     };
