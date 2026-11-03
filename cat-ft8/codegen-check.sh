@@ -76,12 +76,7 @@
 #   `vmls`; a floor of 230), 0 divisions (`umull`, `udiv`; a ceiling of 0)
 #   and 1 zero-fill call (`__aeabi_memclr4`, `__aeabi_memclr`, `memset`; a
 #   ceiling of 1).
-#   It was run against these forms (findings O20b), and fails on each: a
-#   radix-4 stage as loops (202 multiplies), the radix-3 stage (218), the
-#   radix-5 stage (171, 1 division), the later stages but radix 5 as loops
-#   (142), `stage` in place of the later stages (66, 4, 7) and
-#   `first_stage::<1>` for the first stage (243, 1, 2: the ceilings, not
-#   the floor).
+#   The forms it was run against are listed in findings O20b.
 #   It misses: the radix-2 stage alone as loops (234 passes), the form of
 #   the twiddle index (`% N` and a subtraction both pass), a zero fill by
 #   `__aeabi_memclr8` or a tail call, and what link-time optimisation does
