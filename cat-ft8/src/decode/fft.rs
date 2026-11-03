@@ -24,8 +24,10 @@
 //!   digit-reversed order (a compile-time table, read once per group of
 //!   blocks) and applies the window as it loads them; the later stages
 //!   work in place. With vectors ([`LANES`] above one), independent
-//!   butterflies run side by side so that vector units take them together;
-//!   with one lane, each butterfly is written out term by term. Each
+//!   butterflies run side by side so that vector units take them together
+//!   (the last stage, whose twiddles are strided, as plain loops the
+//!   compiler vectorises); with one lane, each butterfly is written out
+//!   term by term. Each
 //!   butterfly keeps its own operations in the same order, so the result
 //!   does not depend on the group size, the lane count or the target.
 //! - **Real split.** The 3 840 real samples are packed as 1 920 complex
@@ -229,9 +231,8 @@ fn hann(n: usize) -> f32 {
 
 /// Lane counts the transform takes: `Lanes::<L>::OK` fails to compile
 /// unless every stage after the first has a multiple of `L` butterflies per
-/// block (`l`, at least 4, so `L` is 1, 2 or 4) and the last stage's
-/// twiddle lanes cannot wrap (see [`stage`]): N a multiple of `L`·m for
-/// every m below the last radix. Both bounds come from [`STAGES`].
+/// block (`l`, at least 4, so `L` is 1, 2 or 4). (The last stage runs one
+/// butterfly per k whatever `L` is: [`last_stage`].)
 struct Lanes<const L: usize>;
 
 impl<const L: usize> Lanes<L> {
@@ -242,11 +243,6 @@ impl<const L: usize> Lanes<L> {
             assert!(l % L == 0, "lane count must divide every stage's l");
             l *= STAGES[i];
             i += 1;
-        }
-        let mut m = 1;
-        while m < STAGES[STAGES.len() - 1] {
-            assert!(N % (L * m) == 0, "last stage's twiddle lanes would wrap");
-            m += 1;
         }
     };
 }
@@ -322,9 +318,7 @@ const _: () = {
 ///
 /// The twiddles depend only on `k`. With several blocks they are read once
 /// per group of `k` and reused. The last stage has one block, so each is
-/// read where it is used: lane j of (m, q) is `TWIDDLES[f + j·m]`, where
-/// f = m·(k + q·l) mod N is a multiple of `L`·m (k and l are multiples of
-/// `L`, and N of `L`·m), so f + (`L` − 1)·m < N and the lanes do not wrap.
+/// read where it is used, and it runs as [`last_stage`] instead.
 ///
 /// **Precondition: finite input.** Skipping the product equals computing it
 /// only for finite values: with an infinite component the product's
@@ -340,40 +334,30 @@ fn stage<const R: usize, const L: usize, const S: usize>(re: &mut [f32; N], im: 
     let l = S;
     let span = l * R;
     let step = N / span; // W_span^x = W_N^(x · step)
-    let mut k0 = 0;
     if span == N {
-        while k0 < l {
-            butterflies::<R, L, S>(re, im, k0, |m, q| {
-                let f = (m * (k0 + q * l)) % N;
-                let t = &TWIDDLES[f..f + (L - 1) * m + 1];
-                (
-                    core::array::from_fn(|j| t[j * m][0]),
-                    core::array::from_fn(|j| t[j * m][1]),
-                )
-            });
-            k0 += L;
-        }
-    } else {
-        while k0 < l {
-            // Row m = 0 is filled too, though unused: with every entry
-            // written the array needs no zeroing first.
-            let mut w = [[([0.0f32; L], [0.0f32; L]); R]; R];
-            for (m, wm) in w.iter_mut().enumerate() {
-                for (q, wmq) in wm.iter_mut().enumerate() {
-                    for j in 0..L {
-                        let t = TWIDDLES[(m * (k0 + j + q * l) * step) % N];
-                        wmq.0[j] = t[0];
-                        wmq.1[j] = t[1];
-                    }
+        last_stage(re, im);
+        return;
+    }
+    let mut k0 = 0;
+    while k0 < l {
+        // Row m = 0 is filled too, though unused: with every entry
+        // written the array needs no zeroing first.
+        let mut w = [[([0.0f32; L], [0.0f32; L]); R]; R];
+        for (m, wm) in w.iter_mut().enumerate() {
+            for (q, wmq) in wm.iter_mut().enumerate() {
+                for j in 0..L {
+                    let t = TWIDDLES[(m * (k0 + j + q * l) * step) % N];
+                    wmq.0[j] = t[0];
+                    wmq.1[j] = t[1];
                 }
             }
-            let mut base = k0;
-            while base < N {
-                butterflies::<R, L, S>(re, im, base, |m, q| w[m][q]);
-                base += span;
-            }
-            k0 += L;
         }
+        let mut base = k0;
+        while base < N {
+            butterflies::<R, L, S>(re, im, base, |m, q| w[m][q]);
+            base += span;
+        }
+        k0 += L;
     }
 }
 
@@ -435,6 +419,98 @@ fn butterflies<const R: usize, const L: usize, const S: usize>(
             i[q * l + j] = si[j];
         }
     });
+}
+
+/// The last stage's radix and sub-transform length (one block of `N`).
+const LAST_R: usize = STAGES[STAGES.len() - 1];
+const LAST_L: usize = N / LAST_R;
+
+/// The last stage's twiddle of (m, q) at k is W_N^(m·(k + q·`LAST_L`)),
+/// whose index m·k + `LAST_L`·(m·q mod `LAST_R`) is below 2N: it is the
+/// table's when below N and N less otherwise. Over k in `0..LAST_L` that
+/// changes where m·k reaches N − `LAST_L`·r for some m and r < `LAST_R`;
+/// these are the boundaries between which no index changes side, so that
+/// within a segment each one is m·k plus a constant. Computed at compile
+/// time: the ascending boundaries, `LAST_SEGMENTS` + 1 of them, from 0 to
+/// `LAST_L`.
+const LAST_BOUNDS: [usize; LAST_SEGMENTS + 1] = {
+    let mut b = [0usize; LAST_SEGMENTS + 1];
+    let mut n = 1;
+    let mut at = 1;
+    while at < LAST_L {
+        let mut edge = false;
+        let mut m = 1;
+        while m < LAST_R {
+            let mut r = 1;
+            while r < LAST_R {
+                // The first k with m·k + LAST_L·r ≥ N.
+                let first = (N - LAST_L * r).div_ceil(m);
+                edge |= first == at;
+                r += 1;
+            }
+            m += 1;
+        }
+        if edge {
+            assert!(n < LAST_SEGMENTS, "more boundaries than LAST_SEGMENTS");
+            b[n] = at;
+            n += 1;
+        }
+        at += 1;
+    }
+    assert!(n == LAST_SEGMENTS, "fewer boundaries than LAST_SEGMENTS");
+    b[n] = LAST_L;
+    b
+};
+/// The last stage's segments ([`LAST_BOUNDS`]); [`last_stage`] runs one
+/// call per segment.
+const LAST_SEGMENTS: usize = 6;
+
+/// Index into `TWIDDLES` of the last stage's (m, q) at k for k in the
+/// segment that starts at `lo`: m·(k + q·`LAST_L`) mod N, as m·k plus a
+/// constant ([`LAST_BOUNDS`]).
+#[inline(always)]
+fn last_twiddle_index(m: usize, q: usize, k: usize, lo: usize) -> usize {
+    let c = LAST_L * ((m * q) % LAST_R);
+    let wrap = if m * lo + c >= N { N } else { 0 };
+    m * k + c - wrap
+}
+
+/// The last stage (radix 5, `l` = 384, one block) where vectors are taken:
+/// one butterfly per k, each with its own operations in [`stage`]'s order
+/// ([`radix_sums`] with one lane), in a plain loop over k for each segment
+/// ([`LAST_BOUNDS`]), so that within a segment each twiddle index is m·k
+/// plus a constant. The compiler vectorises those loops across adjacent k
+/// and loads each m's twiddles, m apart in the table, as interleaved
+/// vectors (`ld2` and `ld4` on AArch64) rather than lane by lane (rustc
+/// 1.93.0): findings O26. The result is that of `stage` with any lane
+/// count, and of [`last_straight_stage`], bit for bit.
+#[inline(always)]
+fn last_stage(re: &mut [f32; N], im: &mut [f32; N]) {
+    last_segment::<0>(re, im);
+    last_segment::<1>(re, im);
+    last_segment::<2>(re, im);
+    last_segment::<3>(re, im);
+    last_segment::<4>(re, im);
+    last_segment::<5>(re, im);
+}
+
+const _: () = assert!(LAST_SEGMENTS == 6, "last_stage calls six segments");
+
+/// [`last_stage`] over the k of segment `SEG`.
+#[inline(always)]
+fn last_segment<const SEG: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
+    let (lo, hi) = (LAST_BOUNDS[SEG], LAST_BOUNDS[SEG + 1]);
+    for k in lo..hi {
+        let ar: [[f32; 1]; LAST_R] = core::array::from_fn(|m| [re[k + m * LAST_L]]);
+        let ai: [[f32; 1]; LAST_R] = core::array::from_fn(|m| [im[k + m * LAST_L]]);
+        radix_sums!(LAST_R, 1, ar, ai, (m, q) => {
+            let [wr, wi] = TWIDDLES[last_twiddle_index(m, q, k, lo)];
+            ([wr], [wi])
+        }, (sr, si) => {
+            re[k + q * LAST_L] = sr[0];
+            im[k + q * LAST_L] = si[0];
+        });
+    }
 }
 
 /// Index into `TWIDDLES` of W_span^(m·(k + q·l)) for a radix-`R` stage over

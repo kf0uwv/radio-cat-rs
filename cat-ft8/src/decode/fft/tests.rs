@@ -622,6 +622,32 @@ fn twiddle_index_equals_the_stage_index() {
     check::<5>(384);
 }
 
+#[test]
+fn last_twiddle_index_equals_the_stage_index() {
+    // Every (k, m, q) of the last stage, in its segment: the index `stage`
+    // computes with a division, and each segment's index m·k plus one
+    // constant.
+    assert_eq!(LAST_BOUNDS[0], 0);
+    assert_eq!(LAST_BOUNDS[LAST_SEGMENTS], LAST_L);
+    for seg in 0..LAST_SEGMENTS {
+        let (lo, hi) = (LAST_BOUNDS[seg], LAST_BOUNDS[seg + 1]);
+        assert!(lo < hi, "segment {seg}");
+        for k in lo..hi {
+            for m in 0..LAST_R {
+                for q in 0..LAST_R {
+                    let want = (m * (k + q * LAST_L)) % N;
+                    let got = last_twiddle_index(m, q, k, lo);
+                    assert_eq!(got, want, "k {k} m {m} q {q}");
+                    assert_eq!(
+                        got.wrapping_sub(m * k),
+                        last_twiddle_index(m, q, lo, lo).wrapping_sub(m * lo)
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Inputs for the stages after the first, each named: noise at several
 /// scales, signed zeros mixed with values, subnormals, the largest values
 /// the front end passes (±2¹⁶ · N) and impulses.

@@ -282,6 +282,7 @@ mod tests {
         "STEPS",  // the decode command's profile names (not in the library)
         // The contents of DIGIT_REV as a constant, for compile-time checks.
         "DIGIT_REV_TABLE",
+        "LAST_BOUNDS", // the FFT's last-stage segments, folded into code
     ];
 
     #[test]
