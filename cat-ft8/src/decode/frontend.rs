@@ -272,7 +272,7 @@ impl Rows<'_> {
 
     /// Row `r`'s levels, one per stored bin, or `None` if the row is not
     /// filled yet.
-    // Not inlined into the M33 sync sum: findings O21, codegen-check `sumloop`.
+    // Must stay out of line from the M33 sync sum (+3.4%): findings O21, codegen-check `sumloop`.
     pub(crate) fn row(&self, r: usize) -> Option<&[u8]> {
         if r >= self.count {
             return None;
