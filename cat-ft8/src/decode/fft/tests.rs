@@ -765,7 +765,8 @@ fn powers_equal_the_reference_bit_for_bit() {
     // Windows of noise at several scales up to the input limit, silence,
     // a constant, full-scale tones on and between bins, and subnormals;
     // every bin, and ranges that start and end at bin 0, at 960 / 961
-    // (where the split twiddle turns) and across chunk boundaries.
+    // (where the split twiddle turns) and across chunk boundaries; and both
+    // forms of `powers`' loop over each range.
     let mut seed = 0x9e37_79b9_7f4a_7c15u64;
     let mut windows: Vec<[f32; WINDOW]> = Vec::new();
     for scale in [1e-30f32, 1e-6, 0.03, 1.0, 65_536.0] {
@@ -813,6 +814,21 @@ fn powers_equal_the_reference_bit_for_bit() {
             power_spectrum(x, &mut buf, first, &mut got);
             for (i, (g, w)) in got.iter().zip(&want[first..first + count]).enumerate() {
                 assert_eq!(g.to_bits(), w.to_bits(), "bin {}: {g:e} {w:e}", first + i);
+            }
+            // Both loop forms, on the transform the call left in `buf`.
+            let (re, im) = buf.parts();
+            let (mut zipped, mut indexed) =
+                (std::vec![f32::NAN; count], std::vec![f32::NAN; count]);
+            bin_powers_as::<false>(re, im, first, &mut zipped);
+            bin_powers_as::<true>(re, im, first, &mut indexed);
+            for (i, ((z, x), w)) in zipped
+                .iter()
+                .zip(&indexed)
+                .zip(&want[first..first + count])
+                .enumerate()
+            {
+                assert_eq!(z.to_bits(), w.to_bits(), "zipped, bin {}", first + i);
+                assert_eq!(x.to_bits(), w.to_bits(), "indexed, bin {}", first + i);
             }
         }
     }

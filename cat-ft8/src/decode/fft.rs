@@ -39,6 +39,7 @@
 //! The twiddle, real-split and window tables are static data generated
 //! with `libm` and checked bit-for-bit by a test (`tables.rs`).
 
+use super::math::SCALAR_FORMS;
 use super::tables::{HANN_HALF, SPLIT_TWIDDLES, TWIDDLES};
 
 /// Samples in one analysis window (two symbols at 12 kHz).
@@ -810,9 +811,13 @@ fn bin_power(ar: f32, ai: f32, cr: f32, ci: f32, wr: f32, wi: f32) -> f32 {
 /// Powers of bins `k .. k + out.len()` (1 ≤ k, k + out.len() ≤ N) into
 /// `out`, the real-split twiddle of bin k + j being `tw[j]`, or, if
 /// `ROTATE`, −i · `tw[j]` (exact: W₃₈₄₀ᵏ = −i · W₃₈₄₀^(k−960)). A plain
-/// loop over bins, so it vectorises.
+/// loop over bins, so it vectorises. With `INDEXED` (the targets without
+/// a vector unit, [`bin_powers_apart`]) the loop indexes its slices rather
+/// than zipping their iterators, which leaves out the zipped lengths'
+/// checks: on the Cortex-M33 35 instructions a bin instead of 42 (rustc
+/// 1.93.0, opt-level "s"; findings O26). The same values either way.
 #[inline(always)]
-fn powers<const ROTATE: bool>(
+fn powers<const ROTATE: bool, const INDEXED: bool>(
     re: &[f32; N],
     im: &[f32; N],
     k: usize,
@@ -824,6 +829,14 @@ fn powers<const ROTATE: bool>(
     let tw = &tw[..n];
     // Z[N − k − j] for j = 0..n, in reverse order.
     let (cr, ci) = (&re[N + 1 - k - n..N + 1 - k], &im[N + 1 - k - n..N + 1 - k]);
+    if INDEXED {
+        for j in 0..n {
+            let w = tw[j];
+            let (wr, wi) = if ROTATE { (w[1], -w[0]) } else { (w[0], w[1]) };
+            out[j] = bin_power(ar[j], ai[j], cr[n - 1 - j], ci[n - 1 - j], wr, wi);
+        }
+        return;
+    }
     let c = cr.iter().rev().zip(ci.iter().rev());
     for ((((slot, &ar), &ai), (&cr, &ci)), w) in out.iter_mut().zip(ar).zip(ai).zip(c).zip(tw) {
         let (wr, wi) = if ROTATE { (w[1], -w[0]) } else { (w[0], w[1]) };
@@ -883,8 +896,28 @@ pub(crate) fn power_bins<F: FnMut(usize, &[f32])>(
 
 /// Powers of real-transform bins `k0 .. k0 + out.len()` into `out`: bin 0
 /// (which pairs with itself), the bins to 960 and those above as separate
-/// plain loops, which vectorise where the target has vectors.
+/// plain loops, which vectorise where the target has vectors. Where it has
+/// none ([`SCALAR_FORMS`]), [`bin_powers_apart`].
 fn bin_powers(re: &[f32; N], im: &[f32; N], k0: usize, out: &mut [f32]) {
+    if SCALAR_FORMS {
+        bin_powers_apart(re, im, k0, out);
+    } else {
+        bin_powers_as::<false>(re, im, k0, out);
+    }
+}
+
+/// [`bin_powers`] for the targets without a vector unit: out of line, so
+/// that its loops keep their pointers in registers (inlined into the front
+/// end's row, the Cortex-M33 recomputed each address from the buffer's
+/// base), and with [`powers`]' indexed loop.
+#[inline(never)]
+fn bin_powers_apart(re: &[f32; N], im: &[f32; N], k0: usize, out: &mut [f32]) {
+    bin_powers_as::<true>(re, im, k0, out);
+}
+
+/// [`bin_powers`], with [`powers`]' `INDEXED` form or not.
+#[inline(always)]
+fn bin_powers_as<const INDEXED: bool>(re: &[f32; N], im: &[f32; N], k0: usize, out: &mut [f32]) {
     let n = out.len();
     let zero = usize::from(k0 == 0);
     if zero == 1 {
@@ -894,7 +927,7 @@ fn bin_powers(re: &[f32; N], im: &[f32; N], k0: usize, out: &mut [f32]) {
     let k1 = k0 + zero;
     let low = (k0 + n).min(961).saturating_sub(k1);
     if low > 0 {
-        powers::<false>(
+        powers::<false, INDEXED>(
             re,
             im,
             k1,
@@ -904,7 +937,7 @@ fn bin_powers(re: &[f32; N], im: &[f32; N], k0: usize, out: &mut [f32]) {
     }
     let k2 = k1 + low;
     if zero + low < n {
-        powers::<true>(
+        powers::<true, INDEXED>(
             re,
             im,
             k2,

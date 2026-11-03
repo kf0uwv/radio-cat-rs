@@ -72,8 +72,9 @@
 # - thumbv8m.main with the cfg at opt-level "s" (the size the embedded
 #   check builds at, though this is the library, not the linked image):
 #   the FFT, inlined into `finish_row`, written out butterfly by butterfly
-#   with one lane. With rustc 1.93.0: 238 `f32` multiplies (`vmul`, `vmla`,
-#   `vmls`; a floor of 230), 0 divisions (`umull`, `udiv`; a ceiling of 0)
+#   with one lane. With rustc 1.93.0: 207 `f32` multiplies (`vmul`, `vmla`,
+#   `vmls`; a floor of 199: 238 and 230 before the bins' powers went out
+#   of line with their 31, findings O26), 0 divisions (`umull`, `udiv`; a ceiling of 0)
 #   and 1 zero-fill call (`__aeabi_memclr4`, `__aeabi_memclr`, `memset`; a
 #   ceiling of 1).
 #   The forms it was run against are listed in findings O20b.
@@ -163,6 +164,11 @@
 #   instructions in `finish_row` (`vec2`, a ceiling of 32: 16 with rustc
 #   1.93.0, from the transform; 170 with two counts in `usize`, which
 #   widened each byte to 64-bit lanes).
+# - the powers of a row's bins on thumbv8m.main with the cfg at opt-level
+#   "s" out of line and with indexed slices (`bin_powers_apart`, findings
+#   O26): the shortest loop with four `f32` adds, a ceiling of 35 (34 with
+#   rustc 1.93.0; 37 with the zipped iterators out of line, 42 inlined
+#   into `finish_row`, where the function is not found).
 # The multiplication by an envelope of 1.0 that the reference leaves out
 # (the weight folded by the compiler) is not checked: findings O18b.
 # A bound that fails means: re-measure before changing it (planning/
@@ -242,7 +248,7 @@ checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 4Fit410add_all_as vec4 12"
   "a64 6blocks shuffles 12" "a64 6blocks vec4 400"
   "m33 7Removal4refs vminmax 8"
-  "m33s 10finish_row fpmul 230" "m33s 10finish_row divides 0" "m33s 10finish_row zerofills 1"
+  "m33s 10finish_row fpmul 199" "m33s 10finish_row divides 0" "m33s 10finish_row zerofills 1"
   "m33s 6select sumloop3 16"
   "m33s 4Fit410add_all_as fploop5 15" "m33s 6blocks carries 24"
   "m33s 10Correction absent 0"
@@ -253,7 +259,7 @@ checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit410add_all_as libcalls 0"
   "a64 within_limit vecor 2" "m33s within_limit shortloop 4" "m33s 7Removal4refs fploop4 21"
   "a64 4feed checks 2" "m33s 4feed checks 2" "a64 10finish_row ldn 48"
-  "a64 10finish_row vec2 32")
+  "a64 10finish_row vec2 32" "m33s bin_powers_apart fploop4 35")
 
 declare -A asm
 for b in "${builds[@]}"; do
