@@ -64,7 +64,8 @@
 #   have none). `Removal::refs` has its `fmaxnm`/`fminnm` floor;
 #   `Fit4::add_all` a floor of 12 `.4s` instructions (18 with rustc
 #   1.93; 8 with its four-lane step `add4` out of line) and `blocks` 400
-#   (549; 0 with `scaled_cos_sin` out of line).
+#   (443 with rustc 1.93 since O23's cheaper polynomial, 549 before it; 0
+#   with `scaled_cos_sin` out of line).
 # - thumbv8m.main with the cfg: `vmaxnm`/`vminnm` in the removal, a
 #   floor: 20 with rustc 1.93, 0 without the cfg;
 # - thumbv7em: calls of `fmaxf`/`fminf` in the removal,
@@ -90,6 +91,22 @@
 #   the correction's `apply` out of line, `blocks` keeps 15 carry adds,
 #   under the ceiling, so the count alone would pass). The forms were run
 #   in findings O22 and O22b.
+# - the polynomial of the subtraction's reference and of the time search's
+#   products (`cos_sin_turns_times`): its remainder by one shift and its
+#   quarter by one sign word, and on the Cortex-M33 the quarter's swap as
+#   `f32` selects and the half turn's sign after the weight, in integer
+#   registers. With rustc 1.93.0 the shortest loop with four conversions
+#   (`scvtf`) has 100 instructions in `blocks` on AArch64 (a ceiling of
+#   104; 107 with the remainder by mask, 112 with two sign words) and 137
+#   in symbol_correlations (a ceiling of 142; 148 and 157); on thumbv8m.main
+#   with the cfg at opt-level "s" the shortest loop with a conversion
+#   (`vcvt`) has 30 in `blocks` (a ceiling of 31; 32 with the swap by bit
+#   operations, 32 with the sign before the weight) and 39 in the
+#   subtraction's closure, where the time search's products are inlined (a
+#   ceiling of 40; 45 and 41), and `blocks` has no `vneg` (a ceiling of 0;
+#   12 with the sign before the weight). The forms were run in findings
+#   O23. The remainder's one instruction a sample on the Cortex-M33 is
+#   within these ceilings' margin there; AArch64's bounds catch it.
 #   It misses: the radix-2 stage alone as loops (234 passes), the form of
 #   the twiddle index (`% N` and a subtraction both pass), a zero fill by
 #   `__aeabi_memclr8` or a tail call, and what link-time optimisation does
@@ -137,7 +154,9 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # value or `Rows::row` is inlined into it (findings O21). `fploopN` counts
 # the instructions of the shortest loop with at least N `f32`
 # multiply-accumulates or adds (`vmla`, `vmls`, `vadd`, `vsub`), at most the
-# bound, and a function with no such loop fails it likewise; `carries`
+# bound, and a function with no such loop fails it likewise; `cvtloopN`
+# likewise with at least N conversions from integers (`scvtf`,
+# `vcvt.f32.s32`); `fpneg` counts `vneg.f32`, at most the bound; `carries`
 # counts `adc` (the high word of a 64-bit add), at most the bound;
 # `absent` passes only if no function's label holds the name (the bound is
 # unused), that is, if it was inlined everywhere; it sees only a type's own
@@ -156,6 +175,8 @@ checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "m33s 6select sumloop 26"
   "m33s 4Fit47add_all fploop5 22" "m33s 15whole_lane_sums fploop2 11" "m33s 6blocks carries 24"
   "m33s 10Correction absent 0"
+  "a64 6blocks cvtloop4 104" "a64 symbol_correlations cvtloop4 142"
+  "m33s 6blocks cvtloop1 31" "m33s 3run28_\$u7b\$\$u7b\$closure cvtloop1 40" "m33s 6blocks fpneg 0"
   "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit47add_all libcalls 0")
 
 declare -A asm
@@ -189,17 +210,20 @@ for entry in "${checks[@]}"; do
     /^\.Lfunc_end[0-9]+:/ { p = 0; next }
     /^[A-Za-z_][^ \t]*:$/ { p = index($0, f) > 0; if (p) found = 1; delete at; next }
     !p { next }
-    metric ~ /^(sumloop|fploop)/ && /^\.[A-Za-z0-9_$]+:/ {
-      sub(/:.*/, ""); at[$0] = k; atb[$0] = bytes; atf[$0] = fps; next
+    metric ~ /^(sumloop|fploop|cvtloop)/ && /^\.[A-Za-z0-9_$]+:/ {
+      sub(/:.*/, ""); at[$0] = k; atb[$0] = bytes; atf[$0] = fps; atc[$0] = cvs; next
     }
-    metric ~ /^(sumloop|fploop)/ && /^\t[a-z]/ {
+    metric ~ /^(sumloop|fploop|cvtloop)/ && /^\t[a-z]/ {
       k++
       if ($1 ~ /^ldrb/) bytes++
       if ($1 ~ /^v(mla|mls|add|sub)\.f32$/) fps++
-      back = $1 ~ /^(b[a-z]*(\.[nw])?|cbn?z)$/ && ($NF in at)
+      if ($1 ~ /^(scvtf|vcvt\.f32\.s32)$/) cvs++
+      back = $1 ~ /^(b[a-z]*(\.[nw])?|b\.[a-z]+|cbn?z|tbn?z)$/ && ($NF in at)
       if (back && metric == "sumloop" && bytes - atb[$NF] == 9 &&
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
       if (back && metric ~ /^fploop/ && fps - atf[$NF] >= substr(metric, 7) + 0 &&
+          (best == "" || k - at[$NF] < best)) best = k - at[$NF]
+      if (back && metric ~ /^cvtloop/ && cvs - atc[$NF] >= substr(metric, 8) + 0 &&
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
     }
     metric == "vec4" && /^\t[a-z][^\t]*\t.*\.4s/ { n++ }
@@ -214,9 +238,10 @@ for entry in "${checks[@]}"; do
     metric == "divides" && /^\t(umull|udiv)\t/ { n++ }
     metric == "zerofills" && /^\tbl\t(__aeabi_memclr4|__aeabi_memclr|memset)$/ { n++ }
     metric == "carries" && /^\tadc/ { n++ }
+    metric == "fpneg" && /^\tvneg\.f32\t/ { n++ }
     END {
       if (!found) print "missing"
-      else if (metric ~ /^(sumloop|fploop)/) print (best == "" ? "noloop" : best)
+      else if (metric ~ /^(sumloop|fploop|cvtloop)/) print (best == "" ? "noloop" : best)
       else print n + 0
     }' "${asm[$key]}")
   if [ "$metric" = absent ]; then
@@ -236,6 +261,7 @@ for entry in "${checks[@]}"; do
   if [ "$n" = noloop ]; then
     case "$metric" in
       sumloop) echo "FAIL $key $name: no loop with nine byte loads (moved or unrolled?)" ;;
+      cvtloop*) echo "FAIL $key $name: no loop with ${metric#cvtloop} conversions (moved or unrolled?)" ;;
       *) echo "FAIL $key $name: no loop with ${metric#fploop} f32 adds (moved or unrolled?)" ;;
     esac
     fail=1
@@ -255,7 +281,9 @@ for entry in "${checks[@]}"; do
     zerofills) what="zero-fill calls (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     sumloop) what="instructions in the summing loop (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     fploop*) what="instructions in the loop of ${metric#fploop} f32 adds (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    cvtloop*) what="instructions in the loop of ${metric#cvtloop} conversions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     carries) what="carry adds (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    fpneg) what="f32 negations (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     *) what="unknown metric $metric"; ok=0 ;;
   esac
   if [ $ok = 1 ]; then
