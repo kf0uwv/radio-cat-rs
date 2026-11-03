@@ -253,12 +253,12 @@ pub fn refine(spec: &Spectrogram<'_>, c: &Candidate) -> (f32, f32) {
 /// No score at this point of the grid.
 const NONE: i32 = i32::MIN;
 
-/// Local-maximum suppression and top-K selection over a `rows × cols`
-/// score grid whose row q `score(q, row)` fills with cells ([`NONE`] for no
-/// score), visited row by row with a rolling
-/// three-row buffer. Every row is filled before it is read, so the scratch's
-/// earlier contents do not matter and it holds nothing afterwards. Keeps points scoring at least `min_score`, ordered by
-/// score descending, then (q, b) ascending; `make` builds the entries.
+/// Local-maximum suppression and top-K selection over a `rows × cols` score
+/// grid whose row q `score(q, row)` fills with cells ([`NONE`] for no score),
+/// visited row by row with a rolling three-row buffer. Every row is filled
+/// before it is read, so the scratch's earlier contents do not matter and it
+/// holds nothing afterwards. Keeps points scoring at least `min_score`,
+/// ordered by score descending, then (q, b) ascending; `make` builds entries.
 pub(crate) fn select<T, S, M>(
     rows: usize,
     cols: usize,
