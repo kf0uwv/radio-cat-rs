@@ -355,7 +355,9 @@ fn refinement_moves_towards_sub_grid_offsets() {
 fn row_scores_equal_the_single_scores() {
     // Signals and noise, in a full slot and in slots cut where one, two
     // and all three Costas arrays of some start rows are filled; every
-    // start row the search visits and a few beyond, every base bin.
+    // start row the search visits and a few beyond, every base bin; both
+    // forms of the row sums (each bin's eight tones afresh, and running
+    // sums along the bins), on every band width from the narrowest.
     let mut slot = empty_slot();
     add_noise(&mut slot, NOISE_RMS, 11);
     for (k, msg) in ["CQ K1ABC FN42", "K1ABC W9XYZ -11", "W9XYZ K1ABC R-07"]
@@ -375,6 +377,8 @@ fn row_scores_equal_the_single_scores() {
         Band::DEFAULT,
         Band::SMALL,
         Band::from_hz(1_000, 1_200).unwrap(),
+        // The narrowest band: nine base bins.
+        Band::from_hz(1_000, 1_025).unwrap(),
     ] {
         for samples in [SLOT_SAMPLES, 50_000, 90_000, 130_000, 3_000] {
             let mut built = Built::new(band);
@@ -383,11 +387,20 @@ fn row_scores_equal_the_single_scores() {
                 let mut row = vec![0.0f32; cols];
                 let first = NOMINAL_START_ROW - MAX_START_OFFSET - 3;
                 for start in first..first + START_ROWS as i32 + 6 {
-                    costas_scores(spec.rows(), start, &mut row);
-                    for (b, &got) in row.iter().enumerate() {
-                        let want = costas_score(spec, start, b).unwrap_or(NONE);
-                        let got = score_of(got);
-                        assert_eq!(got, want, "samples {samples} start {start} base {b}");
+                    for vector_form in [true, false] {
+                        if vector_form {
+                            costas_scores::<true>(spec.rows(), start, &mut row);
+                        } else {
+                            costas_scores::<false>(spec.rows(), start, &mut row);
+                        }
+                        for (b, &got) in row.iter().enumerate() {
+                            let want = costas_score(spec, start, b).unwrap_or(NONE);
+                            let got = score_of(got);
+                            assert_eq!(
+                                got, want,
+                                "samples {samples} start {start} base {b} {vector_form}"
+                            );
+                        }
                     }
                 }
             });

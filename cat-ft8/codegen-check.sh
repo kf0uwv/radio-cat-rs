@@ -17,7 +17,7 @@
 # clamp and its reference's loads and stores are still vectorised on
 # AArch64, that the clamp keeps its form on the microcontroller targets,
 # that the FFT stays written out butterfly by butterfly on the Cortex-M33,
-# and that the sync search's summing loop keeps its registers there.
+# and that the sync search's running sums keep their loop there.
 # Their speed depends on code generation that no test sees: the
 # sum-product round's tanh and atanh passes 24 values at a time
 # (`PASS_LANES`), its products over four checks in the lanes of one
@@ -170,12 +170,16 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # bound; `fpmul` counts `vmul`, `vmla` and `vmls` on `f32`, at least the
 # bound; `divides` counts `umull` and `udiv`, at most the bound;
 # `zerofills` counts calls of `__aeabi_memclr4`, `__aeabi_memclr` and
-# `memset`, at most the bound; `sumloop` counts the instructions of the
-# shortest loop with nine byte loads, the eight tones' levels and the
-# expected tone's, at most the bound, and a function with no such loop fails
-# it with its own message. The sum's speed depends on what else is live
-# around that loop, so it fails if the rows are passed to `costas_scores` by
-# value or `Rows::row` is inlined into it (findings O21). `fploopN` counts
+# `memset`, at most the bound; `sumloopN` counts the instructions of the
+# shortest loop with N byte loads, at most the bound, and a function with no
+# such loop fails it with its own message: the sync search's running sums
+# (findings O25) read three levels a bin (the expected tone's, and tone 7's
+# and tone 0's entering and leaving the sum), 15 instructions with rustc
+# 1.93.0 (a ceiling of 16; the eight tones added afresh, 24 instructions
+# with nine byte loads, have no such loop). The sum's speed depends on what
+# else is live around that loop, so it failed if the rows were passed to
+# `costas_scores` by value or `Rows::row` inlined into it (findings O21, for
+# the nine-load loop). `fploopN` counts
 # the instructions of the shortest loop with at least N `f32`
 # multiply-accumulates or adds (`vmla`, `vmls`, `vadd`, `vsub`), at most the
 # bound, and a function with no such loop fails it likewise; `cvtloopN`
@@ -209,7 +213,7 @@ checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 6blocks shuffles 12" "a64 6blocks vec4 400"
   "m33 7Removal4refs vminmax 8"
   "m33s 10finish_row fpmul 230" "m33s 10finish_row divides 0" "m33s 10finish_row zerofills 1"
-  "m33s 6select sumloop 26"
+  "m33s 6select sumloop3 16"
   "m33s 4Fit410add_all_as fploop5 15" "m33s 6blocks carries 24"
   "m33s 10Correction absent 0"
   "a64 6blocks cvtloop4 104"
@@ -263,7 +267,7 @@ for entry in "${checks[@]}"; do
       if ($1 ~ /^ldr/) lds++
       if ($1 ~ /^v/) vs++
       back = $1 ~ /^(b[a-z]*(\.[nw])?|b\.[a-z]+|cbn?z|tbn?z)$/ && ($NF in at)
-      if (back && metric == "sumloop" && bytes - atb[$NF] == 9 &&
+      if (back && metric ~ /^sumloop/ && bytes - atb[$NF] == substr(metric, 8) + 0 &&
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
       if (back && metric ~ /^fploop/ && fps - atf[$NF] >= substr(metric, 7) + 0 &&
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
@@ -314,7 +318,7 @@ for entry in "${checks[@]}"; do
   fi
   if [ "$n" = noloop ]; then
     case "$metric" in
-      sumloop) echo "FAIL $key $name: no loop with nine byte loads (moved or unrolled?)" ;;
+      sumloop*) echo "FAIL $key $name: no loop with ${metric#sumloop} byte loads (moved or unrolled?)" ;;
       cvtloop*) echo "FAIL $key $name: no loop with ${metric#cvtloop} conversions (moved or unrolled?)" ;;
       shortloop) echo "FAIL $key $name: no loop" ;;
       *) echo "FAIL $key $name: no loop with ${metric#fploop} f32 adds (moved or unrolled?)" ;;
@@ -334,7 +338,7 @@ for entry in "${checks[@]}"; do
     fpmul) what="f32 multiplies (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     divides) what="divisions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     zerofills) what="zero-fill calls (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
-    sumloop) what="instructions in the summing loop (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    sumloop*) what="instructions in the summing loop (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     fploop*) what="instructions in the loop of ${metric#fploop} f32 adds (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     cvtloop*) what="instructions in the loop of ${metric#cvtloop} conversions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     carries) what="carry adds (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;

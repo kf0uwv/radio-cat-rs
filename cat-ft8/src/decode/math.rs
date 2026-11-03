@@ -244,10 +244,11 @@ pub(crate) const LANES: usize = 4;
 /// the tests run both on any host.
 pub(crate) const VECTOR: bool = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
 
-/// Whether the subtraction's per-target forms take their side for targets
-/// without a vector unit: the reference's layout (a group of one), the time
-/// search's sums (one lane at a time) and the generator's fused overlap
-/// runs. That is `!VECTOR`, and also the tests built with
+/// Whether the per-target forms take their side for targets without a
+/// vector unit: the subtraction's reference layout (a group of one), its
+/// time search's sums (one lane at a time) and the generator's fused
+/// overlap runs, and the sync search's running sums along the bins. That is
+/// `!VECTOR`, and also the tests built with
 /// `--cfg cat_ft8_test_group_one`, so that a host runs those forms end to
 /// end. (`CHAINS`, the grouped running sum and the other `VECTOR` choices,
 /// such as belief propagation's, keep the host's.)

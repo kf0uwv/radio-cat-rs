@@ -35,6 +35,7 @@
 //!   keeps the best `out.len()`; the rest are counted as dropped.
 
 use super::frontend::{Rows, Spectrogram};
+use super::math::SCALAR_FORMS;
 use crate::symbols::{COSTAS, COSTAS_POSITIONS};
 use crate::Error;
 
@@ -132,7 +133,7 @@ pub(crate) fn search_rows(
     select(
         START_ROWS,
         cols,
-        |q, out| costas_scores(rows, first_row + q as i32, out),
+        |q, out| costas_scores::<{ !SCALAR_FORMS }>(rows, first_row + q as i32, out),
         min_score,
         scratch,
         out,
@@ -144,12 +145,44 @@ pub(crate) fn search_rows(
     )
 }
 
+/// One Costas symbol's row for [`costas_scores`] without a vector unit: adds
+/// `8 · level(b + 2·tone) − Σₜ level(b + 2t)` (t = 0..8, the eight tones
+/// two bins apart) to `out[b]` at every base bin b < `out.len()`, from the
+/// row's levels `row`. The eight tones' sum at bin b is the one at b − 2,
+/// less tone 0's level there and plus tone 7's at b: running sums along the
+/// even and the odd bins, so a bin reads three levels rather than nine.
+/// Integers: the same values as adding the eight afresh.
+#[inline(always)]
+fn add_row_running(row: &[u8], tone: usize, out: &mut [ScoreCell]) {
+    let cols = out.len();
+    // Tone 7's level at the last bin is the row's last one used.
+    let row = &row[..cols + 14];
+    let sent = &row[2 * tone..2 * tone + cols];
+    let level = |k: usize| i32::from(row[k]);
+    for first in 0..cols.min(2) {
+        let mut all = (0..8).fold(0, |s, t| s + level(first + 2 * t));
+        let mut b = first;
+        loop {
+            out[b] = cell_of(score_of(out[b]) + 8 * i32::from(sent[b]) - all);
+            if b + 2 >= cols {
+                break;
+            }
+            // Tone 0's level at b leaves the sum, tone 7's at b + 2 enters.
+            all += level(b + 16) - level(b);
+            b += 2;
+        }
+    }
+}
+
 /// [`costas_score`] at every base bin `0..out.len()` of one start row, into
 /// `out` as cells ([`NONE`] where there is none): the same integer sums,
 /// added in another order (exact), a row of the spectrogram at a time so the
-/// inner loop runs along the bins and vectorises.
-// `spec` must stay a reference for the M33 sync sum (+3.4%): findings O21, codegen-check `sumloop`.
-fn costas_scores(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
+/// inner loop runs along the bins. With `VECTOR_FORM` (where the target has
+/// a vector unit) each bin's eight tones are added afresh, which
+/// vectorises; otherwise by running sums ([`add_row_running`]).
+// `spec` must stay a reference for the M33 sync sum (+3.4% for the loop of
+// nine loads): findings O21, codegen-check `sumloop3`.
+fn costas_scores<const VECTOR_FORM: bool>(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
     let cols = out.len();
     let rows = spec.len() as i32;
     out.fill(cell_of(0));
@@ -167,6 +200,10 @@ fn costas_scores(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
                 out.fill(cell_of(NONE));
                 return;
             };
+            if !VECTOR_FORM {
+                add_row_running(row, usize::from(tone), out);
+                continue;
+            }
             // The eight tones' levels at every base bin, as slices along
             // the bins.
             let at = |t: usize| &row[2 * t..2 * t + cols];
