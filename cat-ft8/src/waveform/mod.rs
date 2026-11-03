@@ -386,7 +386,8 @@ impl Synth {
     /// same two pulses overlap (the previous symbol's and the current
     /// one's rising half, then the current one's falling half and the
     /// next symbol's) the increments are stored first, with no per-sample
-    /// branch or bounds check, so the loop vectorises, and then summed.
+    /// branch or bounds check, so the loop vectorises, and then summed
+    /// (without a vector unit, summed as they are taken: [`FUSED_SUM`]).
     /// Between them the current pulse is alone and exactly 1.0, so
     /// `cur · g` is `cur` and every increment is the same, `step(cur)`:
     /// there the phase at the k-th sample is the run's first phase plus
@@ -433,10 +434,19 @@ impl Synth {
             if a > s0 {
                 let g = &pulse[NS + s0 - PF..NS + a - PF];
                 let h = &pulse[NS + 1 - a - PF..NS + 1 - s0 - PF];
-                for ((y, &g), &h) in o1.iter_mut().zip(g).zip(h.iter().rev()) {
-                    *y = step(cur * g + prev * h);
+                if FUSED_SUM {
+                    for ((y, &g), &h) in o1.iter_mut().zip(g).zip(h.iter().rev()) {
+                        if !SUM_ONLY {
+                            *y = p;
+                        }
+                        p = p.wrapping_add(step(cur * g + prev * h));
+                    }
+                } else {
+                    for ((y, &g), &h) in o1.iter_mut().zip(g).zip(h.iter().rev()) {
+                        *y = step(cur * g + prev * h);
+                    }
+                    p = sum(p, o1);
                 }
-                p = sum(p, o1);
             }
             // s in a..c: the current pulse alone, and exactly 1.0, so
             // `cur · g` is `cur` and every increment is `step(cur)`.
@@ -455,10 +465,19 @@ impl Synth {
             if s1 > c {
                 let g = &pulse[2 * NS + 1 - s1 - PF..2 * NS + 1 - c - PF];
                 let h = &pulse[c - PF..s1 - PF];
-                for ((y, &g), &h) in o4.iter_mut().zip(g.iter().rev()).zip(h) {
-                    *y = step(cur * g + next * h);
+                if FUSED_SUM {
+                    for ((y, &g), &h) in o4.iter_mut().zip(g.iter().rev()).zip(h) {
+                        if !SUM_ONLY {
+                            *y = p;
+                        }
+                        p = p.wrapping_add(step(cur * g + next * h));
+                    }
+                } else {
+                    for ((y, &g), &h) in o4.iter_mut().zip(g.iter().rev()).zip(h) {
+                        *y = step(cur * g + next * h);
+                    }
+                    p = sum(p, o4);
                 }
-                p = sum(p, o4);
             }
             at += s1 - s0;
         }
@@ -477,6 +496,16 @@ impl Synth {
         n
     }
 }
+
+/// Whether [`Synth::phases`] sums the overlap runs' increments as it takes
+/// them: where the target has no vector unit (the Cortex-M33), whose loop
+/// is scalar either way, so the increments need not go through memory; and
+/// in the tests built with `--cfg cat_ft8_test_group_one`, so that a host
+/// runs that form. Where the target has a vector unit, the increments are
+/// taken in a loop that vectorises, stored, and then summed
+/// ([`running_sum`]). Integer addition modulo 2³² is associative, so both
+/// give the same phases.
+const FUSED_SUM: bool = !crate::decode::math::VECTOR || cfg!(all(test, cat_ft8_test_group_one));
 
 /// Whether [`running_sum`] takes four entries at a time: measured faster
 /// on the Cortex-A76, neutral on x86-64, more instructions on the M33.
