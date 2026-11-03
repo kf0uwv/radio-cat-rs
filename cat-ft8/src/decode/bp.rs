@@ -422,6 +422,8 @@ fn sum_product_round<const V: bool, const W: usize, const G: usize>(
 ) {
     let (edge_vars, var_edges) = tables::<G>();
     if INPUT_BLOCK == 1 {
+        // Checked: where the edges go one at a time (x86-64, the
+        // microcontrollers) [`total_of`]'s clamp was not measured here.
         for (m, &i) in msg.iter_mut().zip(edge_vars) {
             *m = total[usize::from(i)] - *m;
         }
@@ -448,12 +450,10 @@ const INPUT_BLOCK: usize = if cfg!(target_arch = "aarch64") { 8 } else { 1 };
 /// one, the round has the plain loop instead. `INPUT_BLOCK` is not a
 /// parameter of the round, so the round with blocked inputs is tested
 /// only where it is built, on AArch64; elsewhere the tests compare
-/// `inputs` itself at several block sizes with the plain loop. In a
-/// block a variable's index is taken no further than the last variable,
-/// which every index already is: a select rather than a bounds-check
-/// branch per edge, and the block's subtractions as two four-lane ones
-/// (46 instructions a block of eight on AArch64, 61 with the branches;
-/// findings O27).
+/// `inputs` itself at several block sizes with the plain loop. A block
+/// takes its totals through [`total_of`], so it has no bounds-check
+/// branch and its subtractions vectorise (the checks `sum_product_round
+/// sumloop8` in `codegen-check.sh`; findings O27).
 #[inline(always)]
 fn inputs<const U: usize>(total: &[f32; N], msg: &mut [f32; EDGES], edge_vars: &[u8; EDGES]) {
     let mut blocks = msg.chunks_exact_mut(U);
@@ -462,9 +462,10 @@ fn inputs<const U: usize>(total: &[f32; N], msg: &mut [f32; EDGES], edge_vars: &
         let block: &mut [f32; U] = block.try_into().unwrap();
         let v: &[u8; U] = v.try_into().unwrap();
         for k in 0..U {
-            block[k] = total[usize::from(v[k]).min(N - 1)] - block[k];
+            block[k] = total_of(total, v[k]) - block[k];
         }
     }
+    // Checked: at most `U - 1` edges, once a round; not hot.
     for (m, &i) in blocks.into_remainder().iter_mut().zip(vars.remainder()) {
         *m = total[usize::from(i)] - *m;
     }
@@ -495,6 +496,36 @@ pub(crate) static VAR_EDGES: [[u16; 3]; N] = var_edges(GROUP);
 
 /// Each edge's variable, in the messages' layout ([`place`]).
 pub(crate) static EDGE_VARS: [u8; EDGES] = edge_vars(&VAR_EDGES);
+
+// Every variable's index fits the `u8` entries of [`EDGE_VARS`].
+const _: () = assert!(N <= u8::MAX as usize + 1);
+
+// Every entry of [`EDGE_VARS`] is a variable's index, below `N`: the
+// table built again at compile time and each entry checked.
+const _: () = {
+    let table = edge_vars(&var_edges(GROUP));
+    let mut e = 0;
+    while e < EDGES {
+        assert!((table[e] as usize) < N);
+        e += 1;
+    }
+};
+
+/// Variable `i`'s total, from an index read from [`EDGE_VARS`] (or the
+/// tests' tables for other group sizes, built the same way).
+///
+/// [`edge_vars`] writes only `i as u8` for `i < N`, so every index is
+/// below `N` and the clamp to `N - 1` never changes it; it is there so
+/// the compiler can take the total by a select rather than a bounds-check
+/// branch, which lets a group's or block's rows vectorise in the release
+/// form (16 codegen units), checked by the `a64r` entries of
+/// `codegen-check.sh`. With debug assertions the bound is asserted, so a
+/// bad table panics there rather than reading the last total.
+#[inline(always)]
+fn total_of(total: &[f32; N], i: u8) -> f32 {
+    debug_assert!(usize::from(i) < N);
+    total[usize::from(i).min(N - 1)]
+}
 
 /// [`VAR_EDGES`] in the layout of groups of `group`.
 const fn var_edges(group: usize) -> [[u16; 3]; N] {
@@ -687,6 +718,9 @@ fn min_sum_check<const ONE_PASS: bool>(total: &[f32; N], v: &[u8], row: &mut [f3
             }
         }};
     }
+    // Checked, not [`total_of`]: on the hosts only the checks left over
+    // take this (not hot); where every check does (no vector unit) the
+    // clamp was not measured.
     if ONE_PASS {
         for (j, (m, &i)) in row.iter_mut().zip(v).enumerate() {
             *m = total[usize::from(i)] - *m;
@@ -715,12 +749,11 @@ fn min_sum_check<const ONE_PASS: bool>(total: &[f32; N], v: &[u8], row: &mut [f3
 /// selects here, which choose the same values.
 ///
 /// Each row's inputs replace its messages in the step that compares
-/// them, and a variable's index is taken no further than the last
-/// variable, which every index already is, so the row has no
+/// them, and the row takes its totals through [`total_of`], so it has no
 /// bounds-check branch. Under the release profile (16 codegen units,
 /// local ThinLTO), with the inputs first in a local array and the indices
-/// checked, the group compiled to scalar code on AArch64 (14 four-lane
-/// instructions in `min_sum_round`; findings O27).
+/// checked, the group compiled to scalar code on AArch64 (the check
+/// `a64r min_sum_round` in `codegen-check.sh`; findings O27).
 #[inline(always)]
 fn group_min_sum<const D: usize, const K: usize>(total: &[f32; N], vars: &[u8], group: &mut [f32]) {
     let (mut min1, mut min2) = ([f32::MAX; K], [f32::MAX; K]);
@@ -730,7 +763,7 @@ fn group_min_sum<const D: usize, const K: usize>(total: &[f32; N], vars: &[u8], 
         let row: &mut [f32; K] = row.try_into().unwrap();
         let v: &[u8; K] = v.try_into().unwrap();
         for l in 0..K {
-            row[l] = total[usize::from(v[l]).min(N - 1)] - row[l];
+            row[l] = total_of(total, v[l]) - row[l];
         }
         for l in 0..K {
             let x = row[l];

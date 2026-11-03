@@ -592,6 +592,23 @@ fn the_edge_layout_places_every_edge_once_for_both_group_sizes() {
     edge_layout_is::<4>();
 }
 
+#[test]
+fn a_variable_takes_its_own_total() {
+    let total: [f32; N] = core::array::from_fn(|i| i as f32);
+    for i in 0..N {
+        assert_eq!(total_of(&total, i as u8), i as f32);
+    }
+}
+
+/// With debug assertions, an index past the variables panics rather than
+/// reading the last total.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic]
+fn an_index_past_the_variables_panics_with_debug_assertions() {
+    total_of(&[0.0; N], N as u8);
+}
+
 /// The layout of groups of `G` ([`place`]), checked from the tables of
 /// [`tables`] and [`check_edges`] against the parity-check table.
 fn edge_layout_is<const G: usize>() {
