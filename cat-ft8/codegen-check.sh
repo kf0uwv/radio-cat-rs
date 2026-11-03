@@ -36,10 +36,10 @@
 # microcontrollers) for each target and fails if a function's count is
 # past its bound:
 # - four-lane `.4s` instructions, a floor: with rustc 1.93
-#   sum_product_round has 696 and min_sum_round 165 (156 before O27);
-#   forms that lost the gain counted 115-452 (passes of 4 to 32 values,
-#   32 not unrolled) and 29 (min-sum check by check). The margin under
-#   the passes of 4 values is thin: 452 against the floor of 500.
+#   sum_product_round has 698 and min_sum_round 165 (696 and 156 before
+#   O27); forms that lost the gain counted 115-452 (passes of 4 to 32
+#   values, 32 not unrolled) and 29 (min-sum check by check). The margin
+#   under the passes of 4 values is thin: 452 against the floor of 500.
 #   min_sum_round also as a release build compiles it (`a64r`, findings
 #   O27): with 16 codegen units the local ThinLTO pipeline inlines and
 #   unrolls the round again before the vectorisers, and with each row's
