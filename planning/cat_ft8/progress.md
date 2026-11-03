@@ -2021,3 +2021,36 @@
 - All eight binaries byte-identical to 0104271 at every code commit; O23's
   timing, counts and identity stand. Local CI (codegen-check and group-one included) and A76 library tests
   with the ignored ones (217) pass at f633ecb.
+
+## Session: 2026-11-03 (O24 the time search's products and generator)
+
+- Profiled at 7f4e73f on all three targets (A76 microbenchmark, counters and
+  PC samples; x86-64 perf; M33 per-function and per-block counts): the time
+  search's products' block is 53.5% of the A76 time search (137
+  instructions, 126 vector, 9 of them rebroadcast constants), stored and
+  loaded back by `whole_lane_sums` (5.4%); `skip_with` 12.7%; x86-64
+  `fill_phase_only` 27.8% of the subtraction (17.7% of it the running sum's
+  one scalar add); M33 products 39 a core sample and lane sums 9, the
+  generator's increments stored and summed in a second pass.
+- ee64690: the products summed by lane as they are taken
+  (`correlation`, the whole lanes out of line on the hosts, one lane at a
+  time on the M33), the half turn's sign on the weight
+  (`cos_sin_turns_signed_as`); the time search no longer uses the scratch.
+  5c9977c: without a vector unit the generator's overlap runs summed as
+  taken (`FUSED_SUM`; AArch64 byte-identical, x86-64 one instruction moved).
+  eb210f9: a skipped span's sum from its mirrored pair of tones
+  (`Synth::transition_increment`; 12.8 of 41.6 ordered pairs a message).
+  c4d5b08: codegen-check `memsums` and `eors`, new bounds; six forced forms
+  each fail (exit 1).
+- M33 s0086 host: subtraction −7.85% a call (22.218 → 20.474 M), slot −4.07%;
+  A76 subtraction −2.80% (39.620 → 38.510 ms; slot 85.45 → 84.30), time
+  search −12.5% a core sample (microbenchmark); x86-64 user cycles −1.65%.
+  Flash −228 B (M33 host), static RAM unchanged, two frames −8 B. A first
+  x86-64 session was void (the A76 identity's local driver counted as a
+  job); rerun alone.
+- Identity (x86-64, A76, encoder, M33) at eb210f9; comparators fail when
+  forced; mutants caught, three equivalent by design.
+- Tried, not kept: the whole lanes inlined (halves and spills), 8 samples
+  at a time (slower on the A76), an in-register prefix sum on the hosts (not
+  vectorised by rustc 1.93.0), the fused generator by a const parameter
+  (moved x86-64 code).

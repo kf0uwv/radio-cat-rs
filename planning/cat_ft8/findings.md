@@ -11935,3 +11935,513 @@ changed.
 
 - As in O23. The shared tail was compared by the library's assembly only (not
   timed, no linked-image counts).
+## The time search's products and phase generator, twenty-fourth round (O24, bit-identical, 2026-11-03)
+
+Base: 7f4e73f (the code of O23b). The target is the subtraction's time
+search: its products (the audio times the reference's cosine and sine, and
+their sums by lane) and the phase generator that feeds it
+(`Synth::phases`, through `fill_phase_only` and `skip_with`). After O23 the
+A76's products were 4.81 cycles a core sample against the reference's 3.81,
+x86-64 spent about a quarter of the subtraction's samples in
+`fill_phase_only`, and the M33's products were 39 instructions a core
+sample. It was profiled first on all three targets. Three code commits,
+one optimisation each: ee64690 (the products summed as they are taken),
+5c9977c (the generator's overlap runs summed as they are taken without a
+vector unit) and eb210f9 (a skipped span's sum from its pair of tones the
+other way round). Then c4d5b08, code-generation bounds for the first two.
+Decodes, records, residuals and encoder output are identical; the WAV
+output differs from b93516e's only in O21's `--profile` memory figures, as
+at O21. No memory is added: static RAM and the slot's storage are
+unchanged, two frames fall by 8 B, and flash falls (host −228 B).
+
+| target | measure | 7f4e73f | eb210f9 | change |
+|---|---|---|---|---|
+| Cortex-M33, s0086 host | subtraction, emulated instructions a call | 22.218 M | 20.474 M | **−7.85%** |
+| | host slot (setup excluded) | 1 584.35 M | 1 519.83 M | **−4.07%** |
+| Cortex-M33, s0407 host | subtraction (all calls) | 820.44 M | 755.80 M | −7.88% |
+| | host slot | 1 581.02 M | 1 516.38 M | −4.09% |
+| Cortex-A76, crowded host slot | subtraction (medians of 4) | 39.620 ms | 38.510 ms | **−2.80%** |
+| | slot | 85.45 ms | 84.30 ms | −1.35% |
+| | time search's correlations (microbenchmark, cycles a core sample) | 8.512 | 7.445 | −12.5% |
+| x86-64, `slotcost host host,passes=1 200 5` | user cycles, the whole program (medians of 4) | 319.07 G | 313.81 G | −1.65% |
+
+The M33 gain is the products kept in floating-point registers and summed
+in place (no stores, no second pass), the generator's increments summed as
+they are taken, and fewer skipped spans generated. The A76 and x86-64 gains
+are the products' stores, loads and lane adds removed, one exclusive or
+fewer a vector, and fewer skipped spans.
+
+### Measured first (7f4e73f)
+
+**Cortex-A76** (O18's microbenchmark in O22's form, appended to a scratch
+copy of `subtract/tests.rs`, not committed; core 3 after the 5 s sampled
+busy loop; two runs × three rounds, all valid at 0x0; cycles a waveform
+sample, the time search's parts a core sample): the subtraction 18.085;
+the time search's generator over the cores with the rest skipped by
+`skip_with` (`T0`) 4.126; the products stored (`T1`) 8.910; the
+correlations as the decoder runs them (`T2`: generator over the cores, the
+skipped spans' sums, products, lane sums) 8.514, of which 10.37 vector
+operations and 18.0 instructions (raw counters, two runs). PC samples:
+
+| where (A76, 7f4e73f) | share |
+|---|---|
+| **the subtraction** (26 359 samples, 23 µs apart) | |
+| `blocks` (the reference's block of 16 19.1%, the correction 10.1%) | 31.9% |
+| `fill_phase_only` (increments 4.8% + 4.3%, running sums 2.6% + 2.1%, the flat run 1.0%) | 17.0% |
+| `Fit4::add_all` | 14.0% |
+| `symbol_correlations` (the products' block of 16, 13.1%) | 13.9% |
+| `Removal::refs` | 12.3% |
+| `score` | 3.6% |
+| **the time search alone** (`T2`, 6 575 samples) | |
+| `symbol_correlations` (the products' block 53.5%) | 57.0% |
+| `fill_phase_only` | 17.9% |
+| `skip_with` (the skipped spans of pairs first met) | 12.7% |
+| `whole_lane_sums` | 5.4% |
+| not attributed (a mapping symbol) | 6.9% |
+
+The products' block of 16 samples is 137 instructions, 126 vector: per
+vector of four the remainder 3, the polynomial 10, the quarter 8, the
+clamp 5, the weight 2, and over the block 9 `dup`s that rebroadcast
+constants (register pressure) and a move; then 8 stores, and
+`whole_lane_sums` loads them back (2 loads and 2 adds a vector).
+
+**x86-64** (`perf record -e cycles:u` of the same microbenchmark, the
+subtraction only, core 5): `fill_phase_only` 27.8%, `blocks` 24.3%,
+`symbol_correlations` 12.1%, `Removal::refs` 9.9%, `Fit4::add_all` 7.9%,
+`skip_with` 5.0%, the bench's copy of the slot 4.0%, `score` 3.5%,
+`whole_lane_sums` 2.0%. In `fill_phase_only` the running sum's one scalar
+add takes 17.7% of its samples (a dependent add per sample). The time
+search alone (`T0`–`T4`): `skip_with` 38.0% (most of it `T0`'s whole
+skips), `fill_phase_only` 23.1%, `symbol_correlations` 15.1%.
+
+**Cortex-M33** (staged host image, s0086, 37 subtractions; 822.06 M of the
+1 584.35 M slot; emulated instructions per function and basic block):
+
+| part (M33, 7f4e73f) | M | per sample |
+|---|---|---|
+| the products (the subtraction's closure; one block of 39 a core sample, 2.784 M core samples) | 110.61 | 39 |
+| `whole_lane_sums` | 25.92 | 9 a core sample |
+| `fill_phase_only` (fit path and cores): increments 14 + 1 and 13 + 1, running sums 5 and 5, the flat run 5 | 129.09 | |
+| `skip_with` (the skipped spans): increments 14 and 13, sums 4 and 4 | 27.76 | |
+| `blocks` (fit path: correction, reference), `Removal::refs`, `Fit4::add_all` | 247.19, 145.63, 116.55 | (not this round's) |
+
+On the M33 the products went to integer registers for the half turn's
+exclusive or and their byte stores (2 `vmov`, 2 `eor`, 2 `str`), then
+came back in `whole_lane_sums`; the generator's increments were stored
+and summed in a second pass.
+
+### Changes
+
+1. **ee64690: the time search's products summed as they are taken.**
+   - `symbol_correlations` stored each block's products in the caller's
+     scratch (`scaled_cos_sin`) and then summed them by lane (`lane_sums`,
+     `whole_lane_sums`). `correlation` now adds each product to its lane's
+     sums as it is taken: sample i of the block in lane i % 4, each lane
+     from 0.0 in sample order, the lanes added by `sum_lanes`, as before,
+     so the sums are the same bit for bit.
+   - Where the target has a vector unit, the four lanes side by side: the
+     single samples up to the first whole lane, the whole lanes out of
+     line (`correlation_whole`, 16 samples at a time, then four), the
+     single samples after them. Elsewhere one lane at a time, its two sums
+     in locals over the block (the form O22 found keeps the M33's sums in
+     registers).
+   - The products take the half turn's sign on the weight
+     (`cos_sin_turns_signed_as`): (−w)·x = −(w·x) bit for bit for finite w
+     and x, so they equal `cos_sin_turns_times`' for the decoder's finite
+     weights. The vector form: one `eor` on the weight instead of one on
+     each part. The select form: the weight negated by a select (`vneg`,
+     `vsel`), so the parts stay in floating-point registers for the sums
+     (the stored form took them to integer registers for the stores and
+     the exclusive or). The polynomial is shared with
+     `cos_sin_turns_times_as` (`reduced`; the reference's code is
+     unchanged by that).
+   - The time search no longer uses the caller's scratch (its parameter is
+     gone; `SUBTRACT_SCRATCH_BYTES` and `SUBTRACT_MIN_SCRATCH_BYTES` are
+     unchanged, the reference needs them). The code-generation check's
+     entries for the removed functions name `correlation_whole`.
+   - Loops (rustc 1.93.0, the library): AArch64 the products' block of 16
+     137 instructions (123 vector) with the sums, against 137 (126
+     vector, 9 of them constants rebroadcast) without them plus
+     `whole_lane_sums`' loop; x86-64 203 against 208 plus the sums;
+     Cortex-M33 (opt-level "s") 36 a core sample against 39 for the
+     products and 9 for the lane sums.
+2. **5c9977c: the generator's overlap runs summed as they are taken
+   without a vector unit.** Where two pulses overlap, `Synth::phases`
+   stores each increment (a loop that vectorises) and then takes their
+   running sum. Without a vector unit that loop is scalar anyway: there
+   (`FUSED_SUM`: no vector unit, or the tests built with
+   `--cfg cat_ft8_test_group_one`) each increment is added to the phase
+   as it is taken, the phase before it stored first. M33 (opt-level "s"):
+   the two runs 17 and 15 instructions a sample against 15 + 5 and
+   14 + 5; the phase-only skip 16 and 14 against 15 + 4 and 14 + 4. The
+   AArch64 binaries are byte-identical to ee64690's; x86-64's `.text`
+   differs by one instruction's place in `fill_phase_only`.
+3. **eb210f9: a skipped span's sum from its pair of tones the other way
+   round.** The time search's skipped span (960 samples between two
+   cores, O22) is as many samples before the symbols' boundary as after
+   it. There each increment takes the two pulses at mirrored places,
+   a·H[NS − x − PF] + b·H[NS + x − PF] at x samples from the boundary
+   (H the stored half pulse), in either order; IEEE addition is
+   commutative, so the increment at −x for tones (a, b) equals the one at
+   +x for (b, a). So the span of (b, a) holds the increments of (a, b)'s
+   less its first and plus the first of (b, a)'s:
+   S(b, a) = S(a, b) − i(a, b) + i(b, a), where i is the increment at
+   the span's first sample (`Synth::transition_increment`, the
+   generator's expression there). A pair met after its mirror takes its
+   sum so, two increments instead of 960 samples of the generator. Over
+   2 000 random payloads a message meets 41.6 ordered pairs at its 78
+   boundaries, of which 12.8 now come from their mirror (28.8 spans
+   generated).
+4. **c4d5b08: the code-generation check** (below).
+
+### Cortex-M33 (emulated instructions; staged images as built, rustc 1.93.0, `--cfg cat_ft8_minmaxnm`)
+
+| commit | s0086 host slot | subtraction (all 37 calls) | s0407 host slot | subtraction (all calls) |
+|---|---|---|---|---|
+| 7f4e73f | 1 584 352 834 | 822 058 015 | 1 581 016 971 | 820 437 528 |
+| ee64690 | 1 550 625 922 (−2.13%) | 788 331 103 (−4.10%) | 1 547 369 470 (−2.13%) | 786 790 027 (−4.10%) |
+| 5c9977c | 1 526 363 100 (−1.56%) | 764 068 281 (−3.08%) | 1 523 137 356 (−1.57%) | 762 557 913 (−3.08%) |
+| **eb210f9** | **1 519 833 890 (−0.43%; −4.07% in all)** | **757 539 071 (−0.85%; −7.85% in all)** | **1 516 383 326 (−4.09% in all)** | **755 803 883 (−7.88% in all)** |
+
+- A call on s0086 (37): 22.218 M → 20.474 M. Per decode, host s0086:
+  39.6 → 38.0 M.
+- Same decodes (40 and 38 host; 23 and 30 small). Every other stage's count
+  is the same to the instruction, except `setup` (the image's start-up
+  encoder check, which runs the generator): −403 545 from 5c9977c on both
+  slots. The small slots (no subtraction) are unchanged: 183 016 805 and
+  175 802 921.
+- Functions (s0086 host, M): the products' closure 110.61 → 102.80 and
+  `whole_lane_sums` 25.92 → gone (ee64690); `fill_phase_only` 129.09 →
+  109.56 and `skip_with` 27.76 → 22.62 (5c9977c); `skip_with` → 16.08
+  (eb210f9). `blocks`, `Removal::refs` and `Fit4::add_all` unchanged
+  (247.19, 145.63, 116.55).
+- Paint high water: host 10 252 → 10 244 B (ee64690 on); small 10 304 B
+  unchanged.
+- The linked image's executed blocks (s0086, per block): the products and
+  sums one block of 36 a core sample (98.97 M; 39 + 9 before); the
+  generator's overlap runs 15 + 1 and 14 + 1 a sample (the running sums'
+  5 + 5 gone); the skipped spans' generator 524 132 + 504 960 samples
+  (733 892 + 714 720 before, −29%).
+
+### Cortex-A76 (Raspberry Pi 5; `slotcost host host,passes=1 200 5`, medians of 4 alternated runs)
+
+Aligned builds (`-align-loops=64 -align-all-functions=6`) of 7f4e73f,
+ee64690 (whose AArch64 binaries' `.text` and `.rodata` 5c9977c's equal)
+and eb210f9 from one scratch path, core 3, the throttle, clock and
+temperature sampled once a second from core 0, a 5 s sampled busy loop on
+core 3 before each run, alternated (forward, then reversed), four cycles.
+
+| ms per slot (median, spread) | 7f4e73f | ee64690 | eb210f9 |
+|---|---|---|---|
+| **subtract** | 39.620 (0.040) | 38.920 (0.030): −1.77% | **38.510 (0.010): −1.110, −2.80%** |
+| pass 2 / pass 3 subtract | 27.600 / 12.020 | 27.115 / 11.810 | 26.820 / 11.680 |
+| slot | 85.45 | 84.70 | **84.30 (−1.35%)** |
+| worst slot | 90.75 | 89.90 | 89.45 |
+| feed (placement check) | 19.195 (0.030) | 19.120 (0.020) | 19.130 (0.020) |
+| belief propagation / sync / soft bits / SNR (placement check) | 19.060 / 4.680 / 2.380 / 0.240 | 19.060 / the same | 19.055 / the same |
+| one pass: slot, feed | 18.30, 6.450 | 18.30, 6.460 | 18.30, 6.460 |
+
+- **Placement check.** Belief propagation, sync, soft bits, SNR, OSD-1,
+  refine and the one-pass slot agree within 0.005 ms. The feed, whose
+  code did not change, reads 0.065–0.075 ms (0.4%) faster in both new
+  builds: placement (O21c saw ±1% of a stage). Each step's gain in the
+  subtraction (0.700 and 0.410 ms) is 5–10 times that and 10–40 times
+  its stage's spread. No placement variation was run.
+- **Microbenchmark** (cycles, medians over 4 alternated runs × 3 rounds,
+  all valid): the subtraction 18.085 → 17.782 → 17.505 a waveform sample
+  (−3.2%); the time search's correlations as the decoder takes them
+  (`T2`) 8.512 → 7.863 → 7.445 a core sample (−12.5%). Raw counters (two
+  runs each): `T2` 10.37 → 9.90 vector operations and 18.0 → 16.0
+  instructions a core sample, integer operations 4.02 → 2.89, stores 0.89
+  → 0.74, loads 1.53 → 1.64 (the constants the loop reloads from the
+  stack); the subtraction 20.68 → 20.45 vector operations, 41.24
+  → 40.20 instructions a sample. `T1` (the bench's own form, the generator's
+  whole skips) now takes the sums too, so it is not compared (8.913 →
+  9.010 → 8.925); the fit path's parts (`F0`–`F4`, `R`) move by less than
+  0.6%.
+- PC samples at eb210f9 (25 540 in the subtraction): `blocks` 34.4% (the
+  reference's block 20.7%), `fill_phase_only` 17.5%, `Fit4::add_all`
+  14.1%, `correlation_whole` 13.5% (its loop 13.2%: 140 instructions in
+  the test binary, 124 vector), `Removal::refs` 11.5%, `score` 3.7%;
+  `whole_lane_sums` gone. The time search alone (5 810): the whole lanes
+  60.6%, `fill_phase_only` 18.7%, `skip_with` 10.5% (12.7% before).
+- **Validity.** All 12 timed runs are valid: 1 472 samples during the
+  runs and 60 in the warm-ups, every one 0x0, the 12 end checks included;
+  every sample during a run at 2 400 MHz; one warm-up sample at 1.7 GHz
+  (the first). Peak 54.3 °C. The program's own output is logged with a
+  prefix no sample line has. The 18 microbenchmark runs likewise (all
+  valid; 142 samples, all 0x0; 2 400 MHz during each run).
+### x86-64 (Threadripper 3970X, core 5, `perf stat` user counters over the whole `slotcost` program)
+
+Aligned builds of the four commits from the same scratch path, four
+alternated rounds (forward, then reversed), `slotcost host host,passes=1 200
+5`; a check for other jobs before and after each sample.
+
+| build | cycles (median, range) | instructions | subtract stage (ms) |
+|---|---|---|---|
+| 7f4e73f | 319.07 G (318.55–319.59) | 900.14 G | 23.715 |
+| ee64690 | 315.59 G (315.34–316.35), −1.09% | 895.33 G | 22.850 |
+| 5c9977c | 315.73 G (314.70–316.93), −1.05% | 895.33 G | 22.805 |
+| eb210f9 | **313.81 G (312.43–314.11), −1.65%** | 891.36 G (−0.98%) | 22.420 (−5.5%) |
+
+- ee64690's range clears the base's by 2.2 G; 5c9977c's x86-64 change (one
+  instruction's place) is within ee64690's range, its instructions equal;
+  eb210f9's range clears ee64690's and 5c9977c's.
+- **A first session was void**: the A76 identity's local driver (a shell
+  that only waits on its remote commands) ran beside it and the job check
+  counted it, so 10 of its 16 samples were marked VOID. Its 6 valid
+  samples agree (base 318.20 G, ee64690 314.25 G, 5c9977c 313.96–315.95 G,
+  eb210f9 314.41–315.36 G). The session above ran after every other job
+  had ended: none void.
+- Stage times are the virtual machine's clock, for scale only.
+- Profile at eb210f9 (`perf record` of the microbenchmark, one run each,
+  core 5): the subtraction: `fill_phase_only` 28.6%, `blocks` 26.6%,
+  `correlation_whole` 11.7% (`symbol_correlations` 12.1% and
+  `whole_lane_sums` 2.0% before), `Removal::refs` 9.2%, `Fit4::add_all`
+  8.1%, the bench's copy 4.5%, `skip_with` 3.8% (5.0%), `score` 3.3%. The
+  generator's share rose because the rest fell; its code on x86-64 is
+  unchanged.
+
+
+### Sizes and stack (`check.sh --stack`, thumbv8m)
+
+| image | flash 7f4e73f → ee64690 → 5c9977c → eb210f9 (B) | static RAM (B) |
+|---|---|---|
+| small, small with OSD on | 92 082 → 92 082 → 91 982 → **91 982 (−100)** | 201 668 (unchanged) |
+| host, host with OSD off | 103 182 → 102 838 → 102 734 → **102 954 (−228 in all; +220 at eb210f9)** | 230 084 (unchanged) |
+| encoder only | 35 286 → 35 286 → 35 186 → **35 186 (−100)** | 0 |
+
+- Frames: the subtraction's closure 2 536 → 2 528 B (ee64690),
+  `Synth::skip` 352 → 344 B (5c9977c; all images); host `subtract_one`
+  4 920, `_start` 4 104, `decode_a_slot` 2 520, `finish_row` 464,
+  `osd_decode` 272 B unchanged. No scratch or storage added:
+  `SUBTRACT_STACK_BYTES` (4 920) and `SUBTRACT_SCRATCH_BYTES` unchanged;
+  the time search no longer uses the scratch. Paint high water above.
+- No fused multiply-add (0 `vfma`/`vfms`/`vfnma`/`vfnms`); `vmla` small 128
+  and encoder 17 unchanged, host 211 → 213 (ee64690) → 217 (eb210f9:
+  `transition_increment`'s sums). No `f64` helper in any
+  image.
+- Cortex-M4F (thumbv7em, embedded-check images, no cfg): small flash
+  92 348 → 92 248 B (5c9977c), host 103 628 → 103 288 → 103 184 →
+  103 400 B (−228); static RAM unchanged; no `f64` helper, no fused
+  multiply-add; `fmaxf`/`fminf` calls 10 and 14, unchanged (the
+  codegen check's `symbol_correlations` ceiling of 0 holds).
+- Hosts' `.text` (one scratch path, aligned): AArch64 `paired_bench`
+  1 170 648 → 1 170 584 (ee64690, 5c9977c) → 1 170 904 B, `cat-ft8-decode`
+  398 120 → 398 056 → 398 376; x86-64 `paired_bench` 1 412 022 →
+  1 410 870 → 1 410 870 → 1 411 190, `cat-ft8-decode` 457 478 → 456 454
+  → 456 454 → 456 774.
+
+### Sections of all eight binaries
+
+`.text` and `.rodata` (one scratch path, fresh tree, rustc 1.93.0; thumbv8m
+with `--cfg cat_ft8_minmaxnm`):
+
+| binary | ee64690 against 7f4e73f | 5c9977c against ee64690 | eb210f9 against 5c9977c |
+|---|---|---|---|
+| x86-64 `cat-ft8-decode`, `paired_bench` | differ | `.text` differs (one instruction's place in `fill_phase_only`), `.rodata` identical | differ |
+| AArch64 `cat-ft8-decode`, `paired_bench` | differ | identical | differ |
+| M33 check, small | identical | differ (the generator) | identical |
+| M33 check, host; staged small and host | differ | differ | differ |
+
+c4d5b08 changes only `codegen-check.sh`.
+
+### The code-generation check (c4d5b08)
+
+ee64690's gain on AArch64 rests on the whole lanes staying out of line
+(inlined, the sums were split across half vectors and spilled) and its
+one `eor` a vector; the M33's gains on the one-lane loop with the sign
+on the weight and on the fused generator. Two metrics are added: `memsums`
+(loops that load with no floating-point or vector instruction, a ceiling)
+and `eors` (`eor`, a ceiling). ee64690 had already replaced the entries of
+the removed `whole_lane_sums` (its `.4s` floor and its M33 `fploop2`) and
+moved the AArch64 clamp floor and the `cvtloop4` ceiling of the products
+from `symbol_correlations` to `correlation_whole`. Each forced form below
+is applied to a copy of the work tree with c4d5b08's check (one log each,
+the check's own exit status):
+
+| form | a64 `correlation_whole` loop (≤ 140) / `eor` (≤ 8) | m33s products' closure (≤ 37, `one`) | m33s `memsums` `fill_phase_only` / `skip_with` (≤ 0) | exit |
+|---|---|---|---|---|
+| head | 137 / 7 | 36 | 0 / 0 | 0 |
+| f1: AArch64, the sign after the weight | 138 / **14** | 36 | 0 / 0 | 1 |
+| f2: the whole lanes inlined | **not found** | 36 | 0 / 0 | 1 |
+| f3: the products stored and summed after (7f4e73f's subtract.rs, tests and math.rs) | **not found** | **39** | 0 / 0 | 1 |
+| f4: without a vector unit, the sign after the weight | 137 / 7 | **42** | 0 / 0 | 1 |
+| f5: without a vector unit, the lanes side by side | 137 / 7 | **69** | 0 / 0 | 1 |
+| f6: without a vector unit, the generator's increments stored and summed after | 137 / 7 | 36 | **2 / 2** | 1 |
+
+No other check failed in any form. What it misses: the sign on the weight
+on AArch64 is caught by its exclusive ors, not by the loop's length (138
+against 137, under the ceiling); one instruction in the M33 loop (36
+against a ceiling of 37); x86-64 and the M4F (no bounds); the linked
+images (it reads the library at opt-level "s"; the linked images' loops
+are counted above); eb210f9 (the mirrored spans) does not rest on code
+generation and has no bound.
+
+### Identity
+
+All at eb210f9's binaries (c4d5b08 changes only the check).
+
+- **Records, x86-64:** the 73 800 `paired_bench run` records equal b93516e's
+  (host, one pass, small: 24 600 each, 0 differ; the records comparison exits 0
+  each).
+- **800 WAV slots** × 3 configurations × 3 modes, x86-64 (7 200 runs, 78 690
+  decode lines): 93 091 lines byte-identical to b93516e's, and the 2 400
+  `--profile` lines differ only by the sync scratch, as at O21 (the WAV
+  comparison exits 0).
+- **A76:** the records of eb210f9's AArch64 `paired_bench` equal x86-64
+  b93516e's (73 800, 0 differ; exit 0 each), and the 800 WAV slots × 3 × 3 with
+  its `cat-ft8-decode` give the same 93 091 identical lines and 2 400
+  `--profile` lines (exit 0). One benchmark at a time, in fresh directories;
+  317 throttle samples, start and end included, all 0x0.
+- **Encoder:** the 45 `cat-ft8-encode` WAV files equal 70be604's.
+- **Cortex-M33 (emulated):** the small and host dump images on seven slots
+  (14 of 14) and the multi-pass residuals of s0086 and s0407 equal 68634cc's
+  (the M33 comparison exits 0).
+- **Comparators on a forced difference** (copies; each line its own exit
+  status): the records comparison 0 unforced, 1 with one record's field
+  changed; the WAV comparison 0 unforced, 1 with a decode line's frequency
+  one higher, 1 with a `--profile` line's `peak_bytes` one higher; the M33
+  comparison 0 unforced, 1 with one bit of one dump flipped (15 identical,
+  1 differ); `cmp` of an encoder WAV 0 unforced, 1 with one byte changed.
+
+### Tests and mutants
+
+New: `time_search_correlation_is_the_lanes_sums_in_both_forms` (both forms
+of `correlation` against the sums' definition: every first sample modulo
+four up to 11, 14 lengths, random and edge phases, audio with the values the
+front end treats specially). Extended: the weight test checks both forms of
+`cos_sin_turns_signed_as`; `skipped_spans_depend_only_on_the_two_tones`
+checks `transition_increment` against the generator's increment at each
+span's first sample and the mirror relation for every pair of tones met.
+`symbol_correlations` takes no scratch in the tests either.
+
+Mutants in fresh copies of c4d5b08's tree (`cat-ft8` tree af126d4f…),
+release library tests (210); the fused generator runs on a host only with
+`--cfg cat_ft8_test_group_one` (g1). One log each, the tree, the edit and
+cargo's exit status in it; failing tests read from the logs:
+
+| mutant | mode | failing (of 210) |
+|---|---|---|
+| none (control) | release / g1 | 0 / 0 |
+| a1 one lane at a time: the lane's first sample one on | release | 1 |
+| a2 one lane at a time: a step of three | release | 1 |
+| a3 side by side: the first single sample before the whole lanes dropped | release | 2 |
+| a4 side by side: the sine's sums take the cosine | release | 12 |
+| a5 side by side: the chains' lanes reversed | release | 2 |
+| a6 side by side: the whole lanes after the chains dropped | release | 3 |
+| a7 side by side: the first single sample after the whole lanes dropped | release | 2 |
+| a8 the bit form: the half turn's sign dropped | release | 13 |
+| a9 the select form: the weight's sign inverted | release | 2 |
+| a10 the select form: the swap inverted | release | 2 |
+| a11 the bit form: the sine not negated | release | 10 |
+| b1 fused, first run: the phase stored after its increment | g1 | 9 |
+| b2 fused, last run: the previous tone for the next | g1 | 14 |
+| b3 fused, last run: the phase not stored | g1 | 29 |
+| b4 fused: the phase stored in the phase-only skip (equivalent: working storage) | g1 | 0 |
+| b5 b1's site off by one, default build (the fused form is not compiled there) | release | 0 |
+| c1 mirror: the two increments swapped | release | 8 |
+| c2 mirror: the sum without the two increments | release | 3 |
+| c3 mirror: the generator not advanced | release | 9 |
+| c4 `transition_increment`: the next pulse one sample on | release | 4 |
+| c5 `transition_increment`: the tones swapped | release | 9 |
+| c6 the mirror never taken (equivalent: every span generated) | release | 0 |
+| c7 the mirrored sum not marked known (equivalent: taken again next time) | release | 0 |
+
+b4, c6 and c7 are equivalent by design (they change only the work); b5 shows
+that the default build does not reach the fused form, which is why the
+group-one step runs it.
+
+Local CI passes at c4d5b08: fmt; clippy `-D warnings` (workspace, all
+targets and features, thumbv8m); workspace, profile, no-std and release
+tests with the ignored ones (219, the exhaustive comparisons included); the
+group-one step (210 run, 9 ignored); the bulk run; MSRV 1.75; docs with and
+without `std`; `check.sh --stack`; the code-generation check (the new bounds
+140, 8, 37, 0 and 0). A76 release library tests with the ignored ones,
+cross-built at c4d5b08 (`cat-ft8` tree af126d4f…): 218 pass, 0 fail, the
+source-tree test skipped, the exhaustive comparisons included; 50 throttle
+samples, start and end included, all 0x0.
+
+### Tried, not kept
+
+- **The whole lanes inlined** into the block loop (the first form built):
+  on AArch64 the compiler split the four lanes' sums across half vectors
+  (`.2s` adds) and spilled them: 180 instructions in the loop of 16
+  samples against 137 out of line (forced form f2 above).
+- **Eight samples at a time** in the whole lanes (`W` 8 against 16) on
+  the A76 (microbenchmark, two alternated cycles, all valid): the time
+  search 8.018 cycles a core sample against 16's 7.863, the subtraction
+  17.836 against 17.784. 16 is kept (its loop has no constant
+  rebroadcasts, 6 loads of constants from the stack and one spill).
+- **The hosts' overlap runs summed as taken, four increments at a time
+  with the sums within the four written out** (an in-register prefix sum):
+  rustc 1.93.0 did not vectorise it on AArch64 (47 scalar instructions
+  for four samples, against 34 for eight vectorised increments plus 12
+  for four sums) and gave 96 instructions on x86-64; not built further.
+  Without `unsafe` intrinsics no form that keeps the increments in vector
+  registers through the sum was found; the hosts keep the stored
+  increments and the separate sum.
+- **The fused generator chosen by a const parameter** (`phases_as::<_,
+  FUSED>` called from `phases`): it moved the x86-64 code of
+  `fill_phase_only` (register choices, frame 104 → 120 B) though the
+  hosts take the unfused form; the form chosen by a module constant
+  (`FUSED_SUM`, with the group-one cfg for the tests) leaves AArch64 byte
+  for byte and moves one x86-64 instruction.
+
+### What bounds the time search now
+
+- **Cortex-A76:** the whole lanes' loop, 137 instructions (123 vector) a
+  block of 16 core samples, about 31 vector operations a vector of four
+  (the remainder, the polynomial and its quarter, the clamp, the weight and
+  its sign, the two sums); a floor of about 3.8 cycles a core sample on
+  two vector pipes. Then the generator over the cores (the overlap runs'
+  increments vectorised, their running sum scalar on the hosts) and the
+  skipped spans of pairs met first.
+- **Cortex-M33** (the library at opt-level "s"): the products and sums 36
+  a core sample (the clamp 6, the constants' copies for `vmla` 4, the loop
+  4); the generator 17 and 15 a sample in the overlap runs, 5 in the flat
+  run.
+
+### Next candidates (not built)
+
+| candidate | estimate | cost |
+|---|---|---|
+| **The hosts' running sum in vector registers** (an in-register prefix sum fused with the increments) | x86-64: the running sum's scalar add was 17.7% of `fill_phase_only`; A76: the sums 4.7% of the subtraction | no form without `unsafe` intrinsics found (rustc 1.93.0 kept it scalar) |
+| **The clamp checked once per subtraction** (if every usable sample is finite and within ±2¹⁶, the clamp is the identity: one pass, then loops without it) | A76: 5 of the removal's and the fit's 15 vector operations per four samples and 5 of the products' 29; M33: 6 a sample in each | a second form of three loops (flash); a pass over the audio |
+| **The second time-search step's cores** | as O22 | 303 KB; not revisited |
+
+### Risks
+
+- The A76 and x86-64 gains of ee64690 rest on `correlation_whole` staying
+  out of line and on its `eor` count; the M33's on the one-lane loop with
+  the sign on the weight and the fused generator: checked (c4d5b08); a
+  toolchain change can lose them with every test passing.
+- The fused generator runs on a host only in the group-one tests (b5: the
+  default tests do not reach it); the M33 identity runs and the group-one
+  CI step are its evidence.
+- `cos_sin_turns_signed_as` equals `cos_sin_turns_times` for finite weights
+  only (as O23b found for the select form); the decoder's weights are the
+  clamped input: finite.
+- The mirrored spans rest on the pulse's two terms being added in either
+  order with the same result (IEEE addition is commutative) and on the span
+  being symmetric about the boundary (a `const` assertion); the test checks
+  every pair of tones on six bases.
+- 5c9977c moves one x86-64 instruction in `fill_phase_only` (not timed
+  separately from the round; its x86-64 sample is in the table above).
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instructions only); M33 counts on any slot but
+  s0086 and s0407 (seven slots for identity); any M4F count or identity
+  (sizes and library calls only).
+- Sparse and empty slots on any target (the A76 timing is the crowded
+  `main` block; the microbenchmark is one synthesized crowded slot), and
+  how the mirrored spans' gain varies with the number of time-search steps
+  (the pair counts are over random payloads).
+- A placement variation on the A76 (the feed, untouched, read 0.4% faster
+  in both new builds; the gains are 5–10 times that).
+- The microbenchmark on other A76 cores; the forms in "Tried, not kept"
+  beyond the microbenchmark and the library's assembly.
+- x86-64 stage times (the virtual machine's clock); x86-64 timing on real
+  recordings. The x86-64 profiles are one run each.
+- After a toolchain change: the bounds above.

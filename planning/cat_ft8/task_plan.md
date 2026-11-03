@@ -2761,6 +2761,28 @@ Constraints: bit-identical everywhere (an exhaustive test against the
 first form over every `u32` phase); no memory growth (the "clamp once"
 idea is not built); stack and flash changes stated. Evidence as in O22.
 
+## O24: the time search's products and phase generator, bit-identical (2026-11-03)
+
+Base 7f4e73f. Profile first (A76 microbenchmark, counters and PC samples;
+x86-64 perf; M33 emulated counts per function and block at opt-level "s"
+with `--cfg cat_ft8_minmaxnm`), then one optimisation per commit:
+
+1. The time search's products summed by lane as they are taken, not stored
+   and summed after; the half turn's sign on the weight (one sign for both
+   parts); the lanes side by side where there is a vector unit, one lane at
+   a time elsewhere.
+2. Without a vector unit, the generator's overlap runs summed as their
+   increments are taken (no stored increments, no second pass).
+3. A skipped span's phase sum from its pair of tones the other way round
+   (the transition is symmetric about the symbols' boundary), with two
+   single increments instead of 960 samples of the generator.
+4. Code-generation bounds for what rests on code generation, each shown
+   failing on a forced revert.
+
+Constraints: bit-identical on every target; no new scratch or storage
+(stack and flash changes stated); the second time-search step's reuse
+(303 KB) is not revisited. Evidence as in O23.
+
 ## Next: gated, result-changing rounds
 
 Each changes results and needs its own acceptance (the run sets, the
