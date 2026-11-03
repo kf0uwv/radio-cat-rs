@@ -13839,12 +13839,12 @@ the hosts (equivalent, unguarded).
 - **800 WAV slots** × 3 × 3, x86-64: 93 091 lines byte-identical to
   b93516e's, 2 400 `--profile` lines differing only by the sync scratch
   and, new, by `static_table_bytes` 39 429 → 48 621 in every one of them
-  (`wavcmp26b.py`: O21's rule plus that one change; exit 0). On forced
+  (the line comparison: O21's rule plus that one change; exit 0). On forced
   copies it exits 0 unforced, 1 with one line's table bytes at 48 629, 1
   with one left at 39 429, 1 with one decode's frequency one higher.
 - **A76:** the 73 800 records equal b93516e's (24 600 each of host, one
   pass, small; 0 differ, exit 0 each), and the 800 WAV slots × 3 × 3 the
-  same as x86-64's above under `wavcmp26b.py` (exit 0); throttle 0x0 in
+  same as x86-64's above under the same comparison (exit 0); throttle 0x0 in
   all 1 527 samples.
 - **Encoder:** the 45 `cat-ft8-encode` WAVs equal 70be604's.
 - **Cortex-M33 (emulated):** the small and host dump images on seven slots
