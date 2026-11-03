@@ -17,7 +17,8 @@
 # clamp and its reference's loads and stores are still vectorised on
 # AArch64, that the clamp keeps its form on the microcontroller targets,
 # that the FFT stays written out butterfly by butterfly on the Cortex-M33,
-# and that the sync search's summing loop keeps its registers there. Their speed depends on code generation that no test sees: the
+# and that the sync search's summing loop keeps its registers there.
+# Their speed depends on code generation that no test sees: the
 # sum-product round's tanh and atanh passes 24 values at a time
 # (`PASS_LANES`), its products over four checks in the lanes of one
 # vector (`group_products`), min-sum likewise (`group_min_sum`), the
@@ -119,10 +120,10 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # `memset`, at most the bound; `sumloop` counts the instructions of the
 # shortest loop with nine byte loads, the eight tones' levels and the
 # expected tone's, at most the bound, and a function with no such loop fails
-# it. The sum's speed depends on what else is live around that loop, so it
-# fails if the rows are passed to `costas_scores` by value or `Rows::row` is
-# inlined into it (findings O21). A function whose label is not found, or an
-# unknown metric, fails.
+# it with its own message. The sum's speed depends on what else is live
+# around that loop, so it fails if the rows are passed to `costas_scores` by
+# value or `Rows::row` is inlined into it (findings O21). A function whose
+# label is not found, or an unknown metric, fails.
 checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 min_sum_round vec4 100"
   "a64 7Removal4refs minmax 2" "a64 symbol_correlations minmax 2"
@@ -162,7 +163,9 @@ for entry in "${checks[@]}"; do
   case "$name" in [0-9]*) seg=$name ;; *) seg="${#name}$name" ;; esac
   # Prints the count, or "missing" if no function's label holds `seg`.
   n=$(awk -v f="$seg" -v metric="$metric" '
-    /^_ZN.*:$/ { p = index($0, f) > 0; if (p) found = 1; delete at; next }
+    # A function ends at its end label or at the next global label.
+    /^\.Lfunc_end[0-9]+:/ { p = 0; next }
+    /^[A-Za-z_][^ \t]*:$/ { p = index($0, f) > 0; if (p) found = 1; delete at; next }
     !p { next }
     metric == "sumloop" && /^\.[A-Za-z0-9_$]+:/ {
       sub(/:.*/, ""); at[$0] = k; atb[$0] = bytes; next
@@ -186,11 +189,16 @@ for entry in "${checks[@]}"; do
     metric == "zerofills" && /^\tbl\t(__aeabi_memclr4|__aeabi_memclr|memset)$/ { n++ }
     END {
       if (!found) print "missing"
-      else if (metric == "sumloop") print (best == "" ? 9999 : best)
+      else if (metric == "sumloop") print (best == "" ? "noloop" : best)
       else print n + 0
     }' "${asm[$key]}")
   if [ "$n" = missing ]; then
     echo "FAIL $key $name: function not found"
+    fail=1
+    continue
+  fi
+  if [ "$n" = noloop ]; then
+    echo "FAIL $key $name: no loop with nine byte loads (moved or unrolled?)"
     fail=1
     continue
   fi
