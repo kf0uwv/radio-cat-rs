@@ -714,3 +714,29 @@ fn running_sum_grouped_matches_the_plain_sum() {
         }
     }
 }
+
+/// No count past the end of the waveform hangs or wraps the generator: `skip`,
+/// `skip_summed` and `advance` stop at the end, and `skip_summed` returns at
+/// once with no working storage.
+#[test]
+fn skips_stop_at_the_end_of_the_waveform() {
+    let symbols = [3u8; SYMBOL_COUNT];
+    let mut a = Synth::new(&symbols, 1_000.0, 1.0).unwrap();
+    assert_eq!(a.skip(usize::MAX), WAVEFORM_SAMPLES);
+    assert_eq!((a.position(), a.remaining()), (WAVEFORM_SAMPLES, 0));
+    let mut b = Synth::new(&symbols, 1_000.0, 1.0).unwrap();
+    let mut c = b.clone();
+    let mut buf = [0u32; 7];
+    let sum = c.skip_summed(WAVEFORM_SAMPLES, &mut buf);
+    assert_eq!(b.skip_summed(usize::MAX, &mut buf), sum);
+    assert_eq!((b.position(), b.remaining()), (WAVEFORM_SAMPLES, 0));
+    assert_eq!(b.skip_summed(1, &mut buf), 0);
+    let mut d = Synth::new(&symbols, 1_000.0, 1.0).unwrap();
+    assert_eq!(d.skip_summed(10, &mut []), 0);
+    assert_eq!(d.position(), 0);
+    let mut e = Synth::new(&symbols, 1_000.0, 1.0).unwrap();
+    e.advance(usize::MAX, sum);
+    assert_eq!((e.position(), e.remaining()), (WAVEFORM_SAMPLES, 0));
+    let mut out = [0.0f32; 4];
+    assert_eq!(e.fill(&mut out), 0);
+}

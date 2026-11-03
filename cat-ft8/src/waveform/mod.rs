@@ -335,27 +335,29 @@ impl Synth {
         self.symbols[m]
     }
 
-    /// [`skip_with`](Self::skip_with) over the next `n` samples (at most
-    /// [`remaining`](Self::remaining)), with `buf` (not empty) as working
-    /// storage; returns the phase it added, modulo 2³².
+    /// [`skip_with`](Self::skip_with) over the next `n` samples, with `buf`
+    /// as working storage; returns the phase it added, modulo 2³². It stops
+    /// at the end of the waveform (and at once if `buf` is empty).
     pub(crate) fn skip_summed(&mut self, n: usize, buf: &mut [u32]) -> u32 {
-        debug_assert!(n <= self.remaining() && !buf.is_empty());
         let p = self.phase;
         let mut left = n;
         while left > 0 {
             let k = left.min(buf.len());
-            left -= self.skip_with(&mut buf[..k]);
+            let done = self.skip_with(&mut buf[..k]);
+            if done == 0 {
+                break;
+            }
+            left -= done;
         }
         self.phase.wrapping_sub(p)
     }
 
-    /// Moves over the next `n` samples (at most
-    /// [`remaining`](Self::remaining)) adding `by` to the phase: where `by`
-    /// is the phase [`skip_summed`](Self::skip_summed) adds over them, the
-    /// same state, without the generator.
+    /// Moves over the next `n` samples, at most to the end of the waveform,
+    /// adding `by` to the phase: where `by` is the phase
+    /// [`skip_summed`](Self::skip_summed) adds over them, the same state,
+    /// without the generator.
     pub(crate) fn advance(&mut self, n: usize, by: u32) {
-        debug_assert!(n <= self.remaining());
-        self.pos += n;
+        self.pos += n.min(self.remaining());
         self.phase = self.phase.wrapping_add(by);
     }
 
