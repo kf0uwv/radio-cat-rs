@@ -1067,6 +1067,14 @@ fn skipped_spans_depend_only_on_the_two_tones() {
         a.skip_summed(CORE_END, &mut buf);
         b.skip_summed(CORE_END, &mut buf);
         for k in 0..SYMBOL_COUNT - 1 {
+            // The span's first increment, as the generator takes it.
+            let mut two = [0u32; 2];
+            a.clone().fill_phase_only(&mut two);
+            assert_eq!(
+                two[1].wrapping_sub(two[0]),
+                synth.transition_increment(tones[k], tones[k + 1], CORE_END),
+                "round {round} symbol {k}"
+            );
             let sum = a.skip_summed(BETWEEN_CORES, &mut buf);
             let pair = usize::from(tones[k]) * 8 + usize::from(tones[k + 1]);
             assert_eq!(
@@ -1084,6 +1092,24 @@ fn skipped_spans_depend_only_on_the_two_tones() {
         }
         if round % 2 == 0 {
             assert!(seen.iter().all(Option::is_some), "round {round}");
+        }
+        // Each pair's sum from the same tones the other way round
+        // ([`Skips`]).
+        let first = |a: u8, b: u8| synth.transition_increment(a, b, CORE_END);
+        for a in 0..8u8 {
+            for b in 0..8u8 {
+                let (ab, ba) = (
+                    seen[usize::from(a) * 8 + usize::from(b)],
+                    seen[usize::from(b) * 8 + usize::from(a)],
+                );
+                if let (Some(ab), Some(ba)) = (ab, ba) {
+                    assert_eq!(
+                        ab,
+                        ba.wrapping_sub(first(b, a)).wrapping_add(first(a, b)),
+                        "round {round} tones {a} {b}"
+                    );
+                }
+            }
         }
     }
 }

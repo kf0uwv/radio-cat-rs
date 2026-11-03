@@ -115,8 +115,11 @@ const _: () = assert!(RAMP_SAMPLES <= CORE_START && CORE_END + RAMP_SAMPLES <= T
 /// time search skips.
 const BETWEEN_CORES: usize = T - (CORE_END - CORE_START);
 // They lie within the two symbols' transition, so the phase the generator
-// adds over them depends only on the two symbols' tones ([`Skips`]).
+// adds over them depends only on the two symbols' tones ([`Skips`]), and
+// they are as many before the symbols' boundary as after it (mirrored
+// pairs, [`Skips`]).
 const _: () = assert!(TRANSITION.0 <= CORE_END && CORE_START <= TRANSITION.1);
+const _: () = assert!(T - CORE_END == CORE_START);
 
 /// Most segments in one waveform (`run` uses `div_ceil` too).
 const MAX_SEGMENTS: usize = WAVEFORM_SAMPLES.div_ceil(SubtractConfig::MIN_SEGMENT);
@@ -441,6 +444,15 @@ fn blocks(
 /// tones and base frequency) and must not be used with another. Debug
 /// builds keep the first generator it served and check every later one
 /// against it.
+///
+/// A pair met after the same two tones the other way round takes its sum
+/// from theirs. The span is as many samples before the symbols' boundary as
+/// after it, and the increment x samples before it for tones (a, b) is the
+/// one x samples after it for (b, a) ([`TRANSITION`]); so the span of
+/// (b, a) holds the increments of (a, b)'s, less its first one and plus the
+/// one just after it, the first one of (b, a)'s. Each is
+/// [`Synth::transition_increment`] at the span's first sample, and integer
+/// addition modulo 2³² is associative.
 struct Skips {
     sum: [u32; 64],
     /// Bit p is set once `sum[p]` is known.
@@ -533,9 +545,19 @@ fn symbol_correlations(
         if k + 1 == SYMBOL_COUNT || j0 + BETWEEN_CORES >= end {
             break;
         }
-        let pair = usize::from(s.tone(k)) * 8 + usize::from(s.tone(k + 1));
+        let (a, b) = (s.tone(k), s.tone(k + 1));
+        let pair = usize::from(a) * 8 + usize::from(b);
+        let mirror = usize::from(b) * 8 + usize::from(a);
         if skips.known & 1 << pair != 0 {
             s.advance(BETWEEN_CORES, skips.sum[pair]);
+        } else if skips.known & 1 << mirror != 0 {
+            let first = |a: u8, b: u8| s.transition_increment(a, b, CORE_END);
+            let sum = skips.sum[mirror]
+                .wrapping_sub(first(b, a))
+                .wrapping_add(first(a, b));
+            skips.sum[pair] = sum;
+            skips.known |= 1 << pair;
+            s.advance(BETWEEN_CORES, sum);
         } else {
             skips.sum[pair] = s.skip_summed(BETWEEN_CORES, &mut phase);
             skips.known |= 1 << pair;

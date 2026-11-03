@@ -133,7 +133,12 @@ const _: () = assert!(PREV_END <= PULSE_FIRST);
 /// from `TRANSITION.0` or later of symbol m to before `TRANSITION.1` of
 /// symbol m + 1, the generator's phase increments depend only on the two
 /// symbols' tones and the base frequency: they are the same for every m
-/// whose pair of tones is the same.
+/// whose pair of tones is the same. Each increment there takes the two
+/// pulses at mirrored places about the symbols' boundary, x samples before
+/// it and after it, and the sum of their two terms does not depend on
+/// which is added first; so the increment x samples before the boundary
+/// for tones (a, b) is the one x samples after it for (b, a)
+/// ([`Synth::transition_increment`]).
 pub(crate) const TRANSITION: (usize, usize) = (PULSE_FIRST, PREV_END);
 /// The first index of `PULSE_HALF` in the run `PREV_END..PULSE_FIRST`
 /// (the current pulse at `SAMPLES_PER_SYMBOL + s` for sample s).
@@ -340,6 +345,20 @@ impl Synth {
     /// The tone of symbol `m`.
     pub(crate) fn tone(&self, m: usize) -> u8 {
         self.symbols[m]
+    }
+
+    /// The phase increment the generator takes at sample `s` (from
+    /// [`TRANSITION`]`.0` to the end of the symbol) of a symbol of tone `a`
+    /// followed by one of tone `b`, whatever the other symbols: there only
+    /// the two symbols' pulses are non-zero ([`Synth::phases`]' last run,
+    /// the same expression).
+    pub(crate) fn transition_increment(&self, a: u8, b: u8, s: usize) -> u32 {
+        const NS: usize = SAMPLES_PER_SYMBOL;
+        const PF: usize = PULSE_FIRST;
+        debug_assert!((PF..NS).contains(&s), "sample {s} outside the transition");
+        let (g, h) = (PULSE_HALF[2 * NS - s - PF], PULSE_HALF[s - PF]);
+        let dev = f32::from(a) * g + f32::from(b) * h;
+        increment((self.base_hz + TONE_SPACING_HZ * dev) * TURNS_PER_HZ)
     }
 
     /// [`skip_with`](Self::skip_with) over the next `n` samples, with `buf`
