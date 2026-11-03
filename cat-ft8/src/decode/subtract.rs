@@ -619,7 +619,8 @@ fn lane_sums(pairs: &[u8], i0: usize, i1: usize) -> (f32, f32) {
 #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
 fn whole_lane_sums(pairs: &[u8], re: &mut [f32; LANES], im: &mut [f32; LANES]) {
     if GROUP == 1 {
-        // Where a group is one sample (no vector unit): one lane at a time,
+        // In a group of one (targets without a vector unit, and the tests
+        // built with `--cfg cat_ft8_test_group_one`): one lane at a time,
         // its two sums in locals, its samples in order; the lanes are added
         // only after (`sum_lanes`), so the sums are the same. (Side by side,
         // the Cortex-M33 build, opt-level "s" with rustc 1.93.0, kept the
@@ -922,7 +923,8 @@ impl Fit4 {
             .chunks_exact(LANES)
             .zip(refs4.chunks_exact(LANES * PAIR));
         if GROUP == 1 {
-            // Where a group is one sample (no vector unit): one lane at a
+            // In a group of one (targets without a vector unit, and the
+            // tests built with `--cfg cat_ft8_test_group_one`): one lane at a
             // time over the whole lanes, its five sums in locals. Each lane
             // still takes its samples in order, and the lanes meet only in
             // `sum`, so the sums are those of the four lanes side by side.
@@ -1795,7 +1797,10 @@ impl Correction {
     /// [`Correction::apply`]: four at a time, then single samples, if
     /// `IN_LANES`; else one at a time. (Without a vector unit, the
     /// Cortex-M33 build, opt-level "s" with rustc 1.93.0, kept the lanes'
-    /// 64-bit phases and steps in memory.)
+    /// 64-bit phases and steps in memory.) `apply` keys it on [`VECTOR`],
+    /// not on [`GROUP`] as the reference's loops do: the correction does not
+    /// touch the reference's layout, so the group-of-one tests keep the
+    /// lanes here, and the tests call both forms directly.
     #[inline(always)]
     #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
     fn apply_as<const IN_LANES: bool>(&mut self, phase: &mut [u32]) {
