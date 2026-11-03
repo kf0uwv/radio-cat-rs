@@ -817,15 +817,39 @@ impl Fit4 {
         }
         let k = k0 + (m0 - i0);
         let refs4 = &refs[k * PAIR..(k + (m1 - m0)) * PAIR];
-        for (x, r) in xs[m0 - i0..m1 - i0]
+        let whole = xs[m0 - i0..m1 - i0]
             .chunks_exact(LANES)
-            .zip(refs4.chunks_exact(LANES * PAIR))
-        {
-            let (mut c, mut s) = ([0.0f32; LANES], [0.0f32; LANES]);
+            .zip(refs4.chunks_exact(LANES * PAIR));
+        if GROUP == 1 {
+            // Where a group is one sample (no vector unit): one lane at a
+            // time over the whole lanes, its five sums in locals. Each lane
+            // still takes its samples in order, and the lanes meet only in
+            // `sum`, so the sums are those of the four lanes side by side.
+            // (Side by side, the Cortex-M33 build, opt-level "s" with rustc
+            // 1.93.0, kept the lanes' sums and samples in memory.)
             for l in 0..LANES {
-                (c[l], s[l]) = get(r, l);
+                let (mut sxc, mut sxs, mut scc) = (self.xc[l], self.xs[l], self.cc[l]);
+                let (mut scs, mut sss) = (self.cs[l], self.ss[l]);
+                for (x, r) in whole.clone() {
+                    let (c, s) = get(r, l);
+                    let w = input(x[l]);
+                    sxc += w * c;
+                    sxs += w * s;
+                    scc += c * c;
+                    scs += c * s;
+                    sss += s * s;
+                }
+                (self.xc[l], self.xs[l], self.cc[l]) = (sxc, sxs, scc);
+                (self.cs[l], self.ss[l]) = (scs, sss);
             }
-            self.add4(input4(lanes(x)), c, s);
+        } else {
+            for (x, r) in whole {
+                let (mut c, mut s) = ([0.0f32; LANES], [0.0f32; LANES]);
+                for l in 0..LANES {
+                    (c[l], s[l]) = get(r, l);
+                }
+                self.add4(input4(lanes(x)), c, s);
+            }
         }
         for i in m1..i0 + xs.len() {
             one(self, i);
