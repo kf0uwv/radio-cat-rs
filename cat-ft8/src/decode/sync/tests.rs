@@ -56,6 +56,9 @@ fn a_score_survives_a_cell_bit_for_bit() {
     let mut scores = vec![0, 1, -1, 2, 1_000, -1_000, 85_680, -85_680, NONE, i32::MAX];
     scores.extend((0..32).map(|shift| 1i32 << shift));
     scores.extend((0..32).map(|shift| -(1i32 << shift).max(1)));
+    // Signalling NaNs as `f32`, at both ends of their range and either sign:
+    // a load or store that quietened one would set bit 22.
+    scores.extend([0x7f80_0001u32, 0x7fbf_ffff, 0xff80_0001, 0xffbf_ffff].map(|b| b as i32));
     // Through memory, as the scratch is.
     let cells: Vec<f32> = scores.iter().map(|&s| cell_of(s)).collect();
     let cells = std::hint::black_box(cells);
