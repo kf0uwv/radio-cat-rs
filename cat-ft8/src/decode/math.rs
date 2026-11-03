@@ -276,10 +276,11 @@ const C4: f32 = 62.962_955;
 pub(crate) fn cos_sin_turns(phase: u32) -> (f32, f32) {
     let u = phase.wrapping_add(1 << 29);
     let k = u >> 30;
-    // The remainder in [−2²⁹, 2²⁹), exactly; one rounding to `f32`, then
+    // The remainder r in [−2²⁹, 2²⁹) is the phase's low 30 bits read as
+    // signed, so 4r is `phase << 2` read as signed: one shift. One
+    // rounding to `f32` (4r rounds to the same bits as r, times 4), then
     // an exact scaling to turns.
-    let r = (u & 0x3fff_ffff) as i32 - (1 << 29);
-    let t = r as f32 * (1.0 / 4_294_967_296.0);
+    let t = (phase << 2) as i32 as f32 * (1.0 / 17_179_869_184.0);
     let z = t * t;
     let s = t * (S1 + z * (S3 + z * S5));
     let c = C0 + z * (C2 + z * C4);
@@ -438,6 +439,62 @@ mod tests {
         // value, so a better polynomial fails here too: re-pin it if the
         // coefficients change.
         assert!(cos_sin_turns_accurate(1) > 1.0e-5);
+    }
+
+    /// [`cos_sin_turns`] as first written (the remainder by mask and
+    /// subtraction, the quarter by two sign words), the definition the
+    /// cheaper forms must equal bit for bit.
+    fn cos_sin_turns_first(phase: u32) -> (f32, f32) {
+        let u = phase.wrapping_add(1 << 29);
+        let k = u >> 30;
+        let r = (u & 0x3fff_ffff) as i32 - (1 << 29);
+        let t = r as f32 * (1.0 / 4_294_967_296.0);
+        let z = t * t;
+        let s = t * (S1 + z * (S3 + z * S5));
+        let c = C0 + z * (C2 + z * C4);
+        let swap = 0u32.wrapping_sub(k & 1);
+        let (sb, cb) = (s.to_bits(), c.to_bits());
+        let sin = ((cb & swap) | (sb & !swap)) ^ ((k & 2) << 30);
+        let cos = ((sb & swap) | (cb & !swap)) ^ ((k.wrapping_add(1) & 2) << 30);
+        (f32::from_bits(cos), f32::from_bits(sin))
+    }
+
+    /// Phases where [`cos_sin_turns`] and its first form are compared: every
+    /// `stride`-th, and each quarter turn's neighbours and the ends of its
+    /// reduced range. Returns how many.
+    fn cos_sin_turns_is_its_first_form(stride: usize) -> u64 {
+        let mut n = 0u64;
+        let mut check = |p: u32| {
+            let (got, want) = (cos_sin_turns(p), cos_sin_turns_first(p));
+            assert_eq!(
+                (got.0.to_bits(), got.1.to_bits()),
+                (want.0.to_bits(), want.1.to_bits()),
+                "phase {p:#010x}"
+            );
+            n += 1;
+        };
+        for p in (0..=u32::MAX).step_by(stride) {
+            check(p);
+        }
+        for k in 0..4u32 {
+            for d in [0u32, 1, 2, 3, (1 << 29) - 1, 1 << 29, (1 << 29) + 1] {
+                check((k << 30).wrapping_add(d));
+                check((k << 30).wrapping_sub(d));
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn cos_sin_turns_is_its_first_form_bit_for_bit() {
+        assert!(cos_sin_turns_is_its_first_form(4_099) > 1_000_000);
+    }
+
+    /// Every `u32` phase (about 4.3·10⁹; run in release).
+    #[test]
+    #[ignore]
+    fn cos_sin_turns_is_its_first_form_everywhere() {
+        assert!(cos_sin_turns_is_its_first_form(1) > u64::from(u32::MAX));
     }
 
     #[test]
