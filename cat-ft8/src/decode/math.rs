@@ -528,9 +528,10 @@ mod tests {
     }
 
     /// Both forms of [`cos_sin_turns_times`] give the first form's parts
-    /// times the weight, bit for bit, for weights of either sign, zeros,
-    /// subnormals and the largest finite ones (in the decoder, the envelope
-    /// and the clamped input: finite).
+    /// times the weight, bit for bit, at the quarter turns' edges and 20 000
+    /// random phases, for weights of either sign, zeros, subnormals and the
+    /// largest finite ones (in the decoder, the envelope and the clamped
+    /// input: finite).
     #[test]
     fn cos_sin_turns_times_is_the_weight_times_the_parts() {
         let bits = |(c, s): (f32, f32)| (c.to_bits(), s.to_bits());
@@ -563,10 +564,7 @@ mod tests {
                 k += 1;
             }
         }
-        let mut quarters = [0u32; 4];
-        for _ in 0..20_000 {
-            let p = next() as u32;
-            quarters[(p.wrapping_add(1 << 29) >> 30) as usize] += 1;
+        let check = |p: u32| {
             let (c, s) = cos_sin_turns_first(p);
             for &w in &weights {
                 let want = bits((w * c, w * s));
@@ -581,6 +579,20 @@ mod tests {
                     "selects, {p:#010x} {w:e}"
                 );
             }
+        };
+        // Each quarter turn's neighbours (the zero parts at the quarter
+        // turns themselves) and the ends of its reduced range.
+        for k in 0..4u32 {
+            for d in [0u32, 1, 2, 3, (1 << 29) - 1, 1 << 29, (1 << 29) + 1] {
+                check((k << 30).wrapping_add(d));
+                check((k << 30).wrapping_sub(d));
+            }
+        }
+        let mut quarters = [0u32; 4];
+        for _ in 0..20_000 {
+            let p = next() as u32;
+            quarters[(p.wrapping_add(1 << 29) >> 30) as usize] += 1;
+            check(p);
         }
         assert!(quarters.iter().all(|&n| n > 4_000), "{quarters:?}");
     }
