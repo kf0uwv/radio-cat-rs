@@ -313,6 +313,9 @@ pub(crate) fn cos_sin_turns_times_as<const BITS: bool>(phase: u32, w: f32) -> (f
     // negates both.
     let half = u & 0x8000_0000;
     if BITS {
+        // The sign before the weight: after it (the select form's tail),
+        // AArch64's blocks of 16 with an envelope take one and two
+        // instructions more (findings O23b).
         let swap = 0u32.wrapping_sub((u >> 30) & 1);
         let (sb, nb, cb) = (s.to_bits(), (-s).to_bits(), c.to_bits());
         let sin = ((cb & swap) | (sb & !swap)) ^ half;
