@@ -44,7 +44,7 @@
 # - four-lane `fmaxnm`/`fminnm` in the removal (`Removal::refs`) and in
 #   the time search's whole lanes (`correlation_whole`), a floor, and
 #   compares and selects (`fcmgt`, `bsl`, `bit`, `bif`) in the removal, a
-#   ceiling: with rustc 1.93 the removal has 5 and 0, the time search 8;
+#   ceiling: with rustc 1.93 the removal has 5 and 0, the time search 14;
 #   with the branch form of the clamp 0, 18 and 0;
 # - interleaving loads and stores (`ld2`-`ld4`, `st2`-`st4`) in the
 #   removal and in `Fit4::add_all`, a ceiling of 0: with rustc 1.93 both
@@ -163,8 +163,11 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # likewise with at least N conversions from integers (`scvtf`,
 # `vcvt.f32.s32`); `fpneg` counts `vneg.f32`, at most the bound; `carries`
 # counts `adc` (the high word of a 64-bit add), at most the bound;
-# `memsums` counts the loops with a load and no floating-point or vector
-# instruction (an `f32` value's moves included), at most the bound; `eors`
+# `memsums` counts the loops with a load (`ldr`, `ldrb` and the like;
+# not `ldm`) and no floating-point or vector instruction (an `f32`
+# value's moves included), at most the bound: it reads "no mnemonic that
+# starts with v" as "no floating point", which holds on Thumb only, so it
+# is valid for the m33 builds only; `eors`
 # counts `eor` (exclusive or), at most the bound;
 # `absent` passes only if no function's label holds the name (the bound is
 # unused), that is, if it was inlined everywhere; it sees only a type's own
