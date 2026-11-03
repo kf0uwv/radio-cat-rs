@@ -86,7 +86,10 @@
 #   shortest with two in `whole_lane_sums` 9 (a ceiling of 11; 14 side by
 #   side); the frequency correction one sample at a time leaves 19 carry
 #   adds (`adc`) in the two `blocks` (a ceiling of 24; 37 with the
-#   correction in lanes). The forms were run in findings O22.
+#   correction in lanes), and no method of `Correction` out of line (with
+#   the correction's `apply` out of line, `blocks` keeps 15 carry adds,
+#   under the ceiling, so the count alone would pass). The forms were run
+#   in findings O22 and O22b.
 #   It misses: the radix-2 stage alone as loops (234 passes), the form of
 #   the twiddle index (`% N` and a subtraction both pass), a zero fill by
 #   `__aeabi_memclr8` or a tail call, and what link-time optimisation does
@@ -129,13 +132,15 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # `memset`, at most the bound; `sumloop` counts the instructions of the
 # shortest loop with nine byte loads, the eight tones' levels and the
 # expected tone's, at most the bound, and a function with no such loop fails
-# it with its own message; `fploopN` counts the instructions of the shortest
-# loop with at least N `f32` multiply-accumulates or adds (`vmla`, `vmls`,
-# `vadd`, `vsub`), at most the bound, and a function with no such loop
-# fails it likewise; `carries` counts `adc` (the high word of a 64-bit
-# add), at most the bound. The sum's speed depends on what else is live
+# it with its own message. The sum's speed depends on what else is live
 # around that loop, so it fails if the rows are passed to `costas_scores` by
-# value or `Rows::row` is inlined into it (findings O21). A function whose
+# value or `Rows::row` is inlined into it (findings O21). `fploopN` counts
+# the instructions of the shortest loop with at least N `f32`
+# multiply-accumulates or adds (`vmla`, `vmls`, `vadd`, `vsub`), at most the
+# bound, and a function with no such loop fails it likewise; `carries`
+# counts `adc` (the high word of a 64-bit add), at most the bound;
+# `absent` passes only if no function's label holds the name (the bound is
+# unused), that is, if it was inlined everywhere. Otherwise a function whose
 # label is not found, or an unknown metric, fails.
 checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 min_sum_round vec4 100"
@@ -148,6 +153,7 @@ checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "m33s 10finish_row fpmul 230" "m33s 10finish_row divides 0" "m33s 10finish_row zerofills 1"
   "m33s 6select sumloop 26"
   "m33s 4Fit47add_all fploop5 22" "m33s 15whole_lane_sums fploop2 11" "m33s 6blocks carries 24"
+  "m33s 10Correction absent 0"
   "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit47add_all libcalls 0")
 
 declare -A asm
@@ -211,6 +217,15 @@ for entry in "${checks[@]}"; do
       else if (metric ~ /^(sumloop|fploop)/) print (best == "" ? "noloop" : best)
       else print n + 0
     }' "${asm[$key]}")
+  if [ "$metric" = absent ]; then
+    if [ "$n" = missing ]; then
+      echo "ok   $key $name: no function out of line"
+    else
+      echo "FAIL $key $name: a function out of line"
+      fail=1
+    fi
+    continue
+  fi
   if [ "$n" = missing ]; then
     echo "FAIL $key $name: function not found"
     fail=1
