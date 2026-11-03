@@ -1988,11 +1988,10 @@ impl Correction {
     /// Not inlined, one call a block: inlined into the loop's function,
     /// the compiler saw each lane's step as the first's plus a multiple
     /// of the acceleration, shared one running sum among the four and kept
-    /// the lanes in scalar registers (24 instructions a group of four on
-    /// AArch64, 23 on x86-64). Taken from a call, the lanes are values it
-    /// knows nothing of, and it vectorises their loop: two-lane 64-bit
-    /// adds and one `uzp2` for the high halves, 10 instructions a group of
-    /// four on AArch64 (findings O27).
+    /// the lanes in scalar registers. Taken from a call, the lanes are
+    /// values it knows nothing of, and it vectorises their loop as
+    /// two-lane 64-bit adds (the check `add2d` in `codegen-check.sh`;
+    /// findings O27).
     #[inline(never)]
     #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
     fn lanes(&self) -> CorrectionLanes {
