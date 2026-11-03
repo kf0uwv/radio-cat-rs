@@ -11472,3 +11472,384 @@ alternated, other jobs checked around each sample, none void; instructions
   identical to e30e553's. Local tests: debug 241 pass, release 239 pass (9
   ignored each), the group-one step 207 run, 8 ignored; the code-generation
   check passes.
+
+## The reference polynomial, twenty-third round (O23, bit-identical, 2026-11-03)
+
+Base: be3907a (the code of O22c). The target is the polynomial that gives the
+subtraction's reference and the time search's products their cosine and sine
+(`cos_sin_turns`): O22 found it the largest part of the A76's subtraction
+(4.56 cycles a sample, about 1.2× its vector floor) and 39 emulated
+instructions a sample on the Cortex-M33, about 16 of them the quarter's
+selects in integer registers. Three code commits, one optimisation each:
+6b6ba4e (the remainder by one shift), 59a59b9 (the quarter by one sign word,
+as `f32` selects without a vector unit) and 0104271 (the half turn's sign after
+the weight without a vector unit). Then b900ed4, code-generation bounds for
+them. No memory is added: static RAM, every stack frame and the slot's
+storage are unchanged; flash falls. Decodes, records, residuals and encoder
+output are identical; the WAV output differs from b93516e's only in O21's
+`--profile` memory figures, as at O21.
+
+| target | measure | be3907a | 0104271 | change |
+|---|---|---|---|---|
+| Cortex-M33, s0086 host | subtraction, emulated instructions a call | 24.342 M | 22.218 M | **−8.73%** |
+| | host slot (setup excluded) | 1 662.94 M | 1 584.35 M | **−4.73%** |
+| Cortex-M33, s0407 host | subtraction a call | 24.293 M | 22.174 M | −8.72% |
+| | host slot | 1 659.42 M | 1 581.02 M | −4.72% |
+| Cortex-A76, crowded host slot | subtraction (medians of 4) | 42.450 ms | 39.615 ms | **−6.68%** |
+| | slot | 88.30 ms | 85.50 ms | −3.2% |
+| x86-64, `slotcost host host,passes=1 200 5` | user cycles, the whole program (medians of 4) | 324.37 G | 318.72 G | −1.74% |
+
+The A76 gain is fewer vector operations for the same results (the reference's
+6.97 → 5.64 a sample); the M33's is mostly the quarter kept in floating-point
+registers.
+
+### Measured first (be3907a)
+
+**Cortex-A76** (O18's microbenchmark, O22's form, appended to a scratch copy of
+`subtract/tests.rs`, not committed; core 3, after the 5 s sampled busy loop;
+cycles a waveform sample, medians over 4 runs × 3 rounds, all valid at 0x0):
+the subtraction 19.29; the reference (`F2 − F1`) 4.59, 6.97 vector operations
+a sample; the time search's products (`T1 − T0`) 5.80 a core sample, 9.34
+vector operations. PC samples (28 307, 23 µs apart): `blocks` 33.6% (the
+reference's block of 16 samples 22.6%: 127 instructions, 113 vector),
+`fill_phase_only` 15.8%, `symbol_correlations` 15.3% (the products' block 14.5%:
+165 instructions, 153 vector), `Fit4::add_all` 13.0%, `Removal::refs` 12.4%,
+`score` 3.4%.
+
+**x86-64** (`perf record -e cycles:u` of the same microbenchmark, the whole
+subtraction only, core 5): `blocks` 26.9%, `fill_phase_only` 25.0%,
+`symbol_correlations` 12.4%, `Removal::refs` 8.5%, `Fit4::add_all` 6.2%,
+`skip_with` 5.5%, the bench's own copy of the slot (`memmove`) 4.5%, `score`
+3.1%.
+
+**Cortex-M33** (staged host image, s0086, emulated instructions per basic
+block): the reference's loop is one block of 39 a sample (216.5 M): the load,
+three copies of constants for `vmla`, the remainder (`add`, `bic`, `add`),
+the conversion and scaling, the polynomial (nine, with one more copy), the two
+parts moved to integer registers (`vmov` ×2), then the quarter's swap and two
+sign words in integer registers (`ubfx`, `subs`, `rsbs`, five `and`, two
+`orr`, `add`, two `eor`), two stores and the loop's four. The time search's
+products, inlined in the subtraction's closure, are one block of 51 a core
+sample (142.0 M).
+
+**The generated code** (rustc 1.93.0). Per vector of four samples on AArch64
+the remainder was `mov`, `bic`, `add`, `scvtf`, `fmul` (the mask needs a copy),
+and the quarter about ten operations (`ushr`, `bic`, `neg` for the swap mask,
+`bsl`/`bit` and copies, `and` and `eor` for each of two sign words and an `add`
+for the second), with the block's register pressure adding copies and a spill.
+
+### Changes
+
+1. **6b6ba4e: the remainder by one shift.** The remainder r ∈ [−2²⁹, 2²⁹)
+   of the phase from its nearest quarter turn is the phase's low 30 bits read
+   as signed, so 4r is `phase << 2` read as signed. Converting 4r to `f32`
+   rounds to r's bits times 4 and the scaling by 2⁻³⁴ is exact, so t is the
+   same `f32`: one shift for the mask, the subtraction and the copy. A test
+   compares the function with its first form (kept in the tests) at every
+   4 099th phase and the quarter turns' edges; an ignored test at every `u32`
+   phase (run: equal).
+2. **59a59b9: the quarter by one sign word, as selects without a vector
+   unit.** Quarter k gives (cos, sin) = (c, s), (−s, c), (−c, −s), (s, −c): an
+   odd k swaps the parts and negates the sine's, then k ≥ 2 negates both
+   (`u`'s top bit). The first form built two sign words; now the sine is
+   negated once and both parts take one. Where the target has a vector unit
+   this stays bit operations (`and`+`cmeq` for the swap mask, one `and` for
+   the sign word, `fneg`, two selects, two `eor`); elsewhere it is written as
+   `f32` selects and negations, which the Cortex-M33 keeps in floating-point
+   registers (`tst`, `vseleq`, `vnmul` for −s). Negation flips only the sign
+   bit, as the exclusive or does: the tests check both forms (`BITS` a const
+   parameter) against the first at every 4 099th phase and, ignored, at every
+   `u32` phase (run on x86-64: equal).
+3. **0104271: the half turn's sign after the weight without a vector unit.**
+   The subtraction takes cosine and sine only times a weight (the envelope,
+   1.0, or the clamped input), so the function takes the weight
+   (`cos_sin_turns_times`; `cos_sin_turns` stays for the tests as the weight
+   1.0). Without a vector unit the half turn's sign goes on after the
+   multiplication, as an exclusive or of the products' bits in the integer
+   registers the parts go to for their byte stores anyway: on the M33 that
+   replaces two `vneg`, a `cmp` and two `vselge`. w·(−x) = −(w·x) bit for bit
+   for any weight but a NaN (the decoder's weights are finite); a test checks
+   both forms against the first form times 64 finite weights (zeros of both
+   signs, subnormals, the largest) at 20 000 phases. The x86-64 and AArch64
+   binaries' `.text` and `.rodata` are byte-identical to 59a59b9's.
+4. **b900ed4: code-generation bounds** (below).
+
+| loop (instructions; rustc 1.93.0) | be3907a | 6b6ba4e | 59a59b9 | 0104271 |
+|---|---|---|---|---|
+| AArch64 reference, block of 16 (no envelope / envelope) | 127 / 146 | 118 / 126 | 101 / 111 | the same |
+| AArch64 time search's products, block of 16 | 166 | 158 | 137 | the same |
+| M33 (opt-level "s") reference a sample (no envelope / envelope) | 38 / 45 | 37 / 44 | 32 / 35 | **30 / 33** |
+| M33 products a core sample | 51 | 50 | 41 | **39** |
+| M33 staged image (linked), the reference's executed blocks a sample | 39 | | | 31 (10 + 1 + 20) |
+
+The select form compiled for AArch64 (`BITS` false) gives 114 instructions
+for the block of 16 against the bit form's 101, so each target keeps its form.
+
+### Cortex-M33 (emulated instructions; staged images as built, rustc 1.93.0, `--cfg cat_ft8_minmaxnm`)
+
+| commit | s0086 host slot | subtraction a call (37 calls) | s0407 host slot | subtraction a call |
+|---|---|---|---|---|
+| be3907a | 1 662 944 288 | 24 341 877 | 1 659 424 653 | 24 293 113 |
+| 6b6ba4e | 1 654 436 845 (−0.51%) | 24 111 946 (−0.94%) | 1 650 937 443 (−0.51%) | 24 063 729 (−0.94%) |
+| 59a59b9 | 1 601 066 274 (−3.23%) | 22 669 498 (−5.98%) | 1 597 692 424 (−3.22%) | 22 624 675 (−5.98%) |
+| **0104271** | **1 584 352 834 (−1.04%; −4.73% in all)** | **22 217 784 (−1.99%; −8.73% in all)** | **1 581 016 971 (−4.72% in all)** | **22 173 987 (−8.72% in all)** |
+
+- Same decodes (40 and 38 host; 23 and 30 small). Every other stage's count is
+  the same to the instruction (762.29 M and 760.58 M outside the subtraction).
+- Functions (s0086 host, M): `blocks` 292.13 → 247.19 (the reference's
+  blocks 216.5 → 172.6), the subtraction's closure (the products) 144.26 →
+  110.61; `Removal::refs` 145.63, `fill_phase_only` 129.09, `Fit4::add_all`
+  116.55 unchanged.
+- The small slots (no subtraction) move by +1 instruction from 59a59b9
+  (183 016 804 → 183 016 805; s0407 likewise), in `decode_a_slot`.
+- Paint high water: host 10 260 → 10 252 B; small 10 320 → 10 296 (59a59b9)
+  → 10 304 B (0104271), below the base.
+- Per decode, host s0086: 41.6 → 39.6 M.
+
+### Cortex-A76 (Raspberry Pi 5; `slotcost host host,passes=1 200 5`, medians of 4 alternated runs)
+
+Aligned builds (`-align-loops=64 -align-all-functions=6`) of be3907a, 6b6ba4e
+and 59a59b9 (the code of 0104271 on the hosts) from one scratch path, core 3,
+the throttle, clock and temperature sampled once a second from core 0, a 5 s
+sampled busy loop on core 3 before each run, alternated (forward, then
+reversed), four cycles.
+
+| ms per slot (median, spread) | be3907a | 6b6ba4e | 59a59b9 |
+|---|---|---|---|
+| **subtract** | 42.450 (0.050) | 41.220 (0.020): −2.90% | **39.615 (0.040): −2.835, −6.68%** |
+| pass 2 / pass 3 subtract | 29.575 / 12.880 | 28.710 / 12.505 | 27.595 / 12.020 |
+| slot | 88.30 | 87.10 | **85.50** |
+| worst slot | 94.1 | 92.7 | 90.7 |
+| feed (placement check) | 19.200 | 19.215 | 19.205 |
+| belief propagation (placement check) | 19.050 | 19.055 | 19.055 |
+| sync / soft bits / SNR (placement check) | 4.680 / 2.380 / 0.240 | the same | the same |
+| one pass: slot, feed | 18.30, 6.455 | 18.30, 6.465 | 18.30, 6.450 |
+
+- **Placement check.** The untouched stages agree within 0.015 ms across the
+  three builds, and the one-pass slot is the same. The gain (2.835 ms) is
+  about 190 times that and 70 times its stage's spread; no placement variation
+  was run.
+- **Microbenchmark** (cycles a waveform sample, medians over 4 alternated runs
+  × 3 rounds, all valid): the subtraction 19.288 → 18.834 → 18.095 (−6.2%);
+  the reference (`F2 − F1`) 4.59 → 4.13 → 3.81 (−17%); the time search's
+  products (`T1 − T0`) 5.80 → 5.56 → 4.81 a core sample (−17%). Vector
+  operations (`ASE_SPEC`, two runs each): the subtraction 22.96 → 20.68 a
+  sample, the reference 6.97 → 5.64, the products 9.34 → 7.63. PC samples at
+  59a59b9 (26 373): the reference's block 19.6% (101 instructions, 90
+  vector), the products' block 13.1% (137, 126). The generator parts whose
+  code did not change read 1.3–1.5% slower in the head's test binary (`T0`
+  4.075 → 4.126, `F0` 2.388 → 2.425): placement in that binary; `slotcost`'s
+  untouched stages do not move.
+- **Validity.** All 12 timed runs are valid: 1 557 samples during the runs and
+  the warm-ups, every one 0x0, start and end checks included; every sample
+  during a run at 2 400 MHz; one warm-up sample at 1.7 GHz (the first). Peak
+  53.8 °C. The program's own output is logged with a prefix no sample line
+  has. The 17 microbenchmark runs at the head and base likewise (all valid, 2 400 MHz during each run).
+
+### x86-64 (Threadripper 3970X, core 5, `perf stat` user counters over the whole `slotcost` program)
+
+Aligned builds of the same three commits from the same scratch path, four
+alternated rounds (forward, then reversed), `slotcost host host,passes=1 200
+5`; a check for other jobs before and after each sample, none void.
+
+| build | cycles (median, range) | instructions | subtract stage (ms) |
+|---|---|---|---|
+| be3907a | 324.37 G (323.14–324.92) | 914.33 G | 24.890 |
+| 6b6ba4e | 322.57 G (321.40–323.06), −0.55% | 912.44 G | 24.460 |
+| 59a59b9 | **318.72 G (318.45–318.79), −1.74%** | 900.14 G (−1.55%) | 23.630 (−5.1%) |
+
+- 59a59b9's range clears the base's by 4.4 G; 6b6ba4e's only just clears it
+  (321.40–323.06 against 323.14–324.92, by 0.08 G).
+- Stage times are the virtual machine's clock, for scale only.
+
+### Sizes and stack (`check.sh --stack`, thumbv8m)
+
+| image | flash be3907a → 6b6ba4e → 59a59b9 → 0104271 (B) | static RAM (B) |
+|---|---|---|
+| small, small with OSD on | 92 082 (unchanged) | 201 668 (unchanged) |
+| host, host with OSD off | 103 542 → 103 490 → 103 154 → **103 182 (−360 in all)** | 230 084 (unchanged) |
+| encoder only | 35 286 (unchanged) | 0 |
+
+- Frames unchanged at every commit: host `subtract_one` 4 920 B, the
+  subtraction's closure 2 536, `_start` 4 104, `decode_a_slot` 2 520,
+  `finish_row` 464, `osd_decode` 272. No scratch or storage added
+  (`SUBTRACT_STACK_BYTES` and `SUBTRACT_SCRATCH_BYTES` unchanged).
+- No fused multiply-add (0 `vfma`/`vfms`/`vfnma`/`vfnms`; `vmla` 128 / 211 /
+  17, unchanged) and no `f64` helper in any image.
+- Cortex-M4F (thumbv7em, embedded-check images, no cfg; no `vsel` there, the
+  select form becomes `it`-predicated `vmov`): small flash 92 348 (unchanged),
+  host 104 024 → 103 972 → 103 764 → 103 628 B (−396); static RAM unchanged;
+  no `f64` helper, no fused multiply-add; `fmaxf`/`fminf` calls 10 and 14,
+  unchanged.
+- Hosts' `.text`: AArch64 `paired_bench` 1 170 200 → 1 169 816 → 1 170 648 B
+  (+448 in all), `cat-ft8-decode` 397 672 → 397 288 → 398 120; x86-64
+  1 412 022 → 1 411 638 → 1 412 022 and 457 478 → 457 094 → 457 478;
+  x86-64 `.rodata` −64 B (constants). 0104271 equals 59a59b9 on both hosts.
+
+### Sections of all eight binaries
+
+`.text` and `.rodata` (one scratch path, fresh tree, rustc 1.93.0; thumbv8m
+with `--cfg cat_ft8_minmaxnm`):
+
+| binary | 6b6ba4e against be3907a | 59a59b9 against 6b6ba4e | 0104271 against 59a59b9 |
+|---|---|---|---|
+| x86-64 `cat-ft8-decode`, `paired_bench` | differ | differ | identical |
+| AArch64 `cat-ft8-decode`, `paired_bench` | `.text` differs | `.text` differs | identical |
+| M33 check, small | identical | identical | identical |
+| M33 check, host; staged small and host | differ | differ | differ |
+
+b900ed4 changes only `codegen-check.sh`.
+
+### The code-generation check (b900ed4)
+
+Two metrics: `cvtloopN` (the instructions of the shortest loop with at least
+N conversions from integers, `scvtf` or `vcvt.f32.s32`, a ceiling) and `fpneg`
+(`vneg.f32`, a ceiling); the loop scan now also knows AArch64's conditional and
+test branches. Each forced form below is applied to a copy of the head (one
+log each, the check's own exit status):
+
+| form | a64 `blocks` (≤ 104) | a64 `symbol_correlations` (≤ 142) | m33s `blocks` (≤ 31) | m33s closure (≤ 40) | m33s `vneg` in `blocks` (≤ 0) | exit |
+|---|---|---|---|---|---|---|
+| head | 100 | 137 | 30 | 39 | 0 | 0 |
+| f1: the remainder by mask and subtraction | **107** | **148** | 31 | 40 | 0 | 1 |
+| f2: the vector form's quarter by two sign words | **112** | **157** | 30 | 39 | 0 | 1 |
+| f3: the swap by bit operations without a vector unit | 100 | 137 | **32** | **45** | 0 | 1 |
+| f4: the sign before the weight without a vector unit | 100 | 137 | **32** | **41** | **12** | 1 |
+
+No other check failed in any form. What it misses: the remainder's one
+instruction a sample on the M33 (within those ceilings; the AArch64 bounds
+catch its form); up to one instruction in each M33 loop and four or five in
+the AArch64 blocks; other targets (x86-64, the M4F); the linked image (it
+reads the library at opt-level "s"; the linked image's blocks are counted
+above).
+
+### Identity
+
+All at 0104271's binaries (b900ed4 changes only the check).
+
+- **Records, x86-64:** the 73 800 `paired_bench run` records equal b93516e's
+  (host, one pass, small: 24 600 each, 0 differ; the records comparison exits 0
+  each).
+- **800 WAV slots** × 3 configurations × 3 modes, x86-64 (7 200 runs, 78 690
+  decode lines): 93 091 lines byte-identical to b93516e's, and the 2 400
+  `--profile` lines differ only by the sync scratch, as at O21 (exit 0).
+- **A76:** the records of 0104271's AArch64 `paired_bench` equal x86-64
+  b93516e's (73 800, 0 differ; exit 0 each), and the 800 WAV slots × 3 × 3 with
+  its `cat-ft8-decode` give the same 93 091 identical lines and 2 400
+  `--profile` lines (exit 0). One benchmark at a time, in fresh directories;
+  317 throttle samples, start and end included, all 0x0.
+- **Encoder:** the 45 `cat-ft8-encode` WAV files equal 70be604's.
+- **Cortex-M33 (emulated):** the small and host dump images on seven slots
+  (14 of 14) and the multi-pass residuals of s0086 and s0407 equal 68634cc's
+  (exit 0).
+- **Comparators on a forced difference** (copies; each its own exit status):
+  the records comparison 0 unforced, 1 with one record's field changed; the
+  WAV comparison 0 unforced, 1 with a decode line's frequency one higher, 1
+  with a `--profile` line's `peak_bytes` one higher; the M33 comparison 0
+  unforced, 1 with one bit of one dump flipped (15 identical, 1 differ); `cmp`
+  of an encoder WAV 0 unforced, 1 with one byte changed.
+- **Exhaustively:** both forms equal the first form at every `u32` phase, in
+  release on x86-64 (local CI) and on the A76 (below).
+
+### Tests and mutants
+
+New: `cos_sin_turns_is_its_first_form_bit_for_bit` (both forms, every 4 099th
+phase and the quarter turns' edges), `cos_sin_turns_is_its_first_form_everywhere`
+(ignored: every `u32` phase; run in release on x86-64 and on the A76: equal) and
+`cos_sin_turns_times_is_the_weight_times_the_parts` (both forms, 64 finite
+weights, 20 000 phases).
+
+Mutants in copies of b900ed4's tree, release library tests, failing tests per
+mutant (one log each, counts read from the logs; the form without a vector
+unit runs on a host only through its tests, which call it directly):
+
+| mutant | failing (of 209) |
+|---|---|
+| none (control) | 0 |
+| the remainder scaled by 2⁻³² | 13 |
+| the remainder shifted by one | 13 |
+| the half turn's sign from bit 30 | 17 |
+| the vector form's swap from bit 31 | 13 |
+| the vector form's sine not negated | 11 |
+| the select form's swap inverted | 2 |
+| the select form's sine not negated | 2 |
+| the select form's half-turn sign dropped | 2 |
+| the select form's half-turn sign on the cosine only | 2 |
+| the select form's sign before the weight (equivalent: the first form's bits) | 0 |
+
+A76 release library tests with the ignored ones, cross-built at b900ed4
+(`cat-ft8` tree 0263f86e…): 217 pass, 0 fail, the source-tree test skipped,
+the exhaustive comparison included; 50 throttle samples, all 0x0.
+
+Local CI passes at b900ed4: fmt; clippy `-D warnings` (workspace, all targets
+and features, thumbv8m); workspace, profile, no-std and release tests with the
+ignored ones (218, the two exhaustive comparisons included); the group-one step
+(209 run, 9 ignored); the bulk run; MSRV 1.75; docs with and without `std`;
+`check.sh --stack`; the code-generation check (the new bounds 100, 137, 30, 39
+and 0).
+
+### What bounds the reference now
+
+- **Cortex-A76:** the reference 3.81 cycles a sample with 5.64 vector
+  operations (a floor of 2.82 on two pipes, 1.35×); the products 4.81 a core
+  sample with 7.63 (a floor of 3.82, 1.26×). Per vector of four: the
+  remainder 3, the polynomial 10 with t², the quarter 7 (`and`+`cmeq`, `and`,
+  `fneg`, two selects, two `eor`).
+- **Cortex-M33** (the linked image): the reference 31 instructions a sample:
+  the load; four copies of constants for `vmla` (Horner with an accumulating
+  multiply-add); the remainder, conversion and scaling (`lsls`, `add`,
+  `vmov`, `vcvt`, `vmul`); t², the polynomial and −s (seven); the swap
+  (`tst`, two `vseleq`); the sign (`and`, two `eor`); two `vmov` to integer
+  registers and two `str` (the reference is stored as bytes); the loop's
+  four. The products 39 in the library, of which the clamp is 6.
+
+### Tried, not kept
+
+- **Other spellings of the swap mask** (`(u << 1) as i32 >> 31`,
+  `0 − (u & 2³⁰ ≠ 0)`): the same code on AArch64 (`and`, `cmeq`); no `cmtst`.
+- **The select form on AArch64** (`BITS` false): 114 instructions for the
+  block of 16 against 101; the hosts keep the bit form.
+- **A fixed-point conversion** (`scvtf`/`vcvt` with fraction bits, folding the
+  scaling): the vector conversion at be3907a was already `scvtf` then `fmul`
+  (the scalar one used `#32`); 4r would need 34 fraction bits (at most 32),
+  and r by `asr` then a fixed-point conversion has as many operations. Not
+  built.
+- **The polynomial on the unscaled 4r** (every coefficient scaled by a power of
+  two, exact): it saves the multiplication by 2⁻³⁴ but needs one to scale each
+  part back, unless folded into the weight, which is exact only for weights
+  that do not become subnormal; one operation more without an envelope.
+  Analysis only.
+- **A table in place of the polynomial:** it cannot give the same bits without
+  holding the polynomial's value at every remainder (2³⁰); not built.
+- **The reference stored as `f32`** (`vstr`, no moves to integer registers on
+  the M33): the ring is a byte buffer lent by the decoder; viewing it as `f32`
+  needs `unsafe` or a dependency. Not built.
+- **The clamp once** (O22's candidate) was not built: it adds 23 040 B of
+  scratch.
+
+### Risks
+
+- The M33 gain rests on code generation at opt-level "s" (`vsel` for `f32`
+  selects, the exclusive or after the weight), now checked; a toolchain change
+  can lose it with every test passing. The M4F's select form (`it`-predicated
+  `vmov`) was checked for size and library calls only.
+- The two forms give the same bits for every weight but a NaN (a NaN weight's
+  product would take a different sign bit). The decoder's weights are the
+  envelope table, 1.0 and the clamped input (non-finite inputs become 0).
+- `cos_sin_turns` is now test-only; production code calls
+  `cos_sin_turns_times`.
+- AArch64 code grows by 448 B.
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instructions only); M33 counts on any slot but
+  s0086 and s0407 (seven slots for identity); any M4F count or identity.
+- Sparse and empty slots on any target (the A76 timing is the crowded `main`
+  block; the microbenchmark is one synthesized crowded slot).
+- The microbenchmark on other A76 cores; a placement variation (the gain is
+  well over O21c's ±1% of a stage, and the untouched stages agree).
+- The exhaustive comparison on thumbv8m (run on x86-64 and the A76; the M33
+  is covered by its identity runs, not by the exhaustive test).
+- After a toolchain change: the bounds above.
+- x86-64 stage times (the virtual machine's clock); x86-64 timing on real
+  recordings. The x86-64 profile is from one run.

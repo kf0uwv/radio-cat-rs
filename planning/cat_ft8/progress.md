@@ -1985,3 +1985,25 @@
 - Owner check tested with one tone changed (catches a `same_phases` that
   ignores the tones); `STACK_BYTES` doc is release-only; `absent`'s blind spot
   (trait methods) in the check's header. No code change; sections identical.
+
+## Session: 2026-11-03 (O23 the reference polynomial)
+
+- Profiled at be3907a on all three targets (A76 microbenchmark, counters and
+  PC samples; x86-64 perf; M33 per-function and per-block counts): the
+  reference's block of 16 is 22.6% of the A76 subtraction's samples (127
+  instructions, 113 vector); the M33's reference loop 39 a sample, the
+  products 51.
+- 6b6ba4e: the remainder as `(phase << 2) as i32` times 2⁻³⁴ (the same `f32`).
+  59a59b9: the quarter by one sign word; without a vector unit as `f32`
+  selects (`vsel`, `vnmul`). 0104271: without a vector unit the half turn's
+  sign after the weight (`cos_sin_turns_times`); hosts byte-identical to
+  59a59b9. b900ed4: codegen-check `cvtloopN` and `fpneg`, each forced form
+  fails (exit 1).
+- M33 s0086 host: subtraction −8.73% a call, slot −4.73%; A76 subtraction
+  −6.68% (42.450 → 39.615 ms; slot 88.30 → 85.50); x86-64 user cycles −1.74%. Flash −360 B (M33 host), static RAM and frames
+  unchanged.
+- Identity (x86-64, A76, encoder, M33) at 0104271; comparators fail when
+  forced; exhaustive comparison of both forms with the first form; mutants
+  caught, one equivalent by design.
+- Not built: the clamp once (+23 KB). Tried, not kept: other swap-mask
+  spellings (same code), the select form on AArch64 (114 against 101).

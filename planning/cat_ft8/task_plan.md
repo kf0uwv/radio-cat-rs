@@ -2743,6 +2743,24 @@ definitions or anything else. Run once, as written; no retune and no
 third block on this subset. **If it fails, the OSD code is deleted**
 (the user's condition above).
 
+## O23: the subtraction's reference polynomial, bit-identical (2026-11-03)
+
+Base be3907a. Profile first (A76 microbenchmark and PC samples, x86-64
+perf, M33 emulated counts per function and block at opt-level "s" with
+`--cfg cat_ft8_minmaxnm`), then one optimisation per commit:
+
+1. The remainder as `(phase << 2) as i32` scaled by 2⁻³⁴ (the same `f32`
+   as `r as f32 · 2⁻³²`, exactly), one shift for a mask and a subtraction.
+2. The quarter's swap and signs with one sign word (`u`'s top bit) and the
+   sine negated, not two sign words; on targets without a vector unit as
+   `f32` selects (the Cortex-M33's `vsel`), not integer bit operations.
+3. Code-generation bounds for whatever rests on code generation, each shown
+   failing on a forced revert.
+
+Constraints: bit-identical everywhere (an exhaustive test against the
+first form over every `u32` phase); no memory growth (the "clamp once"
+idea is not built); stack and flash changes stated. Evidence as in O22.
+
 ## Next: gated, result-changing rounds
 
 Each changes results and needs its own acceptance (the run sets, the
