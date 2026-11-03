@@ -44,9 +44,9 @@
 # - four-lane `fmaxnm`/`fminnm` in the removal (`Removal::refs`) and in
 #   the time search's whole lanes (`correlation_whole`), a floor, and
 #   compares and selects (`fcmgt`, `bsl`, `bit`, `bif`) in the removal, a
-#   ceiling: with rustc 1.93 the removal has 5 (6 with O25's second
-#   form) and 0, the time search 14; with the branch form of the clamp 0,
-#   18 and 0;
+#   ceiling: with rustc 1.93.0 the removal has 6 and 0, the time search
+#   14; with the branch form of the clamp (`INPUT_SELECT` false) 1, 0 and
+#   0 (the floors catch it);
 # - interleaving loads and stores (`ld2`-`ld4`, `st2`-`st4`) in the
 #   removal and in `Fit4::add_all`, a ceiling of 0: with rustc 1.93 both
 #   0; with the reference's parts interleaved sample by sample (a group
@@ -60,10 +60,9 @@
 #   elsewhere): on AArch64 each function with a ceiling also has a floor
 #   on its vector instructions (the thumbv7em `fmaxf`/`fminf` ceilings
 #   have none). `Removal::refs` has its `fmaxnm`/`fminnm` floor;
-#   `Fit4::add_all_as` a floor of 12 `.4s` instructions (18 with rustc
-#   1.93 in one form, 28 in its two since O25; 8 with its four-lane step
-#   `add4` out of line) and `blocks` 400 (443 with rustc 1.93 since O23's
-#   cheaper polynomial, 440 since O25, 549 before O23; 0 with
+#   `Fit4::add_all_as` a floor of 12 `.4s` instructions (28 with rustc
+#   1.93.0 over its two forms; 8 with its four-lane step `add4` out of
+#   line) and `blocks` 400 (440 with rustc 1.93.0; 0 with
 #   `scaled_cos_sin` out of line).
 # - thumbv8m.main with the cfg: `vmaxnm`/`vminnm` in the removal, a
 #   floor: 20 with rustc 1.93, 0 without the cfg;
@@ -81,8 +80,9 @@
 # - thumbv8m.main with the cfg at opt-level "s": the subtraction's sums
 #   where a group is one sample, taken one lane at a time with the sums in
 #   registers. With rustc 1.93.0 the shortest loop with five `f32`
-#   multiply-accumulates or adds in `Fit4::add_all` has 20 instructions
-#   (a ceiling of 22, now 15 for the form without the clamp: below; 25
+#   multiply-accumulates or adds in `Fit4::add_all_as` is the form
+#   without the clamp's, 14 instructions (a ceiling of 15; 20 with the
+#   clamp, a form this does not bound: see the input's check below; 25
 #   with the four lanes side by side); the frequency
 #   correction one sample at a time leaves 19 carry
 #   adds (`adc`) in the two `blocks` (a ceiling of 24; 37 with the
@@ -108,35 +108,44 @@
 # - the time search's sums taken as its products are (findings O24): on
 #   AArch64 its whole lanes out of line (`correlation_whole`; inlined, the
 #   compiler split the sums across half vectors and spilled them), whose
-#   loop of four conversions has 137 instructions with rustc 1.93.0 (a
-#   ceiling of 140, now 110: below), and the half turn's sign on the
-#   weight, one `eor` a vector (7 in the function, a ceiling of 8, now 16
-#   for its two forms; 14 with the sign after the weight, whose loop is
-#   138, under the loop's ceiling); on thumbv8m.main
-#   with the cfg at opt-level "s" one lane at a time with the sign on the
-#   weight, the products' loop in the subtraction's one closure 36 (a
-#   ceiling of 37, now 31: below; 39 with the products stored and summed after, 42
-#   with the sign after the weight, 69 with the lanes side by side). There
+#   shortest loop of four conversions, the form without the clamp's, has
+#   107 instructions with rustc 1.93.0 (a ceiling of 110; 137 with the
+#   clamp), and the half turn's sign on the weight, one `eor` a vector (7
+#   in each of the two forms, a ceiling of 16; a form with the sign after
+#   the weight had 14, findings O24); on thumbv8m.main with the cfg at
+#   opt-level "s" one lane at a time with the sign on the weight, the
+#   products' loop in the subtraction's one closure 30 without the clamp
+#   (a ceiling of 31; 36 with it; with the clamp, 39 with the products
+#   stored and summed after, 42 with the sign after the weight, 69 with
+#   the lanes side by side). There
 #   too the generator sums its overlap runs' increments as it takes them,
 #   so `fill_phase_only` and `skip_with` keep no loop that loads with no
 #   floating point (`memsums`, a ceiling of 0; 2 each with the increments
 #   stored and summed after).
 # - the input checked once per subtraction (findings O25): the loops that
-#   read the audio have a second form without the clamp, taken when every
-#   usable sample is within the limit (`within_limit`), whose bitwise or
-#   decides in one pass for audio within ±1. On AArch64 that pass is
-#   vectorised (`vecor`, vector `orr`, a floor of 2: 4 with rustc 1.93.0, 0
-#   as a scalar loop), and the whole lanes without the clamp are 107
-#   instructions a loop of four conversions (the shortest of the two
-#   forms: a ceiling of 110; 137 with the clamp only). On thumbv8m.main
-#   with the cfg at opt-level "s" the pass is 4 instructions a sample
-#   (`shortloop`, the function's shortest loop, a ceiling of 4; 7 with the
-#   largest magnitude alone), and the loops without the clamp are the
-#   products 30 (the closure's ceiling of 31 above; 36 with the clamp),
-#   the fit's 14 (`fploop5`, a ceiling of 15; 20 with the clamp) and the
-#   removal's, unreported, 20 (`fploop4`, a ceiling of 21; 26 with the
-#   clamp). The time search's whole lanes now have two forms of 7 `eor`
-#   each (the ceiling above is 16 for both).
+#   read the audio have a form without the clamp, taken when every usable
+#   sample is within the limit (`within_limit`), whose bitwise or decides
+#   in one pass for audio within ±1. On AArch64 that pass is vectorised
+#   (`vecor`, vector `orr`, a floor of 2: 4 with rustc 1.93.0, 0 as a
+#   scalar loop). On thumbv8m.main with the cfg at opt-level "s" it is 4
+#   instructions a sample (`shortloop`, the function's shortest loop, a
+#   ceiling of 4; 7 with the largest magnitude alone). The ceiling is
+#   exact because 4 is the least a loop of one sample a turn can have (a
+#   load that steps its pointer, the or, the count and the branch), and
+#   each instruction more is a quarter more on the pass; a loop unrolled
+#   to several samples a turn would be longer and fail it while perhaps
+#   faster, and is to be measured then. The removal's form without the
+#   clamp, unreported, is 20 instructions a sample (`fploop4`, a ceiling
+#   of 21; 26 with the clamp).
+#   The loop metrics take the shortest loop, so in the fit, the products,
+#   the time search's whole lanes and the removal they bound the forms
+#   without the clamp only; the forms with it (20, 36, 137 and 26 above)
+#   carry no bound. They run only on audio with a sample beyond ±2¹⁶ or
+#   not finite, which a receiver's samples scaled to ±1 never are, so
+#   their speed is not on any measured path, and their results are the
+#   tests' (each form against the other, bit for bit). The counts above
+#   are summed over both forms: a ceiling (the m4 library calls, the
+#   removal's selects) binds each form, a floor only the two together.
 # The multiplication by an envelope of 1.0 that the reference leaves out
 # (the weight folded by the compiler) is not checked: findings O18b.
 # A bound that fails means: re-measure before changing it (planning/
@@ -177,10 +186,10 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # (findings O25) read three levels a bin (the expected tone's, and tone 7's
 # and tone 0's entering and leaving the sum), 15 instructions with rustc
 # 1.93.0 (a ceiling of 16; the eight tones added afresh, 24 instructions
-# with nine byte loads, have no such loop). The sum's speed depends on what
-# else is live around that loop, so it failed if the rows were passed to
-# `costas_scores` by value or `Rows::row` inlined into it (findings O21, for
-# the nine-load loop). `fploopN` counts
+# with nine byte loads, have no such loop). The rows passed to
+# `costas_scores` by value or `Rows::row` inlined into it leave that loop
+# at 15 (findings O25b; the loop of nine loads they lengthened is gone).
+# `fploopN` counts
 # the instructions of the shortest loop with at least N `f32`
 # multiply-accumulates or adds (`vmla`, `vmls`, `vadd`, `vsub`), at most the
 # bound, and a function with no such loop fails it likewise; `cvtloopN`

@@ -180,8 +180,10 @@ fn add_row_running(row: &[u8], tone: usize, out: &mut [ScoreCell]) {
 /// inner loop runs along the bins. With `VECTOR_FORM` (where the target has
 /// a vector unit) each bin's eight tones are added afresh, which
 /// vectorises; otherwise by running sums ([`add_row_running`]).
-// `spec` must stay a reference for the M33 sync sum (+3.4% for the loop of
-// nine loads): findings O21, codegen-check `sumloop3`.
+// `spec` by reference: by value (a `Copy` view of the rows) the M33's
+// running sums keep their loop (codegen-check `sumloop3`) and the sync stage
+// its count, but the small slot rose 0.38% (s0086, in the feed): findings
+// O25b.
 fn costas_scores<const VECTOR_FORM: bool>(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
     let cols = out.len();
     let rows = spec.len() as i32;
