@@ -496,7 +496,7 @@ fn symbol_correlations(
     // block from `end` on.
     let mut s = synth.clone();
     let mut phase = [0u32; BLOCK];
-    s.skip_by_sum(CORE_START, &mut phase);
+    s.skip_summed(CORE_START, &mut phase);
     for k in 0..SYMBOL_COUNT {
         let mut j0 = k * T + CORE_START;
         while j0 < k * T + CORE_END {
@@ -515,7 +515,7 @@ fn symbol_correlations(
         if skips.known & 1 << pair != 0 {
             s.advance(BETWEEN_CORES, skips.sum[pair]);
         } else {
-            skips.sum[pair] = s.skip_by_sum(BETWEEN_CORES, &mut phase);
+            skips.sum[pair] = s.skip_summed(BETWEEN_CORES, &mut phase);
             skips.known |= 1 << pair;
         }
     }

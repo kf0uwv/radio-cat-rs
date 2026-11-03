@@ -338,7 +338,7 @@ impl Synth {
     /// [`skip_with`](Self::skip_with) over the next `n` samples (at most
     /// [`remaining`](Self::remaining)), with `buf` (not empty) as working
     /// storage; returns the phase it added, modulo 2³².
-    pub(crate) fn skip_by_sum(&mut self, n: usize, buf: &mut [u32]) -> u32 {
+    pub(crate) fn skip_summed(&mut self, n: usize, buf: &mut [u32]) -> u32 {
         debug_assert!(n <= self.remaining() && !buf.is_empty());
         let p = self.phase;
         let mut left = n;
@@ -351,7 +351,7 @@ impl Synth {
 
     /// Moves over the next `n` samples (at most
     /// [`remaining`](Self::remaining)) adding `by` to the phase: where `by`
-    /// is the phase [`skip_by_sum`](Self::skip_by_sum) adds over them, the
+    /// is the phase [`skip_summed`](Self::skip_summed) adds over them, the
     /// same state, without the generator.
     pub(crate) fn advance(&mut self, n: usize, by: u32) {
         debug_assert!(n <= self.remaining());

@@ -991,7 +991,7 @@ fn time_search_lanes_follow_the_sample_index_at_any_start() {
 /// on the two symbols' tones ([`TRANSITION`]): over random messages and
 /// bases with every pair of tones, each skipped span's sum equals the
 /// first one with the same pair, and [`Synth::advance`] by it leaves the
-/// generator where [`Synth::skip_by_sum`] does.
+/// generator where [`Synth::skip_summed`] does.
 #[test]
 fn skipped_spans_depend_only_on_the_two_tones() {
     let mut n = Noise(77);
@@ -1019,10 +1019,10 @@ fn skipped_spans_depend_only_on_the_two_tones() {
         let synth = Synth::new(&tones, base, 1.0).unwrap();
         let mut seen = [None::<u32>; 64];
         let (mut a, mut b) = (synth.clone(), synth.clone());
-        a.skip_by_sum(CORE_END, &mut buf);
-        b.skip_by_sum(CORE_END, &mut buf);
+        a.skip_summed(CORE_END, &mut buf);
+        b.skip_summed(CORE_END, &mut buf);
         for k in 0..SYMBOL_COUNT - 1 {
-            let sum = a.skip_by_sum(BETWEEN_CORES, &mut buf);
+            let sum = a.skip_summed(BETWEEN_CORES, &mut buf);
             let pair = usize::from(tones[k]) * 8 + usize::from(tones[k + 1]);
             assert_eq!(
                 *seen[pair].get_or_insert(sum),
