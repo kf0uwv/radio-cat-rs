@@ -161,8 +161,12 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # `absent` passes only if no function's label holds the name (the bound is
 # unused), that is, if it was inlined everywhere; it sees only a type's own
 # methods (`10Correction`), not a trait's (`Clone` for it, say) left out of
-# line. Otherwise a function whose
-# label is not found, or an unknown metric, fails.
+# line. Otherwise a function whose label is not found, or an unknown
+# metric, fails. A count is summed over every function whose label holds
+# the name, and a loop metric takes the shortest loop among them; a
+# check with a fifth field `one` also fails if more than one label holds
+# the name (the subtraction's closures are named only by the function
+# that holds them, so another closure in it could pass for the products).
 checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 min_sum_round vec4 100"
   "a64 7Removal4refs minmax 2" "a64 symbol_correlations minmax 2"
@@ -176,7 +180,7 @@ checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "m33s 4Fit47add_all fploop5 22" "m33s 15whole_lane_sums fploop2 11" "m33s 6blocks carries 24"
   "m33s 10Correction absent 0"
   "a64 6blocks cvtloop4 104" "a64 symbol_correlations cvtloop4 142"
-  "m33s 6blocks cvtloop1 31" "m33s 3run28_\$u7b\$\$u7b\$closure cvtloop1 40" "m33s 6blocks fpneg 0"
+  "m33s 6blocks cvtloop1 31" "m33s 3run28_\$u7b\$\$u7b\$closure cvtloop1 40 one" "m33s 6blocks fpneg 0"
   "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit47add_all libcalls 0")
 
 declare -A asm
@@ -200,15 +204,16 @@ done
 fail=0
 for entry in "${checks[@]}"; do
   set -- $entry
-  key=$1 name=$2 metric=$3 bound=$4
+  key=$1 name=$2 metric=$3 bound=$4 only=${5:-}
   # The function's body runs from its mangled label to the next
   # function's; count its instructions of the metric's kind.
   case "$name" in [0-9]*) seg=$name ;; *) seg="${#name}$name" ;; esac
-  # Prints the count, or "missing" if no function's label holds `seg`.
-  n=$(awk -v f="$seg" -v metric="$metric" '
+  # Prints the count, "missing" if no function's label holds `seg`, or,
+  # for a check marked `one`, "many" if more than one does.
+  n=$(awk -v f="$seg" -v metric="$metric" -v only="$only" '
     # A function ends at its end label or at the next global label.
     /^\.Lfunc_end[0-9]+:/ { p = 0; next }
-    /^[A-Za-z_][^ \t]*:$/ { p = index($0, f) > 0; if (p) found = 1; delete at; next }
+    /^[A-Za-z_][^ \t]*:$/ { p = index($0, f) > 0; if (p) found++; delete at; next }
     !p { next }
     metric ~ /^(sumloop|fploop|cvtloop)/ && /^\.[A-Za-z0-9_$]+:/ {
       sub(/:.*/, ""); at[$0] = k; atb[$0] = bytes; atf[$0] = fps; atc[$0] = cvs; next
@@ -241,6 +246,7 @@ for entry in "${checks[@]}"; do
     metric == "fpneg" && /^\tvneg\.f32\t/ { n++ }
     END {
       if (!found) print "missing"
+      else if (only == "one" && found > 1) print "many"
       else if (metric ~ /^(sumloop|fploop|cvtloop)/) print (best == "" ? "noloop" : best)
       else print n + 0
     }' "${asm[$key]}")
@@ -251,6 +257,11 @@ for entry in "${checks[@]}"; do
       echo "FAIL $key $name: a function out of line"
       fail=1
     fi
+    continue
+  fi
+  if [ "$n" = many ]; then
+    echo "FAIL $key $name: more than one function matches"
+    fail=1
     continue
   fi
   if [ "$n" = missing ]; then
