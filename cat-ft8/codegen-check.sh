@@ -189,6 +189,13 @@
 #   O26): the shortest loop with four `f32` adds, a ceiling of 35 (34 with
 #   rustc 1.93.0; 37 with the zipped iterators out of line, 42 inlined
 #   into `finish_row`, where the function is not found).
+# - the frequency correction's four 64-bit lanes in the subtraction's
+#   reference blocks (`Correction::lanes` out of line, findings O27):
+#   two-lane 64-bit vector adds in `blocks` (`add2d`, a floor of 8 on
+#   AArch64 and 4 as a release build compiles it, `a64r`: 8 and 4 with
+#   rustc 1.93.0, two blocks' loops of four adds against the one out of
+#   line in the release form; 0 with the lanes' setup inlined, whose
+#   loop was 24 scalar instructions a group of four against 10).
 # The multiplication by an envelope of 1.0 that the reference leaves out
 # (the weight folded by the compiler) is not checked: findings O18b.
 # A bound that fails means: re-measure before changing it (planning/
@@ -256,6 +263,8 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # `calls_within_limit` counts calls of `within_limit`, at least the bound;
 # `ldn` counts `ld2`, `ld3` and `ld4`, at least the bound;
 # `vec2` counts instructions with a two-lane `.2d` operand, at most the bound;
+# `add2d` counts two-lane 64-bit vector adds (`add` on `.2d`), at least the
+# bound;
 # `insns` counts the function's instructions, at most the bound;
 # `mulloopN` counts the instructions of the shortest loop with at least N
 # four-lane multiplies (`mulps`; x86-64 only), at most the bound, and a
@@ -271,6 +280,7 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # that holds them, so another closure in it could pass for the products).
 checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 min_sum_round vec4 100" "a64r min_sum_round vec4 100"
+  "a64 6blocks add2d 8" "a64r 6blocks add2d 4"
   "a64 7Removal4refs minmax 2" "a64 correlation_whole minmax 2"
   "a64 7Removal4refs selects 2"
   "a64 7Removal4refs interleaved 0" "a64 4Fit410add_all_as interleaved 0"
@@ -378,6 +388,7 @@ for entry in "${checks[@]}"; do
     metric == "insns" && /^\t[a-z]/ { n++ }
     metric == "ldn" && /^\tld[234]\t/ { n++ }
     metric == "vec2" && /^\t[a-z][^\t]*\t.*\.2d/ { n++ }
+    metric == "add2d" && /^\tadd\tv[0-9]+\.2d/ { n++ }
     END {
       if (!found) print "missing"
       else if (only == "one" && found > 1) print "many"
@@ -440,6 +451,7 @@ for entry in "${checks[@]}"; do
     mulloop*) what="instructions in the loop of ${metric#mulloop} four-lane multiplies (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     ldn) what="interleaving loads (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     vec2) what="two-lane .2d instructions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    add2d) what="two-lane 64-bit adds (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     *) what="unknown metric $metric"; ok=0 ;;
   esac
   if [ $ok = 1 ]; then
