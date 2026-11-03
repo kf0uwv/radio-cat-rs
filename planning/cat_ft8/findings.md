@@ -11047,8 +11047,10 @@ same operations in the same order per lane keep it in registers.
      subtraction). Integer addition modulo 2³² is associative, so the phases
      are the same. Nothing is generated after the last core.
    - A message has 78 boundaries and at most 64 pairs (the three Costas
-     arrays share their six); the first step generates each pair's span once,
-     later steps none.
+     arrays share their six); a step generates the span of each pair not yet
+     met, so a later step only those of pairs not yet met (one at a start
+     moved earlier can reach boundaries the first did not). (Corrected in
+     O22b: this said "later steps none".)
    - `Synth` gains `tone`, `skip_by_sum` and `advance` (crate-internal).
      `SUBTRACT_STACK_BYTES` 4 656 → 4 920 (ADR 0024 updated).
    - All targets: the hosts' code changed and was timed.
@@ -11292,7 +11294,7 @@ samples, start and end included, all 0x0.
 
 ### Risks
 
-- `Synth::skip_by_sum` and `Synth::advance` check their sample counts only in
+- (Fixed in O22b.) `Synth::skip_by_sum` and `Synth::advance` check their sample counts only in
   debug builds: asked past the waveform's end, the first would loop for ever
   and the second would leave the position past the end. Their two callers ask
   for fixed spans inside the waveform (up to the first core, and between the
@@ -11318,3 +11320,140 @@ samples, start and end included, all 0x0.
   gains do not rest on code generation.
 - x86-64 stage times (the virtual machine's clock); x86-64 timing on real
   recordings. The x86-64 microbenchmark profile is from one run of each build.
+
+## Review follow-ups (O22b, 2026-11-03; two commits change code generation, by less than the noise)
+
+On top of O22 (e7d202b), one concern per commit: 7015c8e, 7e4c251, 10dada1,
+6cf2efd, 7f1fb3e and e232116, then this record.
+
+- **7015c8e: `Synth::skip_by_sum` is `skip_summed`.** All eight binaries'
+  `.text` and `.rodata` are byte-identical to 9d05162's.
+- **7e4c251: the generator's skips stop at the waveform's end.** Asked past
+  the end, or with no working storage, `skip_summed` looped for ever in
+  release builds and `advance` moved the position past the end, so that
+  `remaining` wrapped (O22's risk). `skip_summed` now stops when `skip_with`
+  makes no progress, and `advance` moves at most to the end; the debug
+  assertions on the counts are gone, since the bound now holds in every
+  build. `Synth::skip` already clamped its count to `remaining`, so its loop
+  could not hang (unchanged). A new test, `skips_stop_at_the_end_of_the_waveform`,
+  asks all three for `usize::MAX` samples and `skip_summed` for 10 with no
+  storage. A clamp of `n` to `remaining` in `skip_summed` as well was not
+  needed: the progress check covers both cases.
+- **10dada1: the core walk checks its position and stops like `blocks`.**
+  `debug_assert_eq!(j0, s.position())` before each core block, and a return
+  when the generator makes no progress (never, within the waveform).
+- **6cf2efd: a `Skips` serves one generator, checked in debug builds.** The
+  `CoreWalk<'a> { synth: &'a Synth, .. }` shape was built first (the
+  correlations a method of the walk, which holds the generator). It changed
+  the hosts' code: AArch64 `paired_bench` `.text` 1 170 200 → 1 170 328 B (the
+  correlations 919 → 935 instructions, `run` 2 547 → 2 566), x86-64 likewise,
+  and both M33 host images; so it was not kept. Instead, debug builds keep the
+  first generator a `Skips` serves and panic (`skipped_spans_serve_one_generator`)
+  if it is used with another of other tones or base frequency
+  (`Synth::same_phases`, debug-only); a comment at `run`'s `Skips` says so.
+  `SUBTRACT_STACK_BYTES` counts the sums and mask (`SKIPS_BYTES`, 264 B),
+  checked against the release layout at compile time. Sections byte-identical
+  to 10dada1's.
+- **7f1fb3e: comments.** The one-lane loops' comments say "a group of one"
+  and name its two cases (targets without a vector unit; the group-of-one
+  tests); `apply_as` says why the correction is chosen by `VECTOR`, not
+  `GROUP`: it does not touch the reference's layout, so the group-of-one tests
+  keep the lanes there and the tests call both forms directly.
+- **e232116: the code-generation check fails if the correction leaves
+  `blocks`.** O22's carry-add ceiling passed with `Correction::apply` out of
+  line (15 carry adds stay in `blocks`, from the closed-form skips). A new
+  metric, `absent`, passes only if no function's label holds the name; the
+  M33 check requires that no method of `Correction` is out of line. The
+  header's `sumloop` sentence, which O22 had split from its metric, is back
+  beside it. (One log each, the check's own exit status:)
+
+| form | carry adds in `blocks` (ceiling 24) | `Correction` out of line | exit |
+|---|---|---|---|
+| e232116 | 19 | none | 0 |
+| `Correction::apply` out of line | 15 | **found** | 1 |
+| the correction in lanes | **37** | none | 1 |
+
+- **Wording corrected in O22:** a later step of the time search generates
+  the spans of pairs not yet met, not none (a step at a start moved earlier
+  can reach boundaries the first did not).
+
+### Code, counts and time
+
+`.text` and `.rodata` (one scratch path, rustc 1.93.0): 7015c8e equals
+9d05162; 7e4c251 changes the hosts' code in `symbol_correlations` only
+(AArch64 921 → 922 instructions, x86-64 1 022 → 1 026, the same sizes) and
+the M33 host images (+12 B flash, 103 530 → 103 542 B); 10dada1 changes
+`symbol_correlations` again (AArch64 922 → 919; M33 flash the same); 6cf2efd,
+7f1fb3e and e232116 equal 10dada1. At 10dada1 against 9d05162: static RAM and
+every `check.sh --stack` frame unchanged; the M4 host image 104 004 → 104 024
+B; no fused multiply-add and no `f64` helper; the M4's
+`fmaxf`/`fminf` calls unchanged.
+
+| | 9d05162 | 7e4c251 | 10dada1 |
+|---|---|---|---|
+| M33 s0086 host, subtraction a call | 24 342 836 | 24 343 185 (+349) | 24 341 878 (−1 307) |
+| M33 s0407 host, subtraction a call | 24 294 069 | 24 294 419 (+350) | 24 293 114 (−1 305) |
+| M33 small slots, s0086 / s0407 | 183 016 804 / 175 802 920 | the same | the same |
+| A76 subtract, ms (median of 4, spread) | 42.610 (0.040) | 42.600 (0.060) | 42.465 (0.040) |
+| A76 slot, ms | 88.40 | 88.45 | 88.30 |
+| x86-64 `slotcost` user cycles (median of 4, range) | 323.51 G (323.04–324.33) | 323.30 G (322.73–324.16), −0.07% | 323.16 G (323.05–323.98), −0.11% |
+
+- **The bound costs nothing measurable:** M33 +349 instructions a
+  subtraction (+0.0014%; the progress test is in the skips' loop, run once a
+  span); A76 −0.010 ms, within the spread; x86-64 −0.07%, within the ranges.
+- **10dada1 reads 0.135 ms faster on the A76** (3 times its spread). Its
+  change is a compare and an assertion compiled out; the code of the
+  correlations moved (three instructions fewer). It is not claimed as a gain:
+  placement can move a stage this much (O21c), and no placement variation was
+  run.
+- A76: the three builds aligned, from one source path, alternated, four
+  cycles, core 3; 12 runs, 1 512 samples during the runs and 60 in the
+  warm-ups, all 0x0, start and end checks included; every run at 2 400 MHz;
+  one warm-up sample at 1.7 GHz (the first). Peak 53.8 °C. The untouched stages
+  agree within 0.005 ms (feed, belief propagation, sync, soft bits, SNR,
+  OSD-1, the one-pass slot).
+
+### Identity (7e4c251 and 10dada1, the code of the head)
+
+- x86-64: 73 800 records equal b93516e's at each (the records comparison exits
+  0); the 800 WAV slots × 3 × 3 give 93 091 identical lines and the 2 400
+  `--profile` lines of O21's rule (the WAV comparison exits 0).
+- A76: the records of each build's AArch64 `paired_bench` equal x86-64
+  b93516e's (73 800, 0 differ, exit 0 each) and the 800 WAV slots × 3 × 3 with
+  its `cat-ft8-decode` pass the same rule (exit 0); 318 throttle samples in
+  each run, start and end included, all 0x0.
+- Encoder: the 45 WAV files equal 70be604's at each.
+- Cortex-M33 (emulated): 14 of 14 dumps and the residuals of s0086 and s0407
+  equal 68634cc's at each (the M33 comparison exits 0).
+- Comparators at 10dada1: unforced 0; a record's field, a decode's frequency,
+  a `--profile` line's `peak_bytes`, one dump bit and one encoder byte each
+  give 1.
+
+### Tests and mutants
+
+Mutants in copies of e232116's tree (one log each; failing tests read from
+the logs; release or debug library tests as the code needs):
+
+| mutant | tests | failing |
+|---|---|---|
+| none (control) | release / debug | 0 of 207 / 0 of 208 |
+| `advance` not clamped | release | 1 (`skips_stop_at_the_end_of_the_waveform`) |
+| `skip_summed` without the progress check | release | the test hangs; stopped by a 900 s timeout (exit 124) |
+| the owner check always passes | debug | 1 (`skipped_spans_serve_one_generator`) |
+| `same_phases` ignores the base frequency | debug | 1 (the same) |
+| the walk's position assertion one off | debug | 27 |
+| the walk without the progress return | release | 0: equivalent (the generator always makes progress within the waveform) |
+
+Local CI passes at e232116: as in O22 (release tests with the ignored ones
+215; the group-one step 207 run, 8 ignored), with the code-generation check's
+new `absent` check. A76 release library tests with the ignored ones,
+cross-built at e232116 (`cat-ft8` tree 4c103aa3…): 214 pass, 0 fail, the
+source-tree test skipped; 50 throttle samples, all 0x0. x86-64 timing: core 5,
+alternated, other jobs checked around each sample, none void; instructions
+914.20 → 914.21 → 914.34 G.
+
+### Not measured
+
+- As in O22. The A76 gain read at 10dada1 is not separated from placement.
+- The `CoreWalk` form was measured only by its sections and instruction counts
+  per function, not timed.

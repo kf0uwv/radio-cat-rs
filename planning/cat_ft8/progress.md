@@ -1963,3 +1963,19 @@
   B), the M33 reference's quarter selects.
 - Small staged image's stack high water +120 B (the subtraction's driver is
   inlined into its `decode_a_slot`); check images' frames unchanged there.
+
+## Session: 2026-11-03 (O22b review follow-ups)
+
+- 7015c8e: `skip_by_sum` → `skip_summed` (sections unchanged). 7e4c251: `skip_summed`
+  stops when the generator makes no progress and `advance` stops at the end
+  (no release hang or wrap); `Synth::skip` already clamped. 10dada1: the core
+  walk asserts its position and stops like `blocks`. 6cf2efd: a `Skips` checked
+  against its generator in debug builds (`CoreWalk` changed host code, not
+  kept). 7f1fb3e: comments (VECTOR vs GROUP). e232116: codegen-check `absent`,
+  fails with the correction out of line (shown; the carry ceiling alone passed
+  at 15).
+- Cost: M33 +349 then −1 307 instructions a subtraction; A76 −0.010 then
+  −0.135 ms (not claimed: placement); x86-64 −0.07%, −0.11%. Identity
+  (x86-64, A76, encoder, M33) at 7e4c251 and 10dada1; comparators fail when
+  forced; local CI and A76 tests (214) pass; mutants caught, one equivalent.
+- O22's "later steps none" corrected.
