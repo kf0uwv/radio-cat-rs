@@ -11568,7 +11568,9 @@ for the second), with the block's register pressure adding copies and a spill.
    multiplication, as an exclusive or of the products' bits in the integer
    registers the parts go to for their byte stores anyway: on the M33 that
    replaces two `vneg`, a `cmp` and two `vselge`. w·(−x) = −(w·x) bit for bit
-   for any weight but a NaN (the decoder's weights are finite); a test checks
+   for every finite weight (corrected in O23b: this said any weight but a
+   NaN; an infinite weight times a zero part gives a NaN whose sign the two
+   forms can set differently; the decoder's weights are finite); a test checks
    both forms against the first form times 64 finite weights (zeros of both
    signs, subnormals, the largest) at 20 000 phases. The x86-64 and AArch64
    binaries' `.text` and `.rodata` are byte-identical to 59a59b9's.
@@ -11833,8 +11835,10 @@ and 0).
   selects, the exclusive or after the weight), now checked; a toolchain change
   can lose it with every test passing. The M4F's select form (`it`-predicated
   `vmov`) was checked for size and library calls only.
-- The two forms give the same bits for every weight but a NaN (a NaN weight's
-  product would take a different sign bit). The decoder's weights are the
+- The two forms give the same bits for every finite weight (corrected in
+  O23b: this said every weight but a NaN). A NaN weight, or an infinite one
+  times a zero part (the sine at a quarter turn), gives a NaN whose sign bit
+  can differ between the forms. The decoder's weights are the
   envelope table, 1.0 and the clamped input (non-finite inputs become 0).
 - `cos_sin_turns` is now test-only; production code calls
   `cos_sin_turns_times`.
@@ -11853,3 +11857,81 @@ and 0).
 - After a toolchain change: the bounds above.
 - x86-64 stage times (the virtual machine's clock); x86-64 timing on real
   recordings. The x86-64 profile is from one run.
+
+## Review follow-ups (O23b, 2026-11-03; no code generation change)
+
+On top of O23 (756e8f1), one concern per commit: 7a734b6, 4e1aaaa, 9b0814d,
+4bb9e6e, ee2b5c7 and f633ecb, then this record. `.text` and `.rodata` of all
+eight binaries are byte-identical to 0104271's at 7a734b6, 4e1aaaa, 9b0814d
+and 4bb9e6e (one scratch path, rustc 1.93.0); ee2b5c7 and f633ecb change only
+`codegen-check.sh`. So O23's timing, counts and identity stand for the head.
+
+- **7a734b6: finite weights.** The doc said the two forms of
+  `cos_sin_turns_times` agree for any weight but a NaN. An infinite weight
+  times a zero part (the sine at a quarter turn) gives a NaN, whose sign bit
+  the select form turns and the bit form does not; they agree for every
+  finite weight. Corrected in math.rs and in O23 above. The decoder's weights
+  are the envelope, 1.0 and the clamped input: finite.
+- **4e1aaaa: the bit form keeps its sign before the weight.** Tried: both
+  forms with the half turn's exclusive or after the weight, so that `BITS`
+  decides only the swap (the library's assembly, rustc 1.93.0):
+
+  | loop (instructions) | split (head) | shared tail |
+  |---|---|---|
+  | AArch64 reference, block of 16, no envelope (two monomorphs) | 100 / 101 | 100 / 101 |
+  | AArch64 reference, block of 16, envelope | 108 / 111 | **109 / 113** |
+  | AArch64 products, block of 16 | 137 | 137 |
+  | x86-64 reference blocks | 160–180 | 162–176 (four shorter, two longer) |
+  | x86-64 products | 208 | 209 |
+  | Cortex-M33 (opt-level "s") | 30–34, products 39 | the same code |
+
+  Worse on AArch64's blocks with an envelope, so not adopted (not timed); a
+  comment at the bit form says why.
+- **9b0814d: the weight test takes the quarter turns' edges.** Each quarter
+  turn's neighbours (0 to 3 away) and the ends of its reduced range now go
+  through all 64 weights, not only random phases. A mutant that leaves the
+  half turn's sign off zero products in the select form fails it (and the
+  first-form test); log `o23b-mut-zero-skip.log`.
+- **4bb9e6e:** `cos_sin_turns_times_as` is private; a test comment wrapped.
+  The products in `scaled_cos_sin` stay a local (`cs`) before `put`: inlined,
+  `k0` is used before `phase` and the closure's captures are laid out in
+  another order, which changes the hosts' code (60 lines of AArch64 and 154 of
+  x86-64 assembly differ); a comment says so.
+- **ee2b5c7: the products' check needs one closure.** On the Cortex-M33 the
+  products are inlined in the subtraction's closure, named only by its
+  parent (`run`), and a loop metric took the shortest loop over every
+  function whose label held the name. A fifth field, `one`, now fails a check
+  if more than one label holds its name. Forced forms (one log each, the
+  check's own exit status; f5 and f6 add a second closure in `run`, called
+  through a `dyn Fn`, whose loop of conversions is 32 instructions):
+
+  | form | `blocks` (≤ 31) | products' closure (≤ 40, `one`) | exit | b900ed4's check |
+  |---|---|---|---|---|
+  | head | 30 | 39 | 0 | |
+  | f3: the swap by bit operations | **32** | **45** | 1 | |
+  | f4: the sign before the weight | **32** | **41** (and 12 `vneg`) | 1 | |
+  | f5: f3 and a second closure | **32** | **more than one** | 1 | closure read 34, ok (the 45 hidden); exit 1 from `blocks` only |
+  | f6: a second closure alone | 30 | **more than one** | 1 | closure read 32, ok; exit 0 |
+
+- **f633ecb:** the check's header says what the polynomial's bounds protect
+  and points here; the counts are in O23. The FFT's list of what its bounds
+  miss, which O23's paragraph had been put in front of, is back after its own
+  bullet.
+
+### Tests and checks
+
+Local CI passes at f633ecb: fmt; clippy `-D warnings` (workspace, all
+targets and features, thumbv8m); workspace, profile, no-std and release tests
+with the ignored ones (218, the exhaustive comparisons included); the
+group-one step (209 run, 9 ignored); the bulk run; MSRV 1.75; docs with and
+without `std`; `check.sh --stack` (flash and frames as at O23); the
+code-generation check (100, 137, 30, 39 with one closure, 0). A76 release
+library tests with the ignored ones, cross-built at f633ecb (`cat-ft8` tree
+8d6a10f0…): 217 pass, 0 fail, the source-tree test skipped; 50 throttle
+samples, all 0x0. Identity was not rerun: no binary's `.text` or `.rodata`
+changed.
+
+### Not measured
+
+- As in O23. The shared tail was compared by the library's assembly only (not
+  timed, no linked-image counts).

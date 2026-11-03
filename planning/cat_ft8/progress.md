@@ -2007,3 +2007,17 @@
   caught, one equivalent by design.
 - Not built: the clamp once (+23 KB). Tried, not kept: other swap-mask
   spellings (same code), the select form on AArch64 (114 against 101).
+
+### O23b
+
+- 7a734b6 finite weights (an infinite weight at a zero part gives NaNs of
+  different sign); 4e1aaaa the bit form keeps its sign before the weight
+  (shared tail: AArch64 envelope blocks 108/111 → 109/113, not adopted);
+  9b0814d quarter-turn edges through every weight; 4bb9e6e
+  `cos_sin_turns_times_as` private, `cs` kept (inlining moves host code);
+  ee2b5c7 codegen-check `one` (a second `run` closure no longer passes for the
+  products: b900ed4's check read 34 with the products at 45); f633ecb header
+  trimmed.
+- All eight binaries byte-identical to 0104271 at every code commit; O23's
+  timing, counts and identity stand. Local CI (codegen-check and group-one included) and A76 library tests
+  with the ignored ones (217) pass at f633ecb.
