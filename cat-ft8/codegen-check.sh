@@ -140,7 +140,9 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # bound, and a function with no such loop fails it likewise; `carries`
 # counts `adc` (the high word of a 64-bit add), at most the bound;
 # `absent` passes only if no function's label holds the name (the bound is
-# unused), that is, if it was inlined everywhere. Otherwise a function whose
+# unused), that is, if it was inlined everywhere; it sees only a type's own
+# methods (`10Correction`), not a trait's (`Clone` for it, say) left out of
+# line. Otherwise a function whose
 # label is not found, or an unknown metric, fails.
 checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 min_sum_round vec4 100"

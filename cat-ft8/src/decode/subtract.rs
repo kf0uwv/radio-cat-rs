@@ -134,7 +134,8 @@ const MIDDLE: f32 = WAVEFORM_SAMPLES as f32 / 2.0;
 /// correlations, one set of per-group step sums and the 15 tone steps'
 /// rotations of the time search, the per-segment amplitudes, one block
 /// of reference phase and envelope, and the time search's skipped spans by
-/// tone pair. (The compiler's frames add scalars,
+/// tone pair, in release builds (debug builds add the skipped spans' check
+/// of their generator, a copy of it). (The compiler's frames add scalars,
 /// temporaries and call overhead; the embedded link check reports them.)
 /// The held reference is not on the stack: it is in the caller's scratch
 /// ([`SUBTRACT_SCRATCH_BYTES`](SCRATCH_BYTES)).
