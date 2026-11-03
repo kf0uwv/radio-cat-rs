@@ -503,8 +503,12 @@ fn symbol_correlations(
             if j0 >= end {
                 return c;
             }
+            debug_assert_eq!(j0, s.position());
             // The cores are clear of the ramps: the envelope is 1.0 there.
             let n = s.fill_phase_only(&mut phase);
+            if n == 0 {
+                return c;
+            }
             block(j0, &phase[..n]);
             j0 += n;
         }
