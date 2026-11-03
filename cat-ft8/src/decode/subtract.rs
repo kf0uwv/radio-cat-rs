@@ -85,7 +85,7 @@
 //! the same on every target.
 
 use super::decoder::Decode;
-use super::frontend::INPUT_LIMIT;
+use super::frontend::{within_limit, INPUT_LIMIT};
 use super::math::{
     atan2_turns, cos_sin_turns_times, cos_sin_turns_weight_signed_as, log2_power, phase_of_ratio,
     LANES, SCALAR_FORMS, VECTOR,
@@ -1589,24 +1589,6 @@ fn input_branch_as<const IN_LIMIT: bool>(x: f32) -> f32 {
     } else {
         input_branch(x)
     }
-}
-
-/// Whether every sample of `xs` is finite and within ±[`INPUT_LIMIT`], so
-/// that [`input`] returns each unchanged. A sample's bits without the sign,
-/// as an unsigned integer, order the finite magnitudes and put the
-/// infinities and NaNs above them. Their bitwise or is at least the largest
-/// of them, and for audio within ±1, as a slot's is, it is below the
-/// limit's: then that one pass decides. Otherwise their largest decides,
-/// in a second pass. (Folds over every sample rather than `all`, whose
-/// early exit keeps the loop from vectorising.) Not inlined: one call per
-/// subtraction, and its loops are checked on their own (`codegen-check.sh`).
-#[inline(never)]
-fn within_limit(xs: &[f32]) -> bool {
-    const MAGNITUDE: u32 = 0x7fff_ffff;
-    let limit = INPUT_LIMIT.to_bits();
-    let any = xs.iter().fold(0u32, |a, &x| a | x.to_bits());
-    (any & MAGNITUDE) <= limit
-        || xs.iter().fold(0u32, |m, &x| m.max(x.to_bits() & MAGNITUDE)) <= limit
 }
 
 /// The centre of segment `k` (a whole sample: segments are whole blocks).

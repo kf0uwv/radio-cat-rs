@@ -377,6 +377,80 @@ fn feed_equals_feeding_the_classified_samples() {
     }
 }
 
+/// The block check ([`within_limit`]) holds exactly where [`classify`]
+/// returns the sample unchanged and counts nothing: for the values the
+/// front end treats specially and their neighbours, every exponent with
+/// both signs, and one sample out of the limit at each place of blocks of
+/// several lengths, where [`checked_copy`] counts it and writes what
+/// `classify` returns. A block with samples of 2 and more beside small
+/// ones, whose bitwise or is past the limit's, is taken whole too.
+#[test]
+fn the_block_check_is_where_classify_is_the_identity() {
+    let above = f32::from_bits(INPUT_LIMIT.to_bits() + 1);
+    let mut values = vec![
+        0.0,
+        -0.0,
+        f32::from_bits(1),
+        f32::MIN_POSITIVE,
+        INPUT_LIMIT,
+        -INPUT_LIMIT,
+        f32::from_bits(INPUT_LIMIT.to_bits() - 1),
+        above,
+        -above,
+        f32::MAX,
+        f32::MIN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NAN,
+        -f32::NAN,
+        f32::from_bits(0x7f80_0001),
+        f32::from_bits(0x7fff_ffff),
+    ];
+    for e in 0..256u32 {
+        for m in [0u32, 1, 0x40_0000, 0x7f_ffff] {
+            let x = f32::from_bits(e << 23 | m);
+            values.push(x);
+            values.push(-x);
+        }
+    }
+    let identity = |x: f32| {
+        let (mut sanitised, mut clamped) = (0, 0);
+        let y = classify(x, &mut sanitised, &mut clamped);
+        y.to_bits() == x.to_bits() && sanitised + clamped == 0
+    };
+    let mut out = 0;
+    for &x in &values {
+        assert_eq!(within_limit(&[x]), identity(x), "{:#x}", x.to_bits());
+        out += usize::from(!identity(x));
+    }
+    assert!(out > 100 && out < values.len() - 100, "{out}");
+    assert!(within_limit(&[]));
+    for len in [1usize, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 33, 240, 961] {
+        let ok: Vec<f32> = (0..len).map(|i| (i as f32 - 3.0) * 0.25).collect();
+        assert!(within_limit(&ok), "{len}");
+        let mut wide = ok.clone();
+        wide[len / 2] = -INPUT_LIMIT;
+        assert!(within_limit(&wide), "{len}");
+        for at in 0..len {
+            for bad in [f32::NAN, f32::INFINITY, -INPUT_LIMIT * 1.5, above] {
+                let mut v = ok.clone();
+                v[at] = bad;
+                assert!(!within_limit(&v), "{len} {at} {bad}");
+                let mut copied = vec![1.0f32; len];
+                let (sanitised, clamped) = checked_copy(&v, &mut copied);
+                assert_eq!(sanitised + clamped, 1, "{len} {at} {bad}");
+                let (mut s, mut c) = (0, 0);
+                let want: Vec<u32> = v
+                    .iter()
+                    .map(|&x| classify(x, &mut s, &mut c).to_bits())
+                    .collect();
+                let got: Vec<u32> = copied.iter().map(|x| x.to_bits()).collect();
+                assert_eq!(got, want, "{len} {at} {bad}");
+            }
+        }
+    }
+}
+
 #[test]
 fn floor_and_top_levels_are_counted() {
     let mut front = FrontEnd::new();

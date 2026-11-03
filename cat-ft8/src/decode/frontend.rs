@@ -52,7 +52,7 @@
 //! sync search uses it then.
 
 use super::fft::{power_bins, FftBuffer, BINS, WINDOW};
-use super::math::{abs, log2_power};
+use super::math::log2_power;
 use crate::{Error, SLOT_SAMPLES};
 
 /// Hop between rows: half a symbol.
@@ -199,17 +199,33 @@ fn classify(x: f32, sanitised: &mut usize, clamped: &mut usize) -> f32 {
     }
 }
 
+/// Whether every sample of `xs` is finite and within ±[`INPUT_LIMIT`]:
+/// exactly the samples that [`classify`] returns unchanged and does not
+/// count (and that the subtraction's `input` returns unchanged). A
+/// sample's bits without the sign, as an unsigned integer, order the
+/// finite magnitudes and put the infinities and NaNs above them. Their
+/// bitwise or is at least the largest of them, and for audio within ±1, as
+/// a slot's is, it is below the limit's: then that one pass decides.
+/// Otherwise their largest decides, in a second pass. (Folds over every
+/// sample rather than `all`, whose early exit keeps the loop from
+/// vectorising.) Not inlined: one call per block fed and per subtraction,
+/// and its loops are checked on their own (`codegen-check.sh`).
+#[inline(never)]
+pub(crate) fn within_limit(xs: &[f32]) -> bool {
+    const MAGNITUDE: u32 = 0x7fff_ffff;
+    let limit = INPUT_LIMIT.to_bits();
+    let any = xs.iter().fold(0u32, |a, &x| a | x.to_bits());
+    (any & MAGNITUDE) <= limit
+        || xs.iter().fold(0u32, |m, &x| m.max(x.to_bits() & MAGNITUDE)) <= limit
+}
+
 /// Copies `src` into `dst` (the same length) as [`classify`] takes each
 /// sample, and returns how many it sanitised and clamped. A block whose
-/// samples are all finite and within ±[`INPUT_LIMIT`], which `classify`
-/// returns unchanged, is checked as a whole and copied; any other block is
-/// classified sample by sample.
+/// samples are all finite and within ±[`INPUT_LIMIT`] ([`within_limit`]),
+/// which `classify` returns unchanged, is checked as a whole and copied;
+/// any other block is classified sample by sample.
 fn checked_copy(src: &[f32], dst: &mut [f32]) -> (usize, usize) {
-    // False for NaN and the infinities; true exactly where `classify`
-    // returns `x`. A fold over the whole block rather than `all`: `all`
-    // stops at the first failing sample, and a loop with that exit is not
-    // vectorised (rustc 1.93.0). Blocks almost always pass.
-    if src.iter().fold(true, |ok, &x| ok & (abs(x) <= INPUT_LIMIT)) {
+    if within_limit(src) {
         dst.copy_from_slice(src);
         return (0, 0);
     }
