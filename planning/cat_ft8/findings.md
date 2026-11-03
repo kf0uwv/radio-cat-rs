@@ -11457,3 +11457,18 @@ alternated, other jobs checked around each sample, none void; instructions
 - As in O22. The A76 gain read at 10dada1 is not separated from placement.
 - The `CoreWalk` form was measured only by its sections and instruction counts
   per function, not timed.
+
+## O22c: closure follow-ups (tests and comments only)
+
+- `skipped_spans_serve_one_generator_of_one_tone_sequence`: the owner check
+  with the same base frequency and one data tone moved; the earlier test moved
+  only the base. A `same_phases` that ignores the tones passes the earlier test
+  and fails this one (shown, then reverted).
+- `STACK_BYTES`' doc says it holds for release builds; debug builds add the
+  owner check's copy of the generator.
+- The code-generation check's header says `absent` sees only a type's own
+  methods, not a trait's left out of line.
+- No code change: x86-64 and AArch64 `cat-ft8-decode` `.text` and `.rodata`
+  identical to e30e553's. Local tests: debug 241 pass, release 239 pass (9
+  ignored each), the group-one step 207 run, 8 ignored; the code-generation
+  check passes.

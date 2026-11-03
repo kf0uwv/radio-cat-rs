@@ -1979,3 +1979,9 @@
   (x86-64, A76, encoder, M33) at 7e4c251 and 10dada1; comparators fail when
   forced; local CI and A76 tests (214) pass; mutants caught, one equivalent.
 - O22's "later steps none" corrected.
+
+### O22c
+
+- Owner check tested with one tone changed (catches a `same_phases` that
+  ignores the tones); `STACK_BYTES` doc is release-only; `absent`'s blind spot
+  (trait methods) in the check's header. No code change; sections identical.
