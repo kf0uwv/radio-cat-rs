@@ -1013,8 +1013,7 @@ impl Fit4 {
         // selected form there gave other code that was not measured.
         let one = |f: &mut Fit4, i: usize| {
             let (c, s) = get(refs, k0 + (i - i0));
-            let x = xs[i - i0];
-            f.add(i, if IN_LIMIT { x } else { input_branch(x) }, c, s);
+            f.add(i, input_branch_as::<IN_LIMIT>(xs[i - i0]), c, s);
         };
         for i in i0..m0 {
             one(self, i);
@@ -1581,6 +1580,17 @@ fn input_as<const IN_LIMIT: bool>(x: f32) -> f32 {
     }
 }
 
+/// [`input_branch`] of `x`, or `x` itself where `IN_LIMIT`, as
+/// [`input_as`].
+#[inline(always)]
+fn input_branch_as<const IN_LIMIT: bool>(x: f32) -> f32 {
+    if IN_LIMIT {
+        x
+    } else {
+        input_branch(x)
+    }
+}
+
 /// Whether every sample of `xs` is finite and within ±[`INPUT_LIMIT`], so
 /// that [`input`] returns each unchanged. A sample's bits without the sign,
 /// as an unsigned integer, order the finite magnitudes and put the
@@ -1595,7 +1605,7 @@ fn within_limit(xs: &[f32]) -> bool {
     const MAGNITUDE: u32 = 0x7fff_ffff;
     let limit = INPUT_LIMIT.to_bits();
     let any = xs.iter().fold(0u32, |a, &x| a | x.to_bits());
-    any & MAGNITUDE <= limit
+    (any & MAGNITUDE) <= limit
         || xs.iter().fold(0u32, |m, &x| m.max(x.to_bits() & MAGNITUDE)) <= limit
 }
 

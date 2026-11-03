@@ -312,7 +312,9 @@ fn non_finite_and_huge_samples_are_taken_as_the_front_end_takes_them() {
 /// the signal or after it, or at its last sample (with a signal cut short
 /// at the slot's end), gives what the same audio with that sample as the
 /// front end takes it gives, bit for bit, where the subtraction writes; a
-/// sample it does not write is left as it was.
+/// sample it does not write is left as it was. One just before the usable
+/// audio (at `skip − 1`, outside the check) changes nothing: the same
+/// results as without it, and it is left as it was.
 #[test]
 fn a_sample_out_of_the_limit_anywhere_is_taken_as_the_front_end_takes_it() {
     let mut checked = 0;
@@ -330,6 +332,7 @@ fn a_sample_out_of_the_limit_anywhere_is_taken_as_the_front_end_takes_it() {
         let skip = start + 5 * 1_920 + 600;
         for (skip, at) in [
             (0, 0),
+            (skip, skip - 1),
             (skip, skip),
             (0, start + 3 * 1_920 + 900),
             (0, start + WAVEFORM_SAMPLES),
@@ -341,10 +344,16 @@ fn a_sample_out_of_the_limit_anywhere_is_taken_as_the_front_end_takes_it() {
             for junk in [f32::NAN, f32::INFINITY, -INPUT_LIMIT * 2.0] {
                 let (mut a, mut z) = (slot.clone(), slot.clone());
                 a[at] = junk;
-                z[at] = input_branch(junk);
+                let outside = at < skip;
+                if !outside {
+                    z[at] = input_branch(junk);
+                }
                 let d = decode_near(freq, dt);
                 let ra = sub(&mut a, &d, skip, &SubtractConfig::DEFAULT).unwrap();
                 let rz = sub(&mut z, &d, skip, &SubtractConfig::DEFAULT).unwrap();
+                if outside {
+                    assert_eq!(a[at].to_bits(), junk.to_bits(), "{dt} {skip} {at} {junk}");
+                }
                 if a[at].to_bits() == junk.to_bits() {
                     // Not written: left as it was.
                     a[at] = z[at];
@@ -355,7 +364,10 @@ fn a_sample_out_of_the_limit_anywhere_is_taken_as_the_front_end_takes_it() {
             }
         }
     }
-    assert_eq!(checked, 2 * 5 * 3 - 3);
+    // Six places and three values for each signal, less the place after
+    // the signal for the one at dt 2.0, whose waveform runs past the slot's
+    // end (`at` beyond the last sample): its three values are not run.
+    assert_eq!(checked, 2 * 6 * 3 - 3);
 }
 
 #[test]
@@ -1102,10 +1114,11 @@ fn time_search_correlation_is_the_lanes_sums_in_both_forms() {
 }
 
 /// [`within_limit`] holds exactly where [`input`] returns every sample
-/// unchanged (bit for bit): over the values the front end treats specially
-/// and their neighbours, every exponent with random mantissas and signs,
-/// and one sample out of the limit at each place in slices of several
-/// lengths.
+/// unchanged (bit for bit), in the form the target takes and in both of
+/// its forms ([`input_branch`], [`input_select`]): over the values the
+/// front end treats specially and their neighbours, every exponent with
+/// random mantissas and signs, and one sample out of the limit at each
+/// place in slices of several lengths.
 #[test]
 fn within_limit_is_where_input_is_the_identity() {
     let unchanged = |x: f32| input_branch(x).to_bits() == x.to_bits();
@@ -1142,6 +1155,18 @@ fn within_limit_is_where_input_is_the_identity() {
     let mut out = 0;
     for &x in &values {
         assert_eq!(within_limit(&[x]), unchanged(x), "{:#x}", x.to_bits());
+        assert_eq!(
+            within_limit(&[x]),
+            input(x).to_bits() == x.to_bits(),
+            "input {:#x}",
+            x.to_bits()
+        );
+        assert_eq!(
+            within_limit(&[x]),
+            input_select(x).to_bits() == x.to_bits(),
+            "select {:#x}",
+            x.to_bits()
+        );
         out += usize::from(!unchanged(x));
     }
     assert!(out > 100 && out < values.len() - 100, "{out}");
