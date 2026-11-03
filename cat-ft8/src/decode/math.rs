@@ -297,8 +297,11 @@ pub(crate) fn cos_sin_turns(phase: u32) -> (f32, f32) {
 /// of the factors', its magnitude rounds the same), so both forms give the
 /// same bits for every finite weight. (A NaN weight, or an infinite one
 /// times a zero part, gives a NaN whose sign bit can differ between them.)
+/// The phase reduced to the nearest quarter turn: `u`, the phase plus an
+/// eighth of a turn (quarter k is `u >> 30`), and the polynomials' cosine
+/// and sine of the remainder.
 #[inline(always)]
-fn cos_sin_turns_times_as<const BITS: bool>(phase: u32, w: f32) -> (f32, f32) {
+fn reduced(phase: u32) -> (u32, f32, f32) {
     let u = phase.wrapping_add(1 << 29);
     // The remainder r in [−2²⁹, 2²⁹) is the phase's low 30 bits read as
     // signed, so 4r is `phase << 2` read as signed: one shift. One
@@ -308,6 +311,12 @@ fn cos_sin_turns_times_as<const BITS: bool>(phase: u32, w: f32) -> (f32, f32) {
     let z = t * t;
     let s = t * (S1 + z * (S3 + z * S5));
     let c = C0 + z * (C2 + z * C4);
+    (u, c, s)
+}
+
+#[inline(always)]
+fn cos_sin_turns_times_as<const BITS: bool>(phase: u32, w: f32) -> (f32, f32) {
+    let (u, c, s) = reduced(phase);
     // Quarter k: (cos, sin) = (c, s), (−s, c), (−c, −s), (s, −c): an odd
     // k swaps the parts and negates the sine's, then k ≥ 2 (`u`'s top bit)
     // negates both.
@@ -325,6 +334,34 @@ fn cos_sin_turns_times_as<const BITS: bool>(phase: u32, w: f32) -> (f32, f32) {
         let (cos, sin) = if u & (1 << 30) != 0 { (-s, c) } else { (c, s) };
         let turn = |x: f32| f32::from_bits(x.to_bits() ^ half);
         (turn(w * cos), turn(w * sin))
+    }
+}
+
+/// [`cos_sin_turns_times`] with the half turn's sign taken on the weight
+/// before the products, one sign for both parts: for products that are
+/// summed, not stored (the time search's). (−w) · x = −(w · x) bit for bit
+/// for finite w and x (the product's sign is the exclusive or of the
+/// factors', its magnitude rounds the same), so the parts are those of
+/// [`cos_sin_turns_times`] for every finite weight. The swap by bit
+/// operations (`BITS`, where the target has a vector unit) or by `f32`
+/// selects, as there; the sign by an exclusive or, or by a select of the
+/// negated weight (`vneg` and `vsel` on the Cortex-M33, where the parts
+/// then stay in floating-point registers).
+#[inline(always)]
+pub(crate) fn cos_sin_turns_signed_as<const BITS: bool>(phase: u32, w: f32) -> (f32, f32) {
+    let (u, c, s) = reduced(phase);
+    let half = u & 0x8000_0000;
+    if BITS {
+        let w = f32::from_bits(w.to_bits() ^ half);
+        let swap = 0u32.wrapping_sub((u >> 30) & 1);
+        let (sb, nb, cb) = (s.to_bits(), (-s).to_bits(), c.to_bits());
+        let sin = (cb & swap) | (sb & !swap);
+        let cos = (nb & swap) | (cb & !swap);
+        (w * f32::from_bits(cos), w * f32::from_bits(sin))
+    } else {
+        let w = if half != 0 { -w } else { w };
+        let (cos, sin) = if u & (1 << 30) != 0 { (-s, c) } else { (c, s) };
+        (w * cos, w * sin)
     }
 }
 
@@ -528,11 +565,12 @@ mod tests {
         n
     }
 
-    /// Both forms of [`cos_sin_turns_times`] give the first form's parts
-    /// times the weight, bit for bit, at the quarter turns' edges and 20 000
-    /// random phases, for weights of either sign, zeros, subnormals and the
-    /// largest finite ones (in the decoder, the envelope and the clamped
-    /// input: finite).
+    /// Both forms of [`cos_sin_turns_times`], and both of
+    /// [`cos_sin_turns_signed_as`] (the half turn's sign on the weight),
+    /// give the first form's parts times the weight, bit for bit, at the
+    /// quarter turns' edges and 20 000 random phases, for weights of either
+    /// sign, zeros, subnormals and the largest finite ones (in the decoder,
+    /// the envelope and the clamped input: finite).
     #[test]
     fn cos_sin_turns_times_is_the_weight_times_the_parts() {
         let bits = |(c, s): (f32, f32)| (c.to_bits(), s.to_bits());
@@ -578,6 +616,16 @@ mod tests {
                     bits(cos_sin_turns_times_as::<false>(p, w)),
                     want,
                     "selects, {p:#010x} {w:e}"
+                );
+                assert_eq!(
+                    bits(cos_sin_turns_signed_as::<true>(p, w)),
+                    want,
+                    "signed, bits, {p:#010x} {w:e}"
+                );
+                assert_eq!(
+                    bits(cos_sin_turns_signed_as::<false>(p, w)),
+                    want,
+                    "signed, selects, {p:#010x} {w:e}"
                 );
             }
         };

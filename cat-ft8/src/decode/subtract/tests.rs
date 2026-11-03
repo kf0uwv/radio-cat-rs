@@ -937,7 +937,6 @@ fn time_search_lanes_follow_the_sample_index_at_any_start() {
     let audio = noisy_slot();
     let tones = encode_payload(&decode_near(1_234.5, 0.31).payload);
     let synth = Synth::new(&tones, 1_234.5, 1.0).unwrap();
-    let mut work = std::vec![0u8; SCRATCH_BYTES];
     let core = |j0: usize| (CORE_START..CORE_END).contains(&(j0 % T));
     let mut checked = 0;
     // One set of skipped spans for every call, as the time search's steps
@@ -951,7 +950,7 @@ fn time_search_lanes_follow_the_sample_index_at_any_start() {
                 lo: (start + lo_off).max(0),
                 hi: start + hi_off,
             };
-            let got = symbol_correlations(&audio, usable, &synth, start, &mut work, &mut skips);
+            let got = symbol_correlations(&audio, usable, &synth, start, &mut skips);
             let mut want = [(0.0f32, 0.0f32); SYMBOL_COUNT];
             let end = usable.range(start, 0, WAVEFORM_SAMPLES).1;
             blocks(&synth, end, core, |j0, phase, _| {
@@ -986,6 +985,51 @@ fn time_search_lanes_follow_the_sample_index_at_any_start() {
         }
     }
     assert_eq!(checked, 20);
+}
+
+/// [`correlation`] in both forms (the lanes side by side, and one lane at a
+/// time) against its definition: in a block that starts at a multiple of
+/// [`LANES`], for every first sample modulo `LANES` and lengths around
+/// [`CHAINS`]' multiples, each sample's [`input_branch`] times the cosine
+/// and sine of its phase ([`cos_sin_turns`]), summed lane by lane in sample
+/// order from 0.0, the lanes added by [`sum_lanes`]. The audio holds the
+/// values the front end treats specially. Bit for bit.
+#[test]
+fn time_search_correlation_is_the_lanes_sums_in_both_forms() {
+    let mut n = Noise(4_242);
+    let mut checked = 0;
+    for i0 in 0..2 * LANES + 3 {
+        for len in [0, 1, 2, 3, 5, 15, 16, 17, 31, 47, 64, 65, 129, BLOCK - i0] {
+            let len = len.min(BLOCK - i0);
+            let phase = test_phases(&mut n, len);
+            let xs = test_weights(&mut n, len);
+            let (mut re, mut im) = ([0.0f32; LANES], [0.0f32; LANES]);
+            for l in 0..LANES {
+                for k in 0..len {
+                    if (i0 + k) % LANES == l {
+                        let (c, s) = cos_sin_turns(phase[k]);
+                        let w = input_branch(xs[k]);
+                        re[l] += w * c;
+                        im[l] += w * s;
+                    }
+                }
+            }
+            let want = (sum_lanes(re).to_bits(), sum_lanes(im).to_bits());
+            let bits = |(a, b): (f32, f32)| (a.to_bits(), b.to_bits());
+            assert_eq!(
+                bits(correlation_as::<true>(i0, &phase, &xs)),
+                want,
+                "side by side, {i0} {len}"
+            );
+            assert_eq!(
+                bits(correlation_as::<false>(i0, &phase, &xs)),
+                want,
+                "by lane, {i0} {len}"
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 14 * (2 * LANES + 3));
 }
 
 /// The phase the generator adds between two symbols' cores depends only
@@ -1055,14 +1099,13 @@ fn skips_with_two_generators(base_hz: f32, step: u8) {
         lo: 0,
         hi: audio.len() as i64,
     };
-    let mut work = std::vec![0u8; SCRATCH_BYTES];
     let mut skips = Skips::new();
     let a = Synth::new(&tones, 1_234.5, 1.0).unwrap();
-    symbol_correlations(&audio, usable, &a, 6_000, &mut work, &mut skips);
+    symbol_correlations(&audio, usable, &a, 6_000, &mut skips);
     let mut other = tones;
     other[10] = (other[10] + step) % 8;
     let b = Synth::new(&other, base_hz, 1.0).unwrap();
-    symbol_correlations(&audio, usable, &b, 6_000, &mut work, &mut skips);
+    symbol_correlations(&audio, usable, &b, 6_000, &mut skips);
 }
 
 /// A set of skipped spans' sums serves one generator only: debug builds
@@ -1204,7 +1247,7 @@ fn scaled_cos_sin_matches<const W: usize>(seed: u64) -> usize {
     checked
 }
 
-/// The reference and the time search's products, several samples at a
+/// The reference (by any weight), several samples at a
 /// time (the hosts' form) and one at a time (where nothing vectorises),
 /// against the plain loop bit for bit: random and edge phases and weights,
 /// every length up to three blocks of `W` and beyond, unequal inputs.

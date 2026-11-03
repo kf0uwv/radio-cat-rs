@@ -42,18 +42,15 @@
 #   1.93; 46 with the group products written in place row by row, 38
 #   with the products check by check;
 # - four-lane `fmaxnm`/`fminnm` in the removal (`Removal::refs`) and in
-#   symbol_correlations, a floor, and compares and selects (`fcmgt`,
-#   `bsl`, `bit`, `bif`) in the removal, a ceiling: with rustc 1.93 the
-#   removal has 5 and 0, symbol_correlations 8; with the branch form of
-#   the clamp 0, 18 and 0;
+#   the time search's whole lanes (`correlation_whole`), a floor, and
+#   compares and selects (`fcmgt`, `bsl`, `bit`, `bif`) in the removal, a
+#   ceiling: with rustc 1.93 the removal has 5 and 0, the time search 8;
+#   with the branch form of the clamp 0, 18 and 0;
 # - interleaving loads and stores (`ld2`-`ld4`, `st2`-`st4`) in the
 #   removal and in `Fit4::add_all`, a ceiling of 0: with rustc 1.93 both
 #   0; with the reference's parts interleaved sample by sample (a group
 #   of one) 3 and 1, and with the removal's ramp index carried as an
 #   integer (the loop vectoriser takes four groups at a time) 2 and 0;
-# - four-lane `.4s` instructions in `whole_lane_sums`, a floor of 2: 2
-#   with rustc 1.93; inlined into `lane_sums` (the sums kept as scalars)
-#   the function is not found;
 # - shuffles (`zip`, `uzp`, `trn`) in `blocks` (the reference's block
 #   of 16 samples), a ceiling of 12: 3 with rustc 1.93; with the parts
 #   interleaved 19, and with each sample stored by itself 75;
@@ -83,9 +80,8 @@
 #   where a group is one sample, taken one lane at a time with the sums in
 #   registers. With rustc 1.93.0 the shortest loop with five `f32`
 #   multiply-accumulates or adds in `Fit4::add_all` has 20 instructions
-#   (a ceiling of 22; 25 with the four lanes side by side) and the
-#   shortest with two in `whole_lane_sums` 9 (a ceiling of 11; 14 side by
-#   side); the frequency correction one sample at a time leaves 19 carry
+#   (a ceiling of 22; 25 with the four lanes side by side); the frequency
+#   correction one sample at a time leaves 19 carry
 #   adds (`adc`) in the two `blocks` (a ceiling of 24; 37 with the
 #   correction in lanes), and no method of `Correction` out of line (with
 #   the correction's `apply` out of line, `blocks` keeps 15 carry adds,
@@ -99,7 +95,7 @@
 # - the polynomial of the subtraction's reference and of the time search's
 #   products (`cos_sin_turns_times`): on AArch64 its remainder by one shift
 #   and quarter by one sign word (`cvtloop4` in `blocks` and
-#   symbol_correlations); on thumbv8m.main with the cfg at opt-level "s"
+#   `correlation_whole`); on thumbv8m.main with the cfg at opt-level "s"
 #   also the quarter's swap as `vsel` and the half turn's sign after the
 #   weight (`cvtloop1` in `blocks` and in the subtraction's one closure,
 #   which holds the products; `fpneg` in `blocks`). The ceilings sit one
@@ -162,17 +158,17 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # that holds them, so another closure in it could pass for the products).
 checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "a64 min_sum_round vec4 100"
-  "a64 7Removal4refs minmax 2" "a64 symbol_correlations minmax 2"
+  "a64 7Removal4refs minmax 2" "a64 correlation_whole minmax 2"
   "a64 7Removal4refs selects 2"
   "a64 7Removal4refs interleaved 0" "a64 4Fit47add_all interleaved 0"
-  "a64 4Fit47add_all vec4 12" "a64 whole_lane_sums vec4 2"
+  "a64 4Fit47add_all vec4 12"
   "a64 6blocks shuffles 12" "a64 6blocks vec4 400"
   "m33 7Removal4refs vminmax 8"
   "m33s 10finish_row fpmul 230" "m33s 10finish_row divides 0" "m33s 10finish_row zerofills 1"
   "m33s 6select sumloop 26"
-  "m33s 4Fit47add_all fploop5 22" "m33s 15whole_lane_sums fploop2 11" "m33s 6blocks carries 24"
+  "m33s 4Fit47add_all fploop5 22" "m33s 6blocks carries 24"
   "m33s 10Correction absent 0"
-  "a64 6blocks cvtloop4 104" "a64 symbol_correlations cvtloop4 142"
+  "a64 6blocks cvtloop4 104" "a64 correlation_whole cvtloop4 142"
   "m33s 6blocks cvtloop1 31" "m33s 3run28_\$u7b\$\$u7b\$closure cvtloop1 40 one" "m33s 6blocks fpneg 0"
   "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit47add_all libcalls 0")
 

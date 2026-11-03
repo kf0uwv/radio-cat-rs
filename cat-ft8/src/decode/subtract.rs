@@ -20,8 +20,8 @@
 //! the signal actually sits in the audio, and subtracts the scaled
 //! reference in place. It reads only the audio, the decode and its
 //! arguments: no spectrogram and no decoder state. It allocates nothing:
-//! the reference held between steps 3 and 4 (and, before them, a block of
-//! the time search's products) is in a byte buffer the caller lends
+//! the reference held between steps 3 and 4 is in a byte buffer the caller
+//! lends
 //! ([`SUBTRACT_SCRATCH_BYTES`](SCRATCH_BYTES), 46 080 bytes, for one run of
 //! the reference; any buffer that is idle at the time will do, such as the
 //! decoder's spectrogram between passes), and the rest of its working
@@ -83,7 +83,10 @@
 
 use super::decoder::Decode;
 use super::frontend::INPUT_LIMIT;
-use super::math::{atan2_turns, cos_sin_turns_times, log2_power, phase_of_ratio, LANES, VECTOR};
+use super::math::{
+    atan2_turns, cos_sin_turns_signed_as, cos_sin_turns_times, log2_power, phase_of_ratio, LANES,
+    VECTOR,
+};
 use crate::waveform::{cos_turns, sin_turns, Placement, Synth, RAMP_SAMPLES, TRANSITION};
 use crate::{
     encode_payload, Error, SAMPLES_PER_SYMBOL, SAMPLE_RATE, SYMBOL_COUNT, WAVEFORM_SAMPLES,
@@ -148,8 +151,7 @@ pub const STACK_BYTES: usize =
 pub const SCRATCH_BYTES: usize = HELD * PAIR;
 
 /// The least working storage [`subtract`] takes: one block of the
-/// reference (240 samples), or of the time search's products. With less
-/// than
+/// reference (240 samples). With less than
 /// [`SUBTRACT_SCRATCH_BYTES`](SCRATCH_BYTES) it runs the reference a second
 /// time where a segment and a half does not fit (slower; the same result).
 pub const MIN_SCRATCH_BYTES: usize = BLOCK * PAIR;
@@ -475,16 +477,14 @@ impl Skips {
 }
 
 /// Per symbol, the audio times the conjugate unit reference starting at
-/// `start`, summed over the symbol's middle half. `work` (at least a
-/// block's [`PAIR`]s) holds a block's products between the loop that takes
-/// them and the sums, sample i of the block at slot i ([`slot`]). `skips`
-/// holds the skipped spans' phases of `synth` (see [`Skips`]).
+/// `start`, summed over the symbol's middle half ([`correlation`], block by
+/// block). `skips` holds the skipped spans' phases of `synth` (see
+/// [`Skips`]).
 fn symbol_correlations(
     audio: &[f32],
     usable: Usable,
     synth: &Synth,
     start: i64,
-    work: &mut [u8],
     skips: &mut Skips,
 ) -> [(f32, f32); SYMBOL_COUNT] {
     // Reference sample j is sample j % T of symbol j / T: the waveform is
@@ -502,10 +502,7 @@ fn symbol_correlations(
         }
         let (a, b) = (a - j0, b - j0);
         let xs = &audio[(start + (j0 + a) as i64) as usize..][..b - a];
-        // The products sample by sample (a loop that vectorises), then
-        // their sums by lane.
-        scaled_cos_sin::<CHAINS, _>(work, a, &phase[a..b], xs, input);
-        let (re, im) = lane_sums(work, a, b);
+        let (re, im) = correlation(a, &phase[a..b], xs);
         let k = j0 / T;
         // The conjugate's sine part: the sum's sign turned.
         c[k].0 += re;
@@ -588,59 +585,104 @@ fn add_lane(acc: &mut [f32; LANES], i: usize, v: f32) {
     }
 }
 
-/// The sums of the pairs of samples `i0..i1` of a block that starts at a
-/// multiple of [`LANES`], sample i stored at slot i of `pairs` (by
-/// [`put`]): sample i in lane i % `LANES`, each lane in sample order, the
-/// lanes then added in a fixed order ([`sum_lanes`]).
+/// The time search's sums over the samples `i0..i0 + phase.len()` of a
+/// block that starts at a multiple of [`LANES`]: for each sample, [`input`]
+/// of its audio (in `xs`, from sample `i0` on) times the cosine and sine of
+/// its phase, summed by lane: sample i in lane i % `LANES`, each lane from
+/// 0.0 in sample order, the lanes then added in a fixed order
+/// ([`sum_lanes`]). The products are added as they are taken, not stored.
+/// Each product is [`cos_sin_turns_times`] of the phase and the weight,
+/// bit for bit ([`cos_sin_turns_signed_as`]: the weight is finite).
+#[inline(always)]
+fn correlation(i0: usize, phase: &[u32], xs: &[f32]) -> (f32, f32) {
+    correlation_as::<VECTOR>(i0, phase, xs)
+}
+
+/// [`correlation`] with the four lanes side by side (`SIDE_BY_SIDE`: where
+/// the target has a vector unit, so that each lane's sums are a vector's
+/// lane), or one lane at a time, its two sums in locals over the block.
+/// Each lane takes the same samples in the same order either way, so the
+/// sums are the same. (Side by side, the Cortex-M33 build, opt-level "s"
+/// with rustc 1.93.0, kept the eight sums in memory: findings O22.)
 #[inline(always)]
 #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
-fn lane_sums(pairs: &[u8], i0: usize, i1: usize) -> (f32, f32) {
-    let (m0, m1) = lane_bounds(i0, i1);
+fn correlation_as<const SIDE_BY_SIDE: bool>(i0: usize, phase: &[u32], xs: &[f32]) -> (f32, f32) {
+    let n = phase.len().min(xs.len());
+    let (phase, xs) = (&phase[..n], &xs[..n]);
+    let product = |k: usize| cos_sin_turns_signed_as::<SIDE_BY_SIDE>(phase[k], input(xs[k]));
     let (mut re, mut im) = ([0.0f32; LANES], [0.0f32; LANES]);
-    let one = |re: &mut [f32; LANES], im: &mut [f32; LANES], i: usize| {
-        let (c, s) = get(pairs, i);
-        add_lane(re, i, c);
-        add_lane(im, i, s);
-    };
-    for i in i0..m0 {
-        one(&mut re, &mut im, i);
-    }
-    whole_lane_sums(&pairs[m0 * PAIR..m1 * PAIR], &mut re, &mut im);
-    for i in m1..i1 {
-        one(&mut re, &mut im, i);
+    if SIDE_BY_SIDE {
+        // Single samples up to the first whole lane, the whole lanes, then
+        // single samples after them.
+        let (m0, m1) = lane_bounds(i0, i0 + n);
+        for i in i0..m0 {
+            let (c, s) = product(i - i0);
+            add_lane(&mut re, i, c);
+            add_lane(&mut im, i, s);
+        }
+        let whole = m0 - i0..m1 - i0;
+        correlation_whole(&phase[whole.clone()], &xs[whole], &mut re, &mut im);
+        for i in m1..i0 + n {
+            let (c, s) = product(i - i0);
+            add_lane(&mut re, i, c);
+            add_lane(&mut im, i, s);
+        }
+    } else {
+        for l in 0..LANES {
+            // The lane's first sample, then every `LANES`-th.
+            let mut k = (l + LANES - i0 % LANES) % LANES;
+            let (mut a, mut b) = (0.0f32, 0.0f32);
+            while k < n {
+                let (c, s) = product(k);
+                a += c;
+                b += s;
+                k += LANES;
+            }
+            (re[l], im[l]) = (a, b);
+        }
     }
     (sum_lanes(re), sum_lanes(im))
 }
 
-/// [`lane_sums`] over whole lanes: the pairs in `pairs` (whole groups,
-/// sample i in lane i % [`LANES`]) added to `re` and `im` lane by lane.
-/// Not inlined: on AArch64 (the target measured), inside `lane_sums` the
-/// compiler kept the sums as scalars.
+/// [`correlation`]'s whole lanes, side by side: `phase` and `xs` hold
+/// whole lanes (sample k in lane k % [`LANES`]), whose products are added
+/// to `re` and `im` lane by lane, [`CHAINS`] samples at a time and then a
+/// lane's worth at a time. Not inlined: inside the time search's block
+/// loop, the compiler (rustc 1.93.0, AArch64) split the sums across
+/// half vectors and spilled them; on its own they stay in vector
+/// registers over the call. One call per block of at most 240 samples.
 #[inline(never)]
 #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
-fn whole_lane_sums(pairs: &[u8], re: &mut [f32; LANES], im: &mut [f32; LANES]) {
-    if GROUP == 1 {
-        // In a group of one (targets without a vector unit, and the tests
-        // built with `--cfg cat_ft8_test_group_one`): one lane at a time,
-        // its two sums in locals, its samples in order; the lanes are added
-        // only after (`sum_lanes`), so the sums are the same. (Side by side,
-        // the Cortex-M33 build, opt-level "s" with rustc 1.93.0, kept the
-        // eight sums in memory.)
-        for l in 0..LANES {
-            let (mut a, mut b) = (re[l], im[l]);
-            for r in pairs.chunks_exact(LANES * PAIR) {
-                let (c, s) = get(r, l);
-                a += c;
-                b += s;
-            }
-            (re[l], im[l]) = (a, b);
-        }
-        return;
-    }
+fn correlation_whole(phase: &[u32], xs: &[f32], re: &mut [f32; LANES], im: &mut [f32; LANES]) {
+    // `CHAINS` where the lanes are side by side (16); at least a lane's
+    // worth on any target, where this is compiled but not called.
+    const W: usize = if CHAINS > LANES { CHAINS } else { LANES };
     let (mut a, mut b) = (*re, *im);
-    for r in pairs.chunks_exact(LANES * PAIR) {
+    let n = phase.len().min(xs.len());
+    let wide = n - n % W;
+    let chains = phase[..wide]
+        .chunks_exact(W)
+        .zip(xs[..wide].chunks_exact(W));
+    for (q, x) in chains {
+        let (q, x): (&[u32; W], &[f32; W]) = (q.try_into().unwrap(), x.try_into().unwrap());
+        let (mut vc, mut vs) = ([0.0f32; W], [0.0f32; W]);
+        for (((vc, vs), &q), &x) in vc.iter_mut().zip(&mut vs).zip(q).zip(x) {
+            (*vc, *vs) = cos_sin_turns_signed_as::<true>(q, input(x));
+        }
+        // The chains' lanes in sample order.
+        for g in 0..W / LANES {
+            for l in 0..LANES {
+                a[l] += vc[g * LANES + l];
+                b[l] += vs[g * LANES + l];
+            }
+        }
+    }
+    let rest = phase[wide..n]
+        .chunks_exact(LANES)
+        .zip(xs[wide..n].chunks_exact(LANES));
+    for (q, x) in rest {
         for l in 0..LANES {
-            let (c, s) = get(r, l);
+            let (c, s) = cos_sin_turns_signed_as::<true>(q[l], input(x[l]));
             a[l] += c;
             b[l] += s;
         }
@@ -1045,9 +1087,9 @@ fn run(
     // The skipped spans' sums of `synth`, shared by every step of this time
     // search and by no other generator (checked in debug builds).
     let mut skips = Skips::new();
-    let mut sums_at = |at: i64, work: &mut [u8]| {
+    let mut sums_at = |at: i64| {
         step_sums(
-            &symbol_correlations(audio, usable, &synth, at, work, &mut skips),
+            &symbol_correlations(audio, usable, &synth, at, &mut skips),
             &tones,
         )
     };
@@ -1057,7 +1099,7 @@ fn run(
     let mut taken = start;
     let mut timing: Option<(i64, f32)> = None;
     for _ in 0..TIMING_PASSES {
-        d = sums_at(start, held);
+        d = sums_at(start);
         taken = start;
         let Some((e, frac)) = align(&d) else {
             break;
@@ -1077,7 +1119,7 @@ fn run(
     if taken != at {
         // A repeated step found nothing at the moved start (rare): the
         // frequency is measured from the sums the estimate came from.
-        d = sums_at(at, held);
+        d = sums_at(at);
     }
     out.start = start;
     out.dt = (at as f32 + e) * (1.0 / SAMPLE_RATE as f32) - crate::NOMINAL_START_S;
