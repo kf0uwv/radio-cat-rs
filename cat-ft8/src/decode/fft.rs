@@ -772,9 +772,9 @@ fn bin_power(ar: f32, ai: f32, cr: f32, ci: f32, wr: f32, wi: f32) -> f32 {
 /// `out`, the real-split twiddle of bin k + j being `tw[j]`, or, if
 /// `ROTATE`, −i · `tw[j]` (exact: W₃₈₄₀ᵏ = −i · W₃₈₄₀^(k−960)). A plain
 /// loop over bins, so it vectorises. With `INDEXED` (the targets without
-/// a vector unit, [`bin_powers_apart`]) the loop indexes its slices rather
-/// than zipping their iterators, which leaves out the zipped lengths'
-/// checks: on the Cortex-M33 35 instructions a bin instead of 42 (rustc
+/// a vector unit, [`bin_powers_out_of_line`]) the loop indexes its slices
+/// rather than zipping their iterators, which leaves out the zipped
+/// lengths' checks: on the Cortex-M33 35 instructions a bin instead of 42 (rustc
 /// 1.93.0, opt-level "s"; findings O26). The same values either way.
 #[inline(always)]
 fn powers<const ROTATE: bool, const INDEXED: bool>(
@@ -857,10 +857,10 @@ pub(crate) fn power_bins<F: FnMut(usize, &[f32])>(
 /// Powers of real-transform bins `k0 .. k0 + out.len()` into `out`: bin 0
 /// (which pairs with itself), the bins to 960 and those above as separate
 /// plain loops, which vectorise where the target has vectors. Where it has
-/// none ([`SCALAR_FORMS`]), [`bin_powers_apart`].
+/// none ([`SCALAR_FORMS`]), [`bin_powers_out_of_line`].
 fn bin_powers(re: &[f32; N], im: &[f32; N], k0: usize, out: &mut [f32]) {
     if SCALAR_FORMS {
-        bin_powers_apart(re, im, k0, out);
+        bin_powers_out_of_line(re, im, k0, out);
     } else {
         bin_powers_as::<false>(re, im, k0, out);
     }
@@ -871,7 +871,7 @@ fn bin_powers(re: &[f32; N], im: &[f32; N], k0: usize, out: &mut [f32]) {
 /// end's row, the Cortex-M33 recomputed each address from the buffer's
 /// base), and with [`powers`]' indexed loop.
 #[inline(never)]
-fn bin_powers_apart(re: &[f32; N], im: &[f32; N], k0: usize, out: &mut [f32]) {
+fn bin_powers_out_of_line(re: &[f32; N], im: &[f32; N], k0: usize, out: &mut [f32]) {
     bin_powers_as::<true>(re, im, k0, out);
 }
 

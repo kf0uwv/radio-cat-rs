@@ -149,8 +149,8 @@
 #   are summed over both forms: a ceiling (the m4 library calls, the
 #   removal's selects) binds each form, a floor only the two together.
 # - the front end checks each block it is fed with the same function
-#   (findings O26): `Spectrogram::feed` calls `within_limit` (`checks`, a
-#   floor of 2 on AArch64 and on thumbv8m.main with the cfg at opt-level
+#   (findings O26): `Spectrogram::feed` calls `within_limit`
+#   (`calls_within_limit`, a floor of 2 on AArch64 and on thumbv8m.main with the cfg at opt-level
 #   "s": 2 with rustc 1.93.0, the row's first block and the others; 0
 #   with the block's own compare fold, 10 instructions a sample on the
 #   Cortex-M33 against the or pass's 4).
@@ -176,7 +176,7 @@
 #   1.93.0, from the transform; 170 with two counts in `usize`, which
 #   widened each byte to 64-bit lanes).
 # - the powers of a row's bins on thumbv8m.main with the cfg at opt-level
-#   "s" out of line and with indexed slices (`bin_powers_apart`, findings
+#   "s" out of line and with indexed slices (`bin_powers_out_of_line`, findings
 #   O26): the shortest loop with four `f32` adds, a ceiling of 35 (34 with
 #   rustc 1.93.0; 37 with the zipped iterators out of line, 42 inlined
 #   into `finish_row`, where the function is not found).
@@ -241,7 +241,7 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # `shortloop` counts the instructions of the function's shortest loop, at
 # most the bound, and a function with no loop fails it; `vecor` counts
 # `orr` on vector registers, at least the bound;
-# `checks` counts calls of `within_limit`, at least the bound;
+# `calls_within_limit` counts calls of `within_limit`, at least the bound;
 # `ldn` counts `ld2`, `ld3` and `ld4`, at least the bound;
 # `vec2` counts instructions with a two-lane `.2d` operand, at most the bound;
 # `insns` counts the function's instructions, at most the bound;
@@ -275,10 +275,10 @@ checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "m33s fill_phase_only memsums 0" "m33s 9skip_with memsums 0"
   "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit410add_all_as libcalls 0"
   "a64 within_limit vecor 2" "m33s within_limit shortloop 4" "m33s 7Removal4refs fploop4 21"
-  "a64 4feed checks 2" "m33s 4feed checks 2"
+  "a64 4feed calls_within_limit 2" "m33s 4feed calls_within_limit 2"
   "a64 10finish_row ldn 12" "x64 10finish_row mulloop80 460"
   "a64 10finish_row insns 3000" "x64 10finish_row insns 3500"
-  "a64 10finish_row vec2 32" "m33s bin_powers_apart fploop4 35")
+  "a64 10finish_row vec2 32" "m33s bin_powers_out_of_line fploop4 35")
 
 declare -A asm
 for b in "${builds[@]}"; do
@@ -352,7 +352,7 @@ for entry in "${checks[@]}"; do
     metric == "fpneg" && /^\tvneg\.f32\t/ { n++ }
     metric == "eors" && /^\teor\t/ { n++ }
     metric == "vecor" && /^\torr\tv[0-9]+\./ { n++ }
-    metric == "checks" && /^\tbl\t.*within_limit/ { n++ }
+    metric == "calls_within_limit" && /^\tbl\t.*within_limit/ { n++ }
     metric == "insns" && /^\t[a-z]/ { n++ }
     metric == "ldn" && /^\tld[234]\t/ { n++ }
     metric == "vec2" && /^\t[a-z][^\t]*\t.*\.2d/ { n++ }
@@ -413,7 +413,7 @@ for entry in "${checks[@]}"; do
     eors) what="exclusive ors (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     shortloop) what="instructions in the shortest loop (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     vecor) what="vector ors (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
-    checks) what="calls of within_limit (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
+    calls_within_limit) what="calls of within_limit (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     insns) what="instructions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     mulloop*) what="instructions in the loop of ${metric#mulloop} four-lane multiplies (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     ldn) what="interleaving loads (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;

@@ -471,7 +471,7 @@ fn level_counts_equal_the_filtered_counts() {
                     match kind {
                         0 => 0,
                         1 => 255,
-                        2 => (r % 3) as u8 * 127,
+                        2 => [0, 127, 255][(r % 3) as usize],
                         3 => (r >> 8) as u8,
                         _ => 1 + (r % 254) as u8,
                     }
