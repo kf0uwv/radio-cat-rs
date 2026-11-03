@@ -357,8 +357,7 @@ impl Synth {
         const PF: usize = PULSE_FIRST;
         debug_assert!((PF..NS).contains(&s), "sample {s} outside the transition");
         let (g, h) = (PULSE_HALF[2 * NS - s - PF], PULSE_HALF[s - PF]);
-        let dev = f32::from(a) * g + f32::from(b) * h;
-        increment((self.base_hz + TONE_SPACING_HZ * dev) * TURNS_PER_HZ)
+        step(self.base_hz, f32::from(a) * g + f32::from(b) * h)
     }
 
     /// [`skip_with`](Self::skip_with) over the next `n` samples, with `buf`
@@ -422,7 +421,7 @@ impl Synth {
         let last = SYMBOL_COUNT - 1;
         let tone = |m: usize| f32::from(self.symbols[m.min(last)]);
         let base = self.base_hz;
-        let step = |dev: f32| increment((base + TONE_SPACING_HZ * dev) * TURNS_PER_HZ);
+        let step = |dev: f32| step(base, dev);
         // The stored increments' sum from `p`: their running sum in place,
         // or, with `SUM_ONLY`, their total.
         let sum = |p: u32, xs: &mut [u32]| {
@@ -575,6 +574,15 @@ fn running_sum<const GROUPED: bool>(p: u32, xs: &mut [u32]) -> u32 {
         p = p.wrapping_add(step);
     }
     p
+}
+
+/// The phase increment of a sample whose summed pulses are `dev` tones
+/// above tone 0 at `base` Hz: [`increment`] of its frequency in turns a
+/// sample. The generator's one expression for it ([`Synth::phases`],
+/// [`Synth::transition_increment`]).
+#[inline(always)]
+fn step(base: f32, dev: f32) -> u32 {
+    increment((base + TONE_SPACING_HZ * dev) * TURNS_PER_HZ)
 }
 
 /// Samples per chunk in [`Synth::fill`], [`Synth::mix`] and
