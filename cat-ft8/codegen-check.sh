@@ -100,7 +100,23 @@
 #   weight (`cvtloop1` in `blocks` and in the subtraction's one closure,
 #   which holds the products; `fpneg` in `blocks`). The ceilings sit one
 #   to five instructions above rustc 1.93.0's code; the forms they catch,
-#   and what they miss, are in findings O23 and O23b.
+#   and what they miss, are in findings O23 and O23b (the closure's
+#   ceiling, 40 there, is O24's, below).
+# - the time search's sums taken as its products are (findings O24): on
+#   AArch64 its whole lanes out of line (`correlation_whole`; inlined, the
+#   compiler split the sums across half vectors and spilled them), whose
+#   loop of four conversions has 137 instructions with rustc 1.93.0 (a
+#   ceiling of 140), and the half turn's sign on the weight, one `eor` a
+#   vector (7 in the function, a ceiling of 8; 14 with the sign after the
+#   weight, whose loop is 138, under the loop's ceiling); on thumbv8m.main
+#   with the cfg at opt-level "s" one lane at a time with the sign on the
+#   weight, the products' loop in the subtraction's one closure 36 (the
+#   ceiling of 37 above; 39 with the products stored and summed after, 42
+#   with the sign after the weight, 69 with the lanes side by side). There
+#   too the generator sums its overlap runs' increments as it takes them,
+#   so `fill_phase_only` and `skip_with` keep no loop that loads with no
+#   floating point (`memsums`, a ceiling of 0; 2 each with the increments
+#   stored and summed after).
 # The multiplication by an envelope of 1.0 that the reference leaves out
 # (the weight folded by the compiler) is not checked: findings O18b.
 # A bound that fails means: re-measure before changing it (planning/
@@ -147,6 +163,9 @@ builds=("a64 aarch64-unknown-linux-gnu - - -"
 # likewise with at least N conversions from integers (`scvtf`,
 # `vcvt.f32.s32`); `fpneg` counts `vneg.f32`, at most the bound; `carries`
 # counts `adc` (the high word of a 64-bit add), at most the bound;
+# `memsums` counts the loops with a load and no floating-point or vector
+# instruction (an `f32` value's moves included), at most the bound; `eors`
+# counts `eor` (exclusive or), at most the bound;
 # `absent` passes only if no function's label holds the name (the bound is
 # unused), that is, if it was inlined everywhere; it sees only a type's own
 # methods (`10Correction`), not a trait's (`Clone` for it, say) left out of
@@ -168,8 +187,10 @@ checks=("a64 sum_product_round vec4 500" "a64 sum_product_round lanes 25"
   "m33s 6select sumloop 26"
   "m33s 4Fit47add_all fploop5 22" "m33s 6blocks carries 24"
   "m33s 10Correction absent 0"
-  "a64 6blocks cvtloop4 104" "a64 correlation_whole cvtloop4 142"
-  "m33s 6blocks cvtloop1 31" "m33s 3run28_\$u7b\$\$u7b\$closure cvtloop1 40 one" "m33s 6blocks fpneg 0"
+  "a64 6blocks cvtloop4 104"
+  "m33s 6blocks cvtloop1 31" "m33s 3run28_\$u7b\$\$u7b\$closure cvtloop1 37 one" "m33s 6blocks fpneg 0"
+  "a64 correlation_whole cvtloop4 140" "a64 correlation_whole eors 8"
+  "m33s fill_phase_only memsums 0" "m33s 9skip_with memsums 0"
   "m4 7Removal4refs libcalls 0" "m4 symbol_correlations libcalls 0" "m4 4Fit47add_all libcalls 0")
 
 declare -A asm
@@ -204,14 +225,17 @@ for entry in "${checks[@]}"; do
     /^\.Lfunc_end[0-9]+:/ { p = 0; next }
     /^[A-Za-z_][^ \t]*:$/ { p = index($0, f) > 0; if (p) found++; delete at; next }
     !p { next }
-    metric ~ /^(sumloop|fploop|cvtloop)/ && /^\.[A-Za-z0-9_$]+:/ {
-      sub(/:.*/, ""); at[$0] = k; atb[$0] = bytes; atf[$0] = fps; atc[$0] = cvs; next
+    metric ~ /^(sumloop|fploop|cvtloop|memsums)/ && /^\.[A-Za-z0-9_$]+:/ {
+      sub(/:.*/, ""); at[$0] = k; atb[$0] = bytes; atf[$0] = fps; atc[$0] = cvs
+      atl[$0] = lds; atv[$0] = vs; next
     }
-    metric ~ /^(sumloop|fploop|cvtloop)/ && /^\t[a-z]/ {
+    metric ~ /^(sumloop|fploop|cvtloop|memsums)/ && /^\t[a-z]/ {
       k++
       if ($1 ~ /^ldrb/) bytes++
       if ($1 ~ /^v(mla|mls|add|sub)\.f32$/) fps++
       if ($1 ~ /^(scvtf|vcvt\.f32\.s32)$/) cvs++
+      if ($1 ~ /^ldr/) lds++
+      if ($1 ~ /^v/) vs++
       back = $1 ~ /^(b[a-z]*(\.[nw])?|b\.[a-z]+|cbn?z|tbn?z)$/ && ($NF in at)
       if (back && metric == "sumloop" && bytes - atb[$NF] == 9 &&
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
@@ -219,6 +243,7 @@ for entry in "${checks[@]}"; do
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
       if (back && metric ~ /^cvtloop/ && cvs - atc[$NF] >= substr(metric, 8) + 0 &&
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
+      if (back && metric == "memsums" && lds > atl[$NF] && vs == atv[$NF]) n++
     }
     metric == "vec4" && /^\t[a-z][^\t]*\t.*\.4s/ { n++ }
     metric == "lanes" && /^\t(mov|ins|dup|ld1|st1)\t.*\.s\[/ { n++ }
@@ -233,6 +258,7 @@ for entry in "${checks[@]}"; do
     metric == "zerofills" && /^\tbl\t(__aeabi_memclr4|__aeabi_memclr|memset)$/ { n++ }
     metric == "carries" && /^\tadc/ { n++ }
     metric == "fpneg" && /^\tvneg\.f32\t/ { n++ }
+    metric == "eors" && /^\teor\t/ { n++ }
     END {
       if (!found) print "missing"
       else if (only == "one" && found > 1) print "many"
@@ -284,6 +310,8 @@ for entry in "${checks[@]}"; do
     cvtloop*) what="instructions in the loop of ${metric#cvtloop} conversions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     carries) what="carry adds (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     fpneg) what="f32 negations (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    memsums) what="loops that load with no floating point (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    eors) what="exclusive ors (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     *) what="unknown metric $metric"; ok=0 ;;
   esac
   if [ $ok = 1 ]; then
