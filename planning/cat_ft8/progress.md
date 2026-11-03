@@ -1903,7 +1903,8 @@
   and no test saw it; the summing loop's ceiling of 26 (24 now, 29 regressed)
   fires on it. 725c433: a comment rewrapped.
 - One A76 test run sampled no throttle during it and was repeated. One x86-64
-  `slotcost` figure, +0.60%, did not repeat (−0.13%).
+  `slotcost` figure, +0.60%, did not repeat (−0.13%; corrected in O21b to
+  −0.42%, from a run checked for other jobs).
 - Reported, not built: subtraction's frames in idle storage (about 7.4 KB of
   stack), the candidate buffer's size, the histogram, the window on a host.
 
@@ -1922,3 +1923,13 @@
   repeats and is unexplained; the comparators' exit statuses, now their own; the
   WAV comparison now fails a `--profile` line left unchanged.
 - Wide bands kept. Local CI and the A76 library tests pass.
+
+## Session: 2026-11-02 (O21c closure follow-ups)
+
+- 33a7be2, fba30f1: the M33 dependency comments say what must hold. All eight
+  binaries' sections as at 88fb444. Local CI passes.
+- A76 probe, one session, 24 valid runs: the small feed's rise follows where
+  the buffers land, not the code. Both builds run 6.348 ms at good addresses and
+  6.39–6.41 at bad ones; the base too. Moving side A's buffers 2 KB removes it
+  in both. Which address relation is slow is not known.
+- Wording: 0.03–0.05 ms; the O21b "repeats across sessions" corrected.

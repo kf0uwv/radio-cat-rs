@@ -10601,7 +10601,7 @@ small` measures the same configuration twice, interleaved, as A and B; this tabl
 first gave B alone. A: the feed 6.350 → 6.415 ms (+1.0%) and the slot 12.80 →
 12.90 ms, in each of the four runs (feed 6.40–6.42 against 6.34–6.36); B: the
 feed 6.355 → 6.370 ms (+0.24%). At e4cfa58 A and B agree; at 499b196 A reads
-0.04–0.05 ms above B in every run. The front end's AArch64 code is the same
+0.03–0.05 ms above B in every run. The front end's AArch64 code is the same
 length but not the same bytes, so a cost of 0.2–1.0% of the small feed (0.1–0.5%
 of the slot) on the A76 is not excluded, and its cause is not known. The host
 configurations' feeds fell.
@@ -10752,8 +10752,9 @@ were timed anyway:
   small as A and B), alternated, four runs each; 16 runs, 1 353 samples during
   them, all 0x0 at start, during and end, 2 400 MHz throughout, peak 53.8 °C.
   Every stage agrees within 0.01 ms, and every slot within the 0.1 ms print
-  resolution. The small A feed reads 6.41 ms in both, as at 499b196: that rise
-  repeats across sessions.
+  resolution. The small A feed reads 6.41 ms in both, as at 499b196: the
+  changed binary's A level repeats; the base was not timed in that session.
+  (O21c: it follows the buffers' addresses, not the code.)
 
 **Wide bands stay.** A review proposed limiting `Band::from_hz` to 1 280 base
 bins and removing the separate scratch. Declined: it would refuse band widths of
@@ -10769,7 +10770,7 @@ bins and removing the separate scratch. Declined: it would refuse band widths of
 - **The A76 small figures were one of two.** `slotcost small small` times the
   same configuration as A and B, interleaved, and O21 gave only B. A shows the
   feed +1.0% (6.350 → 6.415 ms) and the slot 12.80 → 12.90 ms in all four runs;
-  B +0.24%. Both are now given. Not explained.
+  B +0.24%. Both are now given. (O21c: it follows the buffers' addresses.)
 - **Exit statuses.** O21 said each forced WAV and M33 comparison exits 1. The
   figures printed then were a pipeline's, not the comparators'. Rerun, the
   comparators' own: unforced 0; a decode digit, `peak_bytes` off by one,
@@ -10804,5 +10805,67 @@ the `as_flattened_mut` form of the transform's buffer, which needs MSRV 1.80.
 
 ### Not measured
 
-- As in O21. The A76 small feed's +0.24–1.0% is unexplained; no profile of the
+- As in O21. The A76 small feed's +0.24–1.0% was unexplained here (O21c: placement); no profile of the
   front end on the A76 was taken.
+
+## Closure follow-ups (O21c, 2026-11-02; no code generation change)
+
+Two comment commits, 33a7be2 and fba30f1: the Cortex-M33 dependency comments
+at `Rows::row` and `costas_scores` now say what must hold ("must stay out of
+line", "must stay a reference", +3.4%). `.text`, `.rodata`, `.data.rel.ro`,
+`.data` and `.bss` of all eight binaries are byte-identical at fba30f1 and
+88fb444 (one source path, rustc 1.93.0). Local CI passes at fba30f1.
+
+### The A76 small feed's rise follows placement, not the code
+
+O21 and O21b saw the small configuration's feed 0.24–1.0% slower at 499b196
+than at e4cfa58 on the A76, more on `slotcost`'s side A than on side B. A probe
+in one Raspberry Pi 5 session, one benchmark at a time on core 3, four cycles,
+order reversed on even cycles, 24 runs, 1 008 throttle samples, all 0x0 at
+start, during and end, 2 400 MHz during every run, peak 53.8 °C:
+
+- Out-of-tree measurement builds of e4cfa58 and b6b73bc (`paired_bench` with
+  logging added, never committed): each decode prints the address mod 4096 of
+  its `FrontEnd` (whose FFT work area lies at a fixed offset in it) and of its
+  level buffer, and its feed time. An environment setting holds a 2 048-byte
+  allocation while side A decodes, which moves side A's buffers. Those builds'
+  code is laid out a little differently from the timed ones.
+- Beside them, the unmodified builds of e4cfa58 and 88fb444 (the same code as
+  the head).
+
+| build (feed, ms, median of 4 runs) | side A | side B |
+|---|---|---|
+| e4cfa58, unmodified | 6.350 | 6.360 |
+| 88fb444, unmodified | **6.405** | 6.370 |
+| e4cfa58, probe | 6.350 | 6.350 |
+| b6b73bc, probe | **6.400** | **6.390** |
+| e4cfa58, probe, side A moved 2 048 B | 6.350 | 6.350 |
+| b6b73bc, probe, side A moved 2 048 B | 6.350 | 6.350 |
+
+- **It reproduces against the base in the same session** (unmodified: side A
+  +0.87%, side B +0.16%).
+- **It follows the address, not the order or the code.** Each decode's feed
+  takes one of two levels: about 6.348 ms or 6.39–6.41 ms. The fast level is the
+  same in both builds (median over addresses 6.348 ms at e4cfa58, 6.347 ms at
+  b6b73bc), and the base also runs slow where its buffers land at some addresses
+  (its `FrontEnd` at 2 288, 304 or 176 mod 4 096: 6.39–6.41 ms, at least 1 280 of
+  its 16 000 decodes). The head's buffers landed at slow addresses more often (at
+  least 6 676 of its 16 000), with a different heap history behind them. Moving side A's buffers by
+  2 KB puts both sides at 6.35 ms in both builds. Sides A and B alternate their
+  order every run, so order is not it.
+- **What about the address makes it slow is not known.** No single residue mod
+  4 096 of the `FrontEnd`, of the levels, or of their difference separates slow
+  from fast in both builds, so this is not shown to be one 4 KB aliasing pair; the
+  other buffers' addresses (candidates, candidate scratch) were not logged.
+- So the 0.24–1.0% is not a cost of the change: an application gets 6.35 or 6.40
+  ms from either build, depending on where its buffers land.
+
+A first attempt at this session was void: the probe's own lines began as the
+throttle samples do, and the run's check counted them; all its real samples
+read 0x0. The prefix was changed and the session rerun from the start.
+
+### Not measured
+
+- Which address relation makes the feed slow; the other buffers' addresses.
+- Whether a Cortex-A76 application's statics (fixed addresses) land in the slow
+  or the fast class.
