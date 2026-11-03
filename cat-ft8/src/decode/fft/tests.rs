@@ -646,7 +646,6 @@ fn twiddles_repeat_the_turn_as_far_as_the_last_stage_reads() {
     }
     assert_eq!(largest + 1, LAST_TWIDDLES);
     assert_eq!(TWIDDLES.len(), TWIDDLE_ENTRIES);
-    assert!(TWIDDLE_ENTRIES >= LAST_TWIDDLES || TWIDDLE_ENTRIES == N);
 }
 
 /// Inputs for the stages after the first, each named: noise at several

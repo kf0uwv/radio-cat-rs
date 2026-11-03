@@ -433,6 +433,8 @@ const LAST_TWIDDLES: usize = (LAST_R - 1) * (LAST_L - 1) + LAST_L * (LAST_R - 1)
 /// Cortex-M runs [`straight_stages`]); where vectors are, as far as
 /// [`last_stage`] reads, [`LAST_TWIDDLES`].
 const TWIDDLE_ENTRIES: usize = if LANES > 1 { LAST_TWIDDLES } else { N };
+// One turn, or as far as the last stage reads ([`last_stage`] relies on it).
+const _: () = assert!(TWIDDLE_ENTRIES == N || TWIDDLE_ENTRIES >= LAST_TWIDDLES);
 
 /// The twiddles W_N^t = e^(−2πit/N) as [cos, −sin], t = 0..[`TWIDDLE_ENTRIES`]:
 /// `TWIDDLE_TURN` (one turn, generated) and past N its entries again, so
