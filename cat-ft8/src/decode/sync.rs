@@ -148,7 +148,7 @@ pub(crate) fn search_rows(
 /// `out` as cells ([`NONE`] where there is none): the same integer sums,
 /// added in another order (exact), a row of the spectrogram at a time so the
 /// inner loop runs along the bins and vectorises.
-// `spec` must stay by reference for the M33 sync sum (+3.4%): findings O21, codegen-check `sumloop`.
+// `spec` must stay a reference for the M33 sync sum (+3.4%): findings O21, codegen-check `sumloop`.
 fn costas_scores(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
     let cols = out.len();
     let rows = spec.len() as i32;
