@@ -245,8 +245,8 @@ const _: () = Lanes::<LANES>::OK;
 
 /// In-place 1 920-point complex DFT of (`re`, `im`), whose input is
 /// already in digit-reversed order. Output in natural order. `L`
-/// butterflies at a time. (The decoder runs [`first_stage`] from the
-/// samples instead of the first stage here; see [`spectrum`].)
+/// butterflies at a time. (The decoder takes the first stage from the
+/// samples instead of running it here; see [`spectrum_lanes`].)
 #[cfg(test)]
 fn fft<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
     // One call per entry of `STAGES`, with its `l` (checked at compile
@@ -259,7 +259,7 @@ fn fft<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
 /// The stages after the first, in place, `L` butterflies at a time. With
 /// one lane (as on a Cortex-M) each butterfly is written out term by term
 /// ([`straight_stages`]); the operations, their values and their order are
-/// those of [`stage`]. (The decoder chooses between the two in [`spectrum`].)
+/// those of [`stage`]. (The decoder chooses in [`spectrum_lanes`].)
 #[cfg(test)]
 fn later_stages<const L: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
     let () = Lanes::<L>::OK;
@@ -428,8 +428,9 @@ fn twiddle_index<const R: usize>(m: usize, q: usize, k_step: usize) -> usize {
 }
 
 /// One radix-R butterfly written out term by term: inputs m = 0 .. R at
-/// `r[m·s]`, `i[m·s]` (`$ms` lists m = 1 .. R, `$qs` q = 0 .. R), output q
-/// stored at `r[q·s]`, `i[q·s]`; the twiddle expression gives [re, im] for
+/// `$re[m·$stride]`, `$im[m·$stride]` (`$ms` lists m = 1 .. R, `$qs`
+/// q = 0 .. R), output q stored at `$re[q·$stride]`, `$im[q·$stride]`; the
+/// twiddle expression gives [re, im] for
 /// (m, q). Every input is read before any output is stored. Output q is
 /// a[0] + Σ_{m ≥ 1} a[m]·w(m, q), the products added in the order of m:
 /// the operations of [`radix_sums`] with one lane, in its order, so the
