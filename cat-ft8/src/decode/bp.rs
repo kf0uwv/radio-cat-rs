@@ -638,34 +638,55 @@ fn min_sum_groups<const V: bool, const D: usize, const G: usize>(
 /// Where the loops vectorise, the check's size as a constant (the slices
 /// cut to 6 or 7 once this is inlined), so the compiler drops the vector
 /// forms of these short loops, which no check reaches; elsewhere one form
-/// for both sizes.
+/// for both sizes, its inputs taken in the loop that finds the two
+/// smallest magnitudes.
 #[inline(always)]
 fn min_sum_check_sized<const V: bool>(total: &[f32; N], v: &[u8], row: &mut [f32]) {
     match (V, v.len()) {
-        (true, 6) => min_sum_check(total, &v[..6], &mut row[..6]),
-        (true, _) => min_sum_check(total, &v[..7], &mut row[..7]),
-        (false, _) => min_sum_check(total, v, row),
+        (true, 6) => min_sum_check::<false>(total, &v[..6], &mut row[..6]),
+        (true, _) => min_sum_check::<false>(total, &v[..7], &mut row[..7]),
+        (false, _) => min_sum_check::<true>(total, v, row),
     }
 }
 
 /// [`min_sum_round`] for one check: its variables `v` and its messages
-/// `row`, of the same length.
+/// `row`, of the same length. With `ONE_PASS` each input (the variable's
+/// total less the message) is taken in the loop that finds the two
+/// smallest magnitudes; otherwise all of them first, in a loop of their
+/// own. Each value goes through the same operations in the same order
+/// either way.
 #[inline(always)]
-fn min_sum_check(total: &[f32; N], v: &[u8], row: &mut [f32]) {
-    for (m, &i) in row.iter_mut().zip(v) {
-        *m = total[usize::from(i)] - *m;
-    }
+fn min_sum_check<const ONE_PASS: bool>(total: &[f32; N], v: &[u8], row: &mut [f32]) {
     let (mut min1, mut min2, mut at) = (f32::MAX, f32::MAX, 0);
     let mut negatives = 0u32;
-    for (j, &x) in row.iter().enumerate() {
-        let a = if x < 0.0 { -x } else { x };
-        negatives += u32::from(x < 0.0);
-        if a < min1 {
-            min2 = min1;
-            min1 = a;
-            at = j;
-        } else if a < min2 {
-            min2 = a;
+    // One input's magnitude and sign into the two smallest and the count.
+    // (A macro rather than a closure: the hosts' two loops compile as they
+    // did before, their binaries unchanged.)
+    macro_rules! take {
+        ($j:expr, $x:expr) => {{
+            let (j, x): (usize, f32) = ($j, $x);
+            let a = if x < 0.0 { -x } else { x };
+            negatives += u32::from(x < 0.0);
+            if a < min1 {
+                min2 = min1;
+                min1 = a;
+                at = j;
+            } else if a < min2 {
+                min2 = a;
+            }
+        }};
+    }
+    if ONE_PASS {
+        for (j, (m, &i)) in row.iter_mut().zip(v).enumerate() {
+            *m = total[usize::from(i)] - *m;
+            take!(j, *m);
+        }
+    } else {
+        for (m, &i) in row.iter_mut().zip(v) {
+            *m = total[usize::from(i)] - *m;
+        }
+        for (j, &x) in row.iter().enumerate() {
+            take!(j, x);
         }
     }
     for (j, x) in row.iter_mut().enumerate() {
