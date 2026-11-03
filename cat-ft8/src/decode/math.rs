@@ -269,13 +269,24 @@ const C4: f32 = 62.962_955;
 /// `(cos, sin)` of `2π · phase / 2³²`, by polynomial: the phase is reduced
 /// in integer arithmetic to the nearest quarter turn k and a remainder of
 /// at most ⅛ turn, both polynomials are taken on the remainder, and k
-/// swaps them and sets the signs (bit operations, no branch), so a loop
-/// over samples vectorises. Not the waveform's table
+/// swaps them and sets the signs without a branch (on the targets
+/// measured), so a loop over samples vectorises. Not the waveform's table
 /// ([`sin_turns`](crate::waveform::sin_turns)): the encoder keeps that.
 #[inline(always)]
 pub(crate) fn cos_sin_turns(phase: u32) -> (f32, f32) {
+    cos_sin_turns_as::<VECTOR>(phase)
+}
+
+/// [`cos_sin_turns`] with the quarter's swap and signs by bit operations
+/// (`BITS`: where the target has a vector unit, so a loop over samples
+/// vectorises) or by `f32` selects and negations (elsewhere: on the
+/// Cortex-M33 they stay in floating-point registers, `vsel` and `vneg`,
+/// where the bit operations take the parts to integer registers and back).
+/// Negation flips only the sign bit, as the bit operations' exclusive or
+/// does, so both give the same bits.
+#[inline(always)]
+pub(crate) fn cos_sin_turns_as<const BITS: bool>(phase: u32) -> (f32, f32) {
     let u = phase.wrapping_add(1 << 29);
-    let k = u >> 30;
     // The remainder r in [−2²⁹, 2²⁹) is the phase's low 30 bits read as
     // signed, so 4r is `phase << 2` read as signed: one shift. One
     // rounding to `f32` (4r rounds to the same bits as r, times 4), then
@@ -284,12 +295,24 @@ pub(crate) fn cos_sin_turns(phase: u32) -> (f32, f32) {
     let z = t * t;
     let s = t * (S1 + z * (S3 + z * S5));
     let c = C0 + z * (C2 + z * C4);
-    // Quarter k: (cos, sin) = (c, s), (−s, c), (−c, −s), (s, −c).
-    let swap = 0u32.wrapping_sub(k & 1);
-    let (sb, cb) = (s.to_bits(), c.to_bits());
-    let sin = ((cb & swap) | (sb & !swap)) ^ ((k & 2) << 30);
-    let cos = ((sb & swap) | (cb & !swap)) ^ ((k.wrapping_add(1) & 2) << 30);
-    (f32::from_bits(cos), f32::from_bits(sin))
+    // Quarter k: (cos, sin) = (c, s), (−s, c), (−c, −s), (s, −c): an odd
+    // k swaps the parts and negates the sine's, then k ≥ 2 (`u`'s top bit)
+    // negates both.
+    if BITS {
+        let swap = 0u32.wrapping_sub((u >> 30) & 1);
+        let half = u & 0x8000_0000;
+        let (sb, nb, cb) = (s.to_bits(), (-s).to_bits(), c.to_bits());
+        let sin = ((cb & swap) | (sb & !swap)) ^ half;
+        let cos = ((nb & swap) | (cb & !swap)) ^ half;
+        (f32::from_bits(cos), f32::from_bits(sin))
+    } else {
+        let (cos, sin) = if u & (1 << 30) != 0 { (-s, c) } else { (c, s) };
+        if (u as i32) < 0 {
+            (-cos, -sin)
+        } else {
+            (cos, sin)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -459,17 +482,19 @@ mod tests {
         (f32::from_bits(cos), f32::from_bits(sin))
     }
 
-    /// Phases where [`cos_sin_turns`] and its first form are compared: every
-    /// `stride`-th, and each quarter turn's neighbours and the ends of its
-    /// reduced range. Returns how many.
+    /// Phases where both forms of [`cos_sin_turns`] and its first form are
+    /// compared: every `stride`-th, and each quarter turn's neighbours and
+    /// the ends of its reduced range. Returns how many.
     fn cos_sin_turns_is_its_first_form(stride: usize) -> u64 {
+        let bits = |(c, s): (f32, f32)| (c.to_bits(), s.to_bits());
         let mut n = 0u64;
         let mut check = |p: u32| {
-            let (got, want) = (cos_sin_turns(p), cos_sin_turns_first(p));
+            let want = bits(cos_sin_turns_first(p));
+            assert_eq!(bits(cos_sin_turns_as::<true>(p)), want, "bits, {p:#010x}");
             assert_eq!(
-                (got.0.to_bits(), got.1.to_bits()),
-                (want.0.to_bits(), want.1.to_bits()),
-                "phase {p:#010x}"
+                bits(cos_sin_turns_as::<false>(p)),
+                want,
+                "selects, {p:#010x}"
             );
             n += 1;
         };
