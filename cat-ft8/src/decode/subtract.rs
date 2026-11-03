@@ -534,6 +534,23 @@ fn lane_sums(pairs: &[u8], i0: usize, i1: usize) -> (f32, f32) {
 #[inline(never)]
 #[allow(clippy::needless_range_loop)] // lane by lane, see `LANES`
 fn whole_lane_sums(pairs: &[u8], re: &mut [f32; LANES], im: &mut [f32; LANES]) {
+    if GROUP == 1 {
+        // Where a group is one sample (no vector unit): one lane at a time,
+        // its two sums in locals, its samples in order; the lanes are added
+        // only after (`sum_lanes`), so the sums are the same. (Side by side,
+        // the Cortex-M33 build, opt-level "s" with rustc 1.93.0, kept the
+        // eight sums in memory.)
+        for l in 0..LANES {
+            let (mut a, mut b) = (re[l], im[l]);
+            for r in pairs.chunks_exact(LANES * PAIR) {
+                let (c, s) = get(r, l);
+                a += c;
+                b += s;
+            }
+            (re[l], im[l]) = (a, b);
+        }
+        return;
+    }
     let (mut a, mut b) = (*re, *im);
     for r in pairs.chunks_exact(LANES * PAIR) {
         for l in 0..LANES {
