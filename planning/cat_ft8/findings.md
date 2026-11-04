@@ -17378,8 +17378,9 @@ trial (31 a pair, sync −2.2%) carried the eight tones' sum.
 The hosts sum by columns (`VECTOR_FORM`) and do not compile this form;
 their binaries are unchanged. The existing test
 `row_scores_equal_the_single_scores` runs this form on the hosts against
-`costas_score` at every base bin for four band widths (nine base bins,
-odd, among them).
+`costas_score` at every base bin for four band widths, all odd (nine
+base bins the narrowest; `Band::from_hz` gives 8k + 1 bins only), so an
+even count's last pair was not tested here: O32b adds even widths.
 
 ### The one-lane first stage in the order of its inputs (54904ad)
 
@@ -17392,12 +17393,16 @@ The blocks are independent, so the operations are the same and only the
 order of the stores changes; a build with one lane no longer links
 `DIGIT_REV`.
 
-| form (on e962403) | first-stage loop | s0086 | s0407 | flash (staged small) |
+| form (on e962403) | first-stage loop | s0086 | s0407 | flash (small image) |
 |---|---|---|---|---|
 | e962403 | 120 | | | |
 | inputs in order through zipped `chunks_exact` and reversed chunks | 152 | | | −2.5 KB |
-| **inputs in order, indexed (54904ad)** | **115** | **−0.26%** | **−0.27%** | **−2.8 KB** |
+| **inputs in order, indexed (54904ad)** | **115** | **−0.26%** | **−0.27%** | **−2 920 B** |
 | the same and output 0 as plain sums (below) | 109 | −0.80% | −0.82% | −2.8 KB |
+
+Flash: 54904ad's figure is the small `check.sh` image's against
+e962403's, as under Sizes and memory (its staged image −2 924 B); the
+trials' are their staged images', to 0.1 KB.
 
 `TABLE_BYTES` now counts the input's order with the twiddles of each form
 (one lane: the fifths, the rows and `BLOCK_OF`, 19 392 bytes; vectors:
@@ -17483,9 +17488,13 @@ exit status:
 | a block's quarters as an array (O31's form) | `finish_row` 1 077 instructions, first-stage loop 139 | 1 |
 | the sliding window on the Cortex-M33 (O31b's form) | `memmoves` 1 in `feed`, `feed_i16` and `skip` | 1 |
 
-The last form no longer fails the first-stage entry, which now finds the
-radix-3 k = 0 loop's eight multiplies when the first stage has none
-there; its memmove entries still fail it.
+The last form passes the first-stage entry, and rightly: with one lane
+`spectrum` of the sliding window also runs the first stage of
+`BLOCK_OF` (`spectrum_of_quarters` of the window's quarters), whose
+loop it found (114 instructions, the longest with eight multiplies, not
+the radix-3 stage's). Its memmove entries fail it. (As first written
+here, the entry was said to find the radix-3 loop in this form; the
+log shows the first stage's. O32b.)
 
 ### Identity
 
@@ -17589,7 +17598,105 @@ third 5.9% at k ≠ 0 (95), the radix-3 stage 4.0% (55), the radix-2 3.2%
   divides again (32 divisions) and `fploop34` fails.
 - `vmulloopN` now takes the longest such loop: a form that removed the
   first stage's window loop and kept the radix-3 k = 0 loop would pass
-  that entry (the sliding-window form does; its memmove entries catch
-  it).
+  that entry (O32b: a first stage with seven multiplies does; the
+  entry is now `vmulhloop8`).
 - Flash +1 KB for the k = 0 loops, more than repaid here by `DIGIT_REV`
-  (−2.9 KB), which a build with one lane no longer links.
+  (−2 920 B in the small `check.sh` image at 54904ad), which a build
+  with one lane no longer links.
+
+## The thirty-second round's fixes (O32b, 2026-11-04)
+
+Fixes to O32 (2700bbd) from its three reviews: 8080625 (codegen-check's
+first-stage entry), 821ec8f (the running sums' test at even widths),
+2690c22 (a test of `BLOCK_OF`), c777c9b (comments). No code the
+binaries hold changed: all eight binaries' `.text` and `.rodata` at
+c777c9b equal 1aa9ab2's build, whose sources outside `planning/` and
+`codegen-check.sh` are 2700bbd's (the same scratch path), so O32's
+identity, counts and sizes stand.
+
+### The first-stage entry (8080625)
+
+`vmulloopN` takes the shortest loop with exactly N `vmul.f32` again, as
+before O32. The first stage's entry is a new metric, `vmulhloopN`: the
+shortest loop with exactly N `vmul.f32` that also loads a halfword
+(`ldrh`). The first stage reads `BLOCK_OF` (`u16`), and no other loop
+of `finish_row` loads a halfword (16 loops at c777c9b; the first stage
+the one with `ldrh`), so the entry names the loop by what only it does.
+A floor on the loop's length (at least 100 instructions) would also
+pass over the radix-3 stage's 53, but it is a second figure that a
+shorter, better first stage could cross, failing then as no loop at
+all; the halfword load holds whatever the loop's length. The radix-3
+stage's k = 0 loop, the row's shortest with eight multiplies, takes the
+restored metric, `m33s 10finish_row vmulloop8 56` (53; at other k that
+stage's loop has twelve, so without k = 0 on its own the shortest with
+eight is the first stage's, 115). 94 entries.
+
+Forced forms, each a fresh copy of the commit's tree with one edit, its
+own log and the check's exit status:
+
+| form | at 2700bbd (`vmulloop8`, longest) | at c777c9b (`vmulhloop8`) |
+|---|---|---|
+| head | 0 (93 of 93, O32) | 0 (94 of 94) |
+| the first stage with seven multiplies (`x3[1] · high[0]` as `x3[1]`) | **0**: the entry finds the radix-3 k = 0 loop (53) | **1**: no loop with eight multiplies and a halfword load |
+| the sliding window on the Cortex-M33 (O31b's form) | 1: `memmoves` 1 in `feed`, `feed_i16`, `skip`; first stage 114 | 1: the same; first stage 114 |
+| the first stage in the order of the blocks (`DIGIT_REV`) | 1 (O32) | 1: 1 128 instructions, first-stage loop 147 (its `DIGIT_REV` read is a halfword load too) |
+
+The seven-multiply form is the gap the reviews named: it passed O32's
+entry and fails this one. The sliding-window form does not touch the
+first stage: with one lane `spectrum` of the sliding window runs
+`spectrum_of_quarters` too, so its first stage is the same loop (114
+instructions, 115 at head) and the first-stage entry passes it at both
+commits, rightly; its memmove entries fail it. O32's findings had said
+the entry found the radix-3 loop in this form; the logs (1aa9ab2 and
+now) show the first stage's, and O32's text is corrected.
+
+### The running sums at even widths (821ec8f)
+
+`Band::of_bins` (`#[cfg(test)]`) builds a band of any width from a
+first bin; `Band::from_hz` takes whole multiples of 25 Hz, so its widths
+are 8k + 1, all odd. `row_scores_equal_the_single_scores` adds widths 1,
+2, 8 and 64 (from bin 124, over the second signal), where the pair loop
+covers every bin and leaves no last bin on its own. The mutant
+`while b + 2 < cols` (the pair loop one pair short of an even count),
+release library tests, fresh copies:
+
+| source | control | `while b + 2 < cols` |
+|---|---|---|
+| 2700bbd | 226 pass | 226 pass (survives) |
+| c777c9b | 227 pass | 226 pass, 1 fails: `row_scores_equal_the_single_scores` |
+
+O32's sentence that the test covered "nine base bins, odd, among them"
+read as if even widths were covered; it now says all four were odd.
+
+### `BLOCK_OF` (2690c22)
+
+`block_of_inverts_the_digit_reversals_block_bases`: for every n < N/4,
+`DIGIT_REV[4 · BLOCK_OF[n]]` = n, and no block twice. The compile-time
+assertions already give it; the test states it where the tables' other
+tests are (227 release library tests).
+
+### Comments (c777c9b)
+
+- `add_row_running`: carrying tones 0 to 6's sum alone takes the loop
+  to 13 instructions a bin, one parity at a time (from 15); the two
+  parities side by side take it to 25 a pair, 12.5 a bin, about 0.34%
+  more of the small slot (−1.36% → −1.70% at s0086, −1.41% → −1.76% at
+  s0407). The comment had credited the pairing with all of 15 → 12.5.
+- The FFT module's "Complex transform" paragraph and `TABLE_BYTES`'
+  comment reflowed.
+- 54904ad's flash figure is −2 920 B (the small `check.sh` image against
+  e962403's) in the findings' table, risks and progress alike; O32's
+  progress said −2.9 KB and its table −2.8 KB.
+
+### Checks
+
+- Sections at c777c9b: x86-64 and AArch64 `cat-ft8-decode` and
+  `paired_bench`, Cortex-M33 check and staged images, small and host:
+  all equal 2700bbd's (1aa9ab2's build).
+- Local CI at c777c9b (`ci31x.sh`): 19 of 19 (the codegen step 94 of 94).
+- codegen-check 94 of 94 at c777c9b; the forced forms above.
+
+### Not done
+
+- The 10f454a fix-up commit (a review's nit) stays: no history rewrites.
+- No Cortex-M33 emulation or host timing: no binary changed.

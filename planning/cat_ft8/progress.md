@@ -2570,7 +2570,8 @@
   pair. Sync −12.5%, small slot −1.70% / −1.76%.
 - 54904ad: the one-lane first stage in the order of its base elements
   (`BLOCK_OF`), `DIGIT_REV` no longer linked with one lane: −0.26% more,
-  flash −2.9 KB; `TABLE_BYTES` counts the input's order per form.
+  flash −2 920 B (small `check.sh` image); `TABLE_BYTES` counts the
+  input's order per form.
 - 1aa9ab2: each one-lane stage's k = 0 on its own, its twiddles
   constants: −0.50% more, +1 KB code. 10f454a: comment figures.
 - Head: small slot −2.45% / −2.53%, host image −0.81%; flash −1 808 B.
@@ -2582,3 +2583,22 @@
   radix-4 twiddles; other running-sum and bin-power loop shapes.
 - Open: the A76; sync start rows in pairs (needs `select` and its
   scratch); the soft bits' row lookups (a host change).
+
+## Session: 2026-11-04 (O32b fixes from the O32 reviews)
+
+- 8080625: `vmulloopN` the shortest loop again; the first stage's entry
+  `vmulhloop8 120`, the loop with eight `vmul.f32` and a halfword load
+  (`BLOCK_OF`'s, the row's only `ldrh` loop; 115); the radix-3 k = 0
+  loop `vmulloop8 56` (53). 94 entries. A first stage with seven
+  multiplies passed 2700bbd's entry and fails this one; the sliding
+  window's first stage is the same loop (114), so only its memmove
+  entries fail it (O32's text had said otherwise; corrected).
+- 821ec8f: `Band::of_bins` (tests only); the running sums' test adds
+  widths 1, 2, 8, 64. `while b + 2 < cols` survives at 2700bbd, fails
+  that test at c777c9b.
+- 2690c22: a test that `BLOCK_OF` inverts `DIGIT_REV`'s block bases.
+- c777c9b: the sync comment states pairing's own gain (13 → 12.5 a bin,
+  about −0.34% of the slot); two doc paragraphs reflowed. 54904ad's
+  flash −2 920 B in findings and progress alike.
+- All eight binaries' sections equal 2700bbd's; local CI 19 of 19;
+  codegen-check 94 of 94.
