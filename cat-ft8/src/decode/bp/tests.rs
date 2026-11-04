@@ -139,31 +139,23 @@ fn hard_decisions_split_exact_ties_by_index() {
     }
 }
 
+/// The branch-free hard decision against the plain rule (a branch on the
+/// sign, then the tie to the index's parity) for every `f32` bit pattern,
+/// NaN, infinities, subnormals and both zeros included, at both parities.
+/// 2^33 decisions: ignored by default, run in release.
 #[test]
-fn both_forms_of_the_hard_decision_agree() {
-    let mut values = std::vec![
-        0.0f32,
-        -0.0,
-        f32::NAN,
-        -f32::NAN,
-        f32::INFINITY,
-        f32::NEG_INFINITY,
-        f32::MIN_POSITIVE,
-        -f32::MIN_POSITIVE,
-        f32::from_bits(1),
-        f32::from_bits(0x8000_0001),
-        f32::MAX,
-        -f32::MAX,
-        1.5,
-        -1.5,
-    ];
-    let mut value = random_values(0x4a2d);
-    values.extend((0..10_000).map(|_| value()));
-    for (k, &x) in values.iter().enumerate() {
-        for i in [k, k + 1] {
+#[ignore]
+fn the_hard_decision_matches_the_plain_rule_for_every_f32() {
+    for i in [0usize, 1] {
+        let mut bits = 0u32;
+        loop {
+            let x = f32::from_bits(bits);
             let want = u8::from(x < 0.0 || (x == 0.0 && i % 2 == 1));
-            assert_eq!(hard_bit::<true>(x, i), want, "{x:?} at {i}");
-            assert_eq!(hard_bit::<false>(x, i), want, "{x:?} at {i}");
+            assert_eq!(hard_bit(x, i), want, "{bits:#010x} at parity {i}");
+            if bits == u32::MAX {
+                break;
+            }
+            bits += 1;
         }
     }
 }
