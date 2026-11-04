@@ -2286,9 +2286,12 @@
   `low` added during the round; the sign test's low power on `masked`.
   Plainer wording in G1's findings.
 - Open items:
-  - Before a hardware release, an off-air check of slots whose only
-    pass-1 decode is weak, including a capture from a real receive
-    chain: paired `host` against `lone=off`.
+  - Before relying on the default in a deployed receiver, an off-air
+    check of slots whose only pass-1 decode is weak, including a capture
+    from a real receive chain: paired `host` against `lone=off`, with the
+    any-count form (pass 2 skipped when every pass-1 decode is weak) as a
+    third arm; if it loses nothing there, the single-decode condition
+    can go.
   - Re-validate the minimum whenever pass 2's sensitivity changes, with
     `lone=off` (or its successor) as a paired arm, on `masked`.
   - A fading or Doppler variant of `masked`'s `low` point.

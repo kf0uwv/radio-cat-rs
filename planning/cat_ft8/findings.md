@@ -14908,7 +14908,7 @@ after exactly one decode. Not renamed.
 ### Tests and mutants
 
 New: pass 2 adding a single decode below the minimum (a +6 dB signal
-hiding a −18 dB one 15 Hz away, decoded at −18.9 dB in pass 2) still
+hiding a −18 dB one 15 Hz away, decoded below the minimum in pass 2) still
 runs pass 3, with output equal to no minimum; a minimum equal to the
 lone decode's SNR runs pass 2, one 0.001 dB above it does not; two weak
 pass-1 decodes in a list of one end as `ListFull`, with one truncated;
@@ -14943,7 +14943,12 @@ x86-64, every slot of every set run (`main` and `fresh`: `sweep`,
 
 No cross-target or A76 run: the rule's output is unchanged.
 
-### Checks (e5120f9)
+### Checks (the working tree committed as e5120f9)
+
+The records and checks were taken from the working tree before it was
+committed; a rebuild at the committed head reproduces the `masked` and
+`edges` records on all three blocks, and `lone=off` equals 9685acf's
+build on the confirm block's sweep, edges and empty sets too.
 
 fmt; clippy `-D warnings` (workspace; cat-ft8 all targets and features;
 thumbv8m library); workspace tests (debug); profile and no-std tests;
