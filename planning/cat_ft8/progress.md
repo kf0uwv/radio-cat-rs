@@ -2655,3 +2655,5 @@
   delete `select` or record why not). Options: `TWIDDLE_TURN` exact on
   the axes (output-changing); `gather` as an array. Low: group-one CI
   without `--include-ignored`.
+- O33c (closing review): `insert_ranked!` fragments as names, its comment
+  citing the Cortex-M33 cost; wording.

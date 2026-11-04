@@ -18278,3 +18278,15 @@ missing.
 ### Not measured
 
 - Cortex-M33 cycles; A76 time.
+
+### Closing review (O33c)
+
+- `insert_ranked!` takes the list, its count and the report as names
+  (`ident`), so no call can pass an expression to be evaluated more than
+  once; its comment gives the Cortex-M33 cost of the function form (sync
+  stage +1.17%) and that a labelled block in place of the `continue`
+  grows the hosts' search as the `else` form does (447 instructions).
+- Wording in `costas_scores`' doc.
+- `.text` of all eight binaries equal cad7e87's; the doc lines move panic
+  locations only.
+
