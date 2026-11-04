@@ -2727,3 +2727,5 @@
   +0.21% (within spread), instructions −0.28% / −0.35%; Cortex-M33
   small +0.075% (the SNR's lookups); identity on x86-64 and the M33;
   CI 19 of 19.
+- O34c (closing review): `divlooprows` fails when `Rows::row` is inlined
+  (no call left to count); comment and reflow.

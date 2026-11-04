@@ -18840,4 +18840,17 @@ s2 is now caught in every build, not only under group one.
 - `divlooprows` finds the tone loop by its division: a compiler that
   unrolled the eight tones or took the logarithm without `vdiv.f32`
   would fail it (no loop, or the symbol loop's calls), which asks for a
-  re-measure rather than passing silently.
+  re-measure rather than passing silently. So would `Rows::row` inlined
+  into `soft_bits_at` (no call left to count), since O34c; before that
+  it passed with no calls.
+
+### Closing review (O34c)
+
+- `divlooprows` fails, rather than reading 0, when `soft_bits_at` has no
+  call of `Rows::row` at all: inlined there, its calls could no longer be
+  told inside or outside the tone loop, and the per-tone form passed. The
+  per-tone form with `Rows::row` inlined now fails it.
+- A comment on the metric's `best` (a count of calls, not a length); a
+  doc paragraph reflowed.
+- Release sections of all eight binaries are unchanged.
+
