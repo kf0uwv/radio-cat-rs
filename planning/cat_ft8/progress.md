@@ -2506,3 +2506,30 @@
   +19.5%); the quarters as an array (+0.75%).
 - Open: the A76 timing (O29b's gather commit; the level steps, rows and
   ring on every target); Cortex-M33 cycles.
+
+## Session: 2026-11-04 (O31b one predicate for the one-lane forms)
+
+- Fixes from O31's reviews. The one-lane forms were chosen by three
+  predicates that disagreed on 32-bit x86 (SSE2): there the front end took
+  the ring and the one-lane transform, with the hosts' unused last stage,
+  where the transform has vectors (`finish_row` 256 → 171 `mulps`).
+- 50805de: `fft::ONE_LANE` (`LANES == 1`, and 1 in the group-one tests)
+  chooses the ring, the feeds, the row's transform and `TABLE_BYTES`;
+  i686's row is again a756578's line for line. `TABLE_BYTES` a `const fn`
+  tested in both forms; codegen-check builds i686 (`onelane`, `mulps`).
+- f79538a: the hosts' kept one-lane last stage and its inverted `cfg`s
+  removed; the rows on every target (Rust 1.75's `LAST_RANGES` warning
+  gone).
+- 72810f6: one first stage from the window's quarters; `power_bins`
+  takes the transform as a closure (a trait made `spectrum` a root, not
+  inlined on the hosts); a scoped ceiling on the M33's first-stage loop.
+- 0243ded: a restart test at rows not a multiple of four; CI's debug
+  group-one front-end run; comments (`ring_at`, `black_box`, the slide's
+  1.6% of the slot and 1.7% after setup).
+- Host binaries now differ from a756578 (decided for this round:
+  layout changes are accepted): hot functions equal but for addresses; x86-64 records (73 800)
+  and WAV outputs equal 6b8013c's; x86-64 time within noise (−0.15%, +0.12%).
+- M33 images equal 8faab0a's at each commit (counts equal), identity 16 of
+  16, encoder 45; local CI 19 of 19 at each commit; forced forms fail;
+  mutants caught (p1 and p2 equivalent in values).
+- Open: the A76 confirmation run of 0243ded against a756578.

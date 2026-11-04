@@ -16910,3 +16910,265 @@ stage 3.1% (25); the bins' powers 4.4% (33 a bin); the levels 1.9%.
   and being 0 when a slot starts (`start_slot`); the row-by-row test
   checks the ring in the group-one build only, as the hosts' test build
   slides the window.
+
+## One predicate for the one-lane forms, thirty-first round's fixes (O31b, 2026-11-04)
+
+Base: da9f8e2 (O31). Fixes from O31's three reviews: the open-source
+review was clean, but for one figure; the QA and code reviews both
+found that the one-lane forms were chosen by three predicates that
+disagree on 32-bit x86. Four code commits: 50805de (one predicate),
+f79538a (the hosts' kept one-lane last stage removed), 72810f6 (one
+first stage for one lane) and 0243ded (tests and CI for the ring). The
+Cortex-A76 board was still not available for timing.
+
+This corrects O31's section above: its "the hosts", "where loops do not
+vectorise (`SCALAR_FORMS`)" and "the hosts' kept one-lane last stage,
+unused" held for x86-64 and AArch64 only; on 32-bit x86 that stage ran.
+
+### The predicates (50805de)
+
+At da9f8e2 the front end took its ring of quarters and the one-lane
+transform where `SCALAR_FORMS` held (`!VECTOR`, from `target_arch`:
+every target but x86-64 and AArch64), the transform took its lanes from
+`LANES` (from the `sse2` and `neon` target features), and the hosts'
+earlier one-lane last stage was kept by a `cfg` of its own. On
+`i686-linux-android` (SSE2, not x86-64) `SCALAR_FORMS` held and `LANES`
+was 4: the front end took the ring and the one-lane transform, and with
+it ran the earlier one-lane last stage, which no test compiled. Release
+assembly of `Spectrogram::finish_row` there (one codegen unit):
+
+| i686-linux-android | instructions | `mulps` | `mulss` | tables read |
+|---|---|---|---|---|
+| a756578 | 3 033 | 256 | 112 | `TWIDDLES` 85, `HANN_HALF` 32 |
+| da9f8e2 (O31) | 2 882 | 171 | 195 | `FIFTH_TWIDDLES` 56, `TWIDDLES` 23, `HANN_HALF` 6 |
+| 50805de and 0243ded | 3 033 | 256 | 112 | `TWIDDLES` 85, `HANN_HALF` 32 |
+
+At 50805de and at 0243ded the function's body is a756578's line for line
+(3 056 lines with local labels numbered and symbol hashes removed; no
+line differs).
+
+Every choice that goes with one lane now derives from
+`fft::ONE_LANE = (LANES == 1)`: the front end's feeds (`ring_at` or the
+window in order), its slide, its row's transform, and `TABLE_BYTES`.
+`LANES` is 1 also in tests built with `cat_ft8_test_group_one`, which
+until now took the ring through `SCALAR_FORMS`. `SCALAR_FORMS` keeps
+its other choices (the bins' indexed powers, the level steps, the
+subtraction's forms), as at a756578.
+
+32-bit ARM with NEON: rustc 1.93 on stable puts no 32-bit ARM target
+feature in `cfg` (`--print cfg` for `armv7-linux-androideabi` with
+`-C target-feature=+neon` lists none; nightly lists `neon`), so there
+`LANES` is 1 at a756578, da9f8e2 and now, and the front end takes the
+ring and the rows; `finish_row` with `+neon` is the same at da9f8e2 and
+0243ded (823 instructions, `last_straight_stage` out of line). Where a
+compiler shows `neon`, the one predicate gives the vector transform and
+the slide together. That case was not built (the target's library is
+not installed for nightly).
+
+`TABLE_BYTES` is `table_bytes(ONE_LANE)`, a `const fn` of the choice; a
+test checks both of its forms against the statics' sizes
+(`table_bytes_of_statics_as`) and the twiddles' figures that
+`decode::TABLE_BYTES` documents (18 432 with one lane, 24 552 with
+vectors; the module's comment at `mod.rs` gives the same). The mutants
+that swap either form, or leave the fifths out, fail it.
+
+`codegen-check.sh` builds `i686-linux-android` (one unit) and checks
+its `finish_row`: no instruction naming `FIFTH_TWIDDLES`, `LAST_ROWS` or
+`last_straight_stage` (metric `onelane`, ceiling 0) and at least 240
+four-lane multiplies (`mulps`, floor). CI's AArch64 job installs the
+target. On O31's own tree with this check both entries fail (56
+references, 171 multiplies; below).
+
+### The hosts' kept one-lane last stage removed (f79538a)
+
+The earlier one-lane last stage, kept in the hosts' builds so that
+their binaries would not change, is gone with its inverted `cfg`s:
+`LAST_ROWS`, `LAST_RANGES` and `last_range` are built on every target,
+`twiddle_index` is for the tests only. Rust 1.75's dead-code warning on
+`LAST_RANGES` (where the rows' code was left out) is gone; the one left,
+`waveform::TRANSITION`, was there at a756578 and is not this round's.
+The comment on `black_box` names its guards (`m33s
+last_straight_stage` `fploop60` and `insns`).
+
+### One first stage for one lane (72810f6)
+
+`straight_first_stage` takes the window as its `Quarters` (four
+`&[f32; 960]`) and `quarters_first_stage` is gone: the joined window
+hands it its four chunks (`spectrum_lanes::<1>`), the front end's ring
+its quarters in order (`spectrum_of_quarters`). `power_bins` takes the
+transform as a closure and does the rest once, so
+`power_bins_quarters` is gone too, and the ring or slide choice is made
+in `Spectrogram::take` and `finish_row` only.
+
+A trait implemented for both window forms was tried first: its impls
+were reachable items, so `spectrum` became a root of its own and was no
+longer inlined into the hosts' row (x86-64 release `power_bins` 673
+instructions and `spectrum` 2 591 out of line, against 3 242 inline),
+and the rows' stage was compiled, unused, on every host. With the
+closure neither happens.
+
+Cortex-M33: the four images' `.text` and `.rodata` at 72810f6 and
+0243ded equal 8faab0a's (and so at 50805de and f79538a); every
+per-stage count of s0086 and s0407, small and host image, equals
+8faab0a's. A new codegen-check entry bounds the first stage's loop on
+its own: `m33s 10finish_row vmulloop8 150`, the row's one loop with
+exactly eight `vmul.f32` (the window's products; 146 instructions, the
+other stages' loops have 4, 12 or 20). The quarters as an array give 179
+there.
+
+### Tests and CI for the ring (0243ded)
+
+- `start_slot_after_a_partial_slot_of_any_rows_mod_four`: a slot cut
+  off at 49, 50, 51 and 51 rows (the last with part of a window filled),
+  a new slot, its rows against a fresh spectrogram's. O31's restart test
+  cut at 100 rows, a multiple of four.
+- CI runs `cargo test -p cat-ft8 --lib -- frontend` with
+  `cat_ft8_test_group_one` in debug as well, so the ring's debug
+  assertions run (21 tests).
+- `ring_at`'s comment: the rotation is the rows completed mod 4 by
+  construction (`rows.count`, advanced once a row in `finish_row` and
+  only there, 0 at `start_slot`).
+- The slide's cost: 2.43 M instructions of the library's `memmove` at
+  a756578, 1.6% of the whole small slot (154.5 M; 76874bb's message and
+  the code's comment) and 1.7% of it after setup (145.6 M; O31's
+  profile above). The comment now gives both.
+
+### Sections of all eight binaries
+
+| commit | x86-64 `cat-ft8-decode`, `paired_bench` | AArch64 both | M33 check and staged, small and host |
+|---|---|---|---|
+| 50805de | = a756578 | = a756578 | = 8faab0a |
+| f79538a | differ | differ | = 8faab0a |
+| 72810f6 | differ | differ | = 8faab0a |
+| 0243ded | = 72810f6 | = 72810f6 | = 8faab0a |
+
+### The hosts' code against a756578
+
+Every function of the four host binaries compared (`llvm-objdump
+--symbolize-operands`, normalised for layout only: addresses, local
+labels, symbol hashes, x86-64 RIP-relative displacements by the symbol
+objdump names, AArch64 pages and their low bits, the linker's adrp to
+adr relaxation, anonymous constants' names, objdump's elided padding;
+every other immediate kept). The tool finds O31's trial with the rows
+built unused into the hosts (`bL`), whose `.text` f79538a's equals,
+different in the decoder's code.
+
+At 0243ded:
+
+| binary | functions | equal | differ in cat-ft8 |
+|---|---|---|---|
+| x86-64 `cat-ft8-decode` | 605 | 598 | `power_bins` (an address only), `encode_payload` (133 → 130), `Error`'s `Display` (an address) |
+| x86-64 `paired_bench` | 1 123 | 1 018 | `soft_bits_at` (769 → 740); `power_bins`, `costas_score`, `select`'s closure, two `Codeword` methods: addresses only |
+| AArch64 `cat-ft8-decode` | 755 | 751 | `encode_payload` (143 → 144), `wav::invalid` (40 → 36) |
+| AArch64 `paired_bench` | 1 305 | 1 305 | none |
+
+The hot functions are equal but for addresses: the transform's row
+(`power_bins`, with the last stage and the first stage inlined),
+`min_sum_round`, `sum_product_round`, `costas_score`, the sync search's
+`select` closure, `snr::estimate`, and the subtraction's `run`,
+`blocks`, `Removal::refs`, `correlation_whole`, `Fit4::add_all_as`,
+`symbol_correlations` and `frequency`. The rest of the differences are
+in the standard library's code, and `paired_bench`'s `soft_bits_at`
+(the bench's 16-unit partition: the decoder binary's is equal), the
+encoder's payload build and the WAV reader's error. At f79538a, where
+the rows' stage was reachable from the hosts' (unused) quarters path,
+more of the decoder differed: AArch64 `select`'s closure (894 → 893
+instructions), `snr::estimate` (1 274 → 1 267) and `soft_bits_at`;
+72810f6 removed that path.
+
+### Identity
+
+- **x86-64** (0243ded against O30's 6b8013c): the run records equal,
+  73 800 (24 600 each for host, host with one pass, and small), and the
+  decode command's output over the 800 WAVs in three configurations and
+  three modes equal line for line (95 491 lines), each comparator's exit
+  status 0.
+- **Cortex-M33 (emulated)**: dumps on seven slots and the residuals of
+  s0086 and s0407 equal a756578's, 16 of 16, at each commit (the images
+  are 8faab0a's).
+- **Encoder**: 45 WAVs equal 70be604's at each commit.
+- **i686, armv7**: assembly only (above); not run.
+
+### x86-64 time
+
+`perf stat` of `paired_bench slotcost` (aligned builds, core 5, the
+x86 machine held exclusively, 4 rounds alternated, no void sample),
+medians and ranges against a756578:
+
+| configuration | a756578 cycles | 0243ded cycles | instructions |
+|---|---|---|---|
+| small | 84.20 G (83.81–84.53) | 84.07 G (83.95–84.76), −0.15% | +0.02% |
+| host, host with one pass | 288.20 G (288.00–288.70) | 288.54 G (287.55–289.03), +0.12% | +0.02% |
+
+Within the rounds' spread: no regression. The A76 run of 0243ded
+against a756578 is a confirmation still to make, not a gate.
+
+### Forced forms (codegen-check on 0243ded, 83 entries)
+
+| form | failing entries | exit |
+|---|---|---|
+| head (0243ded) | none (83 of 83) | 0 |
+| O31's tree (da9f8e2) with this check | `x86 finish_row` `onelane` 56, `mulps` 171 | 1 |
+| the front end's choices by `SCALAR_FORMS` again | `x86 finish_row` `onelane` 57, `mulps` 91 | 1 |
+| `ONE_LANE` inverted | ten: the M33's feeds' `memmoves` (3) and first-stage loop, `a64`/`a64r` `ldn`, `x64`/`x64r` `mulloop80`, `x86` `onelane` | 1 |
+| the rows' slices without `black_box` | `m33s last_straight_stage fploop60` 227 | 1 |
+| the stage inlined into the row | `last_straight_stage` not found (3); `finish_row` 6 divisions, 2 367 instructions | 1 |
+| the earlier one-lane last stage, out of line | `fpmul` 80, `fploop60` 324 | 1 |
+| the window slid in the ring as well | `memmoves` 1 in each of the three feeds | 1 |
+| a block's quarters as an array | `finish_row` 910 instructions, first-stage loop 179 | 1 |
+| the sliding window on the Cortex-M33 | `memmoves` (3), no loop with eight multiplies | 1 |
+
+The 80 entries O31 had give the same counts at 0243ded as at 8faab0a.
+
+### Mutants (0243ded)
+
+Fresh copies of the head, one log each: release library tests (226),
+`g1` with `cat_ft8_test_group_one` (226), `d1` the same in debug,
+`-- frontend` (21).
+
+| mutant | rel | g1 | d1 |
+|---|---|---|---|
+| none (control) | 0 | 0 | 0 |
+| p1 `ONE_LANE` inverted (equivalent in values; the `flipped` form above) | 0 | 0 | |
+| p2 the group-one tests without one lane (equivalent in values) | | 0 | |
+| k1 the row's form by the inverse predicate | 25 | 26 | |
+| k2 the feeds' ring by the inverse predicate | 31 | 26 | |
+| k3 the ring slid as well | | 28 | |
+| t1, t2 `table_bytes`' or the statics' two forms swapped | 2, 2 | | |
+| t3 one lane's bytes without the fifths | 1 | | |
+| c1 the joined window's quarters in reverse | 3 | 8 | |
+| s1 the first stage's inputs 1 and 2 from each other's quarters | 4 | | |
+| s2 input 3 one sample on | 4 | | |
+| m1 `power_bins` without the transform | 37 | | |
+| r1 a new slot keeping the rows' count mod 4 | 3 | 3 | |
+| q1 the ring not turned by the rows | | | 3 |
+
+r1 fails the new restart test and also two decoder tests (a narrow
+band, successive slots), so the new test is not its only catcher. p1 and
+p2 change which bit-identical form runs, which no value shows; p1 is
+the codegen check's `flipped` form.
+
+### Checks
+
+- Local CI 19 of 19 at 50805de, f79538a, 72810f6 and 0243ded (O31's 18
+  and the debug group-one front-end step; codegen-check 83 of 83).
+- `check.sh --stack` and the M4F images at each commit as part of the
+  per-commit run; flash and stack as at 8faab0a (the images' sections
+  are equal).
+
+### Not measured
+
+- The Cortex-A76 (pending: a confirmation run of 0243ded against
+  a756578, not a gate).
+- i686 and 32-bit ARM beyond their assembly; a compiler that puts
+  `neon` in `cfg` for 32-bit ARM.
+
+### Risks
+
+- The hosts' code can move with any change to the crate's items through
+  the 16-unit partition (f79538a moved three decoder functions; 72810f6
+  moved them back). The check above is the guard to rerun.
+- A partial return of the split (the feeds by one predicate, the row by
+  another) shows on i686 only; the codegen check sees the row, and the
+  tests see it only where the two predicates differ, which no tested
+  build has.
