@@ -30,7 +30,7 @@
 //! deviation, so no square root is needed.
 
 use super::frontend::Spectrogram;
-use super::math::log2_power;
+use super::math::{log2_power, SCALAR_FORMS};
 use super::sync::Candidate;
 use super::tables::LEVEL_POWER;
 use crate::ldpc::N;
@@ -181,11 +181,63 @@ pub(crate) fn interpolated_tone_power(
     any.then_some(p)
 }
 
+/// The levels of the rows `rows` (offsets from `centre`, with their
+/// weights) that [`interpolated_tone_power`] reads: `None` for a row of
+/// zero weight, before the first row or not filled.
+#[inline(always)]
+fn row_levels<'a>(
+    spec: &'a Spectrogram<'_>,
+    centre: i32,
+    rows: &[(i32, f32); 2],
+) -> [Option<&'a [u8]>; 2] {
+    let levels = |(dr, wr): (i32, f32)| {
+        let row = centre + dr;
+        if wr == 0.0 || row < 0 {
+            None
+        } else {
+            spec.row(row as usize)
+        }
+    };
+    // Not `rows.map`: on the Cortex-M33 its iterator was left out of line.
+    [levels(rows[0]), levels(rows[1])]
+}
+
+/// [`interpolated_tone_power`] from the rows' levels [`row_levels`] took,
+/// at least one of them present: the same products, added in the same
+/// order.
+#[inline(always)]
+fn tone_power_of(
+    levels: &[Option<&[u8]>; 2],
+    rows: &[(i32, f32); 2],
+    bins: &[(i32, f32); 2],
+    tone: u8,
+    stored: i32,
+) -> f32 {
+    let mut p = 0.0f32;
+    for (&(_, wr), levels) in rows.iter().zip(levels) {
+        let Some(levels) = levels else {
+            continue;
+        };
+        for &(b, wb) in bins.iter() {
+            let bin = b + 2 * i32::from(tone);
+            if (0..stored).contains(&bin) {
+                p += wr * wb * level_power(u32::from(levels[bin as usize]));
+            }
+        }
+    }
+    p
+}
+
 /// Soft bits as [`soft_bits`], at a position refined by `frac_row` rows
 /// and `frac_bin` bins (each in −½…½) from the candidate's grid point:
 /// each tone's power is interpolated bilinearly from the four
 /// surrounding grid values (in linear power), and the metric is taken
 /// on its logarithm. A symbol is erased if none of its rows is filled.
+/// Where the target has no vector unit ([`SCALAR_FORMS`]), the symbol's
+/// rows are looked up once for its eight tones ([`row_levels`],
+/// [`tone_power_of`]: the soft bits 12% fewer instructions on the
+/// Cortex-M33, findings O34); the hosts look them up for each tone, as
+/// before, until the Cortex-A76 has timed the change.
 pub fn soft_bits_at(
     spec: &Spectrogram<'_>,
     candidate: &Candidate,
@@ -199,6 +251,16 @@ pub fn soft_bits_at(
     let bins = straddle(i32::from(candidate.base), frac_bin);
     fill_and_scale(target, llr, |k, v| {
         let centre = i32::from(candidate.start_row) + 2 * k as i32;
+        if SCALAR_FORMS {
+            let levels = row_levels(spec, centre, &rows);
+            if levels.iter().all(Option::is_none) {
+                return false;
+            }
+            for (t, x) in v.iter_mut().enumerate() {
+                *x = log2_power(tone_power_of(&levels, &rows, &bins, t as u8, stored));
+            }
+            return true;
+        }
         for (t, x) in v.iter_mut().enumerate() {
             match interpolated_tone_power(spec, centre, &rows, &bins, t as u8, stored) {
                 Some(p) => *x = log2_power(p),
@@ -324,6 +386,60 @@ mod tests {
                 assert_eq!(g == 0.0, v == 0.0, "bit {i}");
             }
         });
+    }
+
+    /// [`tone_power_of`] over the rows [`row_levels`] looks up once (the
+    /// form without a vector unit) equals [`interpolated_tone_power`] bit
+    /// for bit, and both have no power where no row is present: at every
+    /// tone, row offsets either side of the grid and on it (a row of zero
+    /// weight), rows before the first and past the last filled one, base
+    /// bins at both edges of the band and inside it, odd and even.
+    #[test]
+    fn tone_powers_from_rows_looked_up_once_equal_the_interpolated_powers() {
+        let mut slot = empty_slot();
+        add_signal(
+            &mut slot,
+            &symbols_of("K1ABC W9XYZ -11"),
+            (32 + 300) as f32 * 3.125,
+            dt_of(3),
+            0.01,
+        );
+        add_noise(&mut slot, 0.03, 11);
+        for samples in [crate::SLOT_SAMPLES, 50_000] {
+            let mut built = Built::new(Band::DEFAULT);
+            built.with(&slot[..samples], |spec| {
+                let stored = spec.band().stored_bins() as i32;
+                let filled = spec.rows_filled() as i32;
+                let (mut checked, mut none) = (0, 0);
+                for centre in (-3..filled + 3).chain([0, 1, filled - 1, filled]) {
+                    for frac_row in [-0.5f32, -0.2, 0.0, 0.3, 0.5] {
+                        let rows = straddle(0, frac_row);
+                        let levels = row_levels(spec, centre, &rows);
+                        for base in [0, 1, 300, 301, stored - 16, stored - 15, stored - 1] {
+                            for frac_bin in [-0.5f32, 0.0, 0.25, 0.5] {
+                                let bins = straddle(base, frac_bin);
+                                for tone in 0..8u8 {
+                                    let want = interpolated_tone_power(
+                                        spec, centre, &rows, &bins, tone, stored,
+                                    );
+                                    let got = (!levels.iter().all(Option::is_none)).then(|| {
+                                        tone_power_of(&levels, &rows, &bins, tone, stored)
+                                    });
+                                    assert_eq!(
+                                        got.map(f32::to_bits),
+                                        want.map(f32::to_bits),
+                                        "row {centre} {frac_row}, bin {base} {frac_bin}, tone {tone}"
+                                    );
+                                    checked += 1;
+                                    none += usize::from(want.is_none());
+                                }
+                            }
+                        }
+                    }
+                }
+                assert!(none > 0 && none < checked, "{none} of {checked}");
+            });
+        }
     }
 
     #[test]

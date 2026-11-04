@@ -139,6 +139,9 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # `mulloopN` counts the instructions of the shortest loop with at least N
 # four-lane multiplies (`mulps`; x86-64 only), at most the bound, and a
 # function with no such loop fails it likewise;
+# `rowcallloop` counts the instructions of the shortest loop that calls
+# `Rows::row`, at least the bound, and a function with no such loop fails
+# it likewise;
 # `lowmaskloopN` counts the instructions of the shortest loop with at
 # least N instructions that take 0x7F7F7F7F (each byte's low seven bits)
 # as an immediate (Thumb), at most the bound, and a function with no such
@@ -402,7 +405,11 @@ checks=(
   # A row's levels at 0 and 255 counted four a word, each byte's low seven
   # bits masked by an immediate (13 instructions a word; byte by byte, 9 a
   # level, and no loop with the mask).
-  "m33s 10finish_row lowmaskloop2 14")
+  "m33s 10finish_row lowmaskloop2 14"
+  # The soft bits' rows looked up once a symbol, not once a tone: the
+  # shortest loop that calls `Rows::row` is the loop over the symbols (82
+  # instructions), not the loop over a tone's rows (15).
+  "m33s soft_bits_at rowcallloop 70")
 
 declare -A asm
 for b in "${builds[@]}"; do
@@ -462,13 +469,14 @@ for entry in "${checks[@]}"; do
     /^\.Lfunc_end[0-9]+:/ { p = 0; fcmp = 0; next }
     /^[A-Za-z_][^ \t]*:$/ { p = index($0, f) > 0; if (p) found++; delete at; fcmp = 0; next }
     !p { next }
-    metric ~ /^(sumloop|fploop|cvtloop|memsums|shortloop|mulloop|vmulloop|vmulhloop|vmuladdloop|lowmaskloop)/ && /^\.[A-Za-z0-9_$]+:/ {
+    metric ~ /^(sumloop|fploop|cvtloop|memsums|shortloop|mulloop|vmulloop|vmulhloop|vmuladdloop|lowmaskloop|rowcallloop)/ && /^\.[A-Za-z0-9_$]+:/ {
       sub(/:.*/, ""); at[$0] = k; atb[$0] = bytes; atf[$0] = fps; atc[$0] = cvs
       atl[$0] = lds; atv[$0] = vs; atm[$0] = muls; atu[$0] = vmuls; ath[$0] = hws; atx[$0] = chains
-      atk[$0] = masks; next
+      atk[$0] = masks; atr[$0] = rowcalls; next
     }
-    metric ~ /^(sumloop|fploop|cvtloop|memsums|shortloop|mulloop|vmulloop|vmulhloop|vmuladdloop|lowmaskloop)/ && /^\t[a-z]/ {
+    metric ~ /^(sumloop|fploop|cvtloop|memsums|shortloop|mulloop|vmulloop|vmulhloop|vmuladdloop|lowmaskloop|rowcallloop)/ && /^\t[a-z]/ {
       k++
+      if ($1 == "bl" && $2 ~ /Rows3row/) rowcalls++
       if ($0 ~ /#(2139062143|0x7f7f7f7f)([^0-9a-fx]|$)/) masks++
       if ($1 ~ /^ldrb/) bytes++
       if ($1 ~ /^v(mla|mls|add|sub)\.f32$/) fps++
@@ -500,6 +508,8 @@ for entry in "${checks[@]}"; do
             (best == "" || k - at[$NF] < best)) best = k - at[$NF]
       }
       if (back && metric ~ /^lowmaskloop/ && masks - atk[$NF] >= substr(metric, 12) + 0 &&
+          (best == "" || k - at[$NF] < best)) best = k - at[$NF]
+      if (back && metric == "rowcallloop" && rowcalls > atr[$NF] &&
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
       if (back && metric == "memsums" && lds > atl[$NF] && vs == atv[$NF]) n++
       if (back && metric == "shortloop" && (best == "" || k - at[$NF] < best)) best = k - at[$NF]
@@ -538,8 +548,8 @@ for entry in "${checks[@]}"; do
     END {
       if (!found) print "missing"
       else if (only == "one" && found > 1) print "many"
-      else if (only == "each" && metric ~ /^(sumloop|fploop|cvtloop|shortloop|mulloop|vmulloop|vmulhloop|vmuladdloop|lowmaskloop|memsums)/) print "noteach"
-      else if (metric ~ /^(sumloop|fploop|cvtloop|shortloop|mulloop|vmulloop|vmulhloop|vmuladdloop|lowmaskloop)/) print (best == "" ? "noloop" : best)
+      else if (only == "each" && metric ~ /^(sumloop|fploop|cvtloop|shortloop|mulloop|vmulloop|vmulhloop|vmuladdloop|lowmaskloop|rowcallloop|memsums)/) print "noteach"
+      else if (metric ~ /^(sumloop|fploop|cvtloop|shortloop|mulloop|vmulloop|vmulhloop|vmuladdloop|lowmaskloop|rowcallloop)/) print (best == "" ? "noloop" : best)
       else if (only == "each") {
         least = nf[1] + 0
         for (i = 2; i <= found; i++) if (nf[i] + 0 < least) least = nf[i] + 0
@@ -580,6 +590,7 @@ for entry in "${checks[@]}"; do
       vmulhloop*) echo "FAIL $key $name: no loop with exactly ${metric#vmulhloop} f32 multiplies and a halfword load (moved or unrolled?)" ;;
       vmuladdloop*) echo "FAIL $key $name: no loop with $(muladd "$metric") (moved or unrolled?)" ;;
       lowmaskloop*) echo "FAIL $key $name: no loop with ${metric#lowmaskloop} instructions that take 0x7F7F7F7F (moved or unrolled?)" ;;
+      rowcallloop) echo "FAIL $key $name: no loop that calls Rows::row" ;;
       shortloop) echo "FAIL $key $name: no loop" ;;
       *) echo "FAIL $key $name: no loop with ${metric#fploop} f32 adds (moved or unrolled?)" ;;
     esac
@@ -618,6 +629,7 @@ for entry in "${checks[@]}"; do
     vmulhloop*) what="instructions in the loop of ${metric#vmulhloop} f32 multiplies and a halfword load (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     vmuladdloop*) what="instructions in the loop of $(muladd "$metric") (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     lowmaskloop*) what="instructions in the loop of ${metric#lowmaskloop} that take 0x7F7F7F7F (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    rowcallloop) what="instructions in the shortest loop that calls Rows::row (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     mulps) what="four-lane multiplies (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     onelane) what="references to the one-lane transform (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     ldn) what="interleaving loads (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
