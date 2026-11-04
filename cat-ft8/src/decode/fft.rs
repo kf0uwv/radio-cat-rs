@@ -493,9 +493,7 @@ type LastRow = [[f32; 2]; LAST_R];
 /// butterfly at k reads for (m, q), W_N^((m·k + `LAST_L`·(m·q mod `LAST_R`))
 /// mod N), is with m·k = `LAST_L`·s + r (r < `LAST_L`) entry
 /// (s + m·q mod `LAST_R`) mod `LAST_R` of row r: so a butterfly reads five
-/// entries of one row for each m, all within 40 bytes. (Built where one
-/// lane is taken and in the tests: see [`last_straight_stage`].)
-#[cfg(any(test, not(any(target_feature = "sse2", target_feature = "neon"))))]
+/// entries of one row for each m, all within 40 bytes.
 static LAST_ROWS: [LastRow; LAST_L] = {
     let mut table = [[[0.0f32; 2]; LAST_R]; LAST_L];
     let mut r = 0;
@@ -541,10 +539,8 @@ fn last_stage(re: &mut [f32; N], im: &mut [f32; N]) {
 /// sub-transforms of length l (span = l·`R`, `k` < l, m < `R`, q < `R`):
 /// the index `stage` reads, m·(k + q·l)·(N/span) mod N, as l·(N/span) is
 /// N/`R`. `k_step` is k·(N/span). The tests check [`fifth_index`] and
-/// the entries of [`LAST_ROWS`] against it; the hosts' unused one-lane
-/// last stage reads it.
-#[cfg(any(test, target_feature = "sse2", target_feature = "neon"))]
-#[inline(always)]
+/// the entries of [`LAST_ROWS`] against it.
+#[cfg(test)]
 fn twiddle_index<const R: usize>(m: usize, q: usize, k_step: usize) -> usize {
     (m * k_step + (N / R) * (m * q)) % N
 }
@@ -692,14 +688,8 @@ const _: () = {
 /// The last stage (radix 5, `l` = 384, one block) with one lane, range by
 /// range ([`last_range`]). Out of line: inlined into the decoder's pass,
 /// the Cortex-M33 took more instructions in other stages of the pass
-/// (findings O31).
-///
-/// Built where one lane is taken and in the tests (which run it on every
-/// target). The hosts' builds, which take vectors and run [`last_stage`],
-/// keep the earlier form below instead, unused: with this one in them,
-/// unused, their binaries changed (findings O31), and they are kept as
-/// they were while the Cortex-A76 is not available for timing.
-#[cfg(any(test, not(any(target_feature = "sse2", target_feature = "neon"))))]
+/// (findings O31). The tests run it on every target; the targets with
+/// vectors run [`last_stage`] instead.
 #[inline(never)]
 fn last_straight_stage(re: &mut [f32; N], im: &mut [f32; N]) {
     last_range::<0>(re, im);
@@ -725,8 +715,9 @@ fn last_straight_stage(re: &mut [f32; N], im: &mut [f32; N]) {
 /// load (±1 020 bytes), and added an address for each load: about 247
 /// instructions a butterfly in the ranges whose rows do not start at 0,
 /// 211 with `black_box` (rustc 1.93.0, opt-level "s"; findings O31). Only
-/// the code depends on it; the values do not.
-#[cfg(any(test, not(any(target_feature = "sse2", target_feature = "neon"))))]
+/// the code depends on it; the values do not. Its guards are
+/// codegen-check.sh's `m33s last_straight_stage` entries: `fploop60` (the
+/// shortest range's loop) and `insns` fail without it.
 #[inline(always)]
 fn last_range<const I: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
     let (lo, hi) = LAST_RANGES[I];
@@ -745,23 +736,6 @@ fn last_range<const I: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
             &mut im[k..k + (LAST_R - 1) * LAST_L + 1],
         );
         straight_butterfly!(r, i, LAST_L, [1 2 3 4], [0 1 2 3 4], (m, q) => w[m - 1][(s(m) + (m * q) % LAST_R) % LAST_R]);
-    }
-}
-
-/// The hosts' unused one-lane last stage, as before the rows (see the
-/// other [`last_straight_stage`]): each butterfly reads its twiddles from
-/// `TWIDDLES` where it uses them.
-#[cfg(not(any(test, not(any(target_feature = "sse2", target_feature = "neon")))))]
-#[inline(always)]
-fn last_straight_stage(re: &mut [f32; N], im: &mut [f32; N]) {
-    const R: usize = 5;
-    const S: usize = N / R;
-    for k in 0..S {
-        let (r, i) = (
-            &mut re[k..k + (R - 1) * S + 1],
-            &mut im[k..k + (R - 1) * S + 1],
-        );
-        straight_butterfly!(r, i, S, [1 2 3 4], [0 1 2 3 4], (m, q) => TWIDDLES[twiddle_index::<R>(m, q, k)]);
     }
 }
 
