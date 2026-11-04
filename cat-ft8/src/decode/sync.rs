@@ -345,7 +345,6 @@ where
         return Err(Error::BufferTooSmall);
     }
     let mut report = SyncReport::default();
-    let mut count = 0usize;
     let fill = |scratch: &mut [ScoreCell], q: usize| {
         score(q, &mut scratch[(q % 3) * cols..(q % 3 + 1) * cols]);
     };
@@ -389,24 +388,38 @@ where
             if !keep {
                 continue;
             }
-            report.found += 1;
-            // Insert after every entry scoring ≥ s (earlier points first).
-            let pos = out[..count].partition_point(|e| e.score() >= s);
-            if pos >= out.len() {
-                report.dropped += 1;
-                continue;
-            }
-            if count == out.len() {
-                report.dropped += 1;
-            } else {
-                count += 1;
-            }
-            out.copy_within(pos..count - 1, pos + 1);
-            out[pos] = make(q, b, s);
+            // After every entry scoring ≥ s (found in (q, b) order, so
+            // earlier points first).
+            insert_ranked(out, &mut report, |e| e.score() >= s, || make(q, b, s));
         }
     }
-    report.kept = count;
     Ok(report)
+}
+
+/// Places a local maximum in `out`, whose first `report.kept` entries are
+/// ordered: after every entry `before` holds of (a prefix of them). If the
+/// list is full, the entry or the list's last is dropped. Counts it as
+/// found, and as dropped if so.
+#[inline(always)]
+fn insert_ranked<T: Copy>(
+    out: &mut [T],
+    report: &mut SyncReport,
+    before: impl FnMut(&T) -> bool,
+    entry: impl FnOnce() -> T,
+) {
+    report.found += 1;
+    let pos = out[..report.kept].partition_point(before);
+    if pos >= out.len() {
+        report.dropped += 1;
+        return;
+    }
+    if report.kept == out.len() {
+        report.dropped += 1;
+    } else {
+        report.kept += 1;
+    }
+    out.copy_within(pos..report.kept - 1, pos + 1);
+    out[pos] = entry();
 }
 
 /// An entry with a sync score (for [`select`]).
@@ -708,7 +721,6 @@ where
     let fit = scratch.len() / PAIRED_ROWS;
     let span = if cols <= fit { cols } else { fit - 2 };
     let mut report = SyncReport::default();
-    let mut count = 0usize;
     let mut c0 = 0;
     while c0 < cols {
         let c1 = (c0 + span).min(cols);
@@ -767,27 +779,18 @@ where
                     continue;
                 }
                 let b = lo + i;
-                report.found += 1;
-                // Insert after every entry scoring more, or as much at an
-                // earlier point.
-                let pos = out[..count]
-                    .partition_point(|e| e.score() > s || (e.score() == s && e.point() < (q, b)));
-                if pos >= out.len() {
-                    report.dropped += 1;
-                    continue;
-                }
-                if count == out.len() {
-                    report.dropped += 1;
-                } else {
-                    count += 1;
-                }
-                out.copy_within(pos..count - 1, pos + 1);
-                out[pos] = make(q, b, s);
+                // After every entry scoring more, or as much at an earlier
+                // point.
+                insert_ranked(
+                    out,
+                    &mut report,
+                    |e| e.score() > s || (e.score() == s && e.point() < (q, b)),
+                    || make(q, b, s),
+                );
             }
         }
         c0 = c1;
     }
-    report.kept = count;
     Ok(report)
 }
 
