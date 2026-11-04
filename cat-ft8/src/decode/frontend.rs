@@ -535,16 +535,11 @@ impl<'a> Spectrogram<'a> {
         self.consumed += before;
         while i < n {
             let chunk = (n - i).min(WINDOW - self.filled);
-            // Where the transform takes one lane the window is a ring of
-            // quarters ([`ring_at`]). A chunk never runs past a quarter's
-            // end there but before the first row, when the ring is the
-            // window in order: from then on the window holds three
-            // quarters at each feed, so the chunk ends with the fourth.
-            let at = if ONE_LANE {
-                ring_at(self.filled, self.rows.count)
-            } else {
-                self.filled
-            };
+            // In the ring ([`Layout`]) a chunk never runs past a quarter's
+            // end but before the first row, when the ring is the window in
+            // order: from then on the window holds three quarters at each
+            // feed, so the chunk ends with the fourth.
+            let at = WindowLayout::index(self.filled, self.rows.count);
             debug_assert!(self.rows.count == 0 || at % HOP + chunk <= HOP);
             let (sanitised, clamped) = fill(i, &mut self.front.window[at..at + chunk]);
             self.sanitised += sanitised;
@@ -554,11 +549,7 @@ impl<'a> Spectrogram<'a> {
             self.filled += chunk;
             if self.filled == WINDOW {
                 self.finish_row();
-                // In the ring the quarter just left is the next to fill
-                // (`rows.count` has advanced); otherwise the window slides.
-                if !ONE_LANE {
-                    self.front.window.copy_within(HOP.., 0);
-                }
+                WindowLayout::after_row(&mut self.front.window);
                 self.filled = WINDOW - HOP;
             }
         }
@@ -582,15 +573,7 @@ impl<'a> Spectrogram<'a> {
         };
         let (window, fft) = (&self.front.window, &mut self.front.fft);
         let first = self.rows.band.first_bin();
-        // The ring where the transform takes one lane, as its quarters in
-        // order (`ring`); else the window as it slides, joined as it is
-        // (`window`).
-        if ONE_LANE {
-            let ring = ring_quarters(window, r);
-            power_bins(|b| spectrum_of_quarters(ring, b), fft, first, width, levels);
-        } else {
-            power_bins(|b| spectrum(window, b), fft, first, width, levels);
-        }
+        WindowLayout::powers(window, r, fft, first, width, levels);
         let (floored, top) = level_counts(row);
         self.floored += floored;
         self.top += top;
@@ -598,19 +581,71 @@ impl<'a> Spectrogram<'a> {
     }
 }
 
+/// How the front end holds its window: as a ring of quarters ([`ring_at`])
+/// where `RING`, else in order, slid by [`HOP`] after each row. Where a
+/// feed writes a sample, what follows a row and the row's transform are its
+/// three methods, so that they take one layout.
+struct Layout<const RING: bool>;
+
+/// The front end's layout: the ring where the transform takes one lane
+/// ([`ONE_LANE`]). The one place the front end reads that choice.
+type WindowLayout = Layout<ONE_LANE>;
+
+impl<const RING: bool> Layout<RING> {
+    /// Where sample `at` of the window is held while `rows` rows are
+    /// complete.
+    #[inline(always)]
+    fn index(at: usize, rows: usize) -> usize {
+        if RING {
+            ring_at(at, rows)
+        } else {
+            at
+        }
+    }
+
+    /// The window after a row: in the ring as it is, the quarter just left
+    /// being the next to fill (`rows.count` has advanced); otherwise slid.
+    #[inline(always)]
+    fn after_row(window: &mut [f32; WINDOW]) {
+        if !RING {
+            window.copy_within(HOP.., 0);
+        }
+    }
+
+    /// The row's powers by [`power_bins`] while `rows` rows are complete:
+    /// the transform of the ring's quarters in order, or of the window as
+    /// it is.
+    #[inline(always)]
+    fn powers<F: FnMut(usize, &[f32])>(
+        window: &[f32; WINDOW],
+        rows: usize,
+        fft: &mut FftBuffer,
+        first: usize,
+        width: usize,
+        levels: F,
+    ) {
+        if RING {
+            let ring = ring_quarters(window, rows);
+            power_bins(|b| spectrum_of_quarters(ring, b), fft, first, width, levels);
+        } else {
+            power_bins(|b| spectrum(window, b), fft, first, width, levels);
+        }
+    }
+}
+
 /// Quarters of the window: [`HOP`] samples each, the hop between rows.
 const QUARTERS: usize = WINDOW / HOP;
 const _: () = assert!(QUARTERS * HOP == WINDOW);
 
-/// Where the transform takes one lane ([`ONE_LANE`]) the window is a ring
-/// of [`QUARTERS`] quarters rather than sliding by [`HOP`] after each row
-/// (a copy of three quarters, 11 520 bytes, a row: on the Cortex-M33 1.6%
-/// of a small slot in the library's `memmove`, 1.7% of it after setup;
-/// with the ring, and the transform's first stage reading the quarters,
-/// the slot took 3.2% fewer instructions: findings O31). Sample `at` of
-/// the window, while `rows` rows are complete, is held at the returned
-/// index: its quarter turned on by `rows`, so the quarter a row leaves is
-/// the one the next row's last quarter fills.
+/// Where the transform takes one lane ([`ONE_LANE`], [`Layout`]) the window
+/// is a ring of [`QUARTERS`] quarters rather than sliding by [`HOP`] after
+/// each row (a copy of three quarters, 11 520 bytes, a row: on the
+/// Cortex-M33 1.6% of a small slot in the library's `memmove`, 1.7% of it
+/// after setup; with the ring, and the transform's first stage reading the
+/// quarters, the slot took 3.2% fewer instructions: findings O31). Sample
+/// `at` of the window, while `rows` rows are complete, is held at the
+/// returned index: its quarter turned on by `rows`, so the quarter a row
+/// leaves is the one the next row's last quarter fills.
 ///
 /// The rotation is the rows completed mod [`QUARTERS`] by construction:
 /// `rows` is the spectrogram's `rows.count`, which `finish_row` advances
