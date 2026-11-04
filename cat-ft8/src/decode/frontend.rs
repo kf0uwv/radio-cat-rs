@@ -583,11 +583,11 @@ impl<'a> Spectrogram<'a> {
         let (window, fft) = (&self.front.window, &mut self.front.fft);
         let first = self.rows.band.first_bin();
         // The ring where the transform takes one lane, as its quarters in
-        // order; else the window as it slides.
+        // order (`ring`); else the window as it slides, joined as it is
+        // (`window`).
         if ONE_LANE {
-            let quarters = ring_quarters(window, r);
-            let transform = |b: &mut FftBuffer| spectrum_of_quarters(quarters, b);
-            power_bins(transform, fft, first, width, levels);
+            let ring = ring_quarters(window, r);
+            power_bins(|b| spectrum_of_quarters(ring, b), fft, first, width, levels);
         } else {
             power_bins(|b| spectrum(window, b), fft, first, width, levels);
         }
