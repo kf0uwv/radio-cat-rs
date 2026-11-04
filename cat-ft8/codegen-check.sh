@@ -139,9 +139,9 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # `mulloopN` counts the instructions of the shortest loop with at least N
 # four-lane multiplies (`mulps`; x86-64 only), at most the bound, and a
 # function with no such loop fails it likewise;
-# `rowcallloop` counts the instructions of the shortest loop that calls
-# `Rows::row`, at least the bound, and a function with no such loop fails
-# it likewise;
+# `divlooprows` counts the calls of `Rows::row` in the shortest loop with
+# an `f32` division (`vdiv.f32`; Thumb), at most the bound, and a function
+# with no such loop fails it likewise;
 # `lowmaskloopN` counts the instructions of the shortest loop with at
 # least N instructions that take 0x7F7F7F7F (each byte's low seven bits)
 # as an immediate (Thumb), at most the bound, and a function with no such
@@ -254,12 +254,12 @@ checks=(
   # samples read without an array of the four built a block, the first
   # stage's blocks in the order of their inputs, each later stage's k = 0
   # on its own, the radix-4 stages' turned butterflies and their k = l/2
-  # on its own, the level counts four a word (1 067; 1 011 with the counts
-  # a level at a time, and with those 1 032 before the turned butterflies
-  # and 1 128 in the order of the blocks; the whole row, so a form that
-  # adds work anywhere in it can pass by removing it elsewhere: re-measure
-  # on such a change).
-  "m33s 10finish_row insns 1076"
+  # on its own, the level counts four a word (1 067, and 1 084 before the
+  # turned butterflies; with the counts a level at a time 1 011, 1 032
+  # before the turned butterflies and 1 128 in the order of the blocks; the
+  # whole row, so a form that adds work anywhere in it can pass by removing
+  # it elsewhere: re-measure on such a change).
+  "m33s 10finish_row insns 1072"
   # The same scoped to the first stage's loop: its eight `vmul.f32`, the
   # window products, and its read of `BLOCK_OF`, the row's one loop with a
   # halfword load (115; 147 in the order of the blocks, through the
@@ -406,10 +406,11 @@ checks=(
   # bits masked by an immediate (13 instructions a word; byte by byte, 9 a
   # level, and no loop with the mask).
   "m33s 10finish_row lowmaskloop2 14"
-  # The soft bits' rows looked up once a symbol, not once a tone: the
-  # shortest loop that calls `Rows::row` is the loop over the symbols (82
-  # instructions), not the loop over a tone's rows (15).
-  "m33s soft_bits_at rowcallloop 70")
+  # The soft bits' rows looked up once a symbol, not once a tone: the loop
+  # over a symbol's tones, the shortest with a division (the logarithm's,
+  # one a tone), calls `Rows::row` no times (with the rows looked up a
+  # tone, it holds the calls).
+  "m33s soft_bits_at divlooprows 0")
 
 declare -A asm
 for b in "${builds[@]}"; do
@@ -455,7 +456,7 @@ muladd() {
 }
 # The metrics that measure a loop (the shortest of its kind); they and
 # `memsums` mark the loops' labels as they read the function.
-loops="sumloop|fploop|cvtloop|shortloop|mulloop|vmulloop|vmulhloop|vmuladdloop|lowmaskloop|rowcallloop"
+loops="sumloop|fploop|cvtloop|shortloop|mulloop|vmulloop|vmulhloop|vmuladdloop|lowmaskloop|divlooprows"
 fail=0
 for entry in "${checks[@]}"; do
   set -- $entry
@@ -476,11 +477,12 @@ for entry in "${checks[@]}"; do
     metric ~ marked && /^\.[A-Za-z0-9_$]+:/ {
       sub(/:.*/, ""); at[$0] = k; atb[$0] = bytes; atf[$0] = fps; atc[$0] = cvs
       atl[$0] = lds; atv[$0] = vs; atm[$0] = muls; atu[$0] = vmuls; ath[$0] = hws; atx[$0] = chains
-      atk[$0] = masks; atr[$0] = rowcalls; next
+      atk[$0] = masks; atr[$0] = rowcalls; atd[$0] = divs; next
     }
     metric ~ marked && /^\t[a-z]/ {
       k++
       if ($1 == "bl" && $2 ~ /Rows3row/) rowcalls++
+      if ($1 == "vdiv.f32") divs++
       if ($0 ~ /#(2139062143|0x7f7f7f7f)([^0-9a-fx]|$)/) masks++
       if ($1 ~ /^ldrb/) bytes++
       if ($1 ~ /^v(mla|mls|add|sub)\.f32$/) fps++
@@ -513,8 +515,8 @@ for entry in "${checks[@]}"; do
       }
       if (back && metric ~ /^lowmaskloop/ && masks - atk[$NF] >= substr(metric, 12) + 0 &&
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
-      if (back && metric == "rowcallloop" && rowcalls > atr[$NF] &&
-          (best == "" || k - at[$NF] < best)) best = k - at[$NF]
+      if (back && metric == "divlooprows" && divs > atd[$NF] &&
+          (best == "" || k - at[$NF] < shortest)) { shortest = k - at[$NF]; best = rowcalls - atr[$NF] }
       if (back && metric == "memsums" && lds > atl[$NF] && vs == atv[$NF]) n++
       if (back && metric == "shortloop" && (best == "" || k - at[$NF] < best)) best = k - at[$NF]
     }
@@ -594,7 +596,7 @@ for entry in "${checks[@]}"; do
       vmulhloop*) echo "FAIL $key $name: no loop with exactly ${metric#vmulhloop} f32 multiplies and a halfword load (moved or unrolled?)" ;;
       vmuladdloop*) echo "FAIL $key $name: no loop with $(muladd "$metric") (moved or unrolled?)" ;;
       lowmaskloop*) echo "FAIL $key $name: no loop with ${metric#lowmaskloop} instructions that take 0x7F7F7F7F (moved or unrolled?)" ;;
-      rowcallloop) echo "FAIL $key $name: no loop that calls Rows::row" ;;
+      divlooprows) echo "FAIL $key $name: no loop with an f32 division" ;;
       shortloop) echo "FAIL $key $name: no loop" ;;
       *) echo "FAIL $key $name: no loop with ${metric#fploop} f32 adds (moved or unrolled?)" ;;
     esac
@@ -633,7 +635,7 @@ for entry in "${checks[@]}"; do
     vmulhloop*) what="instructions in the loop of ${metric#vmulhloop} f32 multiplies and a halfword load (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     vmuladdloop*) what="instructions in the loop of $(muladd "$metric") (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     lowmaskloop*) what="instructions in the loop of ${metric#lowmaskloop} that take 0x7F7F7F7F (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
-    rowcallloop) what="instructions in the shortest loop that calls Rows::row (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
+    divlooprows) what="calls of Rows::row in the shortest loop with an f32 division (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     mulps) what="four-lane multiplies (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     onelane) what="references to the one-lane transform (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     ldn) what="interleaving loads (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
