@@ -251,14 +251,30 @@ impl<const L: usize> Lanes<L> {
 }
 
 /// Butterflies computed side by side: four where the target has 128-bit
-/// vectors of `f32`, else one (a Cortex-M then runs `straight_stages`; the
-/// Cortex-M33 measured slower and larger with a first-stage group of four).
-/// The result is the same for any value: lanes are independent butterflies.
-const LANES: usize = if cfg!(any(target_feature = "sse2", target_feature = "neon")) {
+/// vectors of `f32` (SSE2 or NEON: x86-64, AArch64 and 32-bit x86, and
+/// 32-bit ARM with NEON where `cfg` shows the feature, which stable Rust
+/// 1.93 does not), else one (a Cortex-M then runs `straight_stages`; the
+/// Cortex-M33 measured slower and larger with a first-stage group of
+/// four). One also in the tests built with `--cfg cat_ft8_test_group_one`,
+/// so that a host runs the one-lane forms end to end. The result is the
+/// same for any value: lanes are independent butterflies.
+const LANES: usize = if cfg!(any(target_feature = "sse2", target_feature = "neon"))
+    && !cfg!(all(test, cat_ft8_test_group_one))
+{
     4
 } else {
     1
 };
+
+/// Whether the transform takes one lane: the one source of every choice
+/// that goes with it. With one lane the stages are written out term by
+/// term ([`straight_stages`]) and read their twiddles from
+/// [`FIFTH_TWIDDLES`] and [`LAST_ROWS`] ([`TABLE_BYTES`]), and the front
+/// end holds its window as a ring of quarters ([`power_bins_quarters`]).
+/// Not [`SCALAR_FORMS`], which is also true on 32-bit x86 (and on 32-bit
+/// ARM with NEON): there the transform takes vectors and the window slides
+/// (findings O31b).
+pub(crate) const ONE_LANE: bool = LANES == 1;
 
 const _: () = Lanes::<LANES>::OK;
 
@@ -1056,7 +1072,7 @@ pub(crate) fn power_bins<F: FnMut(usize, &[f32])>(
 
 /// [`power_bins`] of the window held as its four quarters
 /// (`quarters[m]` holds samples m·960 .. (m + 1)·960, as the front end's
-/// ring hands them where the target has no vector unit), by the one-lane
+/// ring hands them where the transform takes one lane), by the one-lane
 /// transform ([`quarters_first_stage`], [`straight_stages`]): the same
 /// powers bit for bit.
 pub(crate) fn power_bins_quarters<F: FnMut(usize, &[f32])>(
@@ -1134,23 +1150,38 @@ fn bin_powers_as<const INDEXED: bool>(re: &[f32; N], im: &[f32; N], k0: usize, o
 }
 
 /// Bytes of the static tables this module uses (twiddles, real-split
-/// twiddles, half window, digit-reversal permutation). The twiddles are
-/// [`TWIDDLES`] where vectors are taken, else [`FIFTH_TWIDDLES`] and
-/// [`LAST_ROWS`].
-pub const TABLE_BYTES: usize = if LANES > 1 {
-    core::mem::size_of::<[[f32; 2]; LAST_TWIDDLES]>()
-} else {
-    core::mem::size_of::<[[f32; 2]; N / FIFTH]>() + core::mem::size_of::<[LastRow; LAST_L]>()
-} + core::mem::size_of::<[[f32; 2]; 961]>()
-    + core::mem::size_of::<[f32; WINDOW / 2 + 1]>()
-    + core::mem::size_of::<[u16; N]>();
+/// twiddles, half window, digit-reversal permutation): [`table_bytes`] of
+/// [`ONE_LANE`].
+pub const TABLE_BYTES: usize = table_bytes(ONE_LANE);
 
+/// [`TABLE_BYTES`] where the transform takes one lane or not: the twiddles
+/// are [`FIFTH_TWIDDLES`] and [`LAST_ROWS`] with one lane, else
+/// [`TWIDDLES`].
+const fn table_bytes(one_lane: bool) -> usize {
+    let twiddles = if one_lane {
+        core::mem::size_of::<[[f32; 2]; N / FIFTH]>() + core::mem::size_of::<[LastRow; LAST_L]>()
+    } else {
+        core::mem::size_of::<[[f32; 2]; LAST_TWIDDLES]>()
+    };
+    twiddles
+        + core::mem::size_of::<[[f32; 2]; 961]>()
+        + core::mem::size_of::<[f32; WINDOW / 2 + 1]>()
+        + core::mem::size_of::<[u16; N]>()
+}
+
+/// The sizes of the statics [`TABLE_BYTES`] counts.
 #[cfg(test)]
 pub(crate) fn table_bytes_of_statics() -> usize {
-    let twiddles = if LANES > 1 {
-        core::mem::size_of_val(&TWIDDLES)
-    } else {
+    table_bytes_of_statics_as(ONE_LANE)
+}
+
+/// [`table_bytes_of_statics`] where the transform takes one lane or not.
+#[cfg(test)]
+fn table_bytes_of_statics_as(one_lane: bool) -> usize {
+    let twiddles = if one_lane {
         core::mem::size_of_val(&FIFTH_TWIDDLES) + core::mem::size_of_val(&LAST_ROWS)
+    } else {
+        core::mem::size_of_val(&TWIDDLES)
     };
     twiddles
         + core::mem::size_of_val(&SPLIT_TWIDDLES)

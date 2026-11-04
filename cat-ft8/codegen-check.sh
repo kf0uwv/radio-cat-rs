@@ -25,7 +25,9 @@
 # degree), that a row's levels there take a guess and one step rather
 # than the logarithm, in their own loop (`levels_by_steps_out_of_line`),
 # that the front end's window there is a ring of quarters, not slid each
-# row, and that the belief-propagation rounds take their variables' totals
+# row, that on 32-bit x86 (SSE2, which takes vectors for the transform but
+# the scalar forms elsewhere) the front end keeps the vector transform,
+# and that the belief-propagation rounds take their variables' totals
 # without a bounds check.
 # Their speed depends on code generation that no test sees: the
 # sum-product round's tanh and atanh passes 24 values at a time
@@ -53,8 +55,8 @@
 # the opt-level "s" bounds (findings O20 and O20b).
 #
 # Needs: rustup targets aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu,
-# thumbv8m.main-none-eabihf and thumbv7em-none-eabihf (assembly only;
-# nothing is linked).
+# thumbv8m.main-none-eabihf, thumbv7em-none-eabihf and i686-linux-android
+# (assembly only; nothing is linked).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 target_dir="${CARGO_TARGET_DIR:-$here/../target/codegen-check}"
@@ -71,7 +73,8 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
   "x64r x86_64-unknown-linux-gnu - - - -"
   "m33 thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm - 1"
   "m33s thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm s 1"
-  "m4 thumbv7em-none-eabihf --no-default-features - - 1")
+  "m4 thumbv7em-none-eabihf --no-default-features - - 1"
+  "x86 i686-linux-android - - - 1")
 # Each check: the build, the function, what is counted, and its bound. The function
 # is a name, or a mangled path segment as it appears in the symbol (its
 # length first) where the name alone is ambiguous. `vec4` counts
@@ -131,6 +134,11 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # `mulloopN` counts the instructions of the shortest loop with at least N
 # four-lane multiplies (`mulps`; x86-64 only), at most the bound, and a
 # function with no such loop fails it likewise;
+# `mulps` counts four-lane multiplies (`mulps`, with or without the VEX
+# `v`; x86), at least the bound;
+# `onelane` counts the instructions that name the one-lane transform's
+# tables or its last stage (`FIFTH_TWIDDLES`, `LAST_ROWS`,
+# `last_straight_stage`), at most the bound;
 # `absent` passes only if no function's label holds the name (the bound is
 # unused), that is, if it was inlined everywhere; it sees only a type's own
 # methods (`10Correction`), not a trait's (`Clone` for it, say) left out of
@@ -301,6 +309,13 @@ checks=(
   "a64r power_bins vec2 32 one"
   "x64r power_bins mulloop80 470 one"
   "x64r power_bins insns 3500 one"
+  # On 32-bit x86 (SSE2: vectors for the transform, the scalar forms
+  # elsewhere) the front end keeps the vector transform and its sliding
+  # window: no one-lane table or last stage in the row (O31 read 56 of
+  # `FIFTH_TWIDDLES` there), and its four-lane multiplies (256; 171 with
+  # the one-lane transform).
+  "x86 10finish_row onelane 0"
+  "x86 10finish_row mulps 240"
   # The bins' powers out of line with indexed slices.
   "m33s bin_powers_out_of_line fploop4 35"
   # The levels of a row's powers by a guess and one step, not the logarithm, out of line.
@@ -411,6 +426,8 @@ for entry in "${checks[@]}"; do
     metric == "paddw" && /^\tv?paddw\t/ { n++; nf[found]++ }
     metric == "uaddw8h" && /^\tuaddw2?\tv[0-9]+\.8h/ { n++; nf[found]++ }
     metric == "add2d" && /^\tadd\tv[0-9]+\.2d/ { n++; nf[found]++ }
+    metric == "mulps" && /^\tv?mulps\t/ { n++; nf[found]++ }
+    metric == "onelane" && /^\t[a-z]/ && /(FIFTH_TWIDDLES|LAST_ROWS|last_straight_stage)/ { n++; nf[found]++ }
     END {
       if (!found) print "missing"
       else if (only == "one" && found > 1) print "many"
@@ -423,7 +440,7 @@ for entry in "${checks[@]}"; do
       }
       else print n + 0
     }' "${asm[$key]}")
-  if [ "$n" = noteach ] || { [ "$only" = each ] && ! [[ "$metric" =~ ^(vec4|minmax|vminmax|fpmul|vecor|calls_within_limit|ldn|add2d|fpcmps|vec8h|paddw|uaddw8h)$ ]]; }; then
+  if [ "$n" = noteach ] || { [ "$only" = each ] && ! [[ "$metric" =~ ^(vec4|minmax|vminmax|fpmul|vecor|calls_within_limit|ldn|add2d|fpcmps|vec8h|paddw|uaddw8h|mulps)$ ]]; }; then
     echo "FAIL $key $name: \`each\` takes a floor, not $metric"
     fail=1
     continue
@@ -485,6 +502,8 @@ for entry in "${checks[@]}"; do
     insns) what="instructions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     fpbranches) what="f32 compares followed by a branch (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     mulloop*) what="instructions in the loop of ${metric#mulloop} four-lane multiplies (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    mulps) what="four-lane multiplies (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
+    onelane) what="references to the one-lane transform (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     ldn) what="interleaving loads (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     vec2) what="two-lane .2d instructions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     vec8h) what=".8h instructions (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;

@@ -380,6 +380,19 @@ fn a_full_scale_sine_centred_in_a_bin_reads_one() {
 #[test]
 fn table_bytes_matches_the_statics() {
     assert_eq!(TABLE_BYTES, table_bytes_of_statics());
+    // Both forms, whichever this build takes.
+    for one_lane in [false, true] {
+        assert_eq!(
+            table_bytes(one_lane),
+            table_bytes_of_statics_as(one_lane),
+            "{one_lane}"
+        );
+    }
+    // The twiddles' bytes `decode::TABLE_BYTES` gives: 18 432 with one
+    // lane, 24 552 with vectors.
+    let rest = table_bytes(false) - core::mem::size_of_val(&TWIDDLES);
+    assert_eq!(table_bytes(true) - rest, 18_432);
+    assert_eq!(table_bytes(false) - rest, 24_552);
 }
 
 #[test]

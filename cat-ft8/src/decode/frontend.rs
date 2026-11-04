@@ -51,7 +51,7 @@
 //! feed to the next. The FFT work is free between rows, and the decoder's
 //! sync search uses it then.
 
-use super::fft::{power_bins, power_bins_quarters, FftBuffer, BINS, WINDOW};
+use super::fft::{power_bins, power_bins_quarters, FftBuffer, BINS, ONE_LANE, WINDOW};
 use super::math::{log2_power, POWER_FLOOR, SCALAR_FORMS};
 use super::tables::LEVEL_STEPS;
 use crate::{Error, SLOT_SAMPLES};
@@ -535,12 +535,12 @@ impl<'a> Spectrogram<'a> {
         self.consumed += before;
         while i < n {
             let chunk = (n - i).min(WINDOW - self.filled);
-            // Where the target has no vector unit the window is a ring of
+            // Where the transform takes one lane the window is a ring of
             // quarters ([`ring_at`]). A chunk never runs past a quarter's
             // end there but before the first row, when the ring is the
             // window in order: from then on the window holds three
             // quarters at each feed, so the chunk ends with the fourth.
-            let at = if SCALAR_FORMS {
+            let at = if ONE_LANE {
                 ring_at(self.filled, self.rows.count)
             } else {
                 self.filled
@@ -556,7 +556,7 @@ impl<'a> Spectrogram<'a> {
                 self.finish_row();
                 // In the ring the quarter just left is the next to fill
                 // (`rows.count` has advanced); otherwise the window slides.
-                if !SCALAR_FORMS {
+                if !ONE_LANE {
                     self.front.window.copy_within(HOP.., 0);
                 }
                 self.filled = WINDOW - HOP;
@@ -582,7 +582,9 @@ impl<'a> Spectrogram<'a> {
         };
         let (window, fft) = (&self.front.window, &mut self.front.fft);
         let first = self.rows.band.first_bin();
-        if SCALAR_FORMS {
+        // The ring where the transform takes one lane, as its quarters in
+        // order; else the window as it slides.
+        if ONE_LANE {
             power_bins_quarters(ring_quarters(window, r), fft, first, width, levels);
         } else {
             power_bins(window, fft, first, width, levels);
@@ -598,15 +600,21 @@ impl<'a> Spectrogram<'a> {
 const QUARTERS: usize = WINDOW / HOP;
 const _: () = assert!(QUARTERS * HOP == WINDOW);
 
-/// Where the target has no vector unit ([`SCALAR_FORMS`]) the window is a
-/// ring of [`QUARTERS`] quarters rather than sliding by [`HOP`] after each
-/// row (a copy of three quarters, 11 520 bytes, a row: 1.6% of a slot on
-/// the Cortex-M33 in the library's `memmove`; with the ring, and the
-/// transform's first stage reading the quarters, the slot took 3.2% fewer
-/// instructions: findings O31). Sample `at`
-/// of the window, while `rows` rows are complete, is held at the returned
+/// Where the transform takes one lane ([`ONE_LANE`]) the window is a ring
+/// of [`QUARTERS`] quarters rather than sliding by [`HOP`] after each row
+/// (a copy of three quarters, 11 520 bytes, a row: on the Cortex-M33 1.6%
+/// of a small slot in the library's `memmove`, 1.7% of it after setup;
+/// with the ring, and the transform's first stage reading the quarters,
+/// the slot took 3.2% fewer instructions: findings O31). Sample `at` of
+/// the window, while `rows` rows are complete, is held at the returned
 /// index: its quarter turned on by `rows`, so the quarter a row leaves is
 /// the one the next row's last quarter fills.
+///
+/// The rotation is the rows completed mod [`QUARTERS`] by construction:
+/// `rows` is the spectrogram's `rows.count`, which `finish_row` advances
+/// once a row, as the window fills, and only there, and which is 0 when a
+/// slot starts (`start_slot`), when the ring is the window in order. The
+/// ring has no phase of its own to fall out of step with it.
 #[inline(always)]
 fn ring_at(at: usize, rows: usize) -> usize {
     ((at / HOP + rows) % QUARTERS) * HOP + at % HOP

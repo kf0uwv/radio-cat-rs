@@ -231,7 +231,7 @@ fn row_origin_puts_nominal_symbol_centres_on_rows_5_7_9() {
 fn rows_are_the_levels_of_each_window() {
     // Each row is the levels of its own window of the slot, as the
     // transform of the joined window gives them: so the window's slide (or,
-    // where the target has no vector unit and in the tests built with
+    // where the transform takes one lane and in the tests built with
     // `cat_ft8_test_group_one`, its ring of quarters) holds every row's
     // samples in order. Blocks of 1 921 samples end within a quarter.
     let samples = slot("K1ABC W9XYZ -11", 812.5, 0.3, 0.1, 0.03, 7);
