@@ -357,8 +357,9 @@ fn row_scores_equal_the_single_scores() {
     // and all three Costas arrays of some start rows are filled; every
     // start row the search visits and a few beyond, every base bin; both
     // forms of the sums (the levels summed down the columns first, and
-    // running sums along each row), on every band width from the
-    // narrowest.
+    // running sums along each row), on band widths from one bin, odd (all
+    // that `Band::from_hz` gives are 8k + 1) and even (the running sums'
+    // pair loop then leaves no last bin on its own).
     let mut slot = empty_slot();
     add_noise(&mut slot, NOISE_RMS, 11);
     for (k, msg) in ["CQ K1ABC FN42", "K1ABC W9XYZ -11", "W9XYZ K1ABC R-07"]
@@ -378,8 +379,14 @@ fn row_scores_equal_the_single_scores() {
         Band::DEFAULT,
         Band::SMALL,
         Band::from_hz(1_000, 1_200).unwrap(),
-        // The narrowest band: nine base bins.
+        // The narrowest that `Band::from_hz` gives: nine base bins.
         Band::from_hz(1_000, 1_025).unwrap(),
+        // Widths only a test builds, over the second signal (tone 0 at
+        // bin 128): one bin, and even counts.
+        Band::of_bins(124, 1),
+        Band::of_bins(124, 2),
+        Band::of_bins(124, 8),
+        Band::of_bins(124, 64),
     ] {
         for samples in [SLOT_SAMPLES, 50_000, 90_000, 130_000, 3_000] {
             let mut built = Built::new(band);

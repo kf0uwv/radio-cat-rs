@@ -217,6 +217,17 @@ impl Band {
             f32::from(self.hi_bin) * BIN_HZ,
         )
     }
+
+    /// For tests: `base_bins` base bins from bin `lo_bin`, any count from
+    /// one. [`Band::from_hz`] takes whole multiples of 25 Hz, eight bins,
+    /// so its widths are 8k + 1, all odd.
+    #[cfg(test)]
+    pub(crate) fn of_bins(lo_bin: u16, base_bins: u16) -> Band {
+        assert!(base_bins > 0 && lo_bin > 0);
+        let hi_bin = lo_bin + base_bins - 1;
+        assert!(usize::from(hi_bin) + BINS_ABOVE_BAND < BINS);
+        Band { lo_bin, hi_bin }
+    }
 }
 
 /// The front end's working buffers: one analysis window of input and the
