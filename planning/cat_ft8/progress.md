@@ -2417,3 +2417,38 @@
   the u16 bound's assertion above the loop; `one` on the a64 `uaddw8h`
   entry; the placement cause stated as likely. Open: the A76 timing of the
   gather commit once the board is restarted.
+
+## Session: 2026-11-04 (O30 min-sum written out and the levels by steps on the Cortex-M33)
+
+- The Cortex-A76 board was not available for timing; the round worked on
+  the Cortex-M33 (emulated counts, s0086 and s0407) and left the hosts'
+  binaries as they were.
+- New references at 6b8013c with the same tools (G1 changed the host
+  output from b93516e's): x86-64 records and WAV outputs, Cortex-M33 dumps
+  and residuals, M33 counts, M4F images. Its M33 outputs equal 68634cc's;
+  the encoder's equal 70be604's. The WAV output is compared strictly.
+- Profiled 6b8013c on the Cortex-M33 (per block): min-sum 28.8% of the
+  small slot, the FFT's last stage 10.5%, the running sums 8.4%, the
+  levels 4.5%.
+- O29b's next action, the Costas scores by columns on the Cortex-M33:
+  small slot +1.98% and +2.06%, sync +18%; outside the 2% criterion, so
+  both forms stay.
+- 80065b4: min-sum on the Cortex-M33 each degree's checks in turn and
+  written out, the messages as bits (sign by parity): belief propagation
+  −28%, small slot −8.0% and −7.2%; flash +1.6 KB. codegen-check
+  `sumloop6`, `sumloop7`.
+- 9e1c3f2: a row's levels on the Cortex-M33 by a guess from the power's
+  bits and one compare with `LEVEL_STEPS` (1 KB, generated), out of line;
+  equal to the logarithm's for every `f32` (exhaustive ignored test):
+  feed −5.7% (small) and −6.3% (host image). codegen-check `shortloop 16`.
+- 31fb92b: the hosts' level loop back in the row's closure, so the
+  AArch64 binaries equal 6b8013c's again (9e1c3f2 had changed one bound
+  check's encoding).
+- Head: small slot −10.75% and −9.99%, host image −1.12% and −1.13%;
+  identity (x86-64 records and WAVs, M33 16 of 16, encoder), comparators
+  failing when forced, mutants caught (two equivalent), forced
+  code-generation forms failing, local CI 17 of 17 at each commit.
+- Tried, not kept: the running sums two bins a step (sync −2.2% or
+  +28.8%); the levels inlined into the row (−1.05%); a level table by
+  eighth of an octave (two steps in some buckets).
+- Open: O29b's A76 timing of the gather commit; Cortex-M33 cycles.

@@ -16039,3 +16039,340 @@ before (O29's c10).
   regression beyond its spreads the gather commit is reverted alone.
 - Release sections of all eight binaries are unchanged by these edits.
 
+
+## Min-sum written out and a row's levels by a guess and one step on the Cortex-M33, thirtieth round (O30, bit-identical, 2026-11-04)
+
+Base: 6b8013c (feat/cat-ft8 with O29 and G1). The Cortex-A76 board was
+not available for timing this round, so the round worked on the
+Cortex-M33 (emulated instruction counts on s0086 and s0407) and kept the
+hosts' code as it was. Three code commits: 80065b4 (min-sum's checks
+written out, their messages as bits, where loops do not vectorise),
+9e1c3f2 (a row's levels by a guess and one step where loops do not
+vectorise) and 31fb92b (the hosts' level loop back in the row's closure,
+so that the AArch64 binaries equal 6b8013c's again). Decodes, records,
+dumps, residuals and encoder output are identical; the x86-64 and
+AArch64 binaries of the head equal 6b8013c's.
+
+| target | measure | 6b8013c | 31fb92b | change |
+|---|---|---|---|---|
+| Cortex-M33, small image | s0086 slot | 175 089 503 | 156 263 309 | **−10.75%** |
+| | s0407 slot | 168 438 647 | 151 612 717 | **−9.99%** |
+| | belief propagation (s0086, s0407) | 49 966 476, 42 601 237 | 35 927 885, 30 565 012 | **−28.1%, −28.3%** |
+| | feed | 84 894 130 | 80 044 992 | **−5.71%** |
+| Cortex-M33, host image | s0086 slot | 1 427 783 785 | 1 411 732 811 | **−1.12%** |
+| | s0407 slot | 1 424 518 782 | 1 408 468 317 | **−1.13%** |
+| | feed | 259 596 782 | 243 375 704 | **−6.25%** |
+| x86-64, AArch64 | `.text` and `.rodata` of `cat-ft8-decode` and `paired_bench` | | | unchanged |
+| Cortex-M33 flash | small, host image (`check.sh`) | 91 950, 104 758 B | 94 562, 107 362 B | +2 612, +2 604 B |
+
+Emulated instructions of the staged images (whole slot, setup
+included); the host image decodes with sum-product, so min-sum does not
+run there.
+
+### Baselines
+
+The decoder's host output differs from b93516e's (the references of
+every round to O29) where G1's rule fires, so this round's references
+were all rebuilt at 6b8013c with the same tools, one build from one
+scratch path (rustc 1.93.0): x86-64 run records (host, one pass, small:
+24 600 each), the 800 WAV slots × 3 configurations × 3 modes (95 491
+lines, 2 400 of them `--profile`), the Cortex-M33 dump images on seven
+slots and the multi-pass residuals of s0086 and s0407, the M33
+per-function counts, `check.sh --stack` and the M4F images. Against the
+old references, for the record: 6b8013c's one-pass and small records
+equal b93516e's, its host records differ in 5 569 of 24 600 (G1); its
+WAV decode lines are identical and the `--profile` lines differ in the
+memory figures changed since b93516e; its M33 dumps and residuals equal
+68634cc's (16 of 16); its 45 encoder WAVs equal 70be604's.
+
+The WAV output is now compared strictly (every line byte for byte, the
+line counts equal), since the references are of the same tree's tools.
+
+### The profile at 6b8013c (Cortex-M33, small image, s0086, per block)
+
+Of the slot (166.1 M instructions after setup): `min_sum_round` 28.8%
+(its loop of inputs and the two smallest 26 instructions an edge, its
+loop of messages 17, the sums 26 a variable); the FFT's last stage
+(radix 5) 10.5% in one block of 246 instructions a butterfly, its other
+stages about 28%; the sync search's running sums 8.4% (15 instructions a
+bin and row); the levels of a row 4.5% (about 47 instructions a bin, a
+division among them) and their counts 0.9%; the bins' powers 3.5%.
+
+### The Costas scores by columns on the Cortex-M33 (O29b's next action; not kept)
+
+The column form (`costas_scores::<true>` on the M33, every other line as
+at 6b8013c):
+
+| slot | image | 6b8013c | column form | change | sync stage |
+|---|---|---|---|---|---|
+| s0086 | small | 175 089 503 | 178 563 988 | +1.98% | +18.1% |
+| | host | 1 427 783 785 | 1 439 588 368 | +0.83% | +18.4% (each pass) |
+| s0407 | small | 168 438 647 | 171 913 132 | +2.06% | +18.1% |
+| | host | 1 424 518 782 | 1 436 323 365 | +0.83% | +18.3% |
+
+Stack high water +424 B (10 312 → 10 736) on the small image; flash
++204 B. Without vector lanes each column and sent sum is a load, an add
+and a store per row and bin, against the running sums' three loads. The
+small slot of s0407 is 2.06% above the running form and its sync stage
+18% above in every slot, so by O29b's criterion the running form stays,
+and `costas_scores_running`, `add_row_running` and the `VECTOR_FORM`
+parameter with it.
+
+### Min-sum written out on the Cortex-M33 (80065b4)
+
+`min_sum_round` with groups of one (the Cortex-M33) now takes each
+degree's checks in turn (the layout already holds them so: degree 6 from
+edge 0, degree 7 after), so the degree is a constant, and each check is
+written out edge by edge (`min_sum_check_bits!`, a macro over the edge
+indices: opt-level "s" does not unroll). One pass takes each input
+(total less message), its magnitude, the two smallest and which inputs
+are negative (a bit each); the messages are then the bits of α · min1
+(α · min2 at min1's edge) with the sign bit set by the parity of the
+negatives and the edge's own bit. Negation flips the sign bit and
+nothing else, so each message is the same bits as `-mag` or `mag`; the
+compares are the same and in the same order, and the checks are
+independent within a round. The hosts' groups and their leftover checks
+are unchanged (their binaries equal 6b8013c's); `min_sum_check` loses
+its `ONE_PASS` parameter, which only the Cortex-M33 used.
+
+| form (trial, on 6b8013c) | s0086 small | s0407 small | flash (staged small) |
+|---|---|---|---|
+| 6b8013c (one loop, then the messages in a loop) | 175 089 503 | 168 438 647 | 104 898 B |
+| messages as bits, still in loops | −3.04% | −2.70% | +68 |
+| and the negatives as a shifted mask | −3.98% | −3.54% | +64 |
+| and each degree's checks in turn | −5.00% | −4.44% | +688 |
+| and written out (the degree from the slice: both sizes in each loop) | −7.73% | −6.89% | +3 136 |
+| **written out with the degree constant (80065b4)** | **−8.02%** | **−7.15%** | **+1 632** |
+
+Belief propagation −28.1% (s0086) and −28.3% (s0407). A written-out
+check of degree 6 is 210 instructions and one of degree 7 241 (35 an
+edge with the check's own work), against about 48 an edge in the loops.
+The host image's counts are unchanged (it runs sum-product).
+
+### A row's levels by a guess and one step on the Cortex-M33 (9e1c3f2, 31fb92b)
+
+Each power's level was `level_of(log2_power(p))`: a division, a
+polynomial and a rounding a bin (about 47 instructions on the
+Cortex-M33). Where the target has no vector unit (`SCALAR_FORMS`) it is
+now found from the power's bits: after the same floor and cap, the bits
+less 127 · 2²³ over 2²³ lie within 0.0861 below log2 (the mantissa taken
+as its own logarithm), so a line in the bits (`LEVEL_GUESS_SCALE`,
+`LEVEL_GUESS_OFFSET`, 0.02 of a level low) guesses the level at most one
+below; one compare with `LEVEL_STEPS[guess]`, the bits of the least
+power of the level above, gives it. `LEVEL_STEPS` is a generated table
+of 256 `u32` (1 024 B, in `tables.rs` with the other decode tables,
+found by bisection and checked against its generator). An ignored test
+checks every `f32` bit pattern (2³², in 16 threads, about 2 s in
+release): the levels are equal to the logarithm's for all of them;
+another test checks the bits beside every step and every 65 537th
+pattern. The loop is out of line (`levels_by_steps_out_of_line`): inlined
+into the row, the transform beside it took 2.05 M more instructions in
+its last stage (register allocation), and the slot fell only 1.05%. The
+guess in signed arithmetic lets the clamp be one `usat`: 16 instructions
+a bin against 21 with the unsigned form.
+
+| form (trial, on 80065b4) | s0086 small | s0407 small |
+|---|---|---|
+| inlined into the row | −1.05% | −1.08% |
+| out of line, unsigned guess | −2.27% | −2.34% |
+| **out of line, signed guess and `usat` (9e1c3f2)** | **−2.97%** | **−3.06%** |
+
+The feed −5.71% on the small image, −6.25% on the host image (its wider
+band). Soft bits +0.74% in every slot (69 000 and 184 000 instructions:
+the logarithm they still take compiles differently in `pass`), and a few
+small stages' counts move by under 0.4% likewise.
+
+`decode::TABLE_BYTES` counts the table only where the form uses it (and
+in the tests built with `cat_ft8_test_group_one`); the hosts' figure,
+and so their `--profile` lines, are unchanged.
+
+9e1c3f2 moved the hosts' loop into a helper beside the out-of-line one.
+On AArch64 the release build's `power_bins` then compiled one bound
+check of that loop as `cmp x1, #4; b.hs` rather than `cmp x1, #3; b.hi`
+(the same test; sizes and every other byte equal). 31fb92b puts the
+choice back in the row's closure with the hosts' loop as it was: its
+AArch64 and x86-64 binaries equal 6b8013c's, and its Cortex-M33 images
+equal 9e1c3f2's.
+
+### Sizes and memory
+
+| image | 6b8013c | 80065b4 | 31fb92b |
+|---|---|---|---|
+| M33 small (`check.sh`, flash) | 91 950 | 93 590 | 94 562 (+2 612) |
+| M33 host | 104 758 | 106 390 | 107 362 (+2 604) |
+| M33 encoder only | 35 190 | 35 190 | 35 190 |
+| M4F small (text) | 92 184 | 93 852 | 94 832 (+2 648) |
+| M4F host | 105 192 | 106 852 | 107 832 (+2 640) |
+
+Static RAM unchanged (201 592 and 230 008 B); stack high water
+unchanged (10 312 and 10 276 B in the staged images). `check.sh
+--stack`'s largest frames are the same as at 6b8013c (`_start` 4 104 B,
+`decode_a_slot` 2 528 B, `finish_row` 472 B; the host image's
+`subtract_one` 4 928 B). No fused multiply-add (`vmla` 128 / 241 / 17 at
+80065b4; 122 / 235 / 17 at 9e1c3f2 and 31fb92b, the logarithm gone from
+the row). M4F library calls `fmaxf`/`fminf` 10 and 14 at every commit;
+no `f64` helper. The hosts' sizes are unchanged.
+
+### Sections of all eight binaries
+
+| binary | 80065b4 against 6b8013c | 9e1c3f2 against 80065b4 | 31fb92b against 9e1c3f2 | 31fb92b against 6b8013c |
+|---|---|---|---|---|
+| x86-64 `cat-ft8-decode`, `paired_bench` | identical | identical | identical | identical |
+| AArch64 `cat-ft8-decode`, `paired_bench` | identical | differ (one compare's encoding) | differ | identical |
+| M33 check and staged, small and host | differ | differ | identical | differ |
+
+### The code-generation check
+
+- 80065b4: `m33s min_sum_round sumloop1 31` (the loop of one check's
+  inputs) is replaced by `sumloop6 216` and `sumloop7 248`: the
+  written-out checks of degree 6 and 7 (210 and 241 instructions at
+  80065b4), without a bounds check on the totals.
+- 9e1c3f2: `m33s levels_by_steps_out_of_line shortloop 16` (15).
+
+Forced forms, each a fresh copy of the commit's tree with one edit, its
+own log and the check's exit status:
+
+| form | `m33s min_sum_round` sumloop6 (≤ 216) | sumloop7 (≤ 248) | `m33s levels_by_steps_out_of_line` shortloop (≤ 16) | exit |
+|---|---|---|---|---|
+| head (80065b4; 9e1c3f2 and 31fb92b) | 210 | 241 | — ; 15 | 0 (72 of 72; 73 of 73) |
+| min-sum in the hosts' leftover-check loops (on 80065b4) | **no loop** | **no loop** | — | 1 |
+| the totals read with a bounds check (on 80065b4) | **222** | **255** | — | 1 |
+| the levels by the logarithm in the out-of-line loop (on 9e1c3f2) | 210 | 241 | **48** | 1 |
+| the levels' loop inlined into the row (on 9e1c3f2) | 210 | 241 | **not found** | 1 |
+| the guess in unsigned arithmetic, clamped after (on 9e1c3f2) | 210 | 241 | **22** | 1 |
+
+No other check failed in any form but these, except the bounds-checked
+totals, which also fail the sum-product bounds O28 set (`a64`, `a64r`
+`sum_product_round sumloop8`, `m33s sum_product_round sumloop1`) and the
+stopping test's compare floors (`decode_soft fpcmps`), as they read the
+same totals. All six forms were run again on 31fb92b, each with the same
+counts and exit status (its head 73 of 73).
+
+### Identity
+
+- **Records, x86-64** (80065b4, 9e1c3f2, 31fb92b): the 73 800 `paired_bench
+  run` records equal 6b8013c's (host, one pass, small: 24 600 each, 0
+  differ; exit 0 each).
+- **800 WAV slots** × 3 × 3, x86-64: 95 491 lines byte-identical to
+  6b8013c's, `--profile` lines included (exit 0 each).
+- **Cortex-M33 (emulated)**: the dump images on seven slots and the
+  multi-pass residuals of s0086 and s0407 equal 6b8013c's (16 of 16,
+  exit 0) at each commit; decodes in the counted runs as at 6b8013c
+  (23, 40, 30, 38).
+- **Encoder**: the 45 WAVs equal 70be604's at each commit.
+- **A76**: not run (the board is not available); its binaries equal
+  6b8013c's at the head.
+- **Comparators on a forced difference** (copies of 31fb92b's outputs,
+  each its own exit status): the records comparison 0
+  unforced, 1 with one record's field changed; the WAV comparison 0
+  unforced, 1 with one decode line's frequency 874 → 875, 1 with one
+  `peak_bytes` one higher, 1 with one `candidate_scratch_bytes` one
+  higher; the M33 comparison 0 unforced (16 identical), 1 with one bit
+  of one dump flipped (15 identical, 1 differ); `cmp` of an encoder WAV
+  0 unforced, 1 with one byte changed.
+
+### Tests and mutants
+
+Mutants in fresh copies of the head (31fb92b), release library tests
+(220), and for some also with `--cfg cat_ft8_test_group_one` (`g1`,
+which takes the levels through the decoder on a host), one log each:
+
+| mutant | rel failing | g1 failing |
+|---|---|---|
+| none (control) | 0 | 0 |
+| m1 the smallest's edge always the first | 1 | |
+| m2 the parity folded short (`odd ^= odd >> 2` left out) | 1 | |
+| m3 an edge's own sign bit left out of its message | 1 | |
+| m4 the sign bits read in the wrong order | 1 | |
+| m5 the smallest's own edge without its sign bit | 1 | |
+| m6 α · min2 without α | 1 | |
+| m7 the degree-7 checks' last edge left out | 1 | |
+| m8 a zero input counted as negative | 1 | |
+| m9 the parity's sign never applied | 1 | |
+| m10 the degree-6 checks in the degree-7 form | 1 | |
+| l1 the guess never below 1 | 1 | 2 |
+| l2 the step taken only above its least power (`>` for `>=`) | 1 | 1 |
+| l3 no floor (negative powers and NaN by their bits) | 1 | |
+| l4 no cap (equivalent: infinity guesses past 255 and keeps 255) | 0 | |
+| l5 the guess half a level higher | 1 | 1 |
+| l6 one step one bit late in the table | 3 | |
+| l7 the steps counted in the table bytes on every target | 1 | |
+| e1 the two forms swapped (equivalent: both give every level) | 0 | 0 |
+
+The min-sum mutants fail the round test (every form against the first
+form, bit for bit, ties and special values included); the level mutants
+fail the test of the bits beside every step (and, l6, the generator's
+two tests; l7, `decode_table_bytes_matches_the_tables`; l1 under
+`g1` also `floor_and_top_levels_are_counted`). The same mutants run on
+9e1c3f2 gave the same counts.
+
+### Checks
+
+- Local CI 17 of 17 at 80065b4, 9e1c3f2 and 31fb92b (fmt; clippy `-D
+  warnings` on the workspace, thumbv8m and all features; workspace,
+  profile, no-std and release tests with the ignored ones; group-one;
+  bulk; MSRV 1.75; docs with and without `std`; `check.sh --stack`;
+  codegen-check 72 of 72 at 80065b4, 73 of 73 at 9e1c3f2 and 31fb92b).
+  Release library tests with the ignored ones: 229 pass at 80065b4, 231
+  at 9e1c3f2 and 31fb92b (the two level tests); the group-one step 219
+  and 220 pass.
+
+### Tried, not kept
+
+- **The Costas scores by columns on the Cortex-M33** (above): small slot
+  +1.98% and +2.06%, sync +18%.
+- **The running sums two bins a step** (`add_row_running`, the even and
+  odd sums side by side, then an odd count's last bin): as chunk
+  iterators, 31 instructions a pair (sync −2.2%, stack +124 B); as an
+  indexed loop, bounds checks in the loop (sync +28.8%). Not kept: the
+  first is under the 2% rule and the form is not simpler.
+- **A table of the level in each eighth of an octave** (the power's top
+  12 bits, the level at the bucket's start and the bits of one step): an
+  eighth of an octave starting at mantissa 1 spans log2(1.125) = 0.17 of
+  an octave, 1.02 levels, so some buckets hold two steps; a sixteenth
+  would take 705 entries (2.8 KB). Not built past the generator.
+- **The levels inlined into the row** (above): −1.05%.
+
+### What bounds the stages now (Cortex-M33, small image, s0086, per block at 31fb92b)
+
+Of the slot after setup (147.3 M): the decoder's `pass` (the transform
+inlined, the soft bits and the rest) 54.2%, of it the FFT's last stage
+11.8% (246 instructions a radix-5 butterfly in its first block) and its
+first three stages about 25%; `min_sum_round` 22.9% (the sums about 5%,
+27 instructions a variable, 6 of them the bounds checks of its three
+gathers); the sync search's running sums 9.8%; the bins' powers 4.0%;
+the search's selection 3.0%; the levels 1.7%; the window's slide
+(`memmove`) 1.7%.
+
+### Next candidates (not built)
+
+| candidate | estimate | cost |
+|---|---|---|
+| The FFT's last stage on the Cortex-M33 (about 330 instructions a radix-5 butterfly: 112 floating-point, the rest twiddle indices, reloaded address constants and spills) | up to a third of 11.8% | a form the register allocator keeps; twiddle indices `mod N` |
+| Belief propagation's sums: three bounds checks a variable (6 of about 27 instructions a variable on the Cortex-M33; the sums are about 5% of the small slot) | about 1% | messages padded so a `u16` index needs none (+2 KB of RAM), or a layout the compiler can bound |
+| The window's slide each row (`copy_within`, 1.7% of the small slot) | about 1% | a ring the first stage reads with wrap-around |
+| The running sums' byte loads as words | uncertain | four levels a load and their bytes apart |
+| The soft bits' logarithm of an interpolated power (not quantised: no table) | — | — |
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instruction counts only). The levels'
+  division (a multi-cycle instruction: 14 cycles in Arm's figures for
+  the Cortex-M4F's FPU) is gone, so the cycle gain is likely larger than
+  the instruction counts', but no cycle model was run. M4F counts.
+- Any host timing: the hosts' binaries at the head equal 6b8013c's, so
+  no x86-64 `perf stat` was run and no A76 timing is pending from this
+  round. O29b's pending A76 timing (the gather commit) is still open.
+- Other slots than s0086 and s0407 for counts (identity covers seven
+  slots).
+
+### Risks
+
+- The min-sum checks written out cost 1.6 KB of Cortex-M33 flash; the
+  level steps 1 KB more (the table) less the logarithm's loop.
+- `level_by_steps` relies on the decoder's `log2` and `level_of` as they
+  are: a change to either needs `LEVEL_STEPS` regenerated
+  (`decode_tables_match_their_definitions` fails until it is) and the
+  exhaustive test run (`--include-ignored` in release, which CI runs).
+- The Cortex-M33 levels are equal to the hosts' for every `f32` by test,
+  not by construction.
