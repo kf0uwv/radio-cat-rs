@@ -669,13 +669,13 @@ macro_rules! min_sum_check_bits {
         let v: &[u8; $d] = $v[..$d].try_into().unwrap();
         let row: &mut [f32; $d] = (&mut $row[..$d]).try_into().unwrap();
         let (mut min1, mut min2, mut at) = (f32::MAX, f32::MAX, 0);
-        // Bit d − 1 − j: input j is negative.
+        // Bit j: input j is negative.
         let mut negative = 0u32;
         $(
             let x = total_of($total, v[$j]) - row[$j];
             row[$j] = x;
             let a = if x < 0.0 { -x } else { x };
-            negative = negative << 1 | u32::from(x < 0.0);
+            negative |= u32::from(x < 0.0) << $j;
             if a < min1 {
                 min2 = min1;
                 min1 = a;
@@ -691,9 +691,9 @@ macro_rules! min_sum_check_bits {
         let sign = (odd & 1) << 31;
         let (one, two) = ((ALPHA * min1).to_bits() ^ sign, (ALPHA * min2).to_bits() ^ sign);
         $(
-            row[$j] = f32::from_bits(one ^ ((negative >> ($d - 1 - $j)) << 31));
+            row[$j] = f32::from_bits(one ^ ((negative >> $j) << 31));
         )*
-        row[at] = f32::from_bits(two ^ ((negative >> ($d - 1 - at)) << 31));
+        row[at] = f32::from_bits(two ^ ((negative >> at) << 31));
     }};
 }
 

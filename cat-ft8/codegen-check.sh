@@ -160,8 +160,8 @@ checks=(
   "a64r sum_product_round sumloop8 40 one"
   # Min-sum check by check, each degree's check written out edge by edge (a loop of 6 and of 7 byte
   # loads), its inputs' totals without a bounds check (the totals padded to any u8 index).
-  "m33s min_sum_round sumloop6 216"
-  "m33s min_sum_round sumloop7 248"
+  "m33s min_sum_round sumloop6 204"
+  "m33s min_sum_round sumloop7 233"
   # The sum-product inputs likewise, one edge at a time.
   "m33s sum_product_round sumloop1 10"
   # The stopping test's hard decisions without a branch on each value's sign (4 with it); it reads `decode_soft` only, so the two checks after it.
