@@ -15082,3 +15082,26 @@ there; the `absent` checks fail it. No other check failed in any form.
 
 - Cortex-M33 cycles of either form; A76 or x86-64 timing (the host code
   is unchanged).
+
+### Closing review (O28c)
+
+- The exhaustive hard-decision test is renamed to end in `_everywhere`, so
+  the CI step that runs the ignored exhaustive checks
+  (`--ignored _everywhere`) runs it too; before, only a local run with
+  every ignored test did.
+- A floor on `decode_soft`'s scalar f32 compares (`fpcmps`: 9 on AArch64,
+  15 on x86-64; 4 and 10 with the stopping test out of line; floors 8 and
+  14), so `fpbranches 0` and the `absent` checks cannot pass because the
+  test left `decode_soft` under another name (an iterator adaptor's, say).
+  With `checks_hold` forced out of line the floors fail. The x86-64
+  compare pattern also takes the VEX forms (`vucomiss`, `vcomiss`).
+- A note at `checks_hold` and `hard_bit` that the check names them.
+- The validity rule's limits: the cpufreq `time_in_state` delta sees only
+  frequency changes made through the kernel's governor, not a cap the
+  board's firmware applies, and the kernel's under-voltage messages come
+  from polling, so they are sampled too. With the throttle word at 0x0
+  at the start of a run its sticky bits record any event in it, which
+  makes the 0x0 rule the guard; the other two only add to it.
+- The code is unchanged: release sections of the host binaries and M33
+  images equal ca480ed's.
+

@@ -2299,3 +2299,6 @@
   kernel log's under-voltage count or time below the top frequency. The
   board was restarted after O28; the strict 0x0 rule applies again.
 - Local CI 17 of 17 at ca480ed.
+- O28c (closing review): the exhaustive hard-decision test named for the
+  CI step that runs such tests; a floor on `decode_soft`'s f32 compares;
+  VEX compares in the x86-64 pattern; the validity rule's limits stated.
