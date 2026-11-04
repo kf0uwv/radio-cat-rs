@@ -736,13 +736,7 @@ fn min_sum_round<const V: bool, const G: usize>(
 #[inline(always)]
 fn min_sum_checks<const V: bool, const D: usize>(total: &Totals, vars: &[u8], edges: &mut [f32]) {
     for (row, v) in edges.chunks_exact_mut(D).zip(vars.chunks_exact(D)) {
-        if V {
-            min_sum_check_sized::<V>(total, v, row);
-        } else if D == 6 {
-            min_sum_check_bits!(total, v, row, 6, [0 1 2 3 4 5]);
-        } else {
-            min_sum_check_bits!(total, v, row, 7, [0 1 2 3 4 5 6]);
-        }
+        min_sum_check_sized::<V, D>(total, v, row);
     }
 }
 
@@ -762,18 +756,20 @@ fn min_sum_groups<const V: bool, const D: usize, const G: usize>(
     }
     let rest = groups.into_remainder().chunks_exact_mut(D);
     for (row, v) in rest.zip(group_vars.remainder().chunks_exact(D)) {
-        min_sum_check_sized::<V>(total, v, row);
+        min_sum_check_sized::<V, D>(total, v, row);
     }
 }
 
-/// [`min_sum_check`] on one check's variables `v` and messages `row`.
-/// Where the loops vectorise, the check's size as a constant (the slices
-/// cut to 6 or 7 once this is inlined), so the compiler drops the vector
-/// forms of these short loops, which no check reaches; elsewhere
-/// [`min_sum_check_bits`] for the check's size.
+/// [`min_sum_check`] on one check's variables `v` and messages `row`, of
+/// degree `D` (6 or 7: the code's checks), the one choice of form for
+/// every check of [`min_sum_round`]. Where the loops vectorise, the slices
+/// cut to the degree, so the compiler drops the vector forms of these
+/// short loops, which no check reaches; elsewhere [`min_sum_check_bits`]
+/// for the degree.
 #[inline(always)]
-fn min_sum_check_sized<const V: bool>(total: &Totals, v: &[u8], row: &mut [f32]) {
-    match (V, v.len()) {
+fn min_sum_check_sized<const V: bool, const D: usize>(total: &Totals, v: &[u8], row: &mut [f32]) {
+    debug_assert!(D == 6 || D == 7);
+    match (V, D) {
         (true, 6) => min_sum_check(total, &v[..6], &mut row[..6]),
         (true, _) => min_sum_check(total, &v[..7], &mut row[..7]),
         (false, 6) => min_sum_check_bits!(total, v, row, 6, [0 1 2 3 4 5]),
