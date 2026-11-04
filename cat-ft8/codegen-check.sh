@@ -104,6 +104,8 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # `add2d` counts two-lane 64-bit vector adds (`add` on `.2d`), at least the
 # bound;
 # `insns` counts the function's instructions, at most the bound;
+# `fpbranches` counts floating-point compares (`fcmp`) followed at once by
+# a conditional branch (AArch64), at most the bound;
 # `mulloopN` counts the instructions of the shortest loop with at least N
 # four-lane multiplies (`mulps`; x86-64 only), at most the bound, and a
 # function with no such loop fails it likewise;
@@ -131,7 +133,7 @@ checks=(
   "a64 min_sum_round vec4 100"
   # The same in the release form, which left the groups scalar while the one-unit build passed.
   "a64r min_sum_round vec4 100 one"
-  # Its groups of degree 6 vectorised there too (with them scalar the round is about 1 240 instructions).
+  # Its groups of degree 6 vectorised there too (1 204 instructions with them scalar).
   "a64r min_sum_round insns 1000 one"
   # The correction's lanes out of line, so their loop is two-lane 64-bit adds: each of `blocks`' two instantiations.
   "a64 6blocks add2d 2 each"
@@ -145,6 +147,10 @@ checks=(
   "m33s min_sum_round sumloop1 31"
   # The sum-product inputs likewise, one edge at a time.
   "m33s sum_product_round sumloop1 10"
+  # The stopping test's hard decisions without a branch on each value's sign (3 with it); it passes if the test moves out of line.
+  "a64 decode_soft fpbranches 0"
+  # The same in the release form.
+  "a64r decode_soft fpbranches 0 one"
   # The removal's clamp as four-lane fmaxnm/fminnm.
   "a64 7Removal4refs minmax 2"
   # The time search's clamp likewise.
@@ -313,6 +319,10 @@ for entry in "${checks[@]}"; do
     metric == "vecor" && /^\torr\tv[0-9]+\./ { n++; nf[found]++ }
     metric == "calls_within_limit" && /^\tbl\t.*within_limit/ { n++; nf[found]++ }
     metric == "insns" && /^\t[a-z]/ { n++; nf[found]++ }
+    metric == "fpbranches" && /^\t[a-z]/ {
+      if (fcmp && $1 ~ /^b\.[a-z]+$/) { n++; nf[found]++ }
+      fcmp = $1 == "fcmp"
+    }
     metric == "ldn" && /^\tld[234]\t/ { n++; nf[found]++ }
     metric == "vec2" && /^\t[a-z][^\t]*\t.*\.2d/ { n++; nf[found]++ }
     metric == "add2d" && /^\tadd\tv[0-9]+\.2d/ { n++; nf[found]++ }
@@ -386,6 +396,7 @@ for entry in "${checks[@]}"; do
     vecor) what="vector ors (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     calls_within_limit) what="calls of within_limit (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     insns) what="instructions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    fpbranches) what="f32 compares followed by a branch (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     mulloop*) what="instructions in the loop of ${metric#mulloop} four-lane multiplies (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     ldn) what="interleaving loads (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     vec2) what="two-lane .2d instructions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;

@@ -139,6 +139,35 @@ fn hard_decisions_split_exact_ties_by_index() {
     }
 }
 
+#[test]
+fn both_forms_of_the_hard_decision_agree() {
+    let mut values = std::vec![
+        0.0f32,
+        -0.0,
+        f32::NAN,
+        -f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::MIN_POSITIVE,
+        -f32::MIN_POSITIVE,
+        f32::from_bits(1),
+        f32::from_bits(0x8000_0001),
+        f32::MAX,
+        -f32::MAX,
+        1.5,
+        -1.5,
+    ];
+    let mut value = random_values(0x4a2d);
+    values.extend((0..10_000).map(|_| value()));
+    for (k, &x) in values.iter().enumerate() {
+        for i in [k, k + 1] {
+            let want = u8::from(x < 0.0 || (x == 0.0 && i % 2 == 1));
+            assert_eq!(hard_bit::<true>(x, i), want, "{x:?} at {i}");
+            assert_eq!(hard_bit::<false>(x, i), want, "{x:?} at {i}");
+        }
+    }
+}
+
 /// The stopping test as first written: every bit decided, then the
 /// checks over the decisions.
 fn hard_decide_first_form(values: &[f32; N], hard: &mut [u8; N]) -> bool {

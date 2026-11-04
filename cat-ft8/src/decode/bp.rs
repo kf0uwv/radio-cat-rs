@@ -195,10 +195,18 @@ fn twice_atanh(p: f32) -> f32 {
 /// The hard decision of value `x` at bit `i`. An exact tie (0, e.g. an
 /// erased bit no check has informed) goes to the bit's index parity:
 /// deterministic, and favouring neither value, so ties do not pull towards
-/// the all-zero codeword.
+/// the all-zero codeword. `V` picks the form: where the loops vectorise
+/// ([`VECTOR`]) without a branch, so the stopping test does not branch on
+/// each value's sign, which the channel makes unpredictable (findings
+/// O28); elsewhere as a branch, which takes fewer instructions on the
+/// Cortex-M33. Both give the same bit for every value (NaN included: 0).
 #[inline]
-fn hard_bit(x: f32, i: usize) -> u8 {
-    u8::from(x < 0.0 || (x == 0.0 && i % 2 == 1))
+fn hard_bit<const V: bool>(x: f32, i: usize) -> u8 {
+    if V {
+        u8::from(x < 0.0) | (u8::from(x == 0.0) & (i % 2) as u8)
+    } else {
+        u8::from(x < 0.0 || (x == 0.0 && i % 2 == 1))
+    }
 }
 
 /// True if every parity check holds for the hard decisions of `values`.
@@ -208,7 +216,7 @@ fn hard_bit(x: f32, i: usize) -> u8 {
 /// both.
 fn checks_hold<const G: usize>(values: &Totals) -> bool {
     let (edge_vars, _) = tables::<G>();
-    let decide = |acc: u8, &i: &u8| acc ^ hard_bit(total_of(values, i), usize::from(i));
+    let decide = |acc: u8, &i: &u8| acc ^ hard_bit::<VECTOR>(total_of(values, i), usize::from(i));
     check_edges::<G>().all(|(e, n, k)| {
         let parity = if k == 1 {
             edge_vars[e..][..n].iter().fold(0u8, decide)
@@ -222,7 +230,7 @@ fn checks_hold<const G: usize>(values: &Totals) -> bool {
 /// Hard decisions of `values` into `hard`.
 fn hard_decisions(values: &[f32; N], hard: &mut [u8; N]) {
     for (i, (h, &x)) in hard.iter_mut().zip(values.iter()).enumerate() {
-        *h = hard_bit(x, i);
+        *h = hard_bit::<VECTOR>(x, i);
     }
 }
 
