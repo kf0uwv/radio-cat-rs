@@ -76,12 +76,11 @@ pub use sync::{Candidate, SyncReport};
 /// Bytes of the decoder's static tables (FFT twiddles and the input's
 /// order, 19 392 bytes where the transform takes one lane, as on a
 /// Cortex-M, and 28 392 where it takes vectors; real-split twiddles, half
-/// Hann window, belief
-/// propagation's check degrees, each variable's edges and each edge's
-/// variable, the level-to-power table, and the generator's rows for
-/// ordered-statistics decoding, 2 184 bytes on every target; and where
-/// the targets have no vector unit, the power-to-level steps, 1 024
-/// bytes), in flash.
+/// Hann window, belief propagation's check degrees, each variable's edges
+/// and each edge's variable, the level-to-power table, and the
+/// generator's rows for ordered-statistics decoding, 2 184 bytes on every
+/// target; and where the targets have no vector unit, the power-to-level
+/// steps, 1 024 bytes), in flash.
 pub const TABLE_BYTES: usize = fft::TABLE_BYTES
     + core::mem::size_of::<[u8; 83]>()
     + core::mem::size_of::<[[u16; 3]; 174]>()

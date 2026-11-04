@@ -19,20 +19,20 @@
 //!
 //! - **Complex transform.** Decimation in time, in place, on separate
 //!   real and imaginary arrays. Six stages of radix 4, 4, 4, 2, 3, 5
-//!   (innermost first) run butterflies whose twiddles come from one static
-//!   table of e^(−2πit/1920). The first stage loads its inputs in
+//!   (innermost first) run butterflies whose twiddles come from one
+//!   static table of e^(−2πit/1920). The first stage loads its inputs in
 //!   digit-reversed order (a compile-time table, read once per group of
 //!   blocks; with one lane, the blocks in the order of their inputs and a
 //!   table of where each is stored) and applies the window as it loads
-//!   them; the later stages
-//!   work in place. With vectors ([`LANES`] above one), independent
-//!   butterflies run side by side so that vector units take them together
-//!   (the last stage, whose twiddles are strided, as a plain loop the
-//!   compiler vectorises, over a table that runs past one turn); with one
-//!   lane ([`ONE_LANE`]), each butterfly is written out term by term and
-//!   the first stage reads the window as its four quarters. Each
-//!   butterfly keeps its own operations in the same order, so the result
-//!   does not depend on the group size, the lane count or the target.
+//!   them; the later stages work in place. With vectors ([`LANES`] above
+//!   one), independent butterflies run side by side so that vector units
+//!   take them together (the last stage, whose twiddles are strided, as a
+//!   plain loop the compiler vectorises, over a table that runs past one
+//!   turn); with one lane ([`ONE_LANE`]), each butterfly is written out
+//!   term by term and the first stage reads the window as its four
+//!   quarters. Each butterfly keeps its own operations in the same order,
+//!   so the result does not depend on the group size, the lane count or
+//!   the target.
 //! - **Real split.** The 3 840 real samples are packed as 1 920 complex
 //!   values `z[n] = x[2n] + i·x[2n+1]`; bin k of the real transform is
 //!   `X[k] = E[k] + W₃₈₄₀ᵏ·O[k]`, with E and O from `Z[k]` and `Z[1920 − k]`.

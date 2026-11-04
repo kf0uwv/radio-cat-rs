@@ -157,9 +157,11 @@ pub(crate) fn search_rows(
 ///
 /// Carrying tones 0 to 6's sum rather than the eight's, a step reads tone
 /// 7's level at b + 14 and none past the last bin's, so the loop has no
-/// last step to leave out and no bounds checks; with the eight's sum and
-/// one parity at a time it took 15 instructions a bin on the Cortex-M33,
-/// as written here 25 a pair (rustc 1.93.0, opt-level "s"; findings O32).
+/// last step to leave out and no bounds checks: on the Cortex-M33 (rustc
+/// 1.93.0, opt-level "s") 13 instructions a bin, one parity at a time,
+/// against 15 with the eight's sum. Running the two parities side by side
+/// takes that to 25 a pair, 12.5 a bin, about 0.34% more of the small slot
+/// (findings O32).
 #[inline(always)]
 fn add_row_running(row: &[u8], sent_at: usize, out: &mut [ScoreCell]) {
     let cols = out.len();
