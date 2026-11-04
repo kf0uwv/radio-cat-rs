@@ -228,35 +228,40 @@ fn tone_power_of(
     p
 }
 
+/// The tone values of the symbol centred on row `centre` into `v`, from
+/// its two rows looked up once ([`row_levels`]) for its eight tones
+/// ([`tone_power_of`]); false (the symbol erased) if neither row is
+/// present.
+#[inline(always)]
+fn symbol_from_rows_once(
+    spec: &Spectrogram<'_>,
+    centre: i32,
+    rows: &[(i32, f32); 2],
+    bins: &[(i32, f32); 2],
+    stored: i32,
+    v: &mut [f32; 8],
+) -> bool {
+    let levels = row_levels(spec, centre, rows);
+    if levels.iter().all(Option::is_none) {
+        return false;
+    }
+    for (t, x) in v.iter_mut().enumerate() {
+        *x = log2_power(tone_power_of(&levels, rows, bins, t as u8, stored));
+    }
+    true
+}
+
 /// Soft bits as [`soft_bits`], at a position refined by `frac_row` rows
 /// and `frac_bin` bins (each in −½…½) from the candidate's grid point:
 /// each tone's power is interpolated bilinearly from the four
 /// surrounding grid values (in linear power), and the metric is taken
 /// on its logarithm. A symbol is erased if none of its rows is filled.
 /// Where the target has no vector unit ([`SCALAR_FORMS`]), the symbol's
-/// rows are looked up once for its eight tones ([`row_levels`],
-/// [`tone_power_of`]: the soft bits 12% fewer instructions on the
+/// rows are looked up once for its eight tones
+/// ([`symbol_from_rows_once`]: the soft bits 12% fewer instructions on the
 /// Cortex-M33, findings O34); the hosts look them up for each tone, as
 /// before, until the Cortex-A76 has timed the change.
 pub fn soft_bits_at(
-    spec: &Spectrogram<'_>,
-    candidate: &Candidate,
-    frac_row: f32,
-    frac_bin: f32,
-    target: f32,
-    llr: &mut [f32; N],
-) -> usize {
-    // Temporary, pending the Cortex-A76's timing of the rows once a symbol
-    // on the hosts; not a vector/scalar split: neither form depends on a
-    // vector unit.
-    soft_bits_at_as::<SCALAR_FORMS>(spec, candidate, frac_row, frac_bin, target, llr)
-}
-
-/// [`soft_bits_at`] with each symbol's rows looked up once for its eight
-/// tones (`ROWS_ONCE`) or once for each tone: the same values, so that the
-/// tests take both forms on any host.
-#[inline(always)]
-fn soft_bits_at_as<const ROWS_ONCE: bool>(
     spec: &Spectrogram<'_>,
     candidate: &Candidate,
     frac_row: f32,
@@ -269,15 +274,11 @@ fn soft_bits_at_as<const ROWS_ONCE: bool>(
     let bins = straddle(i32::from(candidate.base), frac_bin);
     fill_and_scale(target, llr, |k, v| {
         let centre = i32::from(candidate.start_row) + 2 * k as i32;
-        if ROWS_ONCE {
-            let levels = row_levels(spec, centre, &rows);
-            if levels.iter().all(Option::is_none) {
-                return false;
-            }
-            for (t, x) in v.iter_mut().enumerate() {
-                *x = log2_power(tone_power_of(&levels, &rows, &bins, t as u8, stored));
-            }
-            return true;
+        // Temporary, pending the Cortex-A76's timing of this form on the
+        // hosts; not a vector/scalar split: neither form depends on a
+        // vector unit.
+        if SCALAR_FORMS {
+            return symbol_from_rows_once(spec, centre, &rows, &bins, stored, v);
         }
         for (t, x) in v.iter_mut().enumerate() {
             match interpolated_tone_power(spec, centre, &rows, &bins, t as u8, stored) {
@@ -406,9 +407,10 @@ mod tests {
         });
     }
 
-    /// [`soft_bits_at`], and its two forms, the rows looked up once a symbol
-    /// and once a tone, give the same soft bits bit for bit and erase the
-    /// same symbols: row offsets either side of the grid and on it (a row
+    /// [`soft_bits_at`] and its two forms, each symbol's rows looked up once
+    /// ([`symbol_from_rows_once`], with its own erasure) and once a tone,
+    /// give the same soft bits bit for bit and erase the same symbols, on
+    /// any host: row offsets either side of the grid and on it (a row
     /// of zero weight), symbols' rows before the first and past the last
     /// filled one (one of a symbol's two rows present, or none), base bins
     /// at both edges of the band and inside it, odd and even, in a full and
@@ -447,17 +449,33 @@ mod tests {
                                     start_row: start_row as i16,
                                     base: base as u16,
                                 };
-                                let run = |f: SoftBitsAt| {
-                                    let mut llr = [9.0f32; N];
-                                    let erased = f(spec, &cand, frac_row, frac_bin, 4.0, &mut llr);
-                                    (erased, llr.map(f32::to_bits))
+                                let mut llr = [9.0f32; N];
+                                let erased =
+                                    soft_bits_at(spec, &cand, frac_row, frac_bin, 4.0, &mut llr);
+                                let got = (erased, llr.map(f32::to_bits));
+                                let (rows, bins) =
+                                    (straddle(0, frac_row), straddle(base, frac_bin));
+                                let a_tone = |centre: i32, v: &mut [f32; 8]| {
+                                    for (t, x) in v.iter_mut().enumerate() {
+                                        let tone = t as u8;
+                                        match interpolated_tone_power(
+                                            spec, centre, &rows, &bins, tone, stored,
+                                        ) {
+                                            Some(p) => *x = log2_power(p),
+                                            None => return false,
+                                        }
+                                    }
+                                    true
                                 };
-                                let want = run(soft_bits_at_as::<false>);
+                                let once = |centre: i32, v: &mut [f32; 8]| {
+                                    symbol_from_rows_once(spec, centre, &rows, &bins, stored, v)
+                                };
+                                let want = soft_bits_by(start_row, a_tone);
                                 let at = std::format!(
                                     "row {start_row} {frac_row}, bin {base} {frac_bin}"
                                 );
-                                assert_eq!(run(soft_bits_at_as::<true>), want, "{at}");
-                                assert_eq!(run(soft_bits_at), want, "{at}");
+                                assert_eq!(soft_bits_by(start_row, once), want, "{at}");
+                                assert_eq!(got, want, "{at}");
                                 (least, most) = (least.min(want.0), most.max(want.0));
                             }
                         }
@@ -469,7 +487,17 @@ mod tests {
         }
     }
 
-    type SoftBitsAt = fn(&Spectrogram<'_>, &Candidate, f32, f32, f32, &mut [f32; N]) -> usize;
+    /// Soft bits as [`soft_bits_at`] makes them, with each symbol's tone
+    /// values taken by `symbol` (its centre row and the values): the erased
+    /// symbols and the soft bits' bits.
+    fn soft_bits_by(
+        start_row: i32,
+        mut symbol: impl FnMut(i32, &mut [f32; 8]) -> bool,
+    ) -> (usize, [u32; N]) {
+        let mut llr = [9.0f32; N];
+        let erased = fill_and_scale(4.0, &mut llr, |k, v| symbol(start_row + 2 * k as i32, v));
+        (erased, llr.map(f32::to_bits))
+    }
 
     #[test]
     fn ties_give_exactly_zero() {
