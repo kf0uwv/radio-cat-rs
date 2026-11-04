@@ -115,9 +115,11 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # the name (the subtraction's closures are named only by the function
 # that holds them, so another closure in it could pass for the products;
 # with 16 units a function copied into two units would be summed). A
-# fifth field `each`, for the counts only, takes each function's count
+# fifth field `each`, for the floors only, takes each function's count
 # and checks the least of them, so that one instantiation of a generic
-# function cannot pass on another's count.
+# function cannot pass on another's count (a ceiling is already checked
+# most strictly by the sum). It does not check how many functions match,
+# so an instantiation inlined away leaves the check on the others.
 checks=(
   # The sum-product round's tanh and atanh passes 24 values at a time and its group products in vectors.
   "a64 sum_product_round vec4 500"
@@ -130,7 +132,7 @@ checks=(
   # The correction's lanes out of line, so their loop is two-lane 64-bit adds: each of `blocks`' two instantiations.
   "a64 6blocks add2d 2 each"
   # The same in the release form (the second `blocks` is inlined into `subtract::run` there, unchecked).
-  "a64r 6blocks add2d 2 one"
+  "a64r 6blocks add2d 2 each"
   # The sum-product inputs' blocks of eight without a bounds-check branch per edge (61-63 with them).
   "a64 sum_product_round sumloop8 54"
   # The same in the release form.
@@ -318,8 +320,8 @@ for entry in "${checks[@]}"; do
       }
       else print n + 0
     }' "${asm[$key]}")
-  if [ "$n" = noteach ] || { [ "$only" = each ] && [ "$metric" = absent ]; }; then
-    echo "FAIL $key $name: \`each\` takes a count, not $metric"
+  if [ "$n" = noteach ] || { [ "$only" = each ] && ! [[ "$metric" =~ ^(vec4|minmax|vminmax|fpmul|vecor|calls_within_limit|ldn|add2d)$ ]]; }; then
+    echo "FAIL $key $name: \`each\` takes a floor, not $metric"
     fail=1
     continue
   fi
