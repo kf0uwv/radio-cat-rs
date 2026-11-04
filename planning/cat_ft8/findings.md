@@ -15538,9 +15538,9 @@ void).
   ms in both builds; the small slot's other stages, whose code the commit
   does not touch, differ by at most 0.015 ms (belief propagation 1.89 →
   1.90, soft bits 1.17 → 1.185, feed 3.15 → 3.16). The sync code itself
-  is not slower; the small slot's difference lies in untouched code, by
-  placement (functions elsewhere moved: `osd::order1`'s padding,
-  `io::Error::new`).
+  is not slower; the small slot's difference likely lies in untouched
+  code, by placement (functions elsewhere moved: `osd::order1`'s padding,
+  `io::Error::new`), though no per-function profile was taken.
 - **Judgement:** not slower beyond noise in the changed code and in the
   host configuration; the small slot's +0.4–0.7% median is within its
   ranges but seen twice, and is recorded as a risk. Kept.
@@ -15645,3 +15645,17 @@ before (O29's c10).
   restarted, revisit 7ec91b5.
 - The M33 images changed (−28 B, counts −0.002%); its counts were
   measured, not its cycles.
+
+### Closing review (O29c)
+
+- The u8 narrowing of a sent offset is asserted in debug builds; the
+  u16 bound's compile-time assertion sits above the chunk loop rather
+  than in its body; the chunk size's comment no longer says 32 gives the
+  same values (every size does, by construction).
+- `a64 6select uaddw8h` takes `one`, as the release-form entry does.
+- The small slot's +0.4–0.7% x86-64 median: pooled over both sets (8 + 8
+  samples) it is +0.5%, a rank-sum test gives p ≈ 0.3; the A76 timing of
+  this form waits on the board's restart, and if it shows a slot
+  regression beyond its spreads the gather commit is reverted alone.
+- Release sections of all eight binaries are unchanged by these edits.
+

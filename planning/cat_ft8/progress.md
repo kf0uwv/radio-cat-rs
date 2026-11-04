@@ -2356,3 +2356,7 @@
   bound corrected, two wordings made generic, the M33 column-form trial
   recorded as the next action with its deletion criterion, the eight-lane
   final loop as an unmeasured candidate.
+- O29c (closing review): a debug assertion on the sent offsets' narrowing;
+  the u16 bound's assertion above the loop; `one` on the a64 `uaddw8h`
+  entry; the placement cause stated as likely. Open: the A76 timing of the
+  gather commit once the board is restarted.
