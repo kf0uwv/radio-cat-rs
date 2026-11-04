@@ -211,7 +211,9 @@ fn hard_bit(x: f32, i: usize) -> u8 {
 /// Each check decides its own bits as it is tested, so a round that fails
 /// stops at its first failing check without deciding the other bits. `G`
 /// is the layout's group size; the decoder uses [`GROUP`], the tests
-/// both.
+/// both. It takes the padded [`Totals`] because it gathers them by the
+/// `u8` indices of [`EDGE_VARS`] (in bounds by type), while
+/// [`hard_decisions`] walks the variables in order and takes only them.
 fn checks_hold<const G: usize>(values: &Totals) -> bool {
     let (edge_vars, _) = tables::<G>();
     let decide = |acc: u8, &i: &u8| acc ^ hard_bit(total_of(values, i), usize::from(i));
@@ -544,7 +546,10 @@ fn total_of(total: &Totals, i: u8) -> f32 {
 /// only. Under the release profile (16 codegen units, local ThinLTO) the
 /// groups of degree 6 compiled to scalar code on AArch64 with the plain
 /// index and keep their vector form with this one (the check `a64r
-/// min_sum_round` in `codegen-check.sh`; findings O28).
+/// min_sum_round` in `codegen-check.sh`; findings O28). In release a bad
+/// index would read the last variable's total here and a zero in
+/// [`total_of`]; neither is reachable (the const assertions on
+/// [`EDGE_VARS`]).
 #[inline(always)]
 fn total_of_clamped(total: &Totals, i: u8) -> f32 {
     debug_assert!(usize::from(i) < N);
