@@ -2333,3 +2333,26 @@
   (the release form compiled it larger; A76 feed +4.9%).
 - The board's sticky throttle bits were set by an under-voltage event
   after the last timed run; no timing followed it.
+
+## Session: 2026-11-04 (O29b review follow-ups)
+
+- 5043027: the column sums' `u16` assertion is now the bound the code
+  needs (`COSTAS_ROWS · u8::MAX ≤ u16::MAX`), beside the arrays; the
+  chunk size noted as untuned; the scores test's description updated.
+  Binaries identical to 1816faa's.
+- 7ec91b5: one `gather` (a visitor) of the Costas rows, their sent
+  offsets and the scale for both forms; `costas_scores` a two-way
+  dispatch. An array-returning gather was tried first and dropped (M33
+  +196 B). M33 images changed: −28 B, counts −0.002% (s0086, s0407),
+  identity 16 of 16. x86-64 records and WAVs identical; x86-64 timing in
+  two sets: host −0.2/−0.3%, small +0.7/+0.4% by median with
+  overlapping ranges and the sync stage unchanged; kept, recorded as a
+  risk. Mutants caught (one equivalent). A76 timing pending (board not
+  valid until restarted).
+- e97a42a: codegen-check `uaddw8h` (floors 16 on a64 and a64r) and
+  `x64r 6select paddw 16`; the forced 32-bit column form fails all four
+  (and x64). Header names both release builds.
+- Local CI 17 of 17 at 7ec91b5 and e97a42a. Findings: the O29 text's
+  bound corrected, two wordings made generic, the M33 column-form trial
+  recorded as the next action with its deletion criterion, the eight-lane
+  final loop as an unmeasured candidate.
