@@ -508,6 +508,19 @@ fn transform_equals_the_reference_bit_for_bit() {
     }
 }
 
+#[test]
+fn block_of_inverts_the_digit_reversals_block_bases() {
+    // Each base element n < N/4 at the block whose first position holds
+    // it, every block once.
+    let mut seen = std::vec![false; N / 4];
+    for (n, &block) in BLOCK_OF.iter().enumerate() {
+        let block = usize::from(block);
+        assert_eq!(usize::from(DIGIT_REV[4 * block]), n, "n {n}");
+        assert!(!seen[block], "block {block} twice");
+        seen[block] = true;
+    }
+}
+
 /// The window applied and stored in digit-reversed order, then the
 /// first stage: what [`first_stage`] computes without the stored input.
 fn stored_first_stage(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f32; N]) {
