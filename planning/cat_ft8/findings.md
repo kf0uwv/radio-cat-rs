@@ -17758,7 +17758,7 @@ water in the staged images: small 10 312 → 10 296 (e718c6e) → 10 408 B
 
 ### Baselines
 
-042e82a was rebuilt in this round's scratch directory; its small-image
+042e82a was rebuilt from a clean checkout; its small-image
 counts equal 1aa9ab2's (O32: its code is 1aa9ab2's). Its dump images on
 seven slots and the multi-pass residuals of s0086 and s0407 equal
 e962403's (16 of 16), as do the encoder WAVs (equal to 70be604's);
@@ -18090,3 +18090,191 @@ bins' powers 4.5% (33 a bin); the levels 2.0%.
 - The sync code is now in two forms, one for the hosts (`select` over
   column sums) and one without a vector unit (`select_paired`); the
   tests hold them equal.
+
+## The thirty-third round's fixes (O33b, 2026-11-04)
+
+Fixes to O33 (8ade7ad) from its reviews, five code commits: 9ca17d2
+(the running form of `costas_scores` removed), 5057431 (the two
+selections' insertion as a function), 6742793 (`costas_scores_paired`
+and `select_paired` simplified), cad7e87 (the insertion as a macro,
+the hosts' code as before), 3b00f1f (codegen-check's loop predicate,
+`finish_row`'s ceiling, a doc qualifier). Standing rule from this round:
+no dead code and no comment edited to hold a binary's bytes; byte
+identity is evidence, not a requirement.
+
+| commit | hosts (x86-64, AArch64) against f471eb4 | Cortex-M33 images against f471eb4 |
+|---|---|---|
+| 9ca17d2 | `.text`, `.rodata` equal; `.data.rel.ro` differs in 11 panic `Location` line numbers (sync.rs) | every allocated section equal |
+| 5057431 | `search_rows` changed (x86-64 349 → 464 instructions) | changed: sync +1.17% |
+| 6742793 | as 5057431 (layout only between them) | changed: sync +1.07% |
+| cad7e87 | every function equal but for addresses; one `Location` record fewer | changed: sync −0.30% |
+| 3b00f1f | as cad7e87 but for 8 `Location` lines (fft.rs) | as cad7e87 |
+
+### The running form removed (9ca17d2)
+
+`costas_scores` is the column form alone; `costas_scores_running` and
+the `VECTOR_FORM` parameter are gone (tests-only since 1f7feb0).
+`add_row_running` stays, beside `add_row_alone`, its one caller; its
+docs again carry O32's figures (13 instructions a bin one parity at a
+time, 15 with the eight tones' sum, 25 a pair side by side, about 0.34%
+of the small slot in the search before pairs) and say that
+`add_row_paired` runs one parity at a time. The O25b note on `spec` by
+reference moved to `costas_scores_paired`; `gather`'s note says its one
+caller now keeps the rows in arrays of its own. The O33 doc lines trimmed
+to hold panic line numbers are restored. `row_scores_equal_the_single_scores`
+checks the column form against `costas_score`; the running sums are
+checked against it by `paired_scores_equal_the_single_scores`, at the
+same even and odd widths.
+
+The host change is layout only. `.text` and `.rodata` of all four host
+binaries equal f471eb4's; the one section that differs, `.data.rel.ro`,
+differs in 11 words, each the line of a panic `Location` in sync.rs (the
+record's file pointer, from its relocation, names sync.rs; its length
+matches; its column is unchanged); a per-function comparison of the
+disassembly, addresses normalised, finds every function equal. The Cortex-M33 images equal f471eb4's in every allocated section
+(no `Location` there), so O33's counts and identity stand for it.
+
+### The insertion shared (5057431, cad7e87)
+
+`select` and `select_paired` placed an entry with the same partition,
+drop and shift. As an inlined function (`insert_ranked`, always inlined
+or as the compiler chose, with an early return or without, its entry
+built at once or by a closure: five forms tried) the hosts'
+`search_rows` changed, 349 → 464 or 465 instructions on x86-64, and the
+Cortex-M33 sync stage rose 1.17% (5057431). A macro with an `else` for
+the dropped entry's `continue` gave 441. `insert_ranked!` holds the
+statements both selections wrote, `continue` included, and the hosts'
+code is the code before (cad7e87: every function equal on x86-64; on
+AArch64 standard-library functions alone differ, one in
+`cat-ft8-decode` and seven in `paired_bench`, each in a load or store
+offset from a base register the normaliser does not follow: data
+addresses that moved). The cost: the
+two panics inside the macro (the slice and `copy_within`) now report the
+macro call's line, one `Location` record rather than two, so
+`.data.rel.ro` is 24 B shorter and what follows it moves (x86-64
+`cat-ft8-decode`'s `.rodata` jump tables shift by a uniform −32).
+Host identity and x86-64 time are measured below at 3b00f1f.
+
+### The paired scores and the first pair (6742793)
+
+- `costas_scores_paired`: no `filled` flag. A missing row (unreachable:
+  every row read is below the rows' length) leaves no score in either
+  start row and returns at once; the comment states it. The two-flag
+  match with its never-taken arm is an if and else.
+- `select_paired` scores the first pair before the loop over rows and
+  returns at once for no rows; `paired_selection_needs_its_scratch`
+  calls it with none (its score function unreachable).
+
+Cortex-M33 (emulated, staged images, against 1f7feb0's counts):
+
+| | 1f7feb0 | 5057431 | 6742793 | cad7e87 |
+|---|---|---|---|---|
+| s0086 small slot | 128 083 461 | +0.103% | +0.094% | **−0.026%** |
+| s0407 small slot | 123 742 469 | +0.107% | +0.098% | **−0.027%** |
+| s0086 host image | 1 329 414 324 | +0.033% | +0.030% | **−0.009%** |
+| sync (s0086 small) | 11 271 650 | +1.17% | +1.07% | **−0.30%** |
+| stack high water, small | 10 408 | 10 408 | 10 392 | 10 384 |
+
+Only the sync stage moves. Flash (`check.sh`) at cad7e87: small
+101 278 B (−60), host 114 042 B (−40); M4F text 101 564 and 114 552 B;
+static RAM unchanged. 3b00f1f's Cortex-M33 images equal cad7e87's.
+Identity at 5057431, 6742793 and cad7e87: dumps and residuals 16 of 16
+equal 042e82a's, encoder 45 of 45 equal 70be604's.
+
+### codegen-check (3b00f1f)
+
+`nomulloopN` and `plainmulloopN` fold into `vmuladdloopNxM`: exactly N
+`vmul.f32`, at least M adds, and with a trailing `p` no chained
+multiply-add. `nomulloop34` is `vmuladdloop0x34`, `plainmulloop12` is
+`vmuladdloop12x0p`: the same predicates. The messages print N and M
+apart. `finish_row`'s instruction ceiling is 1 020 (1 011 measured).
+99 entries. Forced forms on 3b00f1f, fresh copies, one log each:
+
+| form | failing entries | exit |
+|---|---|---|
+| head | none (99 of 99) | 0 |
+| 042e82a's radix-4 stages | `finish_row` 1 032 (ceiling 1 020), `vmuladdloop12x0p`, `vmuladdloop8x40` | 1 |
+| k = l/2 through `black_box` | 24 divisions, 1 521 instructions, `vmuladdloop8x40` | 1 |
+| k = l/2 by its index in its branch | none (the compiler folds it: the same code) | 0 |
+| k = 0 not on its own | `vmuladdloop0x34`, `vmuladdloop8x40` | 1 |
+| no pairs | `add_row_alone`, `add_row_pair` not found | 1 |
+| the pairs' neighbours through `select`'s closure | `6search` 3 divisions | 1 |
+| the pair loop both parities side by side | `add_row_pair` no loop of four byte loads | 1 |
+| `select_paired` out of line | `13select_paired17` out of line | 1 |
+| 042e82a's radix-4 stages, the entry without `p` | `finish_row` 1 032, `vmuladdloop8x40`: the turned-loop entry passes | 1 |
+| head, the entry without `p` | none | 0 |
+
+Every O33 form fails as before (each now names the merged entries), and
+the unturned form fails the new ceiling too. Without `p` the turned-loop
+entry passes the unturned form (a loop of twelve multiplies with chained
+multiply-adds is within 76), so the flag is what holds that entry.
+
+### Identity and time (hosts)
+
+- x86-64 at 3b00f1f and at 5057431 against O30's 6b8013c: run records
+  equal (24 600 each for host, host with one pass, small), the decode
+  command's output over the 800 WAVs equal line for line (95 491 lines),
+  each comparator's exit 0.
+- x86-64 `perf stat` of `paired_bench slotcost` (aligned builds, core 5,
+  the x86 lock held exclusively, 4 rounds alternated, no void sample),
+  medians and ranges, f471eb4 against 3b00f1f: small 84.67 G cycles
+  (84.23–85.38) → 84.35 G (83.87–84.64), −0.37%; host and host with
+  one pass 289.16 G (288.25–289.48) → 289.56 G (288.55–290.02), +0.14%.
+  Instructions +0.004% and +0.000%. Within the rounds' spread: no change.
+- AArch64, A76: not run (the board is not available); its code equals
+  f471eb4's but for addresses.
+
+### Tests and mutants (3b00f1f)
+
+Release library tests (235), fresh copies, one log each; `g1` with
+`--cfg cat_ft8_test_group_one`:
+
+| mutant | failing |
+|---|---|
+| none (control; rel, g1) | 0, 0 |
+| r1 `pos > len` for `pos >= len` | 36 |
+| r2 a drop past the list not counted (rel, g1) | 2, 3 |
+| r3 a drop from a full list not counted | 3 |
+| r4 found not counted | 2 |
+| r5 `select`'s ties `>` for `>=` | 5 |
+| r6 the shift one place short | 16 |
+| r7, r8 `kept` not set (`select`, `select_paired`) | 31, 3 |
+| p1 a missing row skipped, not scored as none (unreachable) | **0** |
+| p2 `!to_a` for `!to_b` | 2 |
+| p3 the second start row's lone row added to the first | 2 |
+| p4 `!to_a` for `to_a` | 2 |
+| p5 one array scored | 2 |
+| h1 no early return for no rows | 1 |
+| h2 the first pair's second row in slot 3 | 3 |
+| h3 the first pair not scored | 3 |
+| c1 no `NONE` fill in `costas_scores` | 30 |
+| c2 an odd count's last bin left out of the running sums | 2 |
+| c3 the odd parity's tone 7 one bin early | 2 |
+
+p1 is equivalent in reach: no slot leaves a row below the rows' length
+missing.
+
+### Checks
+
+- Local CI 19 of 19 at 9ca17d2, 5057431, 6742793, cad7e87 and 3b00f1f
+  (codegen-check 99 of 99 at each).
+
+### Debt and options
+
+- **Two selections.** `select` (the hosts', over column sums) and
+  `select_paired` (without a vector unit) remain; `select_paired` is
+  the better shape. Exit: at the first A76 timing, time the hosts on
+  `select_paired` with their column sums, and with two `costas_scores`
+  calls a pair; then delete `select`, or write down why it stays.
+- **`gather` as a visitor.** Its reason (the unpaired M33 search's
+  running sums) is gone; returning the rows as an array would change the
+  hosts' column code. Not done.
+- **Exact axis values in `TWIDDLE_TURN`** would let k = l/2 run through
+  the turned loop and remove its peel; it changes output (the axes'
+  residues). An option, not taken.
+- **Low:** the group-one CI step runs without `--include-ignored`, so
+  the `_widely` tests are not under group one.
+
+### Not measured
+
+- Cortex-M33 cycles; A76 time.

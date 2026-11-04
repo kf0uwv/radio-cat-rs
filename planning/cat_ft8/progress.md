@@ -2635,3 +2635,23 @@
   `select_paired` out of line; divisions for the scales and slots.
 - Open: the A76; the bins' powers' addressing; `costas_scores::<false>`
   now tests-only (removing it moves host line numbers).
+- O33b (fixes from review): 9ca17d2 removes the running form of
+  `costas_scores` (tests-only) and restores the trimmed docs; hosts
+  layout only (`.text`, `.rodata` equal; 11 `Location` lines), M33
+  images equal. 5057431 shared the insertion as a function: the hosts'
+  `search_rows` 349 → 464 instructions, M33 sync +1.17%; cad7e87 makes
+  it `insert_ranked!` (the statements as written), the hosts' code equal
+  but for addresses (one `Location` record fewer). 6742793: the paired
+  scores without `filled`, if/else; the first pair before the loop;
+  M33 at cad7e87 small slot −0.03%, sync −0.30%, flash −60 B, stack
+  −24 B. 3b00f1f: `vmuladdloopNxM[p]` replaces `nomulloop`/`plainmulloop`,
+  `finish_row` ceiling 1 020, "(non-NaN)". Identity: M33 16 of 16 and
+  encoder 45 at 5057431, 6742793, cad7e87; x86-64 records and WAVs equal
+  6b8013c's at 5057431 and 3b00f1f; x86-64 time against f471eb4 within
+  noise (small −0.37%, host +0.14%). CI 19 of 19 at each; forced forms
+  all fail as before; mutants caught but one unreachable (p1).
+- Debt: two selections; exit at the first A76 timing (hosts on
+  `select_paired`, shared column sums or two `costas_scores` calls; then
+  delete `select` or record why not). Options: `TWIDDLE_TURN` exact on
+  the axes (output-changing); `gather` as an array. Low: group-one CI
+  without `--include-ignored`.
