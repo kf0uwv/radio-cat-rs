@@ -219,14 +219,18 @@ impl Band {
     }
 
     /// For tests: `base_bins` base bins from bin `lo_bin`, any count from
-    /// one. [`Band::from_hz`] takes whole multiples of 25 Hz, eight bins,
-    /// so its widths are 8k + 1, all odd.
+    /// one, below the narrowest band [`Band::from_hz`] makes (nine bins).
+    /// [`Band::from_hz`] takes whole multiples of 25 Hz, eight bins, so its
+    /// widths are 8k + 1, all odd.
     #[cfg(test)]
     pub(crate) fn of_bins(lo_bin: u16, base_bins: u16) -> Band {
         assert!(base_bins > 0 && lo_bin > 0);
-        let hi_bin = lo_bin + base_bins - 1;
-        assert!(usize::from(hi_bin) + BINS_ABOVE_BAND < BINS);
-        Band { lo_bin, hi_bin }
+        let hi_bin = usize::from(lo_bin) + usize::from(base_bins) - 1;
+        assert!(hi_bin + BINS_ABOVE_BAND < BINS);
+        Band {
+            lo_bin,
+            hi_bin: hi_bin as u16,
+        }
     }
 }
 

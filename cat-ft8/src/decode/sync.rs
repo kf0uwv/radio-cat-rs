@@ -160,8 +160,8 @@ pub(crate) fn search_rows(
 /// last step to leave out and no bounds checks: on the Cortex-M33 (rustc
 /// 1.93.0, opt-level "s") 13 instructions a bin, one parity at a time,
 /// against 15 with the eight's sum. Running the two parities side by side
-/// takes that to 25 a pair, 12.5 a bin, about 0.34% more of the small slot
-/// (findings O32).
+/// takes that to 25 a pair, 12.5 a bin, saving about 0.34% more of the
+/// small slot (findings O32).
 #[inline(always)]
 fn add_row_running(row: &[u8], sent_at: usize, out: &mut [ScoreCell]) {
     let cols = out.len();
