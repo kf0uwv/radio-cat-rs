@@ -193,8 +193,8 @@ fn gather<'a>(
 /// `out` as cells ([`NONE`] where there is none): the same integer sums,
 /// added in another order (exact), from the rows [`gather`] reads, their
 /// levels summed down each column first, vectorised
-/// ([`costas_scores_by_columns`]). The search's where the target has a
-/// vector unit; without one it scores start rows in pairs
+/// ([`costas_scores_by_columns`]). The search uses it where the target has
+/// a vector unit; without one it scores start rows in pairs
 /// ([`search_paired`]).
 fn costas_scores(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
     if costas_scores_by_columns(spec, start_row, out).is_none() {
@@ -329,12 +329,15 @@ const NONE: i32 = i32::MIN;
 /// bins, which a dropped entry `continue`s.
 // A macro rather than a function: as a function (inlined always or as the
 // compiler chose, with an early return or without, its entry built at once
-// or by a closure) the insertion changed the hosts' `search_rows` (x86-64: 464 or 465
-// instructions, against 349), and so did this macro with an `else` for
-// its `continue` (441). The statements as both selections wrote them keep
-// it (findings O33b).
+// or by a closure) the insertion cost the Cortex-M33's sync stage 1.17%
+// (about 0.10% of the small slot) and grew the hosts' `search_rows`
+// (x86-64: 464 or 465 instructions, against 349); so did this macro with
+// an `else` or a labelled block for its `continue` (441, 447). The
+// statements as both selections wrote them keep it (findings O33b). The
+// list, its count and the report are names, so each is a place, read and
+// written as such.
 macro_rules! insert_ranked {
-    ($out:expr, $count:expr, $report:expr, $before:expr, $entry:expr $(,)?) => {{
+    ($out:ident, $count:ident, $report:ident, $before:expr, $entry:expr $(,)?) => {{
         $report.found += 1;
         let pos = $out[..$count].partition_point($before);
         if pos >= $out.len() {
