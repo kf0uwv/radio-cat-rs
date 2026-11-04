@@ -17606,7 +17606,7 @@ third 5.9% at k ≠ 0 (95), the radix-3 stage 4.0% (55), the radix-2 3.2%
 
 ## The thirty-second round's fixes (O32b, 2026-11-04)
 
-Fixes to O32 (2700bbd) from its three reviews: 8080625 (codegen-check's
+Fixes to O32 (2700bbd) from its reviews: 8080625 (codegen-check's
 first-stage entry), 821ec8f (the running sums' test at even widths),
 2690c22 (a test of `BLOCK_OF`), c777c9b (comments). No code the
 binaries hold changed: all eight binaries' `.text` and `.rodata` at
@@ -17641,7 +17641,7 @@ own log and the check's exit status:
 | the sliding window on the Cortex-M33 (O31b's form) | 1: `memmoves` 1 in `feed`, `feed_i16`, `skip`; first stage 114 | 1: the same; first stage 114 |
 | the first stage in the order of the blocks (`DIGIT_REV`) | 1 (O32) | 1: 1 128 instructions, first-stage loop 147 (its `DIGIT_REV` read is a halfword load too) |
 
-The seven-multiply form is the gap the reviews named: it passed O32's
+The seven-multiply form is the gap named in review: it passed O32's
 entry and fails this one. The sliding-window form does not touch the
 first stage: with one lane `spectrum` of the sliding window runs
 `spectrum_of_quarters` too, so its first stage is the same loop (114
@@ -17693,10 +17693,23 @@ tests are (227 release library tests).
 - Sections at c777c9b: x86-64 and AArch64 `cat-ft8-decode` and
   `paired_bench`, Cortex-M33 check and staged images, small and host:
   all equal 2700bbd's (1aa9ab2's build).
-- Local CI at c777c9b (`ci31x.sh`): 19 of 19 (the codegen step 94 of 94).
+- Local CI at c777c9b: 19 of 19 (the codegen step 94 of 94).
 - codegen-check 94 of 94 at c777c9b; the forced forms above.
 
 ### Not done
 
-- The 10f454a fix-up commit (a review's nit) stays: no history rewrites.
+- The 10f454a fix-up commit (a nit from review) stays: no history rewrites.
 - No Cortex-M33 emulation or host timing: no binary changed.
+
+### Closing review (O32c)
+
+- A further forced form: the radix-3 stage without its k = 0 loop on its
+  own. Only `m33s 10finish_row vmulloop8 56` fails it (116 instructions in
+  the shortest loop of eight multiplies, against 56): `finish_row`'s
+  instructions (983), `fploop34` (84) and `vmulhloop8` (116) all pass, so
+  that entry is the one that guards the radix-3 peel.
+- `Band::of_bins` adds in `usize`, so no argument wraps; its doc notes a
+  one-bin band is below the narrowest `Band::from_hz` makes.
+- The pairing's saving stated as a saving; wording.
+- Release sections of all eight binaries are unchanged.
+

@@ -2602,3 +2602,5 @@
   flash −2 920 B in findings and progress alike.
 - All eight binaries' sections equal 2700bbd's; local CI 19 of 19;
   codegen-check 94 of 94.
+- O32c (closing review): the radix-3 no-peel forced form recorded (only
+  `vmulloop8 56` fails it); `Band::of_bins` without u16 wrap; wording.
