@@ -166,7 +166,7 @@ fn tables_source() -> String {
 /// [`LEVEL_STEPS`]: for each level v below 255, the least power's bits
 /// (from the floor to `f32::MAX`) whose level is above v, found by
 /// bisection; `u32::MAX` for 255. Bisection takes the level as rising with
-/// the power, which `level_steps_give_every_level` checks for every `f32`.
+/// the power, which `level_steps_give_every_level_everywhere` checks for every `f32`.
 fn generate_level_steps() -> Vec<u32> {
     use crate::decode::frontend::level_of;
     use crate::decode::math::{log2_power, POWER_FLOOR};

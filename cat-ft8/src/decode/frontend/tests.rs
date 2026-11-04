@@ -150,7 +150,7 @@ fn level_steps_give_the_level_near_every_step_and_across_the_range() {
 
 #[test]
 #[ignore = "exhaustive: every f32 (about 4.3 · 10⁹), in threads; run with --release"]
-fn level_steps_give_every_level() {
+fn level_steps_give_every_level_everywhere() {
     let threads = 16u64;
     let span = (1u64 << 32) / threads;
     let bad: u64 = std::thread::scope(|scope| {

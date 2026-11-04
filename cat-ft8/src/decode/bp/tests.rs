@@ -1137,7 +1137,7 @@ fn decode_soft_matches_its_first_form() {
 /// The same over 3 000 vectors (about ten seconds in release).
 #[test]
 #[ignore]
-fn decode_soft_matches_its_first_form_widely() {
+fn decode_soft_matches_its_first_form_widely_everywhere() {
     let outcomes = decode_soft_against_its_first_form(3_000);
     assert!(outcomes.iter().all(|&n| n > 0), "{outcomes:?}");
     assert!(outcomes[1] >= 1_000, "{outcomes:?}");
