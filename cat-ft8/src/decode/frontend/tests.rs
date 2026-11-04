@@ -567,38 +567,76 @@ fn the_block_check_is_where_classify_is_the_identity() {
     }
 }
 
-/// [`level_counts`] counts the levels at 0 and at 255 as filtering does,
-/// over rows of several widths up to [`BINS`], with no
-/// level, every level and random mixes at either end.
-#[test]
-fn level_counts_equal_the_filtered_counts() {
+/// Rows of each width in `widths` and of seven kinds: no level at 0 or
+/// 255, every level at 0, every level at 255, a mix of 0, 127 and 255,
+/// random levels, random levels but 0 and 255, and a mix of the bytes
+/// next to the words' masks (0, 1, 0x7F, 0x80, 0x81, 0xFE, 0xFF).
+fn level_rows(widths: impl IntoIterator<Item = usize>) -> impl Iterator<Item = Vec<u8>> {
     let mut seed = 0x9e37_79b9_7f4a_7c15u64;
-    let mut next = || {
+    let mut next = move || {
         seed ^= seed << 13;
         seed ^= seed >> 7;
         seed ^= seed << 17;
         seed
     };
-    for width in [0usize, 1, 15, 16, 17, 31, 32, 33, 255, 256, 880, 976, BINS] {
-        for kind in 0..5 {
-            let row: Vec<u8> = (0..width)
-                .map(|_| {
-                    let r = next();
-                    match kind {
-                        0 => 0,
-                        1 => 255,
-                        2 => [0, 127, 255][(r % 3) as usize],
-                        3 => (r >> 8) as u8,
-                        _ => 1 + (r % 254) as u8,
-                    }
-                })
-                .collect();
-            let want = (
-                row.iter().filter(|&&l| l == 0).count(),
-                row.iter().filter(|&&l| l == u8::MAX).count(),
-            );
-            assert_eq!(level_counts(&row), want, "width {width} kind {kind}");
+    widths.into_iter().flat_map(move |width| {
+        (0..7)
+            .map(|kind| {
+                (0..width)
+                    .map(|_| {
+                        let r = next();
+                        match kind {
+                            0 => 2,
+                            1 => 0,
+                            2 => 255,
+                            3 => [0, 127, 255][(r % 3) as usize],
+                            4 => (r >> 8) as u8,
+                            5 => 1 + (r % 254) as u8,
+                            _ => [0, 1, 0x7f, 0x80, 0x81, 0xfe, 0xff][(r % 7) as usize],
+                        }
+                    })
+                    .collect::<Vec<u8>>()
+            })
+            .collect::<Vec<_>>()
+    })
+}
+
+/// The levels of `row` at 0 and at 255, by filtering.
+fn filtered_counts(row: &[u8]) -> (usize, usize) {
+    (
+        row.iter().filter(|&&l| l == 0).count(),
+        row.iter().filter(|&&l| l == u8::MAX).count(),
+    )
+}
+
+/// [`level_counts`] and [`level_counts_by_words`] count the levels at 0
+/// and at 255 as filtering does, over rows of several widths up to
+/// [`BINS`]: odd and even, each remainder of a word, and at either side
+/// of the words' blocks (1 020 levels).
+#[test]
+fn level_counts_equal_the_filtered_counts() {
+    let widths = [
+        0usize, 1, 2, 3, 4, 5, 7, 8, 15, 16, 17, 31, 32, 33, 255, 256, 880, 976, 1016, 1019, 1020,
+        1021, 1023, 1024, 1919, BINS,
+    ];
+    for row in level_rows(widths) {
+        let want = filtered_counts(&row);
+        assert_eq!(level_counts(&row), want, "width {}", row.len());
+        assert_eq!(level_counts_by_words(&row), want, "width {}", row.len());
+    }
+}
+
+/// The same at every width to [`BINS`] (a block of words and part of a second),
+/// and for [`level_counts_by_words`] on to three blocks and a level.
+#[test]
+#[ignore = "slow in debug builds; CI runs it in release"]
+fn level_counts_equal_the_filtered_counts_widely() {
+    for row in level_rows(0..=3 * 1020 + 1) {
+        let want = filtered_counts(&row);
+        if row.len() <= BINS {
+            assert_eq!(level_counts(&row), want, "width {}", row.len());
         }
+        assert_eq!(level_counts_by_words(&row), want, "width {}", row.len());
     }
 }
 

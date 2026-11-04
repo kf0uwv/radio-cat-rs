@@ -670,17 +670,59 @@ fn levels_by_steps_out_of_line(levels: &mut [u8], powers: &[f32]) {
 /// 16 bits) are at the floor (0) and at the top (255), in one pass. In
 /// 16-bit counts the compiler vectorises it as byte compares and widening
 /// subtractions (rustc 1.93.0; counts in `usize` took 64-bit lanes, a
-/// pass for each).
+/// pass for each). Where the target has no vector unit
+/// ([`SCALAR_FORMS`]), [`level_counts_by_words`].
 fn level_counts(levels: &[u8]) -> (usize, usize) {
     const _: () = assert!(BINS <= u16::MAX as usize);
     // A row's stored bins end below Nyquist (`Band::from_hz`).
     debug_assert!(levels.len() <= BINS);
+    if SCALAR_FORMS {
+        return level_counts_by_words(levels);
+    }
     let (mut floored, mut top) = (0u16, 0u16);
     for &l in levels {
         floored += u16::from(l == 0);
         top += u16::from(l == u8::MAX);
     }
     (usize::from(floored), usize::from(top))
+}
+
+/// [`level_counts`] four levels a word, for the targets without a vector
+/// unit: a byte compare and a count a level took 9 instructions on the
+/// Cortex-M33. In a word `w`, `zero_bytes(w)` has bit 7 of each byte set
+/// where that byte is 0 and every other bit clear: a byte's low seven bits
+/// plus 0x7F reach bit 7 unless they are all 0, with no carry into the next
+/// byte, and its own bit 7 is or-ed in. `!w` has a byte of 0 where `w` has
+/// 255. Each word adds those bits, shifted to bit 0, to four byte lanes,
+/// which count at most 255 words, so blocks of 255 words are summed
+/// across their lanes at the block's end; a block's levels after its last
+/// whole word one by one. 13 instructions a word on the Cortex-M33; a
+/// last word built with 1s past the levels (neither 0 nor 255), in place
+/// of that loop, took 0.14% more of the small slot (findings O34).
+fn level_counts_by_words(levels: &[u8]) -> (usize, usize) {
+    const LOW: u32 = 0x7f7f_7f7f;
+    let zero_bytes = |w: u32| !(((w & LOW) + LOW) | w | LOW);
+    let lanes = |x: u32| {
+        let pairs = (x & 0x00ff_00ff) + ((x >> 8) & 0x00ff_00ff);
+        (pairs & 0xffff) + (pairs >> 16)
+    };
+    let (mut floored, mut top) = (0u32, 0u32);
+    for block in levels.chunks(4 * 255) {
+        let (mut f, mut t) = (0u32, 0u32);
+        let mut words = block.chunks_exact(4);
+        for w in &mut words {
+            let w = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+            f += zero_bytes(w) >> 7;
+            t += zero_bytes(!w) >> 7;
+        }
+        floored += lanes(f);
+        top += lanes(t);
+        for &l in words.remainder() {
+            floored += u32::from(l == 0);
+            top += u32::from(l == u8::MAX);
+        }
+    }
+    (floored as usize, top as usize)
 }
 
 #[cfg(test)]
