@@ -362,6 +362,31 @@ fn slot_end_partial_slots_and_start_slot() {
 }
 
 #[test]
+fn start_slot_after_a_partial_slot_of_any_rows_mod_four() {
+    // A slot cut off with 1, 2 or 3 rows past a multiple of four, and part
+    // of the next window filled, then a new slot: its rows are those of a
+    // fresh spectrogram, so the ring (where the transform takes one lane
+    // and in the group-one tests) starts in order again.
+    let samples = slot("CQ K1ABC FN42", 1_500.0, 0.0, 0.3, 0.03, 5);
+    let (want, _) = spectrogram_of(&samples, Band::DEFAULT, 1_921);
+    for cut in [51_000, 52_000, 52_500, 53_000] {
+        let mut front = FrontEnd::new();
+        let mut levels = vec![0u8; Band::DEFAULT.spectrogram_len()];
+        {
+            let mut s = Spectrogram::new(&mut front, &mut levels, Band::DEFAULT).unwrap();
+            s.feed(&samples[..cut]);
+            assert_ne!(s.rows_filled() % 4, 0, "cut {cut}");
+            s.start_slot();
+            for chunk in samples.chunks(1_921) {
+                s.feed(chunk);
+            }
+            assert_eq!(s.rows_filled(), ROWS);
+        }
+        assert!(levels == want, "cut {cut}");
+    }
+}
+
+#[test]
 fn rows_are_read_through_a_shared_reference() {
     let samples = slot("CQ K1ABC FN42", 1_500.0, 0.0, 0.3, 0.03, 5);
     let mut front = FrontEnd::new();

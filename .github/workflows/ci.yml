@@ -182,6 +182,15 @@ jobs:
           CARGO_TARGET_DIR=target/group-one RUSTFLAGS="--cfg cat_ft8_test_group_one" \
             cargo test --release -p cat-ft8 --lib
 
+      - name: Front-end tests with the window's ring, debug (x86-64)
+        # The same cfg also gives the tests one lane in the FFT and so the
+        # front end's ring of quarters, the Cortex-M's form; in debug, so
+        # that the ring's debug assertions run (the release run above
+        # compiles them out).
+        run: |
+          CARGO_TARGET_DIR=target/group-one-debug RUSTFLAGS="--cfg cat_ft8_test_group_one" \
+            cargo test -p cat-ft8 --lib -- frontend
+
       - name: Exhaustive f32 checks and wide comparisons (x86-64)
         # Forms checked at every f32 of their domain, which the default
         # tests only sample: among them the x86-64 floor without a
