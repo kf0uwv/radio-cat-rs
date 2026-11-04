@@ -14422,8 +14422,9 @@ of 2, and the inputs' `sumloop8` a ceiling of 54.
   of one) 3 and 1, and with the removal's ramp index carried as an
   integer (the loop vectoriser takes four groups at a time) 2 and 0;
 - shuffles (`zip`, `uzp`, `trn`) in `blocks` (the reference's block
-  of 16 samples), a ceiling of 12: 3 with rustc 1.93; with the parts
-  interleaved 19, and with each sample stored by itself 75;
+  of 16 samples), a ceiling of 12: 3 with rustc 1.93 when recorded, 5
+  (4 and 1 in its two instantiations) after O27's `lanes` out of line;
+  with the parts interleaved 19, and with each sample stored by itself 75;
 - a ceiling counts only the code in its function, so it would pass if
   the loop it guards moved out (into a function of its own, or inlined
   elsewhere): on AArch64 each function with a ceiling also has a floor
@@ -14556,3 +14557,21 @@ of 2, and the inputs' `sumloop8` a ceiling of 54.
   line in the release form; 0 with the lanes' setup inlined, whose
   loop was 24 scalar instructions a group of four against 10).
 - `sumloop3` in `select` (thumbv8m.main at opt-level "s"): the sync search's running sums (findings O25) read three levels a bin (the expected tone's, and tone 7's and tone 0's entering and leaving the sum), 15 instructions with rustc 1.93.0 (a ceiling of 16; the eight tones added afresh, 24 instructions with nine byte loads, have no such loop). The rows passed to `costas_scores` by value or `Rows::row` inlined into it leave that loop at 15 (findings O25b; the loop of nine loads they lengthened is gone).
+
+### Closing review (O27c)
+
+- `each` is for the floors only: on a ceiling the least count would let
+  one instantiation pass for another, and the sum is already the
+  stricter check, so the script now fails `each` on any metric that is
+  not a floor. It does not check how many functions match, so an
+  instantiation inlined away leaves the check on the others.
+- The release form's `blocks` floor takes `each` rather than `one`, so
+  it holds if the second instantiation stops being inlined into
+  `subtract::run`.
+- `EDGE_VARS` comes from one constant, which the compile-time check
+  reads, so the check cannot drift from the static.
+- `total_of`'s doc corrected: only the sum-product inputs' blocks need
+  the clamp to vectorise (g4); min-sum's groups vectorise with the index
+  checked too (g2), where the clamp only removes the branch.
+- The code is unchanged: release sections of all eight binaries equal
+  11a783b's.

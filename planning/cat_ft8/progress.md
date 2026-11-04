@@ -2237,3 +2237,6 @@
 - Every section of all eight binaries at 366e3a1 equals 11a783b's. The
   forced forms g1, g3 and g4 still fail the check; g2 passes as before.
 - Next candidate recorded: `total`/`next` padded to `[f32; 256]`.
+- O27c (closing review): `each` limited to floors; the release `blocks`
+  floor takes `each`; `EDGE_VARS` from one constant; `total_of`'s doc
+  says which rows need the clamp; a stale shuffle count updated.
