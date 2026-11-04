@@ -56,13 +56,14 @@ target_dir="${CARGO_TARGET_DIR:-$here/../target/codegen-check}"
 # The builds: a name, the target, cargo's features option, a `--cfg`
 # for rustc (`-` for none), an opt-level (`-` for the release
 # profile's) and the codegen units (`1`, or `-` for the release
-# profile's 16: `a64r` is AArch64 as a release build compiles it, whose
-# code the one-unit `a64` need not be). 16 is cargo's default for the
+# profile's 16: `a64r` and `x64r` are AArch64 and x86-64 as a release
+# build compiles them, whose code the one-unit builds need not be). 16 is cargo's default for the
 # release profile; if a profile sets `codegen-units`, the `-` here must
 # follow it.
 builds=("a64 aarch64-unknown-linux-gnu - - - 1"
   "a64r aarch64-unknown-linux-gnu - - - -"
   "x64 x86_64-unknown-linux-gnu - - - 1"
+  "x64r x86_64-unknown-linux-gnu - - - -"
   "m33 thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm - 1"
   "m33s thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm s 1"
   "m4 thumbv7em-none-eabihf --no-default-features - - 1")
@@ -255,6 +256,16 @@ checks=(
   "x64 10finish_row insns 3500"
   # A row's level counts in 16 bits, not widened to 64-bit lanes.
   "a64 10finish_row vec2 32"
+  # The same transform as the release profile compiles it (16 units), where
+  # `finish_row` is inlined into `power_bins`: the last stage one loop with
+  # its twiddles as interleaved loads, not one per segment, and a row's
+  # level counts not widened to 64-bit lanes on AArch64; on x86-64 the last
+  # stage's loop of 80 four-lane multiplies.
+  "a64r power_bins ldn 12 one"
+  "a64r power_bins insns 3000 one"
+  "a64r power_bins vec2 32 one"
+  "x64r power_bins mulloop80 470 one"
+  "x64r power_bins insns 3500 one"
   # The bins' powers out of line with indexed slices.
   "m33s bin_powers_out_of_line fploop4 35")
 
