@@ -158,6 +158,16 @@ pub struct DecodeConfig {
     /// first, so a capped slot's output is a prefix of the uncapped one's
     /// and as reproducible.
     pub max_subtractions: Option<u16>,
+    /// When pass 1 decodes a single message, pass 2 runs only if that
+    /// decode's [`Decode::snr_db`] is at least this many dB (`None`: it
+    /// always runs). A later pass finds signals that the decodes
+    /// subtracted before it were hiding: a strong signal can hide weaker
+    /// ones beside it, a weak one can hide little that is still
+    /// decodable. Pass 3 is not affected. A slot ended this way is
+    /// reported as [`PassesEnd::WeakLoneDecode`]; its output is pass 1's,
+    /// as reproducible as any. −17 dB in [`DecodeConfig::HOST`]; NaN is
+    /// an invalid setting.
+    pub lone_decode_min_snr: Option<f32>,
     /// Ordered-statistics decoding of the candidates belief propagation
     /// fails on ([`OsdConfig`]): `OsdConfig::new(10, 21)` in
     /// [`DecodeConfig::HOST`], `None` (off) in [`DecodeConfig::SMALL`].
@@ -222,6 +232,10 @@ impl DecodeConfig {
     /// OSD-1 ([`OsdConfig::new(10, 21)`](OsdConfig::new)) runs on each
     /// pass's 10 best-scoring candidates that belief propagation fails
     /// on; `with_osd(None)` (or zero candidates) turns it off.
+    ///
+    /// Pass 2 is skipped when pass 1 decodes a single message below
+    /// −17 dB ([`DecodeConfig::lone_decode_min_snr`]):
+    /// `with_lone_decode_min_snr(None)` always runs it.
     pub const HOST: DecodeConfig = DecodeConfig {
         rule: CheckRule::SumProduct,
         max_rounds: 30,
@@ -232,6 +246,7 @@ impl DecodeConfig {
         later_candidates: 50,
         subtract: SubtractConfig::DEFAULT.with_segment(2 * crate::SAMPLES_PER_SYMBOL),
         max_subtractions: None,
+        lone_decode_min_snr: Some(-17.0),
         osd: Some(OsdConfig::new(10, 21)),
     };
 
@@ -308,6 +323,16 @@ impl DecodeConfig {
         }
     }
 
+    /// With pass 2 after a single pass-1 decode run only if that decode's
+    /// SNR is at least `lone_decode_min_snr` dB (`None`: always); see
+    /// [`DecodeConfig::lone_decode_min_snr`].
+    pub const fn with_lone_decode_min_snr(self, lone_decode_min_snr: Option<f32>) -> Self {
+        DecodeConfig {
+            lone_decode_min_snr,
+            ..self
+        }
+    }
+
     /// With ordered-statistics decoding `osd` (`None`: off); see
     /// [`OsdConfig`].
     pub const fn with_osd(self, osd: Option<OsdConfig>) -> Self {
@@ -349,7 +374,8 @@ impl DecodeConfig {
         let counts = 1..=usize::from(u16::MAX);
         let count_ok = counts.contains(&self.candidates) && counts.contains(&self.later_candidates);
         let passes_ok = (1..=Self::MAX_PASSES).contains(&self.passes);
-        if scale_ok && count_ok && passes_ok && self.subtract.validate().is_ok() {
+        let lone_ok = !matches!(self.lone_decode_min_snr, Some(x) if x.is_nan());
+        if scale_ok && count_ok && passes_ok && lone_ok && self.subtract.validate().is_ok() {
             Ok(())
         } else {
             Err(Error::InvalidConfig)
@@ -1020,6 +1046,14 @@ impl<'a> Decoder<'a> {
         self.further_passes(audio, skip, scratch, list, false, event)
     }
 
+    /// Whether `d` is below [`DecodeConfig::lone_decode_min_snr`] (a NaN
+    /// SNR is below any minimum).
+    fn weak(&self, d: &Decode) -> bool {
+        self.config
+            .lone_decode_min_snr
+            .is_some_and(|min| d.snr_db < min || d.snr_db.is_nan())
+    }
+
     /// Passes 2.. after pass 1 (the decoder's state and `list`); `stop`
     /// if a stop was asked for during pass 1.
     fn further_passes(
@@ -1048,8 +1082,12 @@ impl<'a> Decoder<'a> {
                 .config
                 .max_subtractions
                 .is_some_and(|cap| out.subtracted + out.subtract_failed + need > usize::from(cap));
+            // The configured ends come before the limits: an unlimited
+            // decode ends there too.
             out.end = if need == 0 {
                 PassesEnd::NothingNew
+            } else if pass == 2 && need == 1 && self.weak(&list.entries[begin]) {
+                PassesEnd::WeakLoneDecode
             } else if len == list.capacity() {
                 PassesEnd::ListFull
             } else if stop {
@@ -1341,6 +1379,9 @@ pub enum PassesEnd {
     AllPasses,
     /// The last pass run added no decode, so another would find the same.
     NothingNew,
+    /// Pass 1 decoded a single message, weaker than
+    /// [`DecodeConfig::lone_decode_min_snr`].
+    WeakLoneDecode,
     /// The list was full after the last pass run: a further pass could
     /// only list what it truncated again.
     ListFull,
@@ -1352,12 +1393,13 @@ pub enum PassesEnd {
 }
 
 impl PassesEnd {
-    /// A short snake-case name (`all_passes`, `nothing_new`, `list_full`,
-    /// `subtraction_cap`, `stopped`).
+    /// A short snake-case name (`all_passes`, `nothing_new`,
+    /// `weak_lone_decode`, `list_full`, `subtraction_cap`, `stopped`).
     pub const fn name(self) -> &'static str {
         match self {
             PassesEnd::AllPasses => "all_passes",
             PassesEnd::NothingNew => "nothing_new",
+            PassesEnd::WeakLoneDecode => "weak_lone_decode",
             PassesEnd::ListFull => "list_full",
             PassesEnd::SubtractionCap => "subtraction_cap",
             PassesEnd::Stopped => "stopped",

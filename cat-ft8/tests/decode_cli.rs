@@ -138,6 +138,8 @@ fn decodes_print_one_json_object_each() {
         ("small", "small,osd=0:255"),
         ("small", "small,osd=off"),
         ("host", "host,osd=10:21"),
+        ("host", "host,lone=-17"),
+        ("host,lone=off", "host,lone=-30"),
     ] {
         let a = decode_cmd(&path, &["--raw", "--config", plain]);
         let b = decode_cmd(&path, &["--raw", "--config", osd]);
@@ -455,6 +457,10 @@ fn unusable_files_and_arguments_are_errors() {
         "host,osd=x:21",
         "host,osd=65536:21",
         "host,osd=10:256",
+        "host,lone=x",
+        "host,lone=NaN",
+        "host,lone=inf",
+        "host,lone=",
     ] {
         fail(decode_cmd(&rate, &["--config", bad]), 2, "host or small");
     }

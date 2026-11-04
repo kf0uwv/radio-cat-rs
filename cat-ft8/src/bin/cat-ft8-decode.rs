@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `cat-ft8-decode FILE.wav [--config host|small[,passes=N][,osd=C:T|off]] [--raw] [--profile]`
+//! `cat-ft8-decode FILE.wav [--config host|small[,passes=N][,osd=C:T|off][,lone=X|off]] [--raw] [--profile]`
 //!
 //! Decodes one FT8 slot from a 12 kHz mono 16-bit WAV file and prints one
 //! JSON object per decode, in output format version 0 (see the crate docs,
@@ -26,7 +26,10 @@
 //! each pass's first C candidates whose belief propagation failed,
 //! accepting a codeword at most T bits from the hard decisions): `host`
 //! has it on at 10:21, `small` off; `osd=off` (or `osd=0:T`) turns it
-//! off (the output is then as without it). `--profile` adds per-pass keys when more than one
+//! off (the output is then as without it). `lone=X` runs pass 2 after a
+//! single pass-1 decode only if its SNR is at least X dB
+//! (`decode::DecodeConfig::lone_decode_min_snr`; `host` has −17, `small`
+//! runs one pass); `lone=off` always runs it. `--profile` adds per-pass keys when more than one
 //! pass is configured.
 //! Exit status 0 on success (with or without decodes), 1 on an error, 2 on
 //! a usage error.
@@ -47,7 +50,7 @@ use cat_ft8::message::CallTable;
 use cat_ft8::{wav, SAMPLE_RATE, SLOT_SAMPLES};
 
 const USAGE: &str =
-    "usage: cat-ft8-decode FILE.wav [--config host|small[,passes=N][,osd=C:T|off]] [--raw] [--profile]";
+    "usage: cat-ft8-decode FILE.wav [--config host|small[,passes=N][,osd=C:T|off][,lone=X|off]] [--raw] [--profile]";
 
 /// Calls remembered for hashed-call messages within the file.
 const CALLS: usize = 64;
@@ -116,8 +119,9 @@ fn parse() -> Result<Parsed, String> {
     Ok(Parsed::Run(a))
 }
 
-/// `host` or `small`, optionally followed by `,passes=N` (1–3) and
-/// `,osd=C:T` (C 0–65 535 candidates, T 0–255 bits) or `,osd=off`.
+/// `host` or `small`, optionally followed by `,passes=N` (1–3),
+/// `,osd=C:T` (C 0–65 535 candidates, T 0–255 bits) or `,osd=off`, and
+/// `,lone=X` (dB, finite) or `,lone=off`.
 fn parse_config(spec: Option<&str>) -> Result<Setup, String> {
     let bad =
         || format!("--config needs host or small[,passes=N][,osd=C:T|off], not {spec:?}\n{USAGE}");
@@ -148,6 +152,14 @@ fn parse_config(spec: Option<&str>) -> Result<Setup, String> {
                 };
                 // One representation of "off": zero candidates is None.
                 setup.config = setup.config.with_osd((c > 0).then(|| OsdConfig::new(c, t)));
+            }
+            Some(("lone", "off")) => setup.config = setup.config.with_lone_decode_min_snr(None),
+            Some(("lone", x)) => {
+                let x: f32 = x.parse().map_err(|_| bad())?;
+                if !x.is_finite() {
+                    return Err(bad());
+                }
+                setup.config = setup.config.with_lone_decode_min_snr(Some(x));
             }
             _ => return Err(bad()),
         }

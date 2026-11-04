@@ -165,6 +165,7 @@ pub fn set_size(set: &str) -> Option<usize> {
         "fading" => Some(3 * 200),
         "edges" => Some(EDGE_CASES.len() * 100),
         "empty" => Some(2_300),
+        "masked" => Some(MASKED.iter().map(|m| m.1).sum()),
         _ => None,
     }
 }
@@ -218,6 +219,103 @@ fn crowd(r: &mut Rng, n: usize, lo_db: f64, span_db: f64) -> Vec<Sent> {
             snr: lo_db + span_db * r.uniform(),
             channel: None,
         });
+    }
+    sent
+}
+
+/// The `masked` set's points: one strong signal (−4…+20 dB) with one
+/// (`near`) or two (`near2`) weak ones (−20…−8 dB) 5–60 Hz beside it; a
+/// strong one (+5…+20 dB) with a weak one near the decode threshold
+/// (−21…−15 dB) anywhere in the band (`far`); two strong ones, each with
+/// a weak one beside it (`pair`); a weaker masking signal (−20…0 dB)
+/// with one beside it at −22 dB up to 2 dB below it (`low`, 500 slots).
+/// Slots where the first pass decodes one or two signals and a weaker
+/// one may only show once they are removed.
+const MASKED: [(&str, usize); 5] = [
+    ("near", 250),
+    ("near2", 250),
+    ("far", 250),
+    ("pair", 250),
+    ("low", 500),
+];
+
+/// The `masked` point of slot `index`.
+fn masked_point(index: usize) -> &'static str {
+    let mut end = 0;
+    for (kind, n) in MASKED {
+        end += n;
+        if index < end {
+            return kind;
+        }
+    }
+    unreachable!()
+}
+
+/// Appends a signal at `freq` and `snr` with a distinct message and a
+/// random start (−0.3…+0.7 s).
+fn push_signal(r: &mut Rng, sent: &mut Vec<Sent>, freq: f64, snr: f64) {
+    let avoid: Vec<Payload> = sent
+        .iter()
+        .map(|s| Payload::from_bits(s.payload).unwrap())
+        .collect();
+    let (text, payload) = message(r, &avoid);
+    let dt = -0.3 + r.uniform();
+    sent.push(Sent {
+        text,
+        payload: payload.bits(),
+        freq,
+        dt,
+        snr,
+        channel: None,
+    });
+}
+
+/// A frequency 5–60 Hz below or above `f`.
+fn beside(r: &mut Rng, f: f64) -> f64 {
+    let d = 5.0 + 55.0 * r.uniform();
+    if below(r, 2) == 0 {
+        f - d
+    } else {
+        f + d
+    }
+}
+
+/// The signals of a `masked` slot of point `kind` (draw order fixed).
+fn masked(r: &mut Rng, kind: &str) -> Vec<Sent> {
+    let mut sent = Vec::new();
+    let strong = |r: &mut Rng| -4.0 + 24.0 * r.uniform();
+    let weak = |r: &mut Rng| -20.0 + 12.0 * r.uniform();
+    if kind == "low" {
+        let f = 260.0 + 2_480.0 * r.uniform();
+        let snr = -20.0 + 20.0 * r.uniform();
+        push_signal(r, &mut sent, f, snr);
+        let fw = beside(r, f);
+        let weak = -22.0 + (snr - 2.0 + 22.0) * r.uniform();
+        push_signal(r, &mut sent, fw, weak);
+        return sent;
+    }
+    let (groups, beside_count) = match kind {
+        "near" => (1, 1),
+        "near2" => (1, 2),
+        "pair" => (2, 1),
+        _ => (1, 0),
+    };
+    for _ in 0..groups {
+        let f = 260.0 + 2_480.0 * r.uniform();
+        let snr = if kind == "far" {
+            5.0 + 15.0 * r.uniform()
+        } else {
+            strong(r)
+        };
+        push_signal(r, &mut sent, f, snr);
+        for _ in 0..beside_count {
+            let (fw, snr) = (beside(r, f), weak(r));
+            push_signal(r, &mut sent, fw, snr);
+        }
+    }
+    if kind == "far" {
+        let (f, snr) = (200.0 + 2_600.0 * r.uniform(), -21.0 + 6.0 * r.uniform());
+        push_signal(r, &mut sent, f, snr);
     }
     sent
 }
@@ -330,6 +428,10 @@ pub fn build(set: &str, block: &str, index: usize) -> Slot {
             (label.to_string(), sent, skip, cut)
         }
         "empty" => return empty_slot(index, &mut r, noise_seed),
+        "masked" => {
+            let kind = masked_point(index);
+            (kind.to_string(), masked(&mut r, kind), 0, SLOT_SAMPLES)
+        }
         _ => unreachable!(),
     };
     let mut samples = render(&sent, noise_seed);
