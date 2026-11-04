@@ -16293,7 +16293,7 @@ which takes the levels through the decoder on a host), one log each:
 | l1 the guess never below 1 | 1 | 2 |
 | l2 the step taken only above its least power (`>` for `>=`) | 1 | 1 |
 | l3 no floor (negative powers and NaN by their bits) | 1 | |
-| l4 no cap (equivalent: infinity guesses past 255 and keeps 255) | 0 | |
+| l4 no cap (equivalent on hosts; on the M33 the cap stops a quieted signalling NaN from wrapping to 0: O30b) | 0 | |
 | l5 the guess half a level higher | 1 | 1 |
 | l6 one step one bit late in the table | 3 | |
 | l7 the steps counted in the table bytes on every target | 1 | |
@@ -16373,6 +16373,181 @@ the search's selection 3.0%; the levels 1.7%; the window's slide
 - `level_by_steps` relies on the decoder's `log2` and `level_of` as they
   are: a change to either needs `LEVEL_STEPS` regenerated
   (`decode_tables_match_their_definitions` fails until it is) and the
-  exhaustive test run (`--include-ignored` in release, which CI runs).
+  exhaustive test run in release. (Corrected in O30b: CI runs the
+  library's ignored tests through `--ignored _everywhere`, and this test,
+  then `level_steps_give_every_level`, did not match it; CI did not run it
+  until O30b renamed it `level_steps_give_every_level_everywhere`.)
 - The Cortex-M33 levels are equal to the hosts' for every `f32` by test,
   not by construction.
+
+
+### Review fixes (O30b)
+
+Six code commits on 30fb1e0: e6bef13 (the exhaustive level test and
+`decode_soft`'s wide run named for CI's filter), a5aef04 (the level
+guess's error bound written out, its constants recomputed by a test),
+fe1bfe6 (min-sum's sign bits in input order), f5956c7 (min-sum's form
+chosen in one place, the degree a constant parameter), 7d4ada8 (the
+parity fold asserted to cover the check's degree), 519b298
+(codegen-check's header) and 19bd143 (the CI step's comment on its time,
+workflow only). The x86-64 and AArch64 binaries of every one
+equal 6b8013c's; decodes, dumps and residuals are identical.
+
+**CI coverage.** GitHub CI runs the library's ignored tests through
+`--ignored _everywhere`. Two ignored tests did not match it, so CI never
+ran them: `level_steps_give_every_level` (O30) and the older
+`decode_soft_matches_its_first_form_widely` (3 000 vectors). They are now
+`level_steps_give_every_level_everywhere` and
+`decode_soft_matches_its_first_form_widely_everywhere`. The local CI ran
+`--include-ignored` unfiltered, which hid the gap. Its release step now
+runs exactly CI's filter. A new step lists every ignored test of every
+cat-ft8 target (libtest's `--list --ignored`) and fails on any that is
+not a library `_everywhere` test, the bulk test or a `print_*`
+generator. On 30fb1e0's tree it fails, naming the two tests (exit 1). On
+the head it lists 12 (9 `_everywhere`, the bulk test and 2 generators)
+and passes. The local CI therefore has 18 steps, one more than before.
+
+**The guess's error.** `level_by_steps`' doc now gives the sum: the line
+in the bits is below log2 by log2(1 + m) − m (0 to 0.0861, so 0 to 0.518
+of a level), and the offset takes 0.02 more. So the guess is never above
+the level and is 0.02 to 0.54 of a level below the value `level_of`
+truncates, so at most one below. The single compare relies on the level
+rising with the power. `log2_power` is a polynomial with roundings, so
+that is checked by the exhaustive test, not derived. A new test
+(`level_guess_constants_follow_from_db_per_log2`, not ignored) recomputes
+`LEVEL_GUESS_SCALE` and `LEVEL_GUESS_OFFSET` from `DB_PER_LOG2` in `f64`.
+
+**The cap and a signalling NaN.** On the Cortex-M33, `vmaxnm` quiets a
+signalling NaN rather than taking the floor, and `vminnm` then caps it to
+`f32::MAX` (level 255, as `log2_power` gives there). Without the cap,
+0xffbf_ffff quieted is 0xffff_ffff, which would step past
+`LEVEL_STEPS[255]` (`u32::MAX`) and wrap to level 0. The comment says so,
+and a debug assertion checks that the bits are below `LEVEL_STEPS[255]`.
+Mutant l4 (no cap) is equivalent on hosts only.
+
+**The hosts' logarithm.** The doc said the hosts keep `level_of(log2_power(p))`
+because it vectorises. That is unmeasured, and a reviewer measured the
+steps faster on x86-64 (wall-clock, 3970X: the feed about −17%, the host
+slot about −4%). The doc now says the hosts keep the logarithm only to
+leave their binaries unchanged while the Cortex-A76 is not available.
+
+**Sign bits in input order (fe1bfe6).** Input j's sign is stored at bit
+j (`negative |= u32::from(x < 0.0) << j`) and read as `negative >> j`.
+The old form shifted the mask left an input at a time, stored input j at
+bit d − 1 − j, and needed `d − 1 − j` adjustments to read it.
+
+| form (Cortex-M33, codegen-check) | degree 6 | degree 7 |
+|---|---|---|
+| reversed (30fb1e0) | 210 | 241 |
+| **in input order (fe1bfe6)** | **198** | **226** |
+| in input order, parity by `count_ones` | 209 | 244 |
+| in input order, totals bounds-checked | 208 | 241 |
+
+`sumloop6` and `sumloop7` bounds 216 and 248 → 204 and 233 (about 3%
+above the counts).
+
+| Cortex-M33, emulated (setup included) | 6b8013c | 31fb92b | fe1bfe6 | against 31fb92b | against 6b8013c |
+|---|---|---|---|---|---|
+| s0086 small slot | 175 089 503 | 156 263 309 | 154 506 075 | −1.12% | **−11.76%** |
+| s0407 small slot | 168 438 647 | 151 612 717 | 150 110 367 | −0.99% | **−10.88%** |
+| belief propagation (s0086, s0407) | | 35 927 885, 30 565 012 | 34 170 651, 29 062 662 | −4.89%, −4.92% | |
+| host image, s0086 and s0407 | | | | 0 (sum-product) | |
+
+Belief propagation is the only stage whose counts changed. Decodes are
+23 and 30 as before; stack high water is unchanged (10 312, 10 276 B).
+Only the M33 images change: staged and check `.text` −8 B, `.rodata`
+equal.
+
+**One choice of form (f5956c7).** `min_sum_check_sized<V, D>` takes the
+degree as a const parameter. The groups-of-one checks and the hosts'
+checks left over after the groups go through the same `match`. Every
+section of all eight binaries equals fe1bfe6's.
+
+**The parity fold (7d4ada8).** `const _: () = assert!($d <= 8);` in the
+macro (an item, for MSRV 1.75), and a comment on why not `count_ones`:
+the Cortex-M33 has no population count instruction, and the expansion
+measured 11 and 18 more instructions a check (table above). Sections are
+equal to f5956c7's.
+
+#### Sections of all eight binaries
+
+| commit | x86-64 `cat-ft8-decode`, `paired_bench` | AArch64 both | M33 check and staged, small and host |
+|---|---|---|---|
+| e6bef13, a5aef04 | = 6b8013c | = 6b8013c | = 31fb92b |
+| fe1bfe6 | = 6b8013c | = 6b8013c | differ (the sign bits) |
+| f5956c7, 7d4ada8, 519b298 | = 6b8013c | = 6b8013c | = fe1bfe6 |
+
+No host section changed, so the x86-64 records and WAV identity were not
+rerun: those binaries are 6b8013c's.
+
+#### Identity
+
+- Cortex-M33 (emulated), fe1bfe6: dump images on seven slots and the
+  multi-pass residuals of s0086 and s0407 equal 6b8013c's (16 of 16, exit
+  0). f5956c7, 7d4ada8 and 519b298 have fe1bfe6's images byte for byte,
+  so this covers them.
+
+#### Code-generation check (forced forms on 519b298)
+
+Each form is a fresh copy with one edit, its own log and exit status.
+The head passes 73 of 73 (exit 0).
+
+| form | failing entries | exit |
+|---|---|---|
+| min-sum in the hosts' loops on the M33 | `sumloop6`, `sumloop7`: no loop | 1 |
+| totals read with a bounds check | `sumloop6` 208, `sumloop7` 241; also the sum-product bounds and `decode_soft` compare floors, as in O30 | 1 |
+| sign bits reversed (30fb1e0's form) | `sumloop6` 210, `sumloop7` 241 | 1 |
+| parity by `count_ones` | `sumloop6` 209, `sumloop7` 244 | 1 |
+| levels by the logarithm in the out-of-line loop | `shortloop` 48 | 1 |
+| levels' loop inlined | `levels_by_steps_out_of_line` not found | 1 |
+| guess in unsigned arithmetic | `shortloop` 22 | 1 |
+
+#### Mutants (519b298, release library tests, one log each)
+
+| mutant | failing |
+|---|---|
+| none (control) | 0 (221 pass) |
+| s1 an edge's own sign bit left out | 1 |
+| s2 stored in input order, read reversed | 1 |
+| s3 the smallest's own edge without its sign bit | 1 |
+| s4 the smallest's own edge with input 0's sign bit | 1 |
+| s5 every sign at bit 0 | 1 |
+| s6 each sign one bit up | 1 |
+| s7 a zero input counted as negative | 1 |
+| s8 the parity fold without its first step | 1 |
+| d1 degree 6 in the degree-7 form | 1 |
+| d2 the hosts' leftover checks all as degree 7 | 15 |
+| d3 the groups-of-one checks all as degree 6 | 1 |
+| c1 `LEVEL_GUESS_SCALE` + 1 | 1 (the new constants test) |
+| c2 `LEVEL_GUESS_OFFSET` − 1 (2⁻⁴⁰ of a level) | 1 (the new constants test) |
+
+The min-sum and dispatch mutants fail
+`the_min_sum_round_matches_its_first_form_bit_for_bit` (d2 also fails the
+decoder tests that run the hosts' groups). The debug assertion and the
+compile-time degree bound are not mutated; release tests do not compile
+them in.
+
+#### Checks
+
+- Local CI at 519b298: 18 of 18 (the 17 steps of O30, with the release
+  ignored step now CI's exact filter, plus the ignored-test listing), with
+  codegen-check at 73 of 73, release tests with every ignored test at 232,
+  and group-one at 221 (11 ignored).
+- `--ignored _everywhere` in release ran 9 tests, including
+  `level_steps_give_every_level_everywhere` and
+  `decode_soft_matches_its_first_form_widely_everywhere`, all passing in
+  83.6 s. The CI step's comment said "a few seconds", and its own two
+  tests run over 60 s each (`tanh_half…`, `cos_sin_turns_matches_libm…`),
+  so 19bd143 corrects it.
+
+#### Next candidate (first)
+
+| candidate | estimate | cost |
+|---|---|---|
+| **The level steps on every target, if the A76 agrees** | x86-64: feed about −17% (a reviewer's wall-clock); A76 unmeasured | one A76 timing. It would remove the `SCALAR_FORMS` split in the row, the `SCALAR_FORMS` terms in `TABLE_BYTES`, and the risk that the hosts' and the M33's levels agree only by test |
+
+#### Not measured
+
+- A76 timing (board unavailable). Cortex-M33 cycles (emulated counts
+  only). M4F counts.
+

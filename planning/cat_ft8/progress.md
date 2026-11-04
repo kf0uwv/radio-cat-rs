@@ -2452,3 +2452,21 @@
   +28.8%); the levels inlined into the row (−1.05%); a level table by
   eighth of an octave (two steps in some buckets).
 - Open: O29b's A76 timing of the gather commit; Cortex-M33 cycles.
+- O30b (review fixes, hosts' binaries equal to 6b8013c at every commit):
+  the exhaustive level test and decode_soft's wide run renamed to end in
+  `_everywhere`, so CI's `--ignored _everywhere` runs them (it ran
+  neither); the local CI runs CI's exact filter, plus a step that fails
+  on any ignored test CI does not run (shown failing on 30fb1e0's tree).
+  The guess's error bound and the cap's signalling-NaN case written into
+  `level_by_steps`, with a debug assertion and a test recomputing the
+  guess constants. The hosts' logarithm documented as kept only for
+  unchanged binaries. Min-sum's sign bits in input order (M33 checks 198
+  and 226 instructions, small slot −1.1% and −1.0% more, −11.76% and
+  −10.88% against 6b8013c; bounds 204 and 233), one choice of form with
+  the degree as a const parameter (images equal), and the parity fold's
+  degree asserted. M33 identity 16 of 16, forced forms failing, 13
+  mutants caught, local CI 18 of 18.
+- Next round's first candidate: the level steps on every target if the
+  A76 agrees (x86-64 feed about −17% by a reviewer's wall-clock), which
+  removes the split, the `SCALAR_FORMS` terms in `TABLE_BYTES` and the
+  risk.
