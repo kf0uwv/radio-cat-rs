@@ -249,8 +249,10 @@ checks=(
   "m33s 11Spectrogram4feed memmoves 0"
   "m33s 11Spectrogram8feed_i16 memmoves 0"
   "m33s 11Spectrogram4skip memmoves 0"
-  # The sync search's running sums: three levels a bin.
-  "m33s 6select sumloop3 16"
+  # The sync search's running sums: three levels a bin, a pair of bins a
+  # step (25 instructions: six byte loads a pair; with one parity at a
+  # time and the eight tones' sum, 15 a bin with three).
+  "m33s 6select sumloop6 26"
   # On the hosts its column sums in 16-bit vector lanes (the eight tones
   # added afresh a row, the form before: 13 and 0), the levels widened
   # into them as they are added (18 on AArch64; `vec8h` alone passes the

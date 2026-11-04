@@ -149,10 +149,17 @@ pub(crate) fn search_rows(
 /// `8 · level(b + sent_at) − Σₜ level(b + 2t)` (t = 0..8, the eight tones
 /// two bins apart; `sent_at` = 2 · the tone sent) to `out[b]` at every base
 /// bin b < `out.len()`, from the row's levels `row`. The eight tones' sum at
-/// bin b is the one at b − 2, less tone 0's level there and plus tone 7's at
-/// b: running sums along the even and the odd bins, so a bin reads three
-/// levels rather than nine. Integers: the same values as adding the eight
-/// afresh.
+/// bin b is tones 0 to 6's sum there plus tone 7's level, and less tone
+/// 0's level it is tones 0 to 6's sum at b + 2: running sums along the even
+/// and the odd bins, so a bin reads three levels rather than nine. The two
+/// sums run side by side, a pair of bins a step, then an odd count's last
+/// bin. Integers: the same values as adding the eight afresh.
+///
+/// Carrying tones 0 to 6's sum rather than the eight's, a step reads tone
+/// 7's level at b + 14 and none past the last bin's, so the loop has no
+/// last step to leave out and no bounds checks; with the eight's sum and
+/// one parity at a time it took 15 instructions a bin on the Cortex-M33,
+/// as written here 25 a pair (rustc 1.93.0, opt-level "s"; findings O32).
 #[inline(always)]
 fn add_row_running(row: &[u8], sent_at: usize, out: &mut [ScoreCell]) {
     let cols = out.len();
@@ -160,18 +167,22 @@ fn add_row_running(row: &[u8], sent_at: usize, out: &mut [ScoreCell]) {
     let row = &row[..cols + 14];
     let sent = &row[sent_at..sent_at + cols];
     let level = |k: usize| i32::from(row[k]);
-    for first in 0..cols.min(2) {
-        let mut all = (0..8).fold(0, |s, t| s + level(first + 2 * t));
-        let mut b = first;
-        loop {
-            out[b] = cell_of(score_of(out[b]) + 8 * i32::from(sent[b]) - all);
-            if b + 2 >= cols {
-                break;
-            }
-            // Tone 0's level at b leaves the sum, tone 7's at b + 2 enters.
-            all += level(b + 16) - level(b);
-            b += 2;
-        }
+    // Tones 0 to 6's sums at bins 0 and 1.
+    let mut even = (0..7).fold(0, |s, t| s + level(2 * t));
+    let mut odd = (0..7).fold(0, |s, t| s + level(1 + 2 * t));
+    let mut b = 0;
+    while b + 1 < cols {
+        let all = even + level(b + 14);
+        out[b] = cell_of(score_of(out[b]) + 8 * i32::from(sent[b]) - all);
+        even = all - level(b);
+        let all = odd + level(b + 15);
+        out[b + 1] = cell_of(score_of(out[b + 1]) + 8 * i32::from(sent[b + 1]) - all);
+        odd = all - level(b + 1);
+        b += 2;
+    }
+    if b < cols {
+        let all = even + level(b + 14);
+        out[b] = cell_of(score_of(out[b]) + 8 * i32::from(sent[b]) - all);
     }
 }
 
@@ -222,7 +233,7 @@ fn gather<'a>(
 /// vectorises); otherwise by running sums along each row
 /// ([`costas_scores_running`]).
 // `spec` by reference: by value (a `Copy` view of the rows) the M33's
-// running sums keep their loop (codegen-check `sumloop3`) and the sync stage
+// running sums keep their loop (codegen-check `sumloop6`) and the sync stage
 // its count, but the small slot rose 0.38% (s0086, in the feed): findings
 // O25b.
 fn costas_scores<const VECTOR_FORM: bool>(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
