@@ -689,10 +689,11 @@ fn level_counts(levels: &[u8]) -> (usize, usize) {
 
 /// [`level_counts`] four levels a word, for the targets without a vector
 /// unit: a byte compare and a count a level took 9 instructions on the
-/// Cortex-M33. In a word `w`, `zero_bytes(w)` has bit 7 of each byte set
-/// where that byte is 0 and every other bit clear: a byte's low seven bits
-/// plus 0x7F reach bit 7 unless they are all 0, with no carry into the next
-/// byte, and its own bit 7 is or-ed in. `!w` has a byte of 0 where `w` has
+/// Cortex-M33. In a word `w`, `zero_bytes(w)` (the classic test for a
+/// zero byte in a word) has bit 7 of each byte set where that byte is 0
+/// and every other bit clear: a byte's low seven bits plus 0x7F reach bit
+/// 7 unless they are all 0, with no carry into the next byte, and its own
+/// bit 7 is or-ed in. `!w` has a byte of 0 where `w` has
 /// 255. Each word adds those bits, shifted to bit 0, to four byte lanes,
 /// which count at most 255 words, so blocks of 255 words are summed
 /// across their lanes at the block's end; a block's levels after its last
@@ -702,7 +703,7 @@ fn level_counts(levels: &[u8]) -> (usize, usize) {
 fn level_counts_by_words(levels: &[u8]) -> (usize, usize) {
     const LOW: u32 = 0x7f7f_7f7f;
     let zero_bytes = |w: u32| !(((w & LOW) + LOW) | w | LOW);
-    let lanes = |x: u32| {
+    let sum_lanes = |x: u32| {
         let pairs = (x & 0x00ff_00ff) + ((x >> 8) & 0x00ff_00ff);
         (pairs & 0xffff) + (pairs >> 16)
     };
@@ -715,8 +716,9 @@ fn level_counts_by_words(levels: &[u8]) -> (usize, usize) {
             f += zero_bytes(w) >> 7;
             t += zero_bytes(!w) >> 7;
         }
-        floored += lanes(f);
-        top += lanes(t);
+        floored += sum_lanes(f);
+        top += sum_lanes(t);
+        // Only the last block can have levels after its last whole word.
         for &l in words.remainder() {
             floored += u32::from(l == 0);
             top += u32::from(l == u8::MAX);

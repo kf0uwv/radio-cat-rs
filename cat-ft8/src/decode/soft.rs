@@ -214,14 +214,14 @@ fn tone_power_of(
     stored: i32,
 ) -> f32 {
     let mut p = 0.0f32;
-    for (&(_, wr), levels) in rows.iter().zip(levels) {
-        let Some(levels) = levels else {
+    for (&(_, wr), found) in rows.iter().zip(levels) {
+        let Some(row) = found else {
             continue;
         };
         for &(b, wb) in bins.iter() {
             let bin = b + 2 * i32::from(tone);
             if (0..stored).contains(&bin) {
-                p += wr * wb * level_power(u32::from(levels[bin as usize]));
+                p += wr * wb * level_power(u32::from(row[bin as usize]));
             }
         }
     }
