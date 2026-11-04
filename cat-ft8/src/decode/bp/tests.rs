@@ -145,17 +145,12 @@ fn hard_decisions_split_exact_ties_by_index() {
 /// 2^33 decisions: ignored by default, run in release.
 #[test]
 #[ignore]
-fn the_hard_decision_matches_the_plain_rule_for_every_f32() {
+fn the_hard_decision_is_the_plain_rule_everywhere() {
     for i in [0usize, 1] {
-        let mut bits = 0u32;
-        loop {
+        for bits in 0..=u32::MAX {
             let x = f32::from_bits(bits);
             let want = u8::from(x < 0.0 || (x == 0.0 && i % 2 == 1));
             assert_eq!(hard_bit(x, i), want, "{bits:#010x} at parity {i}");
-            if bits == u32::MAX {
-                break;
-            }
-            bits += 1;
         }
     }
 }

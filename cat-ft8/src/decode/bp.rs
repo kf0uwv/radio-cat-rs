@@ -201,7 +201,8 @@ fn twice_atanh(p: f32) -> f32 {
 /// form took 0.18% fewer instructions in belief propagation (cycles not
 /// measured), too little for a second form (findings O28b). The same bit as
 /// `x < 0.0 || (x == 0.0 && i % 2 == 1)` for every value, NaN included
-/// (0); an ignored test checks every `f32`.
+/// (0); an ignored test checks every `f32`. `codegen-check.sh` names this
+/// function, so a rename changes the script too.
 #[inline]
 fn hard_bit(x: f32, i: usize) -> u8 {
     u8::from(x < 0.0) | (u8::from(x == 0.0) & (i % 2) as u8)
@@ -214,6 +215,8 @@ fn hard_bit(x: f32, i: usize) -> u8 {
 /// both. It takes the padded [`Totals`] because it gathers them by the
 /// `u8` indices of [`EDGE_VARS`] (in bounds by type), while
 /// [`hard_decisions`] walks the variables in order and takes only them.
+/// `codegen-check.sh` names this function, so a rename changes the script
+/// too.
 fn checks_hold<const G: usize>(values: &Totals) -> bool {
     let (edge_vars, _) = tables::<G>();
     let decide = |acc: u8, &i: &u8| acc ^ hard_bit(total_of(values, i), usize::from(i));
