@@ -224,7 +224,8 @@ fn costas_scores<const VECTOR_FORM: bool>(spec: &Rows<'_>, start_row: i32, out: 
 /// Rows a start row's score reads: every symbol of every Costas array.
 const COSTAS_ROWS: usize = COSTAS_POSITIONS.len() * COSTAS.len();
 
-/// Base bins [`costas_scores_by_columns`] takes at a time.
+/// Base bins [`costas_scores_by_columns`] takes at a time. Not tuned: 64
+/// was the one size timed (32 gives the same values; findings O29).
 const COLUMN_CHUNK: usize = 64;
 
 /// [`costas_scores`] where the target has a vector unit: the same integer
@@ -234,10 +235,10 @@ const COLUMN_CHUNK: usize = 64;
 /// takes eight of those column sums rather than eight levels a row: the
 /// score is 8 · Σ_rows level(b + 2·tone) − Σₜ column(b + 2t). A bin reads
 /// about 2 · 21 + 8 sums and levels instead of 21 · 9 levels (findings
-/// O29). The bins go
-/// [`COLUMN_CHUNK`] at a time, so the column sums need only small arrays on
-/// the stack (`u16`: at most 21 · 255 a column, 8 · 21 · 255 a bin's eight;
-/// checked at compile time).
+/// O29). The bins go [`COLUMN_CHUNK`] at a time, so the column and sent
+/// sums need only small arrays on the stack. They are `u16`: each is a sum
+/// of at most [`COSTAS_ROWS`] `u8` levels (checked at compile time beside
+/// the arrays); a bin's eight column sums and its score are added in `i32`.
 #[inline(always)]
 fn costas_scores_by_columns(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
     let cols = out.len();
@@ -275,6 +276,8 @@ fn costas_scores_by_columns(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCel
     for (c, chunk) in out.chunks_mut(COLUMN_CHUNK).enumerate() {
         let first = c * COLUMN_CHUNK;
         let len = chunk.len();
+        // A column or sent sum adds at most `COSTAS_ROWS` levels of a `u8`.
+        const _: () = assert!(COSTAS_ROWS as u32 * u8::MAX as u32 <= u16::MAX as u32);
         let mut column = [0u16; COLUMN_CHUNK + 14];
         let mut sent = [0u16; COLUMN_CHUNK];
         for (row, &at) in read.iter().zip(sent_at) {
@@ -297,8 +300,6 @@ fn costas_scores_by_columns(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCel
         }
     }
 }
-
-const _: () = assert!(COSTAS_ROWS as u32 * 8 * 255 <= u16::MAX as u32);
 
 /// The sync score of a candidate at `start_row`, base bin `base`, or
 /// `None` if fewer than two Costas arrays lie in the filled rows.
