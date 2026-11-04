@@ -14575,3 +14575,247 @@ of 2, and the inputs' `sumloop8` a ceiling of 54.
   checked too (g2), where the clamp only removes the branch.
 - The code is unchanged: release sections of all eight binaries equal
   11a783b's.
+
+## Pass 2 skipped after a single weak pass-1 decode (G1, results-changing, 2026-11-03)
+
+One hypothesis: a later pass finds signals that the decodes subtracted
+before it were hiding, so after a pass 1 of one weak decode, pass 2 is
+very unlikely to add anything, yet it costs nearly a whole pass. Target:
+CPU per slot on sparse and one-signal slots, with no accuracy loss
+beyond the paired tests' noise and no new false decode anywhere.
+Change: ea75d2f. Base: 9685acf.
+
+### Measured first (9685acf records, main block only)
+
+A rule that ends the passes early gives exactly the decodes of the
+passes it runs (the passes before do not change), so every rule was
+first simulated on 9685acf's `run host` records: its losses, and the
+stage time of the passes it skips.
+
+**A count rule alone fails.** Pass 2 after a one-decode pass 1 found
+nothing in the existing one-signal sets (`sweep` 8 881 slots, `edges`
+1 244), and those sets never have a pass 1 of 2–4 decodes. The new
+`masked` set (below) has them: there pass 2 found 444 messages after
+one pass-1 decode (in 380 of 502 slots), 363 after two (224 of 430), 57
+after three (57 of 66). Skipping pass 2 after at most 1, 2 or 3 pass-1
+decodes loses 525, 892 and 949 `masked` messages. Pass 3 after a
+one-decode pass 2 also finds messages (crowded 10, wide 4, `masked`
+83): skipping it loses 9–10 per crowded set, which fails the per-set
+sign test (b − c ≤ 2√(b + c): with no gain, at most 4 losses). Pass 3
+is left alone; by the pass-2 decode's SNR its yield thins only below
+−18 dB (0 of 114 slots), worth 0.39 ms a crowded slot (under 1%).
+
+**The lone decode's SNR separates the cases.** Pass 2 after a single
+pass-1 decode, by that decode's SNR as the decoder estimates it (main
+block; `sweep`, `edges`, `masked`, crowded, wide, fading):
+
+| pass-1 decode SNR | slots | of them `masked` | pass-2 messages | slots with any |
+|---|---|---|---|---|
+| below −18 dB | 3 074 | 13 | 1 | 1 |
+| −18 to −17 dB | 2 525 | 17 | 0 | 0 |
+| −17 to −16 dB | 2 188 | 20 | 1 | 1 |
+| −16 to −15 dB | 1 767 | 22 | 2 | 2 |
+| −15 to −14 dB | 646 | 27 | 10 | 10 |
+| −14 to −10 dB | 101 | 77 | 37 | 37 |
+| −10 to 0 dB | 226 | 226 | 180 | 176 |
+| 0 to +10 dB | 196 | 196 | 185 | 159 |
+| +10 dB and up | 260 | 260 | 219 | 185 |
+
+Every find below −14 dB is in `masked`'s `low` point (a weak masker
+with a weaker signal beside it); the lowest is a −18.3 dB decode hiding
+a −20.4 dB signal 41 Hz away. Of the 635 pass-2 finds after a lone
+decode, 633 lie within 60 Hz of it (the set places them there; `far`'s
+distant weak signal is found in pass 2 only twice).
+
+**The rule simulated on main:** pass 2 after a single pass-1 decode only
+if that decode's SNR ≥ X (stage time saved, share of the pass time, one
+thread's records):
+
+| X (dB) | −21 | −20 | −19 | −18 | −17 | −16 | −15 | −14 |
+|---|---|---|---|---|---|---|---|---|
+| `masked` lost (limit) | 0 | 0 | 0 | 1 (2.0) | 1 (2.0) | 2 (2.8) | 4 (4.0) | 14 (fails) |
+| `sweep` saved | 0% | 0% | 3% | 8% | 15% | 21% | 27% | 29% |
+| `edges` saved | 0% | 0% | 1% | 15% | 35% | 39% | 40% | 40% |
+
+Every other set: nothing lost at any X. Chosen on main: −16 (−15 is at
+the limit, −14 fails).
+
+### The `masked` set
+
+New in `paired_bench` (own seeds, 1 500 slots): a strong signal
+(−4…+20 dB) with one (`near`) or two (`near2`) weak ones (−20…−8 dB)
+5–60 Hz beside it; a strong one (+5…+20 dB) with a weak one near the
+decode threshold (−21…−15 dB) anywhere (`far`); two strong ones, each
+with a weak one beside it (`pair`); 250 slots each; and `low`, 500
+slots: a weaker masker (−20…0 dB) with a signal beside it from −22 dB
+to 2 dB below the masker. Every slot is a mixture a subtraction pass
+exists for, and every one has an overlap, far more than a real band
+has: it is a stress test of any rule that skips a pass.
+
+### Settings tried and the confirmation
+
+- **−16** (chosen on main) run on `main`, `fresh` and a third block not
+  used before (`confirm`): `masked` b = 2, 1 and **4** (limits 2.8, 2.0
+  and **4.0**), every other set 0, every block PASS. But `confirm` sits
+  at the limit, the three blocks pooled give b = 7 > 2√7 = 5.3, and one
+  step looser (−15) fails on `fresh` (10) and `confirm` (8): −16 is on
+  the edge of the cliff. Not taken.
+- **−17, the next more conservative value, taken:** `masked` b = 1, 0
+  and 0 on the three blocks; every other set 0 in every block. The one
+  loss: `masked` main slot 1301 (`low`), `KM7MD WK5J RR73` at −18.1 dB
+  (decoded at −18.3) hiding `N3L P1Q HR03` at −20.4 dB, 41 Hz away.
+
+### The change (ea75d2f)
+
+`DecodeConfig::lone_decode_min_snr: Option<f32>`, −17 dB in `HOST`:
+when pass 1 decodes a single message, pass 2 runs only if that decode's
+`snr_db` is at least the minimum. `None` gives 9685acf's behaviour: the
+records of every set on both blocks with `lone=off` equal 9685acf's.
+NaN is an invalid setting (`Decoder::new` rejects it); a NaN decode SNR
+counts as below any minimum. A slot ended this way reports
+`PassesEnd::WeakLoneDecode` (`weak_lone_decode`), checked before the
+full-list end (an unlimited decode ends there too), and is not "stopped
+early". Pass 3 is unchanged. `SMALL` runs one pass, so it is not
+affected: its records, and `host,passes=1`'s, equal 9685acf's on every
+set. The decode command and `paired_bench` take `lone=X|off`. No new
+state or storage; one `f32` comparison per multi-pass slot. Tests: the
+rule on lone signals above and below the minimum, `None`, a crowded slot
+untouched by any minimum, its precedence over a full list, the NaN
+setting; the decode command's spellings and bad values.
+
+### Results (−17)
+
+| check | result |
+|---|---|
+| paired sign test (`compare`), against `lone=off`, `main` (7 sets) | PASS every set and point; `masked` b = 1, c = 0 (limit 2.0); all others b = c = 0 |
+| the same against 9685acf's own records, `main` | PASS, identical figures |
+| `fresh` (7 sets) | PASS; b = c = 0 everywhere |
+| `confirm` (`sweep`, `edges`, `masked`, `empty`) | PASS; b = c = 0 everywhere |
+| sweep 50% point | −19.177 / −19.158 / −19.200 dB on the three blocks, shift +0.000 dB [+0.000, +0.000] |
+| false decodes | 0 on `empty` (2 300 slots, each block); no new false decode in any pass of any record; the skipped passes held none |
+| CRC failures (expected false decodes) | the same or fewer (sweep main 295 → 246, edges 24 → 15: the skipped passes' own) |
+| external comparison, the five seed-1 synthetic sets and the live session | PASS on each (sweep, dt, freq, crowded, fading; live); decode output identical to the base on every slot of every set |
+| live session | 72 of 109 found (bar 68), unchanged; extra decodes outside the reference 1 → 1, the same one as before: none new |
+| fixed reference slots | 60 of 60 pass; an amend dry run adds the same 3 messages for the base as for this change, drops none |
+| 800-WAV corpus | decode lines identical in every slot and mode (host, small, single pass; plain, raw, profile); 33 `host --profile` summary lines differ, each a slot of one pass-1 decode below −17 dB whose empty pass 2 no longer runs (`passes_run` 2 → 1, `weak_lone_decode`, pass 1's counts unchanged) |
+
+The external sets change nowhere because their one-signal slots decode
+mostly above −17 dB: the external sweep skips pass 2 in 106 of its 487
+lone-decode slots, fading in 7, dt, freq, crowded and the live session
+in none (the live session's only lone decode is at −5 dB).
+
+**−16, for the record** (not taken): the external comparison and
+the fixed reference slots also pass, with identical decode output.
+
+### Cost
+
+x86-64 (Threadripper 3970X, one core, `taskset -c 5`, `paired_bench run`
+per set on `main`, `lone=off` and `host` alternated over two cycles;
+decode CPU per slot from the records' stage times, cycle mean):
+
+| set, slot type | slots | off ms/slot | −17 ms/slot | change | ms per decoded signal |
+|---|---|---|---|---|---|
+| sweep, all | 15 000 | 22.93 | 19.61 | −14.5% | 38.73 → 33.13 |
+| sweep, lone decode, pass 2 skipped | 4 481 | 27.54 | 16.36 | −40.6% | 27.54 → 16.36 |
+| sweep, lone decode, pass 2 kept | 4 400 | 27.50 | 27.43 | −0.3% | |
+| sweep, nothing decoded | 6 119 | 16.27 | 16.38 | +0.7% | |
+| edges, all | 1 300 | 27.06 | 17.69 | −34.7% | 28.28 → 18.48 |
+| edges, pass 2 skipped | 1 088 | 27.54 | 16.32 | −40.8% | |
+| masked, all | 1 500 | 34.04 | 33.77 | −0.8% | 15.59 → 15.47 |
+| crowded, all | 600 | 48.32 | 48.25 | −0.1% | 2.15 → 2.15 |
+| empty | 2 300 | 16.32 | 16.32 | 0.0% | |
+
+`perf stat` of the whole program (slot synthesis and the misses'
+unlimited re-search included): user instructions sweep −6.0%, edges
+−15.6%, masked −0.33%, crowded and empty equal to 1 part in 10⁷; user
+cycles sweep −4.4%, edges −11.6%, crowded +0.7% (cycles +0.2% and
++1.2% in the two cycles with equal instructions: run-to-run noise),
+empty +0.02%. In `sweep` the saving is all at the sent SNRs whose decodes
+fall below −17 dB: −20.5 dB −3%, −20 −8%, −19.5 −16%, −19 −29%, −18.5
+−36%, −18 −39%, −17.5 −33%, −17 −23%, −16.5 −8%, −16 −2%, nothing above.
+
+Raspberry Pi 5 (A76, 2.4 GHz, one core, `taskset -c 3`), ea75d2f's
+AArch64 `paired_bench run` on `main`, `host` and `host,lone=off` from
+the same binary plus 9685acf's `host`, alternated over four cycles
+(forward, reverse); every run valid: throttle word 0x0 throughout
+(sampled each second), no rise in the kernel's under-voltage count,
+clock 2 400 MHz in every sample, peak 54.3 °C. Decode CPU per slot from
+the records' stage times, mean of the four cycles (each cycle within
+0.01 ms of the mean):
+
+| set, slot type | slots | off ms/slot | −17 ms/slot | change | ms per decoded signal |
+|---|---|---|---|---|---|
+| edges, all | 1 300 | 33.91 | 21.67 | −36.1% | 35.44 → 22.65 |
+| edges, pass 2 skipped | 1 088 | 34.53 | 19.91 | −42.3% | |
+| edges, lone decode, pass 2 kept | 156 | 34.52 | 34.53 | 0.0% | |
+| masked, all | 1 500 | 42.97 | 42.67 | −0.7% | 19.68 → 19.54 |
+| masked, pass 2 skipped | 30 | 35.17 | 19.98 | −43.2% | |
+| crowded, all | 600 | 64.15 | 64.15 | 0.0% | 2.86 → 2.86 |
+| empty | 2 300 | 19.88 | 19.88 | 0.0% | |
+
+9685acf against `lone=off`: crowded 64.17 / 64.15, edges 33.92 /
+33.91, empty 19.89 / 19.88 ms: the new branch costs nothing measurable.
+`sweep` was not run on the A76 (15 000 slots); from the skipped slots'
+saving (14.6 ms each) and their share (4 481 of 15 000) it saves about
+4.4 ms a sweep slot. Four earlier cycles, taken before the Pi was
+restarted with its throttle word at 0x50000, were discarded.
+
+### Memory
+
+Unchanged: the decoder's peak working memory 944 472 B on every slot
+(the profile's `peak_bytes`), max RSS within run-to-run noise (external
+sweep 22 812 → 22 704 KB); Cortex-M33 static RAM 201 668 / 230 084 / 0 B
+(small / host / encoder) as before, flash small 92 038 → 92 058 B, host
+104 738 → 104 758 B (+20 B each), encoder 35 190 B.
+
+### Identity
+
+- x86-64: `lone=off` records equal 9685acf's on every set of `main` and
+  `fresh`; `small` and `host,passes=1` records equal 9685acf's.
+- A76: the records of all four timing cycles (`host`, `lone=off`, and
+  9685acf's `host`) equal the x86-64 records on every slot of `crowded`,
+  `edges`, `empty` and `masked`.
+- Cortex-M33 (the multi-pass host image, `--cfg cat_ft8_minmaxnm`, in
+  the emulator): on a slot with one weak pass-1 decode (WAV s0025, −19
+  dB) ea75d2f leaves the residual bit-identical to the input, as x86-64
+  reports for that slot (`weak_lone_decode`), while 9685acf subtracts;
+  on a slot with one strong decode (s0001) both images give the same
+  residual (SHA-256 4715a776…).
+
+### Checks (ea75d2f)
+
+fmt; clippy `-D warnings` (workspace; cat-ft8 all targets and features;
+thumbv8m library); workspace tests; profile and no-std tests; the
+release tests with the ignored ones (lib 226); the group-of-one forms;
+the bulk run; MSRV 1.75; docs (std and no-std); `check.sh --stack`;
+the code-generation check. All pass.
+
+### Risks
+
+- The masked mixtures are synthetic and over-represent overlaps; on air
+  a weak lone decode with a decodable signal hidden beside it should be
+  rarer still, but no off-air slot here has one either way (the live
+  session's only lone decode is at −5 dB). The rule's loss grows fast
+  above −17 dB (−16 is at the edge, −15 fails).
+- The minimum compares the decoder's own SNR estimate (against the noise
+  near the signal); a receiver whose noise floor is not flat near the
+  signal shifts it. A signal decoded at −17 dB or more always keeps pass
+  2, so the effect of an error is only on weak lone signals.
+- The saving is on slots whose only decode is weak: none on a band whose
+  lone signals are strong, as in the live session and the external dt
+  and freq sets; pass 2 after a strong lone decode still costs a whole
+  pass.
+- The A76 figures are of `paired_bench`'s records on one core; the real
+  controller decodes with other work running.
+
+### Not measured
+
+The seed-2 sets (not read); any Cortex-M at run time
+(the M33 image runs one pass in practice; the multi-pass image only in
+the emulator); off-air slots with a weak lone signal.
+
+### Next
+
+- A pass 2 after a lone strong decode searching only near the subtracted
+  signal (its finds here sit within 60 Hz of it, 633 of 635) would keep
+  them for a fraction of the cost. Results-changing; its own round.

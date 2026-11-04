@@ -2240,3 +2240,25 @@
 - O27c (closing review): `each` limited to floors; the release `blocks`
   floor takes `each`; `EDGE_VARS` from one constant; `total_of`'s doc
   says which rows need the clamp; a stale shuffle count updated.
+
+## Session: 2026-11-03 (G1 pass 2 skipped after a single weak pass-1 decode)
+
+- Measured on 9685acf's records first: a count rule alone fails on the
+  new `masked` mixtures (pass 2 after one pass-1 decode finds messages
+  in 380 of 502 such slots); pass 3 after a one-decode pass 2 also finds
+  messages, so it is left alone. The lone decode's SNR separates the
+  cases.
+- ea75d2f: `DecodeConfig::lone_decode_min_snr` (`HOST` −17 dB),
+  `PassesEnd::WeakLoneDecode`, `lone=X|off` in the decode command and
+  the bench, the bench's `masked` set, tests.
+- −16 chosen on `main` passed `fresh` and `confirm` but at the limit on
+  `confirm` (pooled over the blocks it fails); −17, the next more
+  conservative value, taken: 1 message lost in `masked` main, 0
+  elsewhere, every paired test PASS on three blocks, external
+  comparison PASS with identical decode output, live 72 of 109
+  unchanged, reference slots 60 of 60, no false decode.
+- x86-64 one core: sweep −14.5% decode CPU per slot, edges −34.7%,
+  slots whose pass 2 is skipped −41%; crowded, empty unchanged. A76
+  (four cycles, throttle 0x0): edges −36.1%, skipped slots −42%,
+  crowded and empty unchanged; records equal x86-64's.
+- Memory unchanged; M33 flash +20 B.
