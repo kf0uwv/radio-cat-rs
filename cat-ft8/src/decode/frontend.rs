@@ -51,7 +51,7 @@
 //! feed to the next. The FFT work is free between rows, and the decoder's
 //! sync search uses it then.
 
-use super::fft::{power_bins, FftBuffer, BINS, WINDOW};
+use super::fft::{power_bins, power_bins_quarters, FftBuffer, BINS, WINDOW};
 use super::math::{log2_power, POWER_FLOOR, SCALAR_FORMS};
 use super::tables::LEVEL_STEPS;
 use crate::{Error, SLOT_SAMPLES};
@@ -525,15 +525,24 @@ impl<'a> Spectrogram<'a> {
         // the start of the window, which is empty until the row origin
         // (`filled` is 0) and which the first row's samples overwrite.
         let before = n.min(ROW_ORIGIN.saturating_sub(self.consumed));
+        // (No row is complete then, so in the ring too the samples are at
+        // their own places.)
+        debug_assert!(before == 0 || self.rows.count == 0);
         let (sanitised, clamped) = fill(0, &mut self.front.window[..before]);
         self.sanitised += sanitised;
         self.clamped += clamped;
         let mut i = before;
         self.consumed += before;
         while i < n {
-            let chunk = (n - i).min(WINDOW - self.filled);
-            let (sanitised, clamped) =
-                fill(i, &mut self.front.window[self.filled..self.filled + chunk]);
+            // Where the target has no vector unit the window is a ring of
+            // quarters ([`ring_at`]), filled up to a quarter's end at a time.
+            let (at, chunk) = if SCALAR_FORMS {
+                let chunk = (n - i).min(HOP - self.filled % HOP);
+                (ring_at(self.filled, self.rows.count), chunk)
+            } else {
+                (self.filled, (n - i).min(WINDOW - self.filled))
+            };
+            let (sanitised, clamped) = fill(i, &mut self.front.window[at..at + chunk]);
             self.sanitised += sanitised;
             self.clamped += clamped;
             i += chunk;
@@ -541,7 +550,11 @@ impl<'a> Spectrogram<'a> {
             self.filled += chunk;
             if self.filled == WINDOW {
                 self.finish_row();
-                self.front.window.copy_within(HOP.., 0);
+                // In the ring the quarter just left is the next to fill
+                // (`rows.count` has advanced); otherwise the window slides.
+                if !SCALAR_FORMS {
+                    self.front.window.copy_within(HOP.., 0);
+                }
                 self.filled = WINDOW - HOP;
             }
         }
@@ -553,27 +566,59 @@ impl<'a> Spectrogram<'a> {
         let width = self.rows.band.stored_bins();
         let r = self.rows.count;
         let row = &mut self.rows.levels[r * width..(r + 1) * width];
-        power_bins(
-            &self.front.window,
-            &mut self.front.fft,
-            self.rows.band.first_bin(),
-            width,
-            |i, p| {
-                // The hosts' logarithm: see `levels_by_steps_out_of_line`.
-                if SCALAR_FORMS {
-                    levels_by_steps_out_of_line(&mut row[i..i + p.len()], p);
-                } else {
-                    for (level, &p) in row[i..i + p.len()].iter_mut().zip(p) {
-                        *level = level_of(log2_power(p));
-                    }
+        let levels = |i: usize, p: &[f32]| {
+            // The hosts' logarithm: see `levels_by_steps_out_of_line`.
+            if SCALAR_FORMS {
+                levels_by_steps_out_of_line(&mut row[i..i + p.len()], p);
+            } else {
+                for (level, &p) in row[i..i + p.len()].iter_mut().zip(p) {
+                    *level = level_of(log2_power(p));
                 }
-            },
-        );
+            }
+        };
+        let (window, fft) = (&self.front.window, &mut self.front.fft);
+        let first = self.rows.band.first_bin();
+        if SCALAR_FORMS {
+            power_bins_quarters(ring_quarters(window, r), fft, first, width, levels);
+        } else {
+            power_bins(window, fft, first, width, levels);
+        }
         let (floored, top) = level_counts(row);
         self.floored += floored;
         self.top += top;
         self.rows.count += 1;
     }
+}
+
+/// Quarters of the window: [`HOP`] samples each, the hop between rows.
+const QUARTERS: usize = WINDOW / HOP;
+const _: () = assert!(QUARTERS * HOP == WINDOW);
+
+/// Where the target has no vector unit ([`SCALAR_FORMS`]) the window is a
+/// ring of [`QUARTERS`] quarters rather than sliding by [`HOP`] after each
+/// row (a copy of three quarters, 11 520 bytes, a row: 1.6% of a slot on
+/// the Cortex-M33 in the library's `memmove`; with the ring, and the
+/// transform's first stage reading the quarters, the slot took 3.2% fewer
+/// instructions: findings O31). Sample `at`
+/// of the window, while `rows` rows are complete, is held at the returned
+/// index: its quarter turned on by `rows`, so the quarter a row leaves is
+/// the one the next row's last quarter fills.
+#[inline(always)]
+fn ring_at(at: usize, rows: usize) -> usize {
+    ((at / HOP + rows) % QUARTERS) * HOP + at % HOP
+}
+
+/// The window's quarters in order (see [`ring_at`]) while `rows` rows are
+/// complete.
+#[inline(always)]
+fn ring_quarters(window: &[f32; WINDOW], rows: usize) -> [&[f32; HOP]; QUARTERS] {
+    core::array::from_fn(|q| {
+        let at = ring_at(q * HOP, rows);
+        match window[at..at + HOP].try_into() {
+            Ok(quarter) => quarter,
+            Err(_) => unreachable!(),
+        }
+    })
 }
 
 /// Each power's level into `levels`, of the same length, by

@@ -228,6 +228,34 @@ fn row_origin_puts_nominal_symbol_centres_on_rows_5_7_9() {
 }
 
 #[test]
+fn rows_are_the_levels_of_each_window() {
+    // Each row is the levels of its own window of the slot, as the
+    // transform of the joined window gives them: so the window's slide (or,
+    // where the target has no vector unit and in the tests built with
+    // `cat_ft8_test_group_one`, its ring of quarters) holds every row's
+    // samples in order. Blocks of 1 921 samples end within a quarter.
+    let samples = slot("K1ABC W9XYZ -11", 812.5, 0.3, 0.1, 0.03, 7);
+    for band in [Band::DEFAULT, Band::SMALL] {
+        let (levels, rows) = spectrogram_of(&samples, band, 1_921);
+        assert_eq!(rows, ROWS);
+        let width = band.stored_bins();
+        let mut buf = crate::decode::fft::FftBuffer::new();
+        let mut p = vec![0.0f32; width];
+        for r in 0..rows {
+            let window: &[f32; WINDOW] = samples[ROW_ORIGIN + r * HOP..][..WINDOW]
+                .try_into()
+                .unwrap();
+            crate::decode::fft::power_spectrum(window, &mut buf, band.first_bin(), &mut p);
+            let want: Vec<u8> = p.iter().map(|&x| level_of(log2_power(x))).collect();
+            assert!(
+                levels[r * width..(r + 1) * width] == want[..],
+                "{band:?} row {r}"
+            );
+        }
+    }
+}
+
+#[test]
 fn rows_do_not_depend_on_block_sizes() {
     let samples = slot("K1ABC W9XYZ -11", 812.5, 0.3, 0.1, 0.03, 7);
     let (whole, _) = spectrogram_of(&samples, Band::DEFAULT, SLOT_SAMPLES);

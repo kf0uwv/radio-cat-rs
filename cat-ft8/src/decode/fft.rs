@@ -913,6 +913,48 @@ fn straight_first_stage(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f3
     }
 }
 
+/// [`straight_first_stage`] from the window held as its four quarters
+/// (`quarters[m]` holds samples m·`INPUT_STEP` .. (m + 1)·`INPUT_STEP`):
+/// block b's inputs m = 0..4 are samples first + m·`INPUT_STEP` (and the
+/// next), with first + 1 < `INPUT_STEP`, so input m lies in quarter m at
+/// `first`. The same window products and butterfly as
+/// [`straight_first_stage`] on the joined window.
+#[inline(always)]
+fn quarters_first_stage(quarters: [&[f32; INPUT_STEP]; 4], re: &mut [f32; N], im: &mut [f32; N]) {
+    // As in `straight_first_stage`.
+    let w: [[[f32; 2]; 4]; 3] = straight_twiddles!(4, 0, [1 2 3], [0 1 2 3]);
+    for (c, (r, i)) in re
+        .chunks_exact_mut(4)
+        .zip(im.chunks_exact_mut(4))
+        .enumerate()
+    {
+        let first = 2 * usize::from(DIGIT_REV[4 * c]);
+        // Each quarter's pair named (an array of them was built on the
+        // stack each block on the Cortex-M33: findings O31).
+        let (x0, x1, x2, x3) = (
+            &quarters[0][first..first + 2],
+            &quarters[1][first..first + 2],
+            &quarters[2][first..first + 2],
+            &quarters[3][first..first + 2],
+        );
+        let low = &HANN_HALF[first..][..INPUT_STEP + 2];
+        let high = &HANN_HALF[INPUT_STEP - 1 - first..][..INPUT_STEP + 2];
+        let ar = [
+            x0[0] * low[0],
+            x1[0] * low[INPUT_STEP],
+            x2[0] * high[INPUT_STEP + 1],
+            x3[0] * high[1],
+        ];
+        let ai = [
+            x0[1] * low[1],
+            x1[1] * low[INPUT_STEP + 1],
+            x2[1] * high[INPUT_STEP],
+            x3[1] * high[0],
+        ];
+        straight_butterfly!(@store ar, ai, r, i, 1, [1 2 3], [0 1 2 3], (m, q) => w[m - 1][q]);
+    }
+}
+
 /// Normalised power of real-transform bin k from a = Z[k], c = Z[N − k]
 /// and the real-split twiddle w = W₃₈₄₀ᵏ: |E + w·O|² / 960², with
 /// E = (a + b) / 2, O = (a − b) / (2i) = −i · (a − b) / 2, b = conj(c).
@@ -1002,6 +1044,32 @@ pub(crate) fn power_bins<F: FnMut(usize, &[f32])>(
     assert!(first_bin + count <= BINS, "bins beyond the transform");
     spectrum(samples, buf);
     let (re, im) = buf.parts();
+    let mut p = [0.0f32; POWER_CHUNK];
+    let mut i = 0;
+    while i < count {
+        let n = (count - i).min(POWER_CHUNK);
+        bin_powers(re, im, first_bin + i, &mut p[..n]);
+        f(i, &p[..n]);
+        i += n;
+    }
+}
+
+/// [`power_bins`] of the window held as its four quarters
+/// (`quarters[m]` holds samples m·960 .. (m + 1)·960, as the front end's
+/// ring hands them where the target has no vector unit), by the one-lane
+/// transform ([`quarters_first_stage`], [`straight_stages`]): the same
+/// powers bit for bit.
+pub(crate) fn power_bins_quarters<F: FnMut(usize, &[f32])>(
+    quarters: [&[f32; INPUT_STEP]; 4],
+    buf: &mut FftBuffer,
+    first_bin: usize,
+    count: usize,
+    mut f: F,
+) {
+    assert!(first_bin + count <= BINS, "bins beyond the transform");
+    let (re, im) = buf.parts();
+    quarters_first_stage(quarters, re, im);
+    straight_stages(re, im);
     let mut p = [0.0f32; POWER_CHUNK];
     let mut i = 0;
     while i < count {

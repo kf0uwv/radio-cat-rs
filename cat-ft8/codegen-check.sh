@@ -24,7 +24,8 @@
 # out edge by edge on the Cortex-M33 (`min_sum_check_bits!`, one block a
 # degree), that a row's levels there take a guess and one step rather
 # than the logarithm, in their own loop (`levels_by_steps_out_of_line`),
-# and that the belief-propagation rounds take their variables' totals
+# that the front end's window there is a ring of quarters, not slid each
+# row, and that the belief-propagation rounds take their variables' totals
 # without a bounds check.
 # Their speed depends on code generation that no test sees: the
 # sum-product round's tanh and atanh passes 24 values at a time
@@ -86,7 +87,9 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # bound; `fpmul` counts `vmul`, `vmla` and `vmls` on `f32`, at least the
 # bound; `divides` counts `umull` and `udiv`, at most the bound;
 # `zerofills` counts calls of `__aeabi_memclr4`, `__aeabi_memclr` and
-# `memset`, at most the bound; `sumloopN` counts the instructions of the
+# `memset`, at most the bound; `memmoves` counts calls of
+# `__aeabi_memmove4`, `__aeabi_memmove`, `memmove` and a `copy_within`
+# left out of line, at most the bound; `sumloopN` counts the instructions of the
 # shortest loop with N byte loads, at most the bound, and a function with no
 # such loop fails it with its own message; `fploopN` counts
 # the instructions of the shortest loop with at least N `f32`
@@ -218,6 +221,16 @@ checks=(
   "m33s 10finish_row divides 0"
   # The FFT without zero fills beyond the one.
   "m33s 10finish_row zerofills 1"
+  # The row from the window's ring of quarters, each quarter's pair of
+  # samples read without an array of the four built a block (849; the
+  # whole row, so a form that adds work anywhere in it can pass by
+  # removing it elsewhere: re-measure on such a change).
+  "m33s 10finish_row insns 870"
+  # The window as a ring: no slide of the window (a memmove of 11 520
+  # bytes a row) in the front end's feeds.
+  "m33s 11Spectrogram4feed memmoves 0"
+  "m33s 11Spectrogram8feed_i16 memmoves 0"
+  "m33s 11Spectrogram4skip memmoves 0"
   # The sync search's running sums: three levels a bin.
   "m33s 6select sumloop3 16"
   # On the hosts its column sums in 16-bit vector lanes (the eight tones
@@ -380,6 +393,7 @@ for entry in "${checks[@]}"; do
     metric == "fpmul" && /^\tv(mul|mla|mls)\.f32\t/ { n++; nf[found]++ }
     metric == "divides" && /^\t(umull|udiv)\t/ { n++; nf[found]++ }
     metric == "zerofills" && /^\tbl\t(__aeabi_memclr4|__aeabi_memclr|memset)$/ { n++; nf[found]++ }
+    metric == "memmoves" && /^\tbl\t(__aeabi_memmove4|__aeabi_memmove|memmove|.*copy_within.*)$/ { n++; nf[found]++ }
     metric == "carries" && /^\tadc/ { n++; nf[found]++ }
     metric == "fpneg" && /^\tvneg\.f32\t/ { n++; nf[found]++ }
     metric == "eors" && /^\teor\t/ { n++; nf[found]++ }
@@ -457,6 +471,7 @@ for entry in "${checks[@]}"; do
     fpcmps) what="f32 compares (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     divides) what="divisions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     zerofills) what="zero-fill calls (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    memmoves) what="memmove or copy_within calls (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     sumloop*) what="instructions in the summing loop (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     fploop*) what="instructions in the loop of ${metric#fploop} f32 adds (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     cvtloop*) what="instructions in the loop of ${metric#cvtloop} conversions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
