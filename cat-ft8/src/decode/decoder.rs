@@ -991,11 +991,12 @@ impl<'a> Decoder<'a> {
     /// partial residual and the next pass does not run). The list then
     /// holds every pass run so far, whole, and the report says
     /// [`PassesEnd::Stopped`], unless an end checked before it applies:
-    /// a stop asked for during pass 1 reports [`PassesEnd::NothingNew`],
-    /// [`PassesEnd::WeakLoneDecode`] or [`PassesEnd::ListFull`] if pass 2
-    /// would not have run anyway. This is a safety net for a deadline; a count-based
-    /// limit ([`DecodeConfig::max_subtractions`]) keeps the output
-    /// reproducible.
+    /// a stop asked for during a pass reports the end that applies after
+    /// it ([`PassesEnd::NothingNew`], [`PassesEnd::ListFull`],
+    /// [`PassesEnd::WeakLoneDecode`] after pass 1, [`PassesEnd::AllPasses`]
+    /// after the last pass) if the next pass would not have run anyway.
+    /// This is a safety net for a deadline; a count-based limit
+    /// ([`DecodeConfig::max_subtractions`]) keeps the output reproducible.
     pub fn decode_passes_staged(
         &mut self,
         audio: &mut [f32],
@@ -1386,10 +1387,11 @@ impl PassesReport {
 }
 
 /// Why [`Decoder::decode_passes`] ran no further pass: the first end that
-/// applied. A diagnostic: a stop asked for during pass 1 shows as
-/// [`PassesEnd::NothingNew`], [`PassesEnd::WeakLoneDecode`] or
-/// [`PassesEnd::ListFull`] if one applied, so a deadline's overrun is not
-/// to be inferred from it.
+/// applied. A diagnostic: a stop asked for during a pass shows as the end
+/// that applies after it ([`PassesEnd::NothingNew`],
+/// [`PassesEnd::ListFull`], [`PassesEnd::WeakLoneDecode`] after pass 1,
+/// [`PassesEnd::AllPasses`] after the last pass) if one does, so a
+/// deadline's overrun is not to be inferred from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum PassesEnd {
