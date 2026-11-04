@@ -213,7 +213,7 @@ checks=(
   # profile compiles them.
   "a64 6select vec8h 24"
   "x64 6select paddw 16"
-  "a64 6select uaddw8h 16"
+  "a64 6select uaddw8h 16 one"
   "a64r 6select uaddw8h 16 one"
   "x64r 6select paddw 16 one"
   # The fit one lane at a time with its sums in registers.
