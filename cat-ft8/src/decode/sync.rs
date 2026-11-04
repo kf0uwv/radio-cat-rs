@@ -250,7 +250,7 @@ fn costas_scores_running(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell])
 }
 
 /// Base bins [`costas_scores_by_columns`] takes at a time. Not tuned: 64
-/// was the one size timed (32 gives the same values; findings O29).
+/// was the one size timed (findings O29).
 const COLUMN_CHUNK: usize = 64;
 
 /// [`costas_scores`] where the target has a vector unit. A row's eight
@@ -274,15 +274,16 @@ fn costas_scores_by_columns(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCel
         // Tone 7's level at the last bin is the row's last one used.
         read[n] = &row[..cols + 14];
         // At most 2 · 7.
+        debug_assert!(at <= usize::from(u8::MAX));
         sent_at[n] = at as u8;
         n += 1;
     })?;
     let (read, sent_at) = (&read[..n], &sent_at[..n]);
+    // A column or sent sum adds at most `COSTAS_ROWS` levels of a `u8`.
+    const _: () = assert!(COSTAS_ROWS as u32 * u8::MAX as u32 <= u16::MAX as u32);
     for (c, chunk) in out.chunks_mut(COLUMN_CHUNK).enumerate() {
         let first = c * COLUMN_CHUNK;
         let len = chunk.len();
-        // A column or sent sum adds at most `COSTAS_ROWS` levels of a `u8`.
-        const _: () = assert!(COSTAS_ROWS as u32 * u8::MAX as u32 <= u16::MAX as u32);
         let mut column = [0u16; COLUMN_CHUNK + 14];
         let mut sent = [0u16; COLUMN_CHUNK];
         for (row, &at) in read.iter().zip(sent_at) {
