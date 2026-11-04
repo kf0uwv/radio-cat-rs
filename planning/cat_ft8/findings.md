@@ -15484,3 +15484,558 @@ thumbv8m library); workspace tests (debug); profile and no-std tests;
 the release tests with the ignored ones; the group-of-one forms; the
 bulk run; MSRV 1.75; docs (std and no-std); `check.sh --stack`; the
 code-generation check. All pass.
+
+
+## The sync search's Costas scores by columns, twenty-ninth round (O29, bit-identical, 2026-11-03)
+
+Base: 32848a1 (O28c's head). A profile first (A76 PC samples on both
+slots, M33 per-function and per-block counts), then trials of the FFT,
+which the profile put first, and of the sync search, which it put
+fourth. Two commits: 1816faa (the Costas scores summed down the columns
+first, on the hosts) and dcbd7f2 (codegen-check reads the FFT as the
+release profile compiles it). Decodes, records, residuals and encoder
+output are identical. Three FFT trials were built, timed and dropped
+(below): the A76 ran each slower although each took fewer instructions
+in the loop it changed.
+
+| target | measure | 32848a1 | 1816faa | change |
+|---|---|---|---|---|
+| Cortex-A76, crowded host slot (medians of 4) | sync | 4.675 ms | 3.080 ms | **−34.1%** |
+| | slot | 75.7 ms | 74.1 ms | **−2.1%** |
+| Cortex-A76, one pass | slot (sync) | 17.1 (1.540) ms | 16.5 (1.010) ms | −3.5% (**−34.4%**) |
+| Cortex-A76, `slotcost small small 200 5` | sync | 1.380 ms | 0.895 ms | **−35.1%** |
+| | slot | 10.3 ms | 9.8 ms | **−4.9%** |
+| x86-64, user cycles of the whole program (medians of 4) | `slotcost small small 200 5` | 91.22 G | 84.10 G | **−7.80%** |
+| | `slotcost host host,passes=1 200 5` | 299.10 G | 288.08 G | **−3.68%** |
+| Cortex-M33 | images | | | unchanged |
+
+The timed builds are of the tree 1816faa holds (its eight binaries'
+`.text` and `.rodata` equal the timed builds'); dcbd7f2 changes only
+codegen-check, and its eight binaries equal 1816faa's.
+
+### The profile at 32848a1
+
+One build of 32848a1 from one scratch path (aligned hosts, thumbv8m with
+`--cfg cat_ft8_minmaxnm`), rustc 1.93.0. A76 PC samples (core 3, one
+benchmark at a time) over `slotcost host host 200 5` (100 µs, 1 552 192
+samples in the decoder's steps) and `slotcost small small 200 5` (50 µs,
+429 235).
+
+| slot | function (share of the decoder's samples) |
+|---|---|
+| small | `power_bins` 52.0%, `min_sum_round` 19.9%, `soft_bits_at` 8.6%, the sync search's score closure 7.8%, `search_rows` 5.6%, `decode_soft` 1.6% |
+| host | `sum_product_round` 23.0%, `power_bins` 21.5%, `subtract::run` 14.6%, the synthesiser's phases 9.2%, the correlation 5.7%, the references 4.9%, the fit 4.7%, the score closure 3.5%, `soft_bits_at` 3.1% |
+
+`power_bins` on the small slot, by loop: the last stage (357
+instructions a step of four butterflies) 11.9%, the first stage from the
+samples (244 a group of four blocks) 9.2%, the second stage (`stage::<4,
+4, 4>`, 178 a block of 16, its butterflies across q with scalar loads
+and the stack between them) 7.2%, the third stage's blocks 5.0%, the
+radix-3 blocks 3.9%, the levels 3.8%. The score closure is one loop of
+41 instructions a step of eight bins (7.5% of the slot): each bin's
+eight tones' levels widened and added afresh, in each of the 21 rows a
+start row reads.
+
+### The Costas scores by columns (1816faa)
+
+A start row's score at base bin b is Σ over the rows read (up to 21:
+three Costas arrays of seven symbols) of 8 · level(b + 2 · tone) less
+the eight tones' levels Σₜ level(b + 2t). The second part does not depend
+on the tone sent, so where the target has a vector unit the rows'
+levels are now added down each column first (`costas_scores_by_columns`)
+and each bin takes eight of those column sums, plus its 21 sent tones'
+levels: about 50 values a bin instead of 189. The bins go 64 at a time,
+so the column and sent sums are small `u16` arrays on the stack (each a
+sum of at most 21 levels of a `u8`, 21 · 255 = 5 355, a const assertion
+since O29b; a bin's eight column sums are added in `i32`). Integer sums in another
+order: the scores are the same. The Cortex-M33 (no vector unit) keeps
+O25b's running sums along each row; its images are unchanged.
+
+- Instructions (one unit): the closure 647 → 598 on AArch64, its 16-bit
+  vector instructions (`.8h`) 13 → 26; x86-64 807 → 729, `paddw` 0 → 18.
+- x86-64 user instructions of the whole small-slot program −9.98%,
+  host −4.89% (below).
+- Stack: the closure's frame grows by the arrays and the 21 rows' slices,
+  96 → 928 B on AArch64 and 88 → 872 B on x86-64 (+832 and +784 B,
+  transient, once per start row's scores); no static or scratch memory
+  changes (`--profile`'s figures are as at 32848a1).
+
+### Cortex-A76 (Raspberry Pi 5; medians of 4 alternated cycles)
+
+Aligned builds from one scratch path of 32848a1 and of 1816faa's tree;
+core 3, the throttle word, clock and temperature sampled once a second
+from core 0, a 5 s sampled busy loop on core 3 before each run; per cycle
+`slotcost host host,passes=1 200 5` then `slotcost small small 200 5` of
+each build, forward on odd cycles and reversed on even.
+
+| ms (median, spread) | 32848a1 | 1816faa |
+|---|---|---|
+| host: sync | 4.675 (0.010) | **3.080 (0.010)** |
+| host: belief propagation / feed / subtract / soft bits | 18.000 / 16.830 / 33.330 / 2.380 | 17.995 / 16.810 / 33.300 / 2.380 |
+| host: slot / worst | 75.7 / 80.2 | **74.1 / 78.5** |
+| one pass: slot, sync | 17.1, 1.540 | 16.5, 1.010 |
+| small: sync | 1.380 (0.000) | **0.895 (0.010)** |
+| small: belief propagation / feed / soft bits | 2.230 / 5.610 / 0.890 | 2.230 / 5.570 / 0.890 |
+| small: slot / worst | 10.3 / 10.5 | **9.8 / 10.0** |
+
+- **Placement check.** The stages the commit does not touch agree within
+  0.04 ms (the small slot's feed 5.610 against 5.570, its largest
+  difference; the host slot's within 0.03). The sync gains (1.6 ms host,
+  0.49 ms small) are many times every spread. No placement variation
+  was run.
+- **Validity (the strict rule).** All 40 timed runs of the round (this
+  table's 16, the two profile runs and the 22 of the dropped trials
+  below) read throttled=0x0 in every sample (3 043 in runs, 200 in the
+  warm-ups) and at their end, every sample at 2 400 MHz, peak 56.0 °C,
+  no under-voltage message in the kernel log since each run's start and
+  no time below the top frequency in core 3's cpufreq statistics.
+- **The validity rule's tooling** (not in the repository) was corrected
+  first: a failing or unreadable kernel log now voids a run instead of
+  counting zero events; the under-voltage messages are counted once,
+  since the run's start time, rather than as two whole-boot counts
+  compared; core 3's `time_in_state` is read before the program starts,
+  not after its launch; the validator's self-test has one case for each
+  void cause alone (27 cases, all as expected). A probe confirmed the
+  benchmarking user can read this boot's kernel log and core 3's
+  statistics (governor `ondemand`).
+- **After the timing.** Three minutes after the round's last timed run
+  ended, the board logged two short under-voltage events (during the A76
+  identity's record runs) and its sticky bits read
+  0x50000 from then on. No timing ran after it; the identity and the
+  library tests that followed allowed the sticky base with no current
+  bit (they do not time anything).
+
+### x86-64 (Threadripper 3970X, core 5, `perf stat` user counters over the whole `slotcost` program)
+
+Builds as on the A76, four alternated rounds, a check for other local
+jobs before and after each sample: none void.
+
+| build | small: cycles (median, range) | instructions | host: cycles (median, range) | instructions |
+|---|---|---|---|---|
+| 32848a1 | 91.22 G (90.37–91.46) | 280.57 G | 299.10 G (297.93–299.78) | 813.95 G |
+| 1816faa | **84.10 G (83.60–84.51), −7.80%** | 252.56 G (−9.98%) | **288.08 G (287.77–288.85), −3.68%** | 774.15 G (−4.89%) |
+
+The ranges do not overlap in either configuration.
+
+### Cortex-M33
+
+The four thumbv8m images (check and staged, small and host) of 1816faa
+and dcbd7f2 equal 32848a1's, so its counts stand: s0086 small 175 092
+578, host 1 427 792 829 emulated instructions; s0407 168 441 722 and
+1 424 527 826. `check.sh --stack`: flash small 91 958 B, host 104 766 B,
+encoder 35 190 B; static RAM 201 592 and 230 008 B; no fused
+multiply-add (`vmla` 128 / 241 / 17). M4F images (sizes and library
+calls) equal 32848a1's: flash 92 192 and 105 200 B, `fmaxf`/`fminf` 10
+and 14, no `f64` helper, no fused multiply-add.
+
+### Sizes (one scratch path, aligned; `.text` + `.rodata`, B)
+
+| binary | 32848a1 | 1816faa | change |
+|---|---|---|---|
+| x86-64 `cat-ft8-decode` | 464 710 + 93 504 | 467 718 + 93 488 | +2 992 |
+| x86-64 `paired_bench` | 1 419 062 + 156 428 | 1 422 054 + 156 428 | +2 992 |
+| AArch64 `cat-ft8-decode` | 398 184 + 85 824 | 399 864 + 85 784 | +1 640 |
+| AArch64 `paired_bench` | 1 171 160 + 147 132 | 1 172 824 + 147 124 | +1 656 |
+
+### Sections of all eight binaries
+
+| binary | 1816faa against 32848a1 | dcbd7f2 against 1816faa |
+|---|---|---|
+| x86-64 and AArch64 `cat-ft8-decode`, `paired_bench` | differ (equal to the timed build) | identical |
+| M33 check and staged, small and host | identical | identical |
+
+### The code-generation check
+
+1816faa: `vec8h` (instructions with an `.8h` operand, a floor) and
+`paddw` (`paddw`/`vpaddw`, a floor); `a64 6select vec8h 24` and `x64
+6select paddw 16`. dcbd7f2: a release-form x86-64 build (`x64r`, 16
+codegen units, as `a64r`) and `power_bins`' bounds in the release form,
+where `finish_row` is inlined into it (O28 read them but added none):
+`a64r power_bins ldn 12`, `insns 3000` (2 770), `vec2 32` (4); `x64r
+power_bins mulloop80 470` (462), `insns 3500` (3 242).
+
+Forced forms, each a fresh copy of the commit's tree with one edit, its
+own log and the check's exit status:
+
+| form (on 1816faa) | a64 `6select` vec8h (≥ 24) | x64 `6select` paddw (≥ 16) | exit |
+|---|---|---|---|
+| head | 26 | 18 | 0 (63 of 63) |
+| the hosts on the running sums (equivalent) | **0** | **0** | 1 |
+| the form before (eight tones afresh a row; equivalent) | **13** | **0** | 1 |
+| the column sums in 32-bit lanes (equivalent) | 34 | **0** | 1 |
+
+| form (on dcbd7f2) | a64r `power_bins` ldn (≥ 12) | x64r `power_bins` mulloop80 (≤ 470) | exit |
+|---|---|---|---|
+| head | 12 | 462 | 0 (68 of 68) |
+| O26b's g1: the last stage side by side, its twiddles gathered | **2** | **697** | 1 |
+| O26b's g2: the last stage's index reduced mod N | **11** | **no loop** | 1 |
+
+No other check failed in any form but the one-unit FFT bounds O26b set,
+which g1 and g2 fail as before. What the checks miss: the 32-bit form
+still reads 34 `.8h` instructions on AArch64 (its widening and narrowing
+moves), so only x86-64 catches it there; a column form moved out of the
+closure would fail them (the count is the closure's), which is the
+intent. `a64r power_bins insns` and `vec2` have no forced form of their
+own this round (O26b's g3 and g4, the six segments and the segments at
+run time, were not rebuilt).
+
+### Identity
+
+The references are b93516e's outputs (x86-64 records and WAV lines, the
+A76's compared with them), 68634cc's (M33 dumps and residuals) and
+70be604's (encoder WAVs), as in every round since.
+
+- **Records, x86-64** (1816faa): the 73 800 `paired_bench run` records
+  equal b93516e's (host, one pass, small: 24 600 each, 0 differ; exit 0
+  each).
+- **800 WAV slots** × 3 × 3, x86-64: 93 091 lines byte-identical; the
+  2 400 `--profile` lines differ from b93516e's by the figures O26b and
+  O28 accounted for (the table bytes; `candidate_scratch_bytes` 4 872 →
+  4 800 and `peak_bytes` 72 B lower), which the comparison allows
+  exactly and nothing else (exit 0): this commit changes no reported
+  memory.
+- **A76** (1816faa): its `paired_bench` records equal x86-64 b93516e's
+  (73 800, 0 differ; exit 0 each), and its `cat-ft8-decode` over the 800
+  WAV slots × 3 × 3 gives the same 93 091 identical lines and 2 400
+  `--profile` lines as accounted above (exit 0). One benchmark at a
+  time; the WAV half ran after the board's sticky bits were set (203
+  samples, all 0x50000, no current bit).
+- **Encoder**: the 45 `cat-ft8-encode` WAVs equal 70be604's.
+- **Cortex-M33 (emulated)**: the small and host dump images on seven
+  slots and the multi-pass residuals of s0086 and s0407 equal 68634cc's
+  (16 of 16; exit 0).
+- **Comparators on a forced difference** (copies of 1816faa's outputs,
+  each its own exit status): the records comparison 0 unforced, 1 with
+  one record's field changed; the WAV comparison 0 unforced, 1 with one
+  decode line's frequency 874 → 875, 1 with one `peak_bytes` one higher,
+  1 with one `candidate_scratch_bytes` 4 800 → 4 801; the M33 comparison
+  0 unforced (16 identical), 1 with one bit of one dump flipped (15
+  identical, 1 differ); `cmp` of an encoder WAV 0 unforced, 1 with one
+  byte changed.
+
+### Tests and mutants
+
+The test that compares both forms of the scores with `costas_score` at
+every base bin, start row and band (four bands, 9 to the default's base
+bins; five slot lengths) covers the column form, its chunk tails
+included. Mutants in fresh copies of the tree, release library tests
+(216), one log each:
+
+| mutant | failing |
+|---|---|
+| none (control) | 0 |
+| c1 each column two levels short | 6 |
+| c2 seven tones of eight in a bin's sum | 2 |
+| c3 the sent tone's level one bin along | 10 |
+| c4 the scale left out | 3 |
+| c5 one Costas array enough for a score | 1 |
+| c6 the last row read left out | 2 |
+| c7 the tones one bin apart, not two | 5 |
+| c8 the chunks overlapping by a bin | 19 |
+| c9 the sent tone weighted 7 | 7 |
+| c10 a missing row not reported as no score (unreachable: rows below the filled count are filled; the form before has the same untested branch) | 0 |
+| e1 chunks of 32 (equivalent) | 0 |
+| e2 the hosts on the running sums (equivalent; its forced form fails the check) | 0 |
+
+### Checks
+
+- **Local CI** passes at 1816faa and at dcbd7f2, 17 of 17 steps: fmt;
+  clippy `-D warnings` (workspace, all targets and features, thumbv8m);
+  workspace, profile, no-std and release tests with the ignored ones;
+  the group-one step; the bulk run; MSRV 1.75; docs with and without
+  `std`; `check.sh --stack`; codegen-check (63 of 63 at 1816faa, 68 of
+  68 at dcbd7f2). Release library tests with the ignored ones: 226 pass;
+  the group-one step 216 pass, 10 ignored.
+- **A76 release library tests** with the ignored ones, cross-built at
+  1816faa: 225 pass, 0 fail (the source-tree test filtered out); 240
+  throttle samples, all 0x50000 with no current bit (after the event
+  above).
+
+### Tried, not kept
+
+- **The FFT's twiddles read whole** (the profile's first candidate: the
+  last stage's twiddles of m = 3 and 4, taken lane by lane since O26).
+  The table's entries as 8-byte values (the generated turn as their
+  bits, built into the table at compile time) let the loop vectoriser
+  load m = 3 and 4 with `ld3` and `ld4` of 64-bit lanes and split the
+  parts with `uzp1`/`uzp2`: the AArch64 loop 330 → 281 instructions a
+  step of four butterflies (one unit). The A76 ran it slower: the feed
+  16.825 → 17.545 ms on the host slot (+4.3%, spreads ≤ 0.07; slot 75.7
+  → 76.45), 5.610 → 5.880 on the small one (slot 10.3 → 10.6), four
+  alternated cycles, every other stage within 0.03 ms. On x86-64 the
+  whole reads made the vectoriser take two butterflies a step instead of
+  four (192 trips of 334 instructions for 96 of 462): +2.3% of the whole
+  small-slot program's instructions; there the parts read apart compile
+  as before. On the Cortex-M33 the whole reads took 1.00% fewer
+  instructions in the feed (s0086 small slot −0.48%, host −0.18%; s0407
+  likewise), part reads compiled exactly as before, and whole reads of
+  entries with the bytes' own alignment 3.72% more (the M33 has no
+  unaligned 8-byte load: 125 `vmov` in `finish_row` against 29). Not
+  kept: slower on the A76, and the M33's part alone is under the ~2% at
+  which O28b keeps the simpler code.
+- **The FFT's first two stages as one** (AArch64): the first stage's
+  group of four blocks is the second stage's block of 16, so the second
+  stage ran on the group's outputs before they were stored (a 4 × 4
+  transpose in registers, each value's operations unchanged; tested bit
+  for bit against the two stages). One unit: 334 instructions a block
+  against 236 + 152. The release form (16 units), which the A76 runs,
+  compiled it to 539 (140 `fmul`) against 244 + 160, and the A76's feed
+  rose 16.830 → 17.650 ms on the host slot and 5.610 → 5.865 on the
+  small (two alternated cycles, then stopped). On x86-64 the fused loop
+  was 533 instructions against 243 + 253. Not kept.
+- **A layout for belief propagation's `sums` whose indices the compiler
+  can bound** (a candidate since O27): not built. The messages
+  are 522 `f32`s and the indices `u16`; the only bound by type is
+  padding the messages to 1 024 entries (+2 KB in `BpScratch`), against
+  the check's two instructions of 20 a variable; O28 found clamping gave
+  nothing.
+
+### What bounds the stages now (A76)
+
+- The small slot, by 32848a1's profile scaled by the sync's measured
+  gain (not re-profiled): the FFT about 55%, min-sum 21%, `soft_bits_at`
+  9%; the sync search is now about 9% of it, of
+  which the local-maximum selection (`search_rows`' branchy loops,
+  5.6% of the slot at 32848a1) is now the larger part.
+- The host slot: the subtraction (44%), belief propagation (24%), the
+  feed (22%).
+
+### Next candidates (not built)
+
+| candidate | estimate | cost |
+|---|---|---|
+| The FFT's second stage (`stage::<4, 4, 4>`: scalar loads, butterflies across q, the stack between; 7.2% of the A76 small slot) | its loop at the third stage's form: about a third of it | a form the release build keeps (the fusion did not) |
+| `search_rows`' selection (5.6% of the A76 small slot, mostly compares and branches) | uncertain | a branch-light suppression with the same order of candidates |
+| Min-sum's groups (8.6 + 4.2% of the A76 small slot) | — | none known bit-identical |
+| `soft_bits_at` (8.6%) | uncertain | its interpolation reads |
+| The M33's Costas scores by columns (scalar) | the running sums' three levels a bin against about 2.4 | not tried; the next action (O29b) |
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instruction counts only, and its code is
+  unchanged); M4F counts.
+- The hosts' stack beyond the changed function's frame (read from its
+  prologue); other chunk sizes than 64 timed (32 is equivalent by value,
+  mutant e1).
+- Sparse and empty slots; off-air recordings; a placement variation on
+  the A76; the A76 per-loop profile after the commit; x86-64
+  per-function shares.
+- A76 timing of dcbd7f2 (its binaries are 1816faa's) and of the commit
+  itself (its binaries equal the timed build's).
+
+### Risks
+
+- The gain rests on the hosts vectorising the column and sent sums in
+  16-bit lanes; bounded by `vec8h` and `paddw`. On AArch64 the 32-bit
+  form still passes `vec8h` (34); x86-64's `paddw` catches it.
+- The `u16` sums are exact only while a start row reads at most 21 rows
+  of 8-bit levels (const assertion, since O29b on `COSTAS_ROWS · u8::MAX
+  ≤ u16::MAX`, the bound the sums need).
+- The closure's stack frame grows by about 0.8 KB on the hosts; the M33
+  is unchanged.
+
+
+## Review follow-ups to the Costas scores by columns (O29b, bit-identical, 2026-11-04)
+
+Base: 2409f30 (O29's head). Three code commits after the reviews of
+O29: 5043027 (the column sums' `u16` bound stated as the code needs it;
+docs), 7ec91b5 (one gather of the Costas rows for both forms of the
+scores) and e97a42a (codegen-check tells 16-bit column sums from 32-bit
+ones). Decodes, records, residuals and encoder output are identical.
+
+### The bound (5043027)
+
+The column and sent sums are each a sum of at most `COSTAS_ROWS` (21)
+`u8` levels; a bin's eight column sums and its score are added in `i32`.
+The assertion is now `COSTAS_ROWS as u32 * u8::MAX as u32 <= u16::MAX as
+u32` (5 355 ≤ 65 535), a `const _` beside the arrays, in place of O29's
+`COSTAS_ROWS · 8 · 255`, which bounded a sum the code never keeps in
+16 bits. The doc comment and O29's text above say the same. The chunk
+of 64 bins is noted in the code as not tuned; the scores test's
+description of the two forms is brought up to date. Sections of all
+eight binaries equal 1816faa's.
+
+### One gather for both forms (7ec91b5)
+
+The rows a start row reads (every symbol of every Costas array in the
+filled rows), their sent tones' offsets, how many and the scale were
+found twice, once in each form. `gather` now finds them for both: it
+calls a visitor with each row and its offset (2 · tone) and returns the
+scale, or `None` below two arrays (or on the unreachable missing row).
+`costas_scores` is a dispatch between `costas_scores_by_columns` and
+`costas_scores_running`, with the one "no score" fill after it; the
+column form stores the offsets as `u8`.
+
+- **A first form, not kept:** `gather` returning the rows, offsets, count
+  and scale as one value (an array of 21 slices). Its M33 images grew by
+  196 B of code (the sync closure storing then rereading the rows). The
+  visitor keeps the M33's running sums reading each row as it is found.
+- **M33 images.** Not byte-identical (no form tried was: the two
+  "no score" paths become one): the sync closure 196 → 187 instructions,
+  its summing loop as before (codegen-check `sumloop3` 15 of ≤ 16);
+  flash small 91 958 → 91 930 B, host 104 766 → 104 738; static RAM,
+  encoder (35 190 B) and `vmla` counts (128 / 241 / 17, no fused
+  multiply-add) unchanged; M4F text 92 192 → 92 164 and 105 200 →
+  105 172, its library calls unchanged.
+- **M33 counts** (emulated, staged images, against 32848a1's, whose
+  images 1816faa's equal):
+
+| slot | image | 1816faa | 7ec91b5 | change | sync stage |
+|---|---|---|---|---|---|
+| s0086 | small | 175 092 578 | 175 089 589 | −0.002% | −0.016% |
+| | host | 1 427 792 829 | 1 427 783 862 | −0.001% | −0.014% |
+| s0407 | small | 168 441 722 | 168 438 733 | −0.002% | −0.016% |
+| | host | 1 424 527 826 | 1 424 518 859 | −0.001% | −0.014% |
+
+  Decodes and stack high water unchanged (23 / 40, 30 / 38; 10 312 and
+  10 276 B). Within the 2% rule; kept.
+- **Hosts.** The release-form closure: x86-64 891 → 827 instructions,
+  AArch64 838 → 837; its frame x86-64 872 → 744 B, AArch64 928 → 784 B
+  (the offsets as `u8`). `.8h` instructions in the one-unit AArch64
+  closure 26 → 34. Sizes (`.text`): x86-64 `cat-ft8-decode` 467 718 →
+  467 446, `paired_bench` 1 422 054 → 1 421 862; AArch64 unchanged in
+  size (399 864, 1 172 824).
+
+### x86-64 timing (Threadripper 3970X, core 5, `perf stat` user counters, whole `slotcost` program)
+
+Two sets of four alternated rounds of 1816faa and 7ec91b5 (exclusive
+lock, a check for other local jobs before and after each sample; none
+void).
+
+| set | build | small: cycles (median, range) | instructions | host: cycles (median, range) | instructions |
+|---|---|---|---|---|---|
+| 1 | 1816faa | 84.34 G (83.99–84.44) | 252.56 G | 289.82 G (289.15–290.64) | 774.16 G |
+| | 7ec91b5 | 84.90 G (83.64–85.44), +0.66% | 252.49 G (−0.03%) | 289.30 G (288.46–290.46), −0.18% | 774.07 G (−0.01%) |
+| 2 | 1816faa | 83.73 G (83.65–83.88) | 252.56 G | 288.48 G (288.42–288.53) | 774.16 G |
+| | 7ec91b5 | 84.07 G (83.65–84.42), +0.40% | 252.50 G (−0.02%) | 287.65 G (287.40–287.99), −0.29% | 774.07 G (−0.01%) |
+
+- The host configuration is faster in both sets (set 2's ranges do not
+  overlap). The small slot's median is higher in both sets (+0.4 and
+  +0.7%) with overlapping ranges: 7ec91b5's samples fall at either about
+  83.65 G (as 1816faa's best) or 84.3–85.4 G. Fewer instructions in
+  both.
+- The program's own stage times (16 runs a build): the sync stage 0.59
+  ms in both builds; the small slot's other stages, whose code the commit
+  does not touch, differ by at most 0.015 ms (belief propagation 1.89 →
+  1.90, soft bits 1.17 → 1.185, feed 3.15 → 3.16). The sync code itself
+  is not slower; the small slot's difference likely lies in untouched
+  code, by placement (functions elsewhere moved: `osd::order1`'s padding,
+  `io::Error::new`), though no per-function profile was taken.
+- **Judgement:** not slower beyond noise in the changed code and in the
+  host configuration; the small slot's +0.4–0.7% median is within its
+  ranges but seen twice, and is recorded as a risk. Kept.
+- **A76 timing pending:** the board's sticky bits are set (under-voltage,
+  O29); it is not valid for timing until it is restarted.
+
+### The code-generation check (e97a42a)
+
+`uaddw8h` counts `uaddw` and `uaddw2` into `.8h` lanes (bytes widened
+and added to 16-bit sums; AArch64): 18 in the closure at 7ec91b5, in the
+one-unit build and in the release form. Floors of 16: `a64 6select
+uaddw8h 16`, `a64r 6select uaddw8h 16 one`; and `x64r 6select paddw 16
+one` (18). The header names both release-form builds; its long line
+wrapped. 71 of 71 pass at e97a42a.
+
+Forced forms on e97a42a, each a fresh copy with one edit, its own log
+and the check's exit status:
+
+| form | a64 vec8h (≥ 24) | a64 uaddw8h (≥ 16) | a64r uaddw8h (≥ 16) | x64 paddw (≥ 16) | x64r paddw (≥ 16) | exit |
+|---|---|---|---|---|---|---|
+| head | 34 | 18 | 18 | 18 | 18 | 0 (71 of 71) |
+| the column sums in 32-bit lanes | 34 | **0** | **0** | **0** | **0** | 1 |
+| the hosts on the running sums | **0** | **0** | **0** | **0** | **0** | 1 |
+| eight tones afresh a row (the form before O29) | **13** | **0** | **0** | **0** | **0** | 1 |
+
+No other check failed in any form. The 32-bit form now fails on AArch64
+and in both release forms, where O29's checks caught it on x86-64 only.
+
+### Identity (7ec91b5)
+
+- **Records, x86-64:** the 73 800 `paired_bench run` records equal
+  b93516e's (host, one pass, small: 24 600 each, 0 differ; exit 0
+  each).
+- **800 WAV slots** × 3 × 3, x86-64: 93 091 lines identical, the 2 400
+  `--profile` lines differing only by the figures accounted since O26b
+  and O28 (exit 0).
+- **Encoder:** the 45 WAVs equal 70be604's.
+- **Cortex-M33 (emulated):** the dump images on seven slots and the
+  multi-pass residuals of s0086 and s0407 equal 68634cc's (16 of 16,
+  exit 0).
+- **A76:** not run this round; pending with its timing.
+
+### Tests and mutants (7ec91b5)
+
+Mutants in fresh copies of the tree, release library tests (216), and
+for the running form also with `--cfg cat_ft8_test_group_one` (`g1`),
+one log each:
+
+| mutant | rel failing | g1 failing |
+|---|---|---|
+| none (control) | 0 | 0 |
+| r1 one Costas array enough for a score | 1 | |
+| r2 the scale fixed at 3 | 2 | |
+| r3 the sent offset one bin a tone, not two | 24 | 24 |
+| r4 a Costas array's symbols one row apart | 23 | 23 |
+| r5 an array ending on the first unfilled row counted | 1 | |
+| r6 running form: the scale left out | 1 | 3 |
+| r7 running form: the sums not cleared first | 1 | 27 |
+| r8 column form: the sent offset halved when stored | 24 | |
+| r9 column form: every row stored over the first | 23 | |
+| r10 no score not filled in as such | 1 | 1 |
+| e3 the two forms swapped (equivalent: both exact) | 0 | 0 |
+
+The missing-row `None` in `gather` stays unreachable and untested, as
+before (O29's c10).
+
+### Sections of all eight binaries
+
+| binary | 5043027 against 1816faa | 7ec91b5 against 1816faa | e97a42a against 7ec91b5 |
+|---|---|---|---|
+| x86-64 and AArch64 `cat-ft8-decode`, `paired_bench` | identical | differ | identical |
+| M33 check and staged, small and host | identical | differ | identical |
+
+### Checks
+
+- Local CI 17 of 17 at 7ec91b5 and at e97a42a (fmt; clippy `-D
+  warnings` on the workspace, thumbv8m and all features; workspace,
+  profile, no-std and release tests with the ignored ones; group-one;
+  bulk; MSRV 1.75; docs with and without `std`; `check.sh --stack`;
+  codegen-check, 68 of 68 at 7ec91b5 and 71 of 71 at e97a42a).
+
+### Next candidates (not built)
+
+| candidate | estimate | cost |
+|---|---|---|
+| **Next action:** the M33's Costas scores by columns (scalar column sums, the same `gather`) | the running sums' three levels a bin against about 2.4 | one trial. Criterion: within 2% of the running sums on the M33 (emulated counts, s0086 and s0407, small and host) → delete `costas_scores_running`, `add_row_running` and the `VECTOR_FORM` parameter, one form for every target |
+| The column form's final per-bin loop in eight `u16` lanes (its eight column sums and the sent sum kept in 16 bits until the score: 8 · 5 355 = 42 840 fits `u16`, the difference does not without an offset) | unmeasured | an offset or a widening at the end; a bound of its own in codegen-check |
+
+### Not measured
+
+- A76 timing and identity of 7ec91b5 (the board is not valid for timing
+  until restarted; pending).
+- Cortex-M33 cycles (emulated counts only); M4F counts.
+- Placement variations on x86-64; a per-function x86-64 profile of the
+  small slot's difference.
+
+### Risks
+
+- The x86-64 small slot's median whole-program cycles were +0.4% and
+  +0.7% in two sets, ranges overlapping, its sync stage unchanged. If the
+  A76 shows a slot difference beyond its spreads once the board is
+  restarted, revisit 7ec91b5.
+- The M33 images changed (−28 B, counts −0.002%); its counts were
+  measured, not its cycles.
+
+### Closing review (O29c)
+
+- The u8 narrowing of a sent offset is asserted in debug builds; the
+  u16 bound's compile-time assertion sits above the chunk loop rather
+  than in its body; the chunk size's comment no longer says 32 gives the
+  same values (every size does, by construction).
+- `a64 6select uaddw8h` takes `one`, as the release-form entry does.
+- The small slot's +0.4–0.7% x86-64 median: pooled over both sets (8 + 8
+  samples) it is +0.5%, a rank-sum test gives p ≈ 0.3; the A76 timing of
+  this form waits on the board's restart, and if it shows a slot
+  regression beyond its spreads the gather commit is reverted alone.
+- Release sections of all eight binaries are unchanged by these edits.
+

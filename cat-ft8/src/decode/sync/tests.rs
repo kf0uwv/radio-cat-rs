@@ -356,8 +356,9 @@ fn row_scores_equal_the_single_scores() {
     // Signals and noise, in a full slot and in slots cut where one, two
     // and all three Costas arrays of some start rows are filled; every
     // start row the search visits and a few beyond, every base bin; both
-    // forms of the row sums (each bin's eight tones afresh, and running
-    // sums along the bins), on every band width from the narrowest.
+    // forms of the sums (the levels summed down the columns first, and
+    // running sums along each row), on every band width from the
+    // narrowest.
     let mut slot = empty_slot();
     add_noise(&mut slot, NOISE_RMS, 11);
     for (k, msg) in ["CQ K1ABC FN42", "K1ABC W9XYZ -11", "W9XYZ K1ABC R-07"]

@@ -18,7 +18,8 @@
 # AArch64, that the clamp keeps its form on the microcontroller targets,
 # that the FFT stays written out butterfly by butterfly on the Cortex-M33
 # and its last stage one vectorised loop on AArch64 and x86-64, and that
-# the sync search's running sums keep their loop there, and that the
+# the sync search's running sums keep their loop there and its column sums
+# their 16-bit vectors on the hosts, and that the
 # belief-propagation rounds take their variables' totals without a
 # bounds check.
 # Their speed depends on code generation that no test sees: the
@@ -34,7 +35,7 @@
 # measured) the clamp is `vmaxnm`/`vminnm`; on thumbv7em
 # (no such cfg) it must not call `fmaxf`/`fminf`, the library's `max` and
 # `min`. This emits the release library's assembly (one codegen unit, and
-# for AArch64 also the release profile's 16; no std for the
+# for AArch64 and x86-64 also the release profile's 16; no std for the
 # microcontrollers) for each target and fails if a function's count is
 # past its bound. Each check below has one line on what it guards; the
 # counts each bound was set against, and the forms run against it, are in
@@ -55,13 +56,14 @@ target_dir="${CARGO_TARGET_DIR:-$here/../target/codegen-check}"
 # The builds: a name, the target, cargo's features option, a `--cfg`
 # for rustc (`-` for none), an opt-level (`-` for the release
 # profile's) and the codegen units (`1`, or `-` for the release
-# profile's 16: `a64r` is AArch64 as a release build compiles it, whose
-# code the one-unit `a64` need not be). 16 is cargo's default for the
-# release profile; if a profile sets `codegen-units`, the `-` here must
-# follow it.
+# profile's 16: `a64r` and `x64r` are AArch64 and x86-64 as a release
+# build compiles them, whose code the one-unit builds need not be). 16 is
+# cargo's default for the release profile; if a profile sets
+# `codegen-units`, the `-` here must follow it.
 builds=("a64 aarch64-unknown-linux-gnu - - - 1"
   "a64r aarch64-unknown-linux-gnu - - - -"
   "x64 x86_64-unknown-linux-gnu - - - 1"
+  "x64r x86_64-unknown-linux-gnu - - - -"
   "m33 thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm - 1"
   "m33s thumbv8m.main-none-eabihf --no-default-features cat_ft8_minmaxnm s 1"
   "m4 thumbv7em-none-eabihf --no-default-features - - 1")
@@ -101,6 +103,12 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # `calls_within_limit` counts calls of `within_limit`, at least the bound;
 # `ldn` counts `ld2`, `ld3` and `ld4`, at least the bound;
 # `vec2` counts instructions with a two-lane `.2d` operand, at most the bound;
+# `vec8h` counts instructions with an eight-lane 16-bit `.8h` operand
+# (AArch64), at least the bound;
+# `paddw` counts `paddw` and `vpaddw` (16-bit vector adds; x86-64), at least
+# the bound;
+# `uaddw8h` counts `uaddw` and `uaddw2` into `.8h` (bytes widened and added
+# to 16-bit lanes; AArch64), at least the bound;
 # `add2d` counts two-lane 64-bit vector adds (`add` on `.2d`), at least the
 # bound;
 # `insns` counts the function's instructions, at most the bound;
@@ -198,6 +206,16 @@ checks=(
   "m33s 10finish_row zerofills 1"
   # The sync search's running sums: three levels a bin.
   "m33s 6select sumloop3 16"
+  # On the hosts its column sums in 16-bit vector lanes (the eight tones
+  # added afresh a row, the form before: 13 and 0), the levels widened
+  # into them as they are added (18 on AArch64; `vec8h` alone passes the
+  # sums in 32-bit lanes), in the one-unit builds and as the release
+  # profile compiles them.
+  "a64 6select vec8h 24"
+  "x64 6select paddw 16"
+  "a64 6select uaddw8h 16 one"
+  "a64r 6select uaddw8h 16 one"
+  "x64r 6select paddw 16 one"
   # The fit one lane at a time with its sums in registers.
   "m33s 4Fit410add_all_as fploop5 15"
   # The frequency correction one sample at a time, not in lanes.
@@ -246,6 +264,16 @@ checks=(
   "x64 10finish_row insns 3500"
   # A row's level counts in 16 bits, not widened to 64-bit lanes.
   "a64 10finish_row vec2 32"
+  # The same transform as the release profile compiles it (16 units), where
+  # `finish_row` is inlined into `power_bins`: the last stage one loop with
+  # its twiddles as interleaved loads, not one per segment, and a row's
+  # level counts not widened to 64-bit lanes on AArch64; on x86-64 the last
+  # stage's loop of 80 four-lane multiplies.
+  "a64r power_bins ldn 12 one"
+  "a64r power_bins insns 3000 one"
+  "a64r power_bins vec2 32 one"
+  "x64r power_bins mulloop80 470 one"
+  "x64r power_bins insns 3500 one"
   # The bins' powers out of line with indexed slices.
   "m33s bin_powers_out_of_line fploop4 35")
 
@@ -349,6 +377,9 @@ for entry in "${checks[@]}"; do
     metric == "fpcmps" && /^\t(fcmp|v?u?comiss)\t/ { n++; nf[found]++ }
     metric == "ldn" && /^\tld[234]\t/ { n++; nf[found]++ }
     metric == "vec2" && /^\t[a-z][^\t]*\t.*\.2d/ { n++; nf[found]++ }
+    metric == "vec8h" && /^\t[a-z][^\t]*\t.*\.8h/ { n++; nf[found]++ }
+    metric == "paddw" && /^\tv?paddw\t/ { n++; nf[found]++ }
+    metric == "uaddw8h" && /^\tuaddw2?\tv[0-9]+\.8h/ { n++; nf[found]++ }
     metric == "add2d" && /^\tadd\tv[0-9]+\.2d/ { n++; nf[found]++ }
     END {
       if (!found) print "missing"
@@ -362,7 +393,7 @@ for entry in "${checks[@]}"; do
       }
       else print n + 0
     }' "${asm[$key]}")
-  if [ "$n" = noteach ] || { [ "$only" = each ] && ! [[ "$metric" =~ ^(vec4|minmax|vminmax|fpmul|vecor|calls_within_limit|ldn|add2d|fpcmps)$ ]]; }; then
+  if [ "$n" = noteach ] || { [ "$only" = each ] && ! [[ "$metric" =~ ^(vec4|minmax|vminmax|fpmul|vecor|calls_within_limit|ldn|add2d|fpcmps|vec8h|paddw|uaddw8h)$ ]]; }; then
     echo "FAIL $key $name: \`each\` takes a floor, not $metric"
     fail=1
     continue
@@ -425,6 +456,9 @@ for entry in "${checks[@]}"; do
     mulloop*) what="instructions in the loop of ${metric#mulloop} four-lane multiplies (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     ldn) what="interleaving loads (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     vec2) what="two-lane .2d instructions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    vec8h) what=".8h instructions (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
+    paddw) what="16-bit vector adds (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
+    uaddw8h) what="bytes widened and added to .8h (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     add2d) what="two-lane 64-bit adds (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     *) what="unknown metric $metric"; ok=0 ;;
   esac

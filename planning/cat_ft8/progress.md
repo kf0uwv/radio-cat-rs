@@ -2359,3 +2359,61 @@
   - A fading or Doppler variant of `masked`'s `low` point.
   - A pass 2 after a lone decode searching only near the subtracted
     signal: results-changing, its own round.
+
+## Session: 2026-11-03 (O29 the Costas scores by columns)
+
+- Corrected the A76 validity tooling first (a failing kernel log voids a
+  run; under-voltage messages counted since the run's start; cpufreq
+  statistics read before the program starts; a self-test case per void
+  cause) and probed the board once.
+- Profiled 32848a1 (A76 PC samples host and small, M33 counts): the FFT
+  52% of the A76 small slot, by loop the last stage 11.9%, the first two
+  stages 9.2 and 7.2%; the sync search's score closure 7.8%, one loop
+  adding each bin's eight tones afresh in each of 21 rows.
+- 1816faa: the Costas scores summed down the columns first on the hosts
+  (about 50 values a bin instead of 189; `u16` sums in chunks of 64 bins
+  on the stack); the M33 keeps its running sums. codegen-check `vec8h`
+  and `paddw` on the closure.
+- dcbd7f2: codegen-check reads `power_bins` in the release form
+  (`a64r`, and a new `x64r` build); O26b's g1 and g2 fail the new bounds.
+- A76 sync −34% (host 4.675 → 3.080 ms, small 1.380 → 0.895); slot
+  −2.1% host (75.7 → 74.1), −4.9% small (10.3 → 9.8). x86-64 user cycles
+  −7.80% small, −3.68% host. M33 images unchanged. Host stack +0.8 KB
+  in the closure; no static memory change.
+- Identity (x86-64 records and WAVs, A76, encoder, M33 16 of 16),
+  comparators failing when forced, mutants caught (one on an
+  unreachable branch, two equivalent), forced code-generation forms
+  failing, local CI 17 of 17 at both commits, A76 library tests.
+- Tried, not kept: the FFT's twiddles read whole (fewer instructions,
+  A76 feed +4.3%; x86-64 vectorised two butterflies a step; M33 −1.0% of
+  the feed alone, under the 2% rule); the first two FFT stages as one
+  (the release form compiled it larger; A76 feed +4.9%).
+- The board's sticky throttle bits were set by an under-voltage event
+  after the last timed run; no timing followed it.
+
+## Session: 2026-11-04 (O29b review follow-ups)
+
+- 5043027: the column sums' `u16` assertion is now the bound the code
+  needs (`COSTAS_ROWS · u8::MAX ≤ u16::MAX`), beside the arrays; the
+  chunk size noted as untuned; the scores test's description updated.
+  Binaries identical to 1816faa's.
+- 7ec91b5: one `gather` (a visitor) of the Costas rows, their sent
+  offsets and the scale for both forms; `costas_scores` a two-way
+  dispatch. An array-returning gather was tried first and dropped (M33
+  +196 B). M33 images changed: −28 B, counts −0.002% (s0086, s0407),
+  identity 16 of 16. x86-64 records and WAVs identical; x86-64 timing in
+  two sets: host −0.2/−0.3%, small +0.7/+0.4% by median with
+  overlapping ranges and the sync stage unchanged; kept, recorded as a
+  risk. Mutants caught (one equivalent). A76 timing pending (board not
+  valid until restarted).
+- e97a42a: codegen-check `uaddw8h` (floors 16 on a64 and a64r) and
+  `x64r 6select paddw 16`; the forced 32-bit column form fails all four
+  (and x64). Header names both release builds.
+- Local CI 17 of 17 at 7ec91b5 and e97a42a. Findings: the O29 text's
+  bound corrected, two wordings made generic, the M33 column-form trial
+  recorded as the next action with its deletion criterion, the eight-lane
+  final loop as an unmeasured candidate.
+- O29c (closing review): a debug assertion on the sent offsets' narrowing;
+  the u16 bound's assertion above the loop; `one` on the a64 `uaddw8h`
+  entry; the placement cause stated as likely. Open: the A76 timing of the
+  gather commit once the board is restarted.
