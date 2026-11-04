@@ -951,6 +951,51 @@ fn straight_stages_equal_the_side_by_side_stages_bit_for_bit() {
     }
 }
 
+#[test]
+fn turned_radix4_stages_equal_stage_alone_bit_for_bit() {
+    // Each radix-4 stage after the first on its own (`turned`), against
+    // `stage` with one lane: every bit. Its k = l/2, whose twiddle of
+    // m = 2 lies on an axis, is not turned; were it, its products by the
+    // axes' rounding residues would differ from the table's, which the
+    // later stages round away for most inputs. So besides the shared
+    // inputs, one with only that k's m = 2 input set, in every block,
+    // real or imaginary.
+    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
+    let mut inputs = later_stage_inputs();
+    for l in [4, 16] {
+        for (re_part, value) in [(true, 1.0f32), (false, -0.75)] {
+            let (mut re, mut im) = ([0.0f32; N], [0.0f32; N]);
+            for base in (0..N).step_by(4 * l) {
+                let at = base + l / 2 + 2 * l;
+                if re_part {
+                    re[at] = value;
+                } else {
+                    im[at] = value;
+                }
+            }
+            inputs.push((std::format!("l {l} k = l/2, m = 2, {re_part}"), re, im));
+        }
+    }
+    for (name, re, im) in inputs {
+        let (mut ar, mut ai) = (re, im);
+        straight_stage!(turned ar, ai, 4, 4, [1 2 3], [0 1 2 3]);
+        let (mut br, mut bi) = (re, im);
+        stage::<4, 1, 4>(&mut br, &mut bi);
+        assert!(
+            bits(&ar) == bits(&br) && bits(&ai) == bits(&bi),
+            "l 4: {name}"
+        );
+        let (mut ar, mut ai) = (re, im);
+        straight_stage!(turned ar, ai, 4, 16, [1 2 3], [0 1 2 3]);
+        let (mut br, mut bi) = (re, im);
+        stage::<4, 1, 16>(&mut br, &mut bi);
+        assert!(
+            bits(&ar) == bits(&br) && bits(&ai) == bits(&bi),
+            "l 16: {name}"
+        );
+    }
+}
+
 /// The transform, `L` butterflies at a time, on an array of complex values.
 fn fft_complex<const L: usize>(buf: &mut [Complex; N]) {
     let mut re = [0.0f32; N];
