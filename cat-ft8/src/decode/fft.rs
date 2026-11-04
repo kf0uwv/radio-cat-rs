@@ -273,8 +273,12 @@ const LANES: usize = if cfg!(any(target_feature = "sse2", target_feature = "neon
 /// [`FIFTH_TWIDDLES`] and [`LAST_ROWS`] ([`TABLE_BYTES`]), and the front
 /// end holds its window as a ring of quarters, which the first stage reads
 /// in place ([`Quarters`]). Not [`SCALAR_FORMS`], which is also true on
-/// 32-bit x86 (and on 32-bit ARM with NEON): there the transform takes
-/// vectors and the window slides (findings O31b).
+/// 32-bit x86, where the transform takes vectors and the window slides
+/// (findings O31b), and would be on 32-bit ARM, whose transform would take
+/// vectors where `cfg` shows NEON. Nor does one lane imply
+/// [`SCALAR_FORMS`]: an x86-64 or AArch64 target without SSE2 or NEON
+/// (`x86_64-unknown-none`, `aarch64-unknown-none-softfloat`) takes one
+/// lane here and the hosts' forms elsewhere.
 pub(crate) const ONE_LANE: bool = LANES == 1;
 
 const _: () = Lanes::<LANES>::OK;

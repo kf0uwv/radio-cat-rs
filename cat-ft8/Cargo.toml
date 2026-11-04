@@ -33,7 +33,9 @@ description = "FT8 from the published protocol: message packing, CRC-14, LDPC (1
 # vector unit on every target (`SCALAR_FORMS` in decode/math.rs: the
 # reference in groups of one sample, its polynomial's select form, the time
 # search one lane at a time, the generator's fused runs and the sync
-# search's running sums), so that a host runs them.
+# search's running sums), so that a host runs them; and one lane in the
+# FFT (`ONE_LANE` in decode/fft.rs: the transform written out term by term)
+# and with it the front end's window as a ring of quarters.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
     "cfg(cat_ft8_minmaxnm)",
