@@ -141,7 +141,8 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # function with no such loop fails it likewise;
 # `divlooprows` counts the calls of `Rows::row` in the shortest loop with
 # an `f32` division (`vdiv.f32`; Thumb), at most the bound, and a function
-# with no such loop fails it likewise;
+# with no such loop fails it likewise, as does one with no call of
+# `Rows::row` at all (it was inlined, so its calls can no longer be told);
 # `lowmaskloopN` counts the instructions of the shortest loop with at
 # least N instructions that take 0x7F7F7F7F (each byte's low seven bits)
 # as an immediate (Thumb), at most the bound, and a function with no such
@@ -515,6 +516,7 @@ for entry in "${checks[@]}"; do
       }
       if (back && metric ~ /^lowmaskloop/ && masks - atk[$NF] >= substr(metric, 12) + 0 &&
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
+      # `best` is a count of calls here, not a length; `shortest` is the length.
       if (back && metric == "divlooprows" && divs > atd[$NF] &&
           (best == "" || k - at[$NF] < shortest)) { shortest = k - at[$NF]; best = rowcalls - atr[$NF] }
       if (back && metric == "memsums" && lds > atl[$NF] && vs == atv[$NF]) n++
@@ -555,6 +557,7 @@ for entry in "${checks[@]}"; do
       if (!found) print "missing"
       else if (only == "one" && found > 1) print "many"
       else if (only == "each" && metric ~ marked) print "noteach"
+      else if (metric == "divlooprows" && rowcalls == 0) print "nocall"
       else if (metric ~ looped) print (best == "" ? "noloop" : best)
       else if (only == "each") {
         least = nf[1] + 0
@@ -584,6 +587,11 @@ for entry in "${checks[@]}"; do
   fi
   if [ "$n" = missing ]; then
     echo "FAIL $key $name: function not found"
+    fail=1
+    continue
+  fi
+  if [ "$n" = nocall ]; then
+    echo "FAIL $key $name: no call of Rows::row (inlined? then the check cannot see a call in the tone loop)"
     fail=1
     continue
   fi

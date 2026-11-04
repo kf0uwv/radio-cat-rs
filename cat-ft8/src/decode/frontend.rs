@@ -693,8 +693,8 @@ fn level_counts(levels: &[u8]) -> (usize, usize) {
 /// zero byte in a word) has bit 7 of each byte set where that byte is 0
 /// and every other bit clear: a byte's low seven bits plus 0x7F reach bit
 /// 7 unless they are all 0, with no carry into the next byte, and its own
-/// bit 7 is or-ed in. `!w` has a byte of 0 where `w` has
-/// 255. Each word adds those bits, shifted to bit 0, to four byte lanes,
+/// bit 7 is or-ed in. `!w` has a byte of 0 where `w` has 255. Each word
+/// adds those bits, shifted to bit 0, to four byte lanes,
 /// which count at most 255 words, so blocks of 255 words are summed
 /// across their lanes at the block's end; a block's levels after its last
 /// whole word one by one. 13 instructions a word on the Cortex-M33; a
