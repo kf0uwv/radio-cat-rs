@@ -422,8 +422,8 @@ fn sum_product_round<const V: bool, const W: usize, const G: usize>(
 ) {
     let (edge_vars, var_edges) = tables::<G>();
     if INPUT_BLOCK == 1 {
-        // Checked: where the edges go one at a time (x86-64, the
-        // microcontrollers) [`total_of`]'s clamp was not measured here.
+        // Checked, not [`total_of`]: the edges go one at a time here
+        // (x86-64, the microcontrollers) and the clamp was not measured.
         for (m, &i) in msg.iter_mut().zip(edge_vars) {
             *m = total[usize::from(i)] - *m;
         }
@@ -495,18 +495,20 @@ fn products<const D: usize, const G: usize>(edges: &mut [f32]) {
 pub(crate) static VAR_EDGES: [[u16; 3]; N] = var_edges(GROUP);
 
 /// Each edge's variable, in the messages' layout ([`place`]).
-pub(crate) static EDGE_VARS: [u8; EDGES] = edge_vars(&VAR_EDGES);
+pub(crate) static EDGE_VARS: [u8; EDGES] = EDGE_VARS_TABLE;
+
+/// [`EDGE_VARS`]' entries as a constant, which the check below can read
+/// (a constant cannot read a static under the minimum Rust version).
+const EDGE_VARS_TABLE: [u8; EDGES] = edge_vars(&var_edges(GROUP));
 
 // Every variable's index fits the `u8` entries of [`EDGE_VARS`].
 const _: () = assert!(N <= u8::MAX as usize + 1);
 
-// Every entry of [`EDGE_VARS`] is a variable's index, below `N`: the
-// table built again at compile time and each entry checked.
+// Every entry of [`EDGE_VARS`] is a variable's index, below `N`.
 const _: () = {
-    let table = edge_vars(&var_edges(GROUP));
     let mut e = 0;
     while e < EDGES {
-        assert!((table[e] as usize) < N);
+        assert!((EDGE_VARS_TABLE[e] as usize) < N);
         e += 1;
     }
 };
@@ -517,9 +519,10 @@ const _: () = {
 /// [`edge_vars`] writes only `i as u8` for `i < N`, so every index is
 /// below `N` and the clamp to `N - 1` never changes it; it is there so
 /// the compiler can take the total by a select rather than a bounds-check
-/// branch, which lets a group's or block's rows vectorise in the release
-/// form (16 codegen units), checked by the `a64r` entries of
-/// `codegen-check.sh`. With debug assertions the bound is asserted, so a
+/// branch. The sum-product inputs' blocks need that to vectorise (the
+/// `sumloop8` entries of `codegen-check.sh`); min-sum's groups vectorise
+/// in the release form (16 codegen units) with the index checked too, so
+/// there the clamp only removes the branch. With debug assertions the bound is asserted, so a
 /// bad table panics there rather than reading the last total.
 #[inline(always)]
 fn total_of(total: &[f32; N], i: u8) -> f32 {

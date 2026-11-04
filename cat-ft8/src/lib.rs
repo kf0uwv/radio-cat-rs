@@ -284,6 +284,8 @@ mod tests {
         "DIGIT_REV_TABLE",
         // One turn of the FFT's twiddles, compile-time input to TWIDDLES.
         "TWIDDLE_TURN",
+        // The contents of EDGE_VARS as a constant, for compile-time checks.
+        "EDGE_VARS_TABLE",
     ];
 
     #[test]
