@@ -119,6 +119,17 @@ fn level_scales() {
     }
 }
 
+#[test]
+fn level_guess_constants_follow_from_db_per_log2() {
+    // 2 · DB_PER_LOG2 levels a unit of log2 (the f32 constant, exactly in
+    // f64); 2²³ units of the bits an octave; both scaled by 2⁴⁰.
+    let levels = 2.0 * f64::from(DB_PER_LOG2);
+    let scale = libm::round(levels * 2f64.powi(40 - 23)) as i64;
+    let offset = libm::round((255.5 - 127.0 * levels - 0.02) * 2f64.powi(40)) as i64;
+    assert_eq!(scale, LEVEL_GUESS_SCALE);
+    assert_eq!(offset, LEVEL_GUESS_OFFSET);
+}
+
 /// The level of `bits` both ways: by the logarithm and by the steps.
 fn levels_both_ways(bits: u32) -> (u8, u8) {
     let p = f32::from_bits(bits);

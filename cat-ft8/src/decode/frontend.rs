@@ -97,13 +97,15 @@ pub(crate) fn level_of(l2: f32) -> u8 {
 }
 
 /// Levels per unit of a power's bits, scaled by 2⁴⁰ for
-/// [`level_by_steps`]' guess: 2⁴⁰ · 6.0206 / 2²³ (`2 · DB_PER_LOG2` levels
-/// a unit of log2, 2²³ units of the bits an octave), rounded.
+/// [`level_by_steps`]' guess: 2⁴⁰ · 2 · `DB_PER_LOG2` / 2²³ (6.0206 levels
+/// a unit of log2, 2²³ units of the bits an octave), rounded. A test
+/// recomputes it.
 const LEVEL_GUESS_SCALE: i64 = 789_132;
-/// The guess's offset, scaled likewise: (255.5 − 127 · 6.0206 − 0.02) ·
-/// 2⁴⁰, rounded. 127 is the exponent's bias, 255.5 the level of 0 dB and
-/// the half that rounds it; the 0.02 keeps the guess below the level where
-/// a power's bits give its log2 exactly (at a power of two).
+/// The guess's offset, scaled likewise: (255.5 − 127 · 2 · `DB_PER_LOG2` −
+/// 0.02) · 2⁴⁰, rounded. 127 is the exponent's bias, 255.5 the level of
+/// 0 dB and the half that rounds it; the 0.02 keeps the guess below the
+/// level where a power's bits give its log2 exactly (at a power of two).
+/// A test recomputes it.
 const LEVEL_GUESS_OFFSET: i64 = -559_801_149_968_876;
 
 /// The spectrogram level of a power value `p` (any `f32`),
@@ -111,18 +113,41 @@ const LEVEL_GUESS_OFFSET: i64 = -559_801_149_968_876;
 /// compare with [`LEVEL_STEPS`]: for the targets without a vector unit
 /// ([`levels_by_steps_out_of_line`]), where the logarithm's division and
 /// polynomial were most of the front end's work after the transform
-/// (findings O30). After the same floor and cap as [`log2_power`], a
-/// power's bits less 127 · 2²³, over 2²³, are within 0.09 below its log2
-/// (the exponent, and the mantissa taken as its own logarithm), so a line
-/// in the bits guesses the level to within one below; the level is the
-/// guess or one more, by `LEVEL_STEPS[guess]`, the bits of the least power
-/// of the level above the guess. A test checks the result for every
-/// `f32`.
+/// (findings O30).
+///
+/// The guess. After the same floor and cap as [`log2_power`], `bits` is a
+/// positive normal `f32`'s, exponent e and mantissa fraction m in [0, 1):
+/// (bits − 127 · 2²³) / 2²³ is e + m, and log2 p is e + log2(1 + m). The
+/// line in the bits is below log2 by log2(1 + m) − m: never negative, 0 at
+/// m = 0, at most 0.0861 (at m = 1/ln 2 − 1), so 0 to 0.518 levels (×
+/// 6.0206). The offset takes 0.02 of a level more, so the line is the
+/// value [`level_of`] truncates (the level unrounded, plus a half) less
+/// 0.02 to 0.54 of a level. Its floor, the guess, is never above the level
+/// and at most one below it (the clamps to 0..=255 on both sides keep
+/// that). The 0.02 covers what is not exact on the logarithm's side
+/// (its polynomial, the `f32` roundings in [`level_of`]) where the line is
+/// exact, at a power of two; the constants' own rounding is 2⁻⁴⁰ of a level.
+///
+/// The step. `LEVEL_STEPS[guess]` is the bits of the least power whose
+/// level is above the guess, so one compare picks the guess or one more.
+/// That relies on the level rising with the power (and on positive `f32`s'
+/// bits being in the order of their values): true of the logarithm, but
+/// [`log2_power`] is a polynomial and roundings, so it is checked, not
+/// derived. The exhaustive test (`level_steps_give_every_level_everywhere`,
+/// every `f32`) checks the result, and with it both the bound and the
+/// order.
 #[inline(always)]
 pub(crate) fn level_by_steps(p: f32) -> u8 {
-    // Not `clamp`: NaN to the floor, as `log2_power`.
+    // Not `clamp`, which keeps a NaN: a quiet NaN goes to the floor, as in
+    // `log2_power`. On the Cortex-M33 (`vmaxnm`, `vminnm`) a signalling
+    // NaN comes out of `max` quieted, not floored, and `min` caps it to
+    // `f32::MAX` (level 255, as `log2_power` gives there). The cap keeps
+    // every `bits` below `LEVEL_STEPS[255]` (`u32::MAX`), so a guess of 255
+    // is never stepped past: without it, 0xffbf_ffff quieted is
+    // 0xffff_ffff, which would step to 256 and wrap to level 0.
     #[allow(clippy::manual_clamp)]
     let bits = p.max(POWER_FLOOR).min(f32::MAX).to_bits();
+    debug_assert!(bits < LEVEL_STEPS[255]);
     let line = (i64::from(bits) * LEVEL_GUESS_SCALE + LEVEL_GUESS_OFFSET) >> 40;
     let guess = (line as i32).clamp(0, 255) as u32;
     (guess + u32::from(bits >= LEVEL_STEPS[guess as usize])) as u8
@@ -534,6 +559,7 @@ impl<'a> Spectrogram<'a> {
             self.rows.band.first_bin(),
             width,
             |i, p| {
+                // The hosts' logarithm: see `levels_by_steps_out_of_line`.
                 if SCALAR_FORMS {
                     levels_by_steps_out_of_line(&mut row[i..i + p.len()], p);
                 } else {
@@ -552,10 +578,13 @@ impl<'a> Spectrogram<'a> {
 
 /// Each power's level into `levels`, of the same length, by
 /// [`level_by_steps`]: the front end's row where the target has no vector
-/// unit ([`SCALAR_FORMS`]; the hosts keep `level_of(log2_power(p))`, which
-/// vectorises). Out of line: inlined into the row, the transform beside it
-/// compiled to more instructions on the Cortex-M33 than the levels saved
-/// (findings O30).
+/// unit ([`SCALAR_FORMS`]). The hosts keep `level_of(log2_power(p))` only
+/// so that their binaries stay as they were while the Cortex-A76 is not
+/// available for timing: on x86-64 the steps measured faster (the feed
+/// about 17% less wall-clock time), and the steps on every target, if the
+/// A76 agrees, are the next candidate (findings O30b). Out of line:
+/// inlined into the row, the transform beside it compiled to more
+/// instructions on the Cortex-M33 than the levels saved (findings O30).
 #[inline(never)]
 fn levels_by_steps_out_of_line(levels: &mut [u8], powers: &[f32]) {
     for (level, &p) in levels.iter_mut().zip(powers) {
