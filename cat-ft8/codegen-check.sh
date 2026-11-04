@@ -19,9 +19,12 @@
 # that the FFT stays written out butterfly by butterfly on the Cortex-M33
 # and its last stage one vectorised loop on AArch64 and x86-64, and that
 # the sync search's running sums keep their loop there and its column sums
-# their 16-bit vectors on the hosts, and that the
-# belief-propagation rounds take their variables' totals without a
-# bounds check.
+# their 16-bit vectors on the hosts, that min-sum's checks stay written
+# out edge by edge on the Cortex-M33 (`min_sum_check_bits!`, one block a
+# degree), that a row's levels there take a guess and one step rather
+# than the logarithm, in their own loop (`levels_by_steps_out_of_line`),
+# and that the belief-propagation rounds take their variables' totals
+# without a bounds check.
 # Their speed depends on code generation that no test sees: the
 # sum-product round's tanh and atanh passes 24 values at a time
 # (`PASS_LANES`), its products over four checks in the lanes of one
