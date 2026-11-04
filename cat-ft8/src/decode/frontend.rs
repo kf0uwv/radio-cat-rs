@@ -109,14 +109,15 @@ const LEVEL_GUESS_OFFSET: i64 = -559_801_149_968_876;
 /// The spectrogram level of a power value `p` (any `f32`),
 /// `level_of(log2_power(p))`, by a guess from the power's bits and one
 /// compare with [`LEVEL_STEPS`]: for the targets without a vector unit
-/// ([`levels_of_powers`]), where the logarithm's division and polynomial
-/// were most of the front end's work after the transform (findings O30).
-/// After the same floor and cap as [`log2_power`], a power's bits less
-/// 127 · 2²³, over 2²³, are within 0.09 below its log2 (the exponent, and
-/// the mantissa taken as its own logarithm), so a line in the bits guesses
-/// the level to within one below; the level is the guess or one more, by
-/// `LEVEL_STEPS[guess]`, the bits of the least power of the level above
-/// the guess. A test checks the result for every `f32`.
+/// ([`levels_by_steps_out_of_line`]), where the logarithm's division and
+/// polynomial were most of the front end's work after the transform
+/// (findings O30). After the same floor and cap as [`log2_power`], a
+/// power's bits less 127 · 2²³, over 2²³, are within 0.09 below its log2
+/// (the exponent, and the mantissa taken as its own logarithm), so a line
+/// in the bits guesses the level to within one below; the level is the
+/// guess or one more, by `LEVEL_STEPS[guess]`, the bits of the least power
+/// of the level above the guess. A test checks the result for every
+/// `f32`.
 #[inline(always)]
 pub(crate) fn level_by_steps(p: f32) -> u8 {
     // Not `clamp`: NaN to the floor, as `log2_power`.
@@ -532,7 +533,15 @@ impl<'a> Spectrogram<'a> {
             &mut self.front.fft,
             self.rows.band.first_bin(),
             width,
-            |i, p| levels_of_powers(&mut row[i..i + p.len()], p),
+            |i, p| {
+                if SCALAR_FORMS {
+                    levels_by_steps_out_of_line(&mut row[i..i + p.len()], p);
+                } else {
+                    for (level, &p) in row[i..i + p.len()].iter_mut().zip(p) {
+                        *level = level_of(log2_power(p));
+                    }
+                }
+            },
         );
         let (floored, top) = level_counts(row);
         self.floored += floored;
@@ -541,23 +550,12 @@ impl<'a> Spectrogram<'a> {
     }
 }
 
-/// Each power's level, `level_of(log2_power(p))`, into `levels`, of the
-/// same length. Where the target has no vector unit ([`SCALAR_FORMS`]) by
-/// [`level_by_steps`], out of line: inlined into the front end's row, the
-/// transform beside it compiled to more instructions on the Cortex-M33
-/// than the levels saved (findings O30).
-#[inline(always)]
-fn levels_of_powers(levels: &mut [u8], powers: &[f32]) {
-    if SCALAR_FORMS {
-        levels_by_steps_out_of_line(levels, powers);
-    } else {
-        for (level, &p) in levels.iter_mut().zip(powers) {
-            *level = level_of(log2_power(p));
-        }
-    }
-}
-
-/// [`levels_of_powers`] where the target has no vector unit.
+/// Each power's level into `levels`, of the same length, by
+/// [`level_by_steps`]: the front end's row where the target has no vector
+/// unit ([`SCALAR_FORMS`]; the hosts keep `level_of(log2_power(p))`, which
+/// vectorises). Out of line: inlined into the row, the transform beside it
+/// compiled to more instructions on the Cortex-M33 than the levels saved
+/// (findings O30).
 #[inline(never)]
 fn levels_by_steps_out_of_line(levels: &mut [u8], powers: &[f32]) {
     for (level, &p) in levels.iter_mut().zip(powers) {
