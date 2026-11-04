@@ -2241,7 +2241,7 @@
   floor takes `each`; `EDGE_VARS` from one constant; `total_of`'s doc
   says which rows need the clamp; a stale shuffle count updated.
 
-## Session: 2026-11-03 (G1 pass 2 skipped after a single weak pass-1 decode)
+## Session: 2026-11-03 (G1, a results-changing round: pass 2 skipped after a single weak pass-1 decode)
 
 - Measured on 9685acf's records first: a count rule alone fails on the
   new `masked` mixtures (pass 2 after one pass-1 decode finds messages
@@ -2254,11 +2254,43 @@
 - −16 chosen on `main` passed `fresh` and `confirm` but at the limit on
   `confirm` (pooled over the blocks it fails); −17, the next more
   conservative value, taken: 1 message lost in `masked` main, 0
-  elsewhere, every paired test PASS on three blocks, external
-  comparison PASS with identical decode output, live 72 of 109
-  unchanged, reference slots 60 of 60, no false decode.
+  elsewhere, every paired test within its limit on three blocks;
+  reference-decoder comparison: decode output identical; live
+  recording 72 of 109 unchanged; regression slots unchanged; no false
+  decode.
 - x86-64 one core: sweep −14.5% decode CPU per slot, edges −34.7%,
   slots whose pass 2 is skipped −41%; crowded, empty unchanged. A76
   (four cycles, throttle 0x0): edges −36.1%, skipped slots −42%,
   crowded and empty unchanged; records equal x86-64's.
 - Memory unchanged; M33 flash +20 B.
+
+## Session: 2026-11-03 (G1b, review follow-ups to G1)
+
+- The general form of the rule (before pass N, end if every decode of
+  pass N − 1 is below X) simulated on G1's records, X = −18 and −17:
+  before pass 2 with any count it loses what the shipped rule loses;
+  before pass 3 it loses messages on `masked` (`fresh`, `confirm`) and
+  `wide` (`fresh`) that the shipped rule keeps. The shipped rule stays
+  (pass 1→2, exactly one decode); its field doc says why. No A76 timing
+  needed: the rule's results are unchanged.
+- e3153ea, e055e2f, 8aeeed1, 4250fb4, e5120f9. Fixes: a truncating
+  pass 1 is not a single decode (list of one: `ListFull` again); docs
+  on pass 3, the ends checked before a stop, `passes_end` as a
+  diagnostic; the decode command's `--config` error lists
+  `lone=X|off`; `masked` points as an enum.
+- Tests: a weak pass-2 decode still runs pass 3; the boundary; the
+  truncated list of one; NaN in the weak test. The mutants `pass == 2`
+  → `>= 2`, `pass == 2` removed, `<` → `<=`, the NaN clause removed and
+  the truncation test removed each fail a test.
+- Findings corrected: what the `masked` identity with 9685acf showed;
+  `low` added during the round; the sign test's low power on `masked`.
+  Plainer wording in G1's findings.
+- Open items:
+  - Before a hardware release, an off-air check of slots whose only
+    pass-1 decode is weak, including a capture from a real receive
+    chain: paired `host` against `lone=off`.
+  - Re-validate the minimum whenever pass 2's sensitivity changes, with
+    `lone=off` (or its successor) as a paired arm, on `masked`.
+  - A fading or Doppler variant of `masked`'s `low` point.
+  - A pass 2 after a lone decode searching only near the subtracted
+    signal: results-changing, its own round.
