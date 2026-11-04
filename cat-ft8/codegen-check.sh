@@ -453,6 +453,9 @@ muladd() {
   [ "${nm%p}" != "$nm" ] && { nm=${nm%p}; plain=" and no chained multiply-add"; }
   echo "exactly ${nm%x*} f32 multiplies, at least ${nm#*x} f32 adds$plain"
 }
+# The metrics that measure a loop (the shortest of its kind); they and
+# `memsums` mark the loops' labels as they read the function.
+loops="sumloop|fploop|cvtloop|shortloop|mulloop|vmulloop|vmulhloop|vmuladdloop|lowmaskloop|rowcallloop"
 fail=0
 for entry in "${checks[@]}"; do
   set -- $entry
@@ -462,19 +465,20 @@ for entry in "${checks[@]}"; do
   case "$name" in [0-9]*) seg=$name ;; *) seg="${#name}$name" ;; esac
   # Prints the count, "missing" if no function's label holds `seg`, or,
   # for a check marked `one`, "many" if more than one does.
-  n=$(awk -v f="$seg" -v metric="$metric" -v only="$only" '
+  n=$(awk -v f="$seg" -v metric="$metric" -v only="$only" -v loops="$loops" '
+    BEGIN { looped = "^(" loops ")"; marked = "^(" loops "|memsums)" }
     # A function ends at its end label or at the next global label;
     # `fpbranches` forgets a compare there, so it cannot pair with a
     # branch at the start of the next function.
     /^\.Lfunc_end[0-9]+:/ { p = 0; fcmp = 0; next }
     /^[A-Za-z_][^ \t]*:$/ { p = index($0, f) > 0; if (p) found++; delete at; fcmp = 0; next }
     !p { next }
-    metric ~ /^(sumloop|fploop|cvtloop|memsums|shortloop|mulloop|vmulloop|vmulhloop|vmuladdloop|lowmaskloop|rowcallloop)/ && /^\.[A-Za-z0-9_$]+:/ {
+    metric ~ marked && /^\.[A-Za-z0-9_$]+:/ {
       sub(/:.*/, ""); at[$0] = k; atb[$0] = bytes; atf[$0] = fps; atc[$0] = cvs
       atl[$0] = lds; atv[$0] = vs; atm[$0] = muls; atu[$0] = vmuls; ath[$0] = hws; atx[$0] = chains
       atk[$0] = masks; atr[$0] = rowcalls; next
     }
-    metric ~ /^(sumloop|fploop|cvtloop|memsums|shortloop|mulloop|vmulloop|vmulhloop|vmuladdloop|lowmaskloop|rowcallloop)/ && /^\t[a-z]/ {
+    metric ~ marked && /^\t[a-z]/ {
       k++
       if ($1 == "bl" && $2 ~ /Rows3row/) rowcalls++
       if ($0 ~ /#(2139062143|0x7f7f7f7f)([^0-9a-fx]|$)/) masks++
@@ -548,8 +552,8 @@ for entry in "${checks[@]}"; do
     END {
       if (!found) print "missing"
       else if (only == "one" && found > 1) print "many"
-      else if (only == "each" && metric ~ /^(sumloop|fploop|cvtloop|shortloop|mulloop|vmulloop|vmulhloop|vmuladdloop|lowmaskloop|rowcallloop|memsums)/) print "noteach"
-      else if (metric ~ /^(sumloop|fploop|cvtloop|shortloop|mulloop|vmulloop|vmulhloop|vmuladdloop|lowmaskloop|rowcallloop)/) print (best == "" ? "noloop" : best)
+      else if (only == "each" && metric ~ marked) print "noteach"
+      else if (metric ~ looped) print (best == "" ? "noloop" : best)
       else if (only == "each") {
         least = nf[1] + 0
         for (i = 2; i <= found; i++) if (nf[i] + 0 < least) least = nf[i] + 0
