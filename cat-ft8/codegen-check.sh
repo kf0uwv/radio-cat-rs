@@ -239,12 +239,12 @@ checks=(
   # The row from the window's ring of quarters, each quarter's pair of
   # samples read without an array of the four built a block, the first
   # stage's blocks in the order of their inputs, each later stage's k = 0
-  # on its own (1 032; 1 123 in the order of the blocks; 758 without
+  # on its own (1 032; 1 128 in the order of the blocks; 758 without
   # k = 0 on its own; the whole row, so a form that adds work anywhere in
   # it can pass by removing it elsewhere: re-measure on such a change).
   "m33s 10finish_row insns 1040"
   # The same scoped to the first stage's loop, the row's longest loop
-  # with exactly eight `vmul.f32`, its window products (115; 146 in the
+  # with exactly eight `vmul.f32`, its window products (115; 147 in the
   # order of the blocks, through the digit-reversal table; the radix-3
   # stage's k = 0 has eight too, in 53 instructions).
   "m33s 10finish_row vmulloop8 120"
