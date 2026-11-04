@@ -138,7 +138,7 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # `mulloopN` counts the instructions of the shortest loop with at least N
 # four-lane multiplies (`mulps`; x86-64 only), at most the bound, and a
 # function with no such loop fails it likewise;
-# `vmulloopN` counts the instructions of the shortest loop with exactly N
+# `vmulloopN` counts the instructions of the longest loop with exactly N
 # `f32` multiplies (`vmul.f32`; Thumb), at most the bound, and a function
 # with no such loop fails it likewise;
 # `mulps` counts four-lane multiplies (`mulps`, with or without the VEX
@@ -238,14 +238,20 @@ checks=(
   "m33s 10finish_row zerofills 1"
   # The row from the window's ring of quarters, each quarter's pair of
   # samples read without an array of the four built a block, the first
-  # stage's blocks in the order of their inputs (758; 849 in the order of
-  # the blocks; the whole row, so a form that adds work anywhere in it can
-  # pass by removing it elsewhere: re-measure on such a change).
-  "m33s 10finish_row insns 780"
-  # The same scoped to the first stage's loop, the row's one loop with
-  # its eight window products (116; 146 in the order of the blocks,
-  # through the digit-reversal table).
+  # stage's blocks in the order of their inputs, each later stage's k = 0
+  # on its own (1 032; 1 123 in the order of the blocks; 758 without
+  # k = 0 on its own; the whole row, so a form that adds work anywhere in
+  # it can pass by removing it elsewhere: re-measure on such a change).
+  "m33s 10finish_row insns 1040"
+  # The same scoped to the first stage's loop, the row's longest loop
+  # with exactly eight `vmul.f32`, its window products (115; 146 in the
+  # order of the blocks, through the digit-reversal table; the radix-3
+  # stage's k = 0 has eight too, in 53 instructions).
   "m33s 10finish_row vmulloop8 120"
+  # Each later stage's k = 0 on its own, its twiddles constants: a radix-4
+  # stage's butterflies there with no multiply by 1 (84 instructions; the
+  # shortest loop of a radix-4 stage at other k, 95).
+  "m33s 10finish_row fploop34 90"
   # The window as a ring: no slide of the window (a memmove of 11 520
   # bytes a row) in the front end's feeds.
   "m33s 11Spectrogram4feed memmoves 0"
@@ -424,7 +430,7 @@ for entry in "${checks[@]}"; do
       if (back && metric ~ /^mulloop/ && muls - atm[$NF] >= substr(metric, 8) + 0 &&
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
       if (back && metric ~ /^vmulloop/ && vmuls - atu[$NF] == substr(metric, 9) + 0 &&
-          (best == "" || k - at[$NF] < best)) best = k - at[$NF]
+          (best == "" || k - at[$NF] > best)) best = k - at[$NF]
       if (back && metric == "memsums" && lds > atl[$NF] && vs == atv[$NF]) n++
       if (back && metric == "shortloop" && (best == "" || k - at[$NF] < best)) best = k - at[$NF]
     }

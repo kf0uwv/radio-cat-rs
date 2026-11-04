@@ -641,25 +641,38 @@ macro_rules! straight_twiddles {
 /// at a time, as [`stage`] computes it with one lane: for each k, the
 /// twiddles of every (m ≥ 1, q) are read once from [`FIFTH_TWIDDLES`] into
 /// an array, then the butterfly at k runs in every block.
+///
+/// k = 0 runs on its own, its twiddles at constant indices: W_N^((m·q mod
+/// R)·N/R), whose values the compiler knows, so it leaves out the
+/// products by 1 and turns those by −1 into negations (exact: the same
+/// bits), and keeps no twiddle across the blocks. On the Cortex-M33 the
+/// slot took 0.50% fewer instructions, most of it in the second stage
+/// (a quarter of its butterflies), for about 1 KB of code (rustc 1.93.0,
+/// opt-level "s"; findings O32).
 macro_rules! straight_stage {
     ($re:ident, $im:ident, $radix:literal, $l:literal, $ms:tt, $qs:tt) => {{
         const SPAN: usize = $radix * $l;
         const STEP: usize = N / SPAN;
         // Every twiddle index a multiple of `FIFTH`: k·STEP and N/R.
         const _: () = assert!(STEP % FIFTH == 0 && (N / $radix) % FIFTH == 0);
-        for k in 0..$l {
-            // Row m − 1 holds the twiddles of m.
-            let w: [[[f32; 2]; $radix]; $radix - 1] =
-                straight_twiddles!($radix, k * (STEP / FIFTH), $ms, $qs);
-            let mut base = k;
-            while base < N {
-                let (r, i) = (
-                    &mut $re[base..base + ($radix - 1) * $l + 1],
-                    &mut $im[base..base + ($radix - 1) * $l + 1],
-                );
-                straight_butterfly!(r, i, $l, $ms, $qs, (m, q) => w[m - 1][q]);
-                base += SPAN;
-            }
+        straight_stage!(@blocks $re, $im, $radix, $l, $ms, $qs, 0);
+        for k in 1..$l {
+            straight_stage!(@blocks $re, $im, $radix, $l, $ms, $qs, k);
+        }
+    }};
+    // The butterfly at `$k` in every block.
+    (@blocks $re:ident, $im:ident, $radix:literal, $l:literal, $ms:tt, $qs:tt, $k:expr) => {{
+        // Row m − 1 holds the twiddles of m.
+        let w: [[[f32; 2]; $radix]; $radix - 1] =
+            straight_twiddles!($radix, $k * (STEP / FIFTH), $ms, $qs);
+        let mut base = $k;
+        while base < N {
+            let (r, i) = (
+                &mut $re[base..base + ($radix - 1) * $l + 1],
+                &mut $im[base..base + ($radix - 1) * $l + 1],
+            );
+            straight_butterfly!(r, i, $l, $ms, $qs, (m, q) => w[m - 1][q]);
+            base += SPAN;
         }
     }};
 }
