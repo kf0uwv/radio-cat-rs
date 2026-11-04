@@ -2279,3 +2279,23 @@
 - Read every AArch64 bound in the release form: only min-sum differed
   (O27); `finish_row` is inlined into `power_bins` there, whose x86-64
   last-stage loop is 462 instructions against the one-unit 450.
+
+## Session: 2026-11-03 (O28b review follow-ups)
+
+- b47da7f: `hard_bit` branch-free on every target (the M33's branch form
+  saved 0.18% of belief propagation's emulated instructions, cycles
+  unmeasured); an ignored test checks it against the plain rule for
+  every `f32` at both parities. M33 small slot +0.052% (s0086), host
+  +0.018%; decodes, residuals and dumps identical (16 of 16); host
+  sections equal fde37e6's.
+- b324075: doc lines on `total_of_clamped` (release behaviour on a bad
+  index, unreachable) and on why `checks_hold` takes the padded totals.
+- 291b2cc: `CandidateScratch` exactly 4 800 B on 64-bit hosts.
+- ca480ed: codegen-check `checks_hold` and `hard_bit` absent in a64,
+  a64r and x64; `fpbranches` on x86-64 (`x64 decode_soft` 0); compare
+  state reset per function. Forced forms fail as expected.
+- A76 validity: the sticky-bit rule's blind spot recorded; the validator
+  prints raw and masked throttle words, and voids a run on a rise in the
+  kernel log's under-voltage count or time below the top frequency. The
+  board was restarted after O28; the strict 0x0 rule applies again.
+- Local CI 17 of 17 at ca480ed.

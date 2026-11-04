@@ -14578,7 +14578,7 @@ of 2, and the inputs' `sumloop8` a ceiling of 54.
 
 ## One array of totals padded to any `u8` index, and the stopping test without a branch on the hosts, twenty-eighth round (O28, bit-identical, 2026-11-03)
 
-Base: 9685acf (the code of O27b and its closing review). A profile
+Base: 9685acf (O27c's head). A profile
 first (A76 PC samples, M33 per-function and per-block counts), then two
 code commits, one optimisation each: 09e19de (one array of totals for
 belief propagation, padded to 256 entries, with the sums written in
@@ -14957,3 +14957,128 @@ which this round did not run.
 | The sum-product tanh and atanh passes (A76 host 16.9%) | none bit-identical found | — |
 | `soft_bits_at`, the Costas sums, `search_rows` (A76 small 8.5, 7.7, 5.5%) | uncertain | — |
 | Release-form bounds for `power_bins` (AArch64 `ldn`, x86-64 `mulloop80` at 462) | guards the hottest A76 function as built | forced forms as O26b's |
+
+## Review follow-ups (O28b, 2026-11-03; one form of the hard decision, the stopping test's bounds closed)
+
+Base: 38170e3 (O28's head). Code commits b47da7f (the branch-free
+`hard_bit` on every target, its const parameter gone, an exhaustive
+test), b324075 (two doc lines), 291b2cc (the candidate scratch's size
+exact on 64-bit hosts) and ca480ed (codegen-check). Decodes and
+residuals are identical; the hosts' code is unchanged.
+
+### One form of the hard decision (b47da7f)
+
+O28 kept the branch form of `hard_bit` on the Cortex-M33 for 0.18% fewer
+emulated instructions in belief propagation, cycles not measured. Under
+about 2% the simpler code is kept: the branch-free form is now the only
+one. The test of the two forms against each other is replaced by an
+ignored test of the branch-free bit against the plain rule (`x < 0 || (x
+== 0 && i odd)`) for every `f32` bit pattern at both parities, 2^33
+decisions (4.0 s in release). A form wrong only for NaN (`!(x >= 0)` for
+`x < 0`) fails it at the first NaN, 0x7f800001 (exit 101).
+
+| Cortex-M33, emulated instructions (s0086; s0407) | fde37e6 | ca480ed | change |
+|---|---|---|---|
+| small slot | 175 001 269 | 175 092 578 | +0.052% (+0.038%) |
+| small: belief propagation | 49 875 242 | 49 966 476 | +0.18% (+0.15%) |
+| host slot | 1 427 542 075 | 1 427 792 829 | +0.018% (+0.016%) |
+| host: belief propagation, each pass | | | +0.06 to +0.07% (likewise) |
+
+Decodes 23 / 40 (s0086) and 30 / 38 (s0407) as before; the stack's
+painted high water unchanged (10 312 B small, 10 276 B host); flash small
+91 970 → 91 958 B, host 104 710 → 104 766 B; static RAM unchanged. The
+four thumbv8m images equal O28's trial of the branch-free form everywhere
+(the same counts to the instruction). M33 cycles remain unmeasured.
+
+### Sections and identity
+
+- The `.text` and `.rodata` of the four host binaries (x86-64 and
+  AArch64 `cat-ft8-decode`, `paired_bench`) equal fde37e6's, so O28's
+  host timings and host identity stand and were not rerun; the four
+  thumbv8m images differ (above).
+- Cortex-M33 (emulated): the small and host dump images on seven slots
+  and the multi-pass residuals of s0086 and s0407 equal 68634cc's (16 of
+  16; exit 0).
+
+### The code-generation check (ca480ed)
+
+- `checks_hold absent` and `hard_bit absent` in `a64`, `a64r` and `x64`:
+  `fpbranches` reads `decode_soft` only, so the stopping test or the
+  hard decision out of line would have passed it with no compare there.
+- `fpbranches` also reads x86-64 (`ucomiss`/`comiss` followed at once by
+  a conditional jump; `jmp` excluded), with `x64 decode_soft fpbranches
+  0` (15 with the branch form, 11 at 9685acf). Its compare state is
+  reset at each function label, and its comment says the pattern is
+  narrow: a compare followed at once by `b.cond` or `jcc`, not a branch
+  later or in another form.
+
+Forced forms on ca480ed (fresh copies, one edit each, the check's own
+exit status):
+
+| form | a64 / a64r / x64 `decode_soft` fpbranches | `checks_hold` absent | `hard_bit` absent | exit |
+|---|---|---|---|---|
+| head | 0 / 0 / 0 | ok | ok | 0 (58 of 58) |
+| the branch form of `hard_bit` | **4 / 3 / 15** | ok | ok | 1 |
+| `checks_hold` out of line (`#[inline(never)]`) | 0 / 0 / 0 | **FAIL ×3** | ok | 1 |
+| `hard_bit` out of line | 0 / 0 / 0 | ok | **FAIL ×3** | 1 |
+| both: `checks_hold` out of line and the branch form | 0 / 0 / **5** | **FAIL ×3** | ok | 1 |
+
+The last form is the hole the review found: on AArch64 the branches
+leave `decode_soft` with the stopping test and `fpbranches` reads 0
+there; the `absent` checks fail it. No other check failed in any form.
+
+### Smaller changes
+
+- `total_of_clamped`: in release a bad index would read the last
+  variable's total there and a zero in `total_of`; neither is reachable
+  (the const assertions on `EDGE_VARS`). `checks_hold` takes the padded
+  totals because it gathers them by `u8` index; `hard_decisions` walks
+  the variables in order and takes only them.
+- `memory_per_item_is_bounded`: `CandidateScratch` exactly 4 800 B on
+  64-bit hosts (a ceiling elsewhere); its doc says "on 64-bit hosts"
+  (the M33's figure was not measured).
+
+### The A76's validity rule after O28
+
+- O28's runs were judged with the board's sticky throttle bits already
+  set (0x50000). The sticky bits then cannot show a new event, and the
+  current bits are read once a second: an under-voltage or throttle
+  event that begins and ends between two samples is invisible to that
+  rule. O28 relied instead on every in-run sample reading 2 400 MHz and
+  on the stages neither commit touches agreeing within 0.02 ms across the
+  four builds; a brief event would have shown only as a slower run,
+  which that check bounds but does not exclude.
+- The board's kernel log reported brief under-voltage events outside the
+  timed runs: one before O28's timing began and seven during its later
+  identity run (whose results matched); none during the timing.
+- O28's validity summaries printed the end check as "0x0" when it read
+  0x50000 (they compared against the allowed set and printed the rule's
+  name). The validator now prints the raw throttle words and their
+  current bits (`& 0xf`) separately; re-read with it, O28's 32 timed runs
+  are valid as before (raw 0x50000, current bits 0x0).
+- The validator now also voids a run if the kernel log's under-voltage
+  count rose between its start and its end, and if the benchmark core's
+  cpufreq `time_in_state` gained any time below its top frequency during
+  the program (both recorded by the run script around each run). Checked
+  on a synthetic log only; not yet run on the board.
+- The board was restarted after O28 and reads 0x0 with no under-voltage
+  event since; later rounds are back on the strict rule (0x0 throughout,
+  no rise in the under-voltage count). The sticky-bit fallback remains
+  for re-reading O28's logs only.
+- O28's first forced WAV comparison passed because its edit had not been
+  applied; it is marked superseded, and the second (each forced form
+  fails) is the record.
+
+### Checks
+
+- Local CI at ca480ed, 17 of 17 steps (codegen-check 58 of 58; release
+  library tests with the ignored ones 226 pass, the exhaustive test
+  among them; the group-one step 216 pass, 10 ignored).
+- Library tests: debug 219 pass, 10 ignored; release 216 pass, 10
+  ignored; clippy `-D warnings` on the host (all targets and features)
+  and thumbv8m.
+
+### Not measured
+
+- Cortex-M33 cycles of either form; A76 or x86-64 timing (the host code
+  is unchanged).
