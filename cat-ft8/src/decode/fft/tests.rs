@@ -674,8 +674,8 @@ fn twiddle_index_equals_the_stage_index() {
 #[test]
 fn twiddles_repeat_the_turn_as_far_as_the_last_stage_reads() {
     // Every entry is the turn's entry at t mod N, bit for bit; the table
-    // holds one turn where one lane is taken, else the last stage's largest
-    // index and no more: every (k, m, q) of the last stage, whose index is
+    // holds as far as the last stage's largest index and no more: every
+    // (k, m, q) of the last stage, whose index is
     // the one `stage` computes with a division, mod N.
     for (t, w) in TWIDDLES.iter().enumerate() {
         let want = TWIDDLE_TURN[t % N];
@@ -692,7 +692,73 @@ fn twiddles_repeat_the_turn_as_far_as_the_last_stage_reads() {
         }
     }
     assert_eq!(largest + 1, LAST_TWIDDLES);
-    assert_eq!(TWIDDLES.len(), TWIDDLE_ENTRIES);
+    assert_eq!(TWIDDLES.len(), LAST_TWIDDLES);
+}
+
+#[test]
+fn fifth_twiddles_are_every_twiddle_the_stages_before_the_last_read() {
+    // Each entry is the turn's at 5i, bit for bit; and every (k, m, q) of
+    // every stage before the last (the first stage's k = 0 included) has
+    // its index a multiple of five, which `fifth_index` gives divided by
+    // five.
+    for (i, w) in FIFTH_TWIDDLES.iter().enumerate() {
+        let want = TWIDDLE_TURN[FIFTH * i];
+        assert_eq!(w.map(f32::to_bits), want.map(f32::to_bits), "i {i}");
+    }
+    fn check<const R: usize>(l: usize) {
+        let step = N / (l * R);
+        for k in 0..l {
+            for m in 0..R {
+                for q in 0..R {
+                    let t = twiddle_index::<R>(m, q, k * step);
+                    assert_eq!(t % FIFTH, 0, "R {R} l {l} k {k} m {m} q {q}");
+                    assert_eq!(
+                        fifth_index::<R>(m, q, k * step / FIFTH) * FIFTH,
+                        t,
+                        "R {R} l {l} k {k} m {m} q {q}"
+                    );
+                }
+            }
+        }
+    }
+    check::<4>(1);
+    check::<4>(4);
+    check::<4>(16);
+    check::<2>(64);
+    check::<3>(128);
+}
+
+#[test]
+fn last_rows_give_the_last_stage_its_twiddles_in_every_range() {
+    // Row r's entry j is the turn's at r + 384·j, bit for bit; and in each
+    // range, the entry `last_range` reads for (k, m, q) is the twiddle
+    // `twiddle_index` gives, for every k of the stage.
+    for (r, row) in LAST_ROWS.iter().enumerate() {
+        for (j, w) in row.iter().enumerate() {
+            let want = TWIDDLE_TURN[r + LAST_L * j];
+            assert_eq!(w.map(f32::to_bits), want.map(f32::to_bits), "r {r} j {j}");
+        }
+    }
+    let mut covered = 0;
+    for &(lo, hi) in LAST_RANGES.iter() {
+        assert_eq!(lo, covered);
+        for k in lo..hi {
+            for m in 1..LAST_R {
+                let s = m * lo / LAST_L;
+                for q in 0..LAST_R {
+                    let w = LAST_ROWS[m * k - LAST_L * s][(s + (m * q) % LAST_R) % LAST_R];
+                    let want = TWIDDLE_TURN[twiddle_index::<LAST_R>(m, q, k)];
+                    assert_eq!(
+                        w.map(f32::to_bits),
+                        want.map(f32::to_bits),
+                        "k {k} m {m} q {q}"
+                    );
+                }
+            }
+        }
+        covered = hi;
+    }
+    assert_eq!(covered, LAST_L);
 }
 
 /// Inputs for the stages after the first, each named: noise at several

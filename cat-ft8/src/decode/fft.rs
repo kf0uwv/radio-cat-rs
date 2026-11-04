@@ -38,7 +38,8 @@
 //!
 //! The twiddle, real-split and window tables are static data generated
 //! with `libm` and checked bit-for-bit by a test (`tables.rs`; the twiddles
-//! as one turn, which [`TWIDDLES`] repeats).
+//! as one turn, which [`TWIDDLES`] repeats, and which with one lane
+//! [`FIFTH_TWIDDLES`] and [`LAST_ROWS`] take in other orders).
 
 use super::math::SCALAR_FORMS;
 use super::tables::{HANN_HALF, SPLIT_TWIDDLES, TWIDDLE_TURN};
@@ -429,23 +430,66 @@ const LAST_L: usize = N / LAST_R;
 /// and m·q mod `LAST_R` = `LAST_R` − 1: 3 069.
 const LAST_TWIDDLES: usize = (LAST_R - 1) * (LAST_L - 1) + LAST_L * (LAST_R - 1) + 1;
 
-/// Entries of [`TWIDDLES`]: one turn, `N`, where one lane is taken (a
-/// Cortex-M runs [`straight_stages`]); where vectors are, as far as
-/// [`last_stage`] reads, [`LAST_TWIDDLES`].
-const TWIDDLE_ENTRIES: usize = if LANES > 1 { LAST_TWIDDLES } else { N };
-// One turn, or as far as the last stage reads ([`last_stage`] relies on it).
-const _: () = assert!(TWIDDLE_ENTRIES == N || TWIDDLE_ENTRIES >= LAST_TWIDDLES);
-
-/// The twiddles W_N^t = e^(−2πit/N) as [cos, −sin], t = 0..[`TWIDDLE_ENTRIES`]:
+/// The twiddles W_N^t = e^(−2πit/N) as [cos, −sin], t = 0..[`LAST_TWIDDLES`]:
 /// `TWIDDLE_TURN` (one turn, generated) and past N its entries again, so
 /// that [`last_stage`] reads its index without reducing it mod N. Every
-/// other reader takes its index mod N.
-static TWIDDLES: [[f32; 2]; TWIDDLE_ENTRIES] = {
-    let mut table = [[0.0f32; 2]; TWIDDLE_ENTRIES];
+/// other reader takes its index mod N. The transform with vectors reads
+/// it; with one lane (a Cortex-M) the transform reads
+/// [`FIFTH_TWIDDLES`] and [`LAST_ROWS`] instead, so a build with one lane
+/// links neither this table nor the vector form.
+static TWIDDLES: [[f32; 2]; LAST_TWIDDLES] = {
+    let mut table = [[0.0f32; 2]; LAST_TWIDDLES];
     let mut t = 0;
-    while t < TWIDDLE_ENTRIES {
+    while t < LAST_TWIDDLES {
         table[t] = TWIDDLE_TURN[t % N];
         t += 1;
+    }
+    table
+};
+
+/// Twiddles a step of [`FIFTH_TWIDDLES`]: every stage but the last reads
+/// W_N^t only at t a multiple of this, as each of its indices is one of
+/// its N / span and of its N / R, multiples of 5 (checked at compile time
+/// in [`straight_stage`], and by a test).
+const FIFTH: usize = 5;
+
+/// W_N^(5i) = `TWIDDLE_TURN[5i]`, i = 0..N/5: the twiddles the stages
+/// before the last read with one lane ([`straight_stage`],
+/// [`straight_first_stage`]), at [`fifth_index`]. A fifth of one turn
+/// (3 072 bytes).
+static FIFTH_TWIDDLES: [[f32; 2]; N / FIFTH] = {
+    let mut table = [[0.0f32; 2]; N / FIFTH];
+    let mut i = 0;
+    while i < N / FIFTH {
+        table[i] = TWIDDLE_TURN[FIFTH * i];
+        i += 1;
+    }
+    table
+};
+
+/// One row of [`LAST_ROWS`]: the last stage's twiddles W_N^(r + `LAST_L`·j),
+/// j = 0..`LAST_R`.
+type LastRow = [[f32; 2]; LAST_R];
+
+/// The last stage's twiddles by row, for [`last_straight_stage`]: row r
+/// holds W_N^(r + `LAST_L`·j) = `TWIDDLE_TURN[r + LAST_L·j]`, j =
+/// 0..`LAST_R`. One turn in another order (15 360 bytes). The twiddle the
+/// butterfly at k reads for (m, q), W_N^((m·k + `LAST_L`·(m·q mod `LAST_R`))
+/// mod N), is with m·k = `LAST_L`·s + r (r < `LAST_L`) entry
+/// (s + m·q mod `LAST_R`) mod `LAST_R` of row r: so a butterfly reads five
+/// entries of one row for each m, all within 40 bytes. (Built where one
+/// lane is taken and in the tests: see [`last_straight_stage`].)
+#[cfg(any(test, not(any(target_feature = "sse2", target_feature = "neon"))))]
+static LAST_ROWS: [LastRow; LAST_L] = {
+    let mut table = [[[0.0f32; 2]; LAST_R]; LAST_L];
+    let mut r = 0;
+    while r < LAST_L {
+        let mut j = 0;
+        while j < LAST_R {
+            table[r][j] = TWIDDLE_TURN[r + LAST_L * j];
+            j += 1;
+        }
+        r += 1;
     }
     table
 };
@@ -455,8 +499,7 @@ static TWIDDLES: [[f32; 2]; TWIDDLE_ENTRIES] = {
 /// [`stage`]'s order ([`radix_sums`] with one lane). The twiddle of (m, q)
 /// at k, W_N^(m·(k + q·`LAST_L`)), is read at m·k + `LAST_L`·(m·q mod
 /// `LAST_R`), below [`LAST_TWIDDLES`] and not reduced mod N: [`TWIDDLES`]
-/// runs that far where vectors are taken; where it holds one turn (only
-/// the tests run this stage there) the index is reduced mod N. Each index is m·k plus a constant, so the compiler
+/// runs that far. Each index is m·k plus a constant, so the compiler
 /// vectorises the loop across adjacent k and loads each m's twiddles, m
 /// apart in the table, as interleaved vectors (`ld2` and `ld4` on AArch64)
 /// rather than lane by lane (rustc 1.93.0): findings O26 and O26b. The
@@ -469,7 +512,7 @@ fn last_stage(re: &mut [f32; N], im: &mut [f32; N]) {
         let ai: [[f32; 1]; LAST_R] = core::array::from_fn(|m| [im[k + m * LAST_L]]);
         radix_sums!(LAST_R, 1, ar, ai, (m, q) => {
             let t = m * k + LAST_L * ((m * q) % LAST_R);
-            let [wr, wi] = TWIDDLES[if TWIDDLE_ENTRIES > N { t } else { t % N }];
+            let [wr, wi] = TWIDDLES[t];
             ([wr], [wi])
         }, (sr, si) => {
             re[k + q * LAST_L] = sr[0];
@@ -481,10 +524,22 @@ fn last_stage(re: &mut [f32; N], im: &mut [f32; N]) {
 /// Index into `TWIDDLES` of W_span^(m·(k + q·l)) for a radix-`R` stage over
 /// sub-transforms of length l (span = l·`R`, `k` < l, m < `R`, q < `R`):
 /// the index `stage` reads, m·(k + q·l)·(N/span) mod N, as l·(N/span) is
-/// N/`R`. `k_step` is k·(N/span).
+/// N/`R`. `k_step` is k·(N/span). The tests check [`fifth_index`] and
+/// the entries of [`LAST_ROWS`] against it; the hosts' unused one-lane
+/// last stage reads it.
+#[cfg(any(test, target_feature = "sse2", target_feature = "neon"))]
 #[inline(always)]
 fn twiddle_index<const R: usize>(m: usize, q: usize, k_step: usize) -> usize {
     (m * k_step + (N / R) * (m * q)) % N
+}
+
+/// [`twiddle_index`] / [`FIFTH`]: the index into [`FIFTH_TWIDDLES`] of
+/// W_span^(m·(k + q·l)) for a radix-`R` stage, `k_fifths` being
+/// k·(N/span)/5 (N/span is a multiple of 5 for every stage but the last,
+/// checked in [`straight_stage`]).
+#[inline(always)]
+fn fifth_index<const R: usize>(m: usize, q: usize, k_fifths: usize) -> usize {
+    (m * k_fifths + (N / R / FIFTH) * (m * q)) % (N / FIFTH)
 }
 
 /// One radix-R butterfly written out term by term: inputs m = 0 .. R at
@@ -534,28 +589,31 @@ macro_rules! straight_butterfly {
 }
 
 /// The twiddles of (m, q) for m in `$ms`, q in `$qs` (one row per m), from
-/// `TWIDDLES`, for the k whose k·(N/span) is `$k_step`.
+/// [`FIFTH_TWIDDLES`], for the k whose k·(N/span)/5 is `$k_fifths`.
 macro_rules! straight_twiddles {
-    ($radix:literal, $k_step:expr, [$($m:tt)*], $qs:tt) => {
-        [$(straight_twiddles!(@row $radix, $k_step, $m, $qs)),*]
+    ($radix:literal, $k_fifths:expr, [$($m:tt)*], $qs:tt) => {
+        [$(straight_twiddles!(@row $radix, $k_fifths, $m, $qs)),*]
     };
-    (@row $radix:literal, $k_step:expr, $m:tt, [$($q:tt)*]) => {
-        [$(TWIDDLES[twiddle_index::<$radix>($m, $q, $k_step)]),*]
+    (@row $radix:literal, $k_fifths:expr, $m:tt, [$($q:tt)*]) => {
+        [$(FIFTH_TWIDDLES[fifth_index::<$radix>($m, $q, $k_fifths)]),*]
     };
 }
 
 /// One radix-`$radix` stage over sub-transforms of length `$l` (not the last
 /// stage, which has one block: see [`last_straight_stage`]), one butterfly
 /// at a time, as [`stage`] computes it with one lane: for each k, the
-/// twiddles of every (m ≥ 1, q) are read once from `TWIDDLES` into an
-/// array, then the butterfly at k runs in every block.
+/// twiddles of every (m ≥ 1, q) are read once from [`FIFTH_TWIDDLES`] into
+/// an array, then the butterfly at k runs in every block.
 macro_rules! straight_stage {
     ($re:ident, $im:ident, $radix:literal, $l:literal, $ms:tt, $qs:tt) => {{
         const SPAN: usize = $radix * $l;
         const STEP: usize = N / SPAN;
+        // Every twiddle index a multiple of `FIFTH`: k·STEP and N/R.
+        const _: () = assert!(STEP % FIFTH == 0 && (N / $radix) % FIFTH == 0);
         for k in 0..$l {
             // Row m − 1 holds the twiddles of m.
-            let w: [[[f32; 2]; $radix]; $radix - 1] = straight_twiddles!($radix, k * STEP, $ms, $qs);
+            let w: [[[f32; 2]; $radix]; $radix - 1] =
+                straight_twiddles!($radix, k * (STEP / FIFTH), $ms, $qs);
             let mut base = k;
             while base < N {
                 let (r, i) = (
@@ -580,8 +638,104 @@ fn straight_stages(re: &mut [f32; N], im: &mut [f32; N]) {
     last_straight_stage(re, im);
 }
 
-/// The last stage (radix 5, `l` = 384, one block) with one lane: each
-/// butterfly reads its twiddles from `TWIDDLES` where it uses them.
+/// The last stage's ranges of k, [lo, hi), for [`last_straight_stage`]:
+/// in each, s(m) = ⌊m·k / `LAST_L`⌋ is the same for every m ≥ 1, so the
+/// entry of [`LAST_ROWS`] each (m, q) reads is a constant there. Their
+/// ends are the k where some s(m) steps: `LAST_L`·s / m for m = 2, 3, 4.
+const LAST_RANGES: [(usize, usize); 6] = [
+    (0, 96),
+    (96, 128),
+    (128, 192),
+    (192, 256),
+    (256, 288),
+    (288, 384),
+];
+
+// The ranges cover 0..LAST_L in order; s(m) is constant in each; and the
+// rows m reads, m·lo − LAST_L·s .. m·hi − LAST_L·s (one every m), lie in
+// the table.
+const _: () = {
+    let mut end = 0;
+    let mut i = 0;
+    while i < LAST_RANGES.len() {
+        let (lo, hi) = LAST_RANGES[i];
+        assert!(lo == end && lo < hi);
+        let mut m = 1;
+        while m < LAST_R {
+            let s = m * lo / LAST_L;
+            assert!(m * (hi - 1) / LAST_L == s);
+            assert!(m * hi - LAST_L * s <= LAST_L);
+            m += 1;
+        }
+        end = hi;
+        i += 1;
+    }
+    assert!(end == LAST_L);
+};
+
+/// The last stage (radix 5, `l` = 384, one block) with one lane, range by
+/// range ([`last_range`]). Out of line: inlined into the decoder's pass,
+/// the Cortex-M33 took more instructions in other stages of the pass
+/// (findings O31).
+///
+/// Built where one lane is taken and in the tests (which run it on every
+/// target). The hosts' builds, which take vectors and run [`last_stage`],
+/// keep the earlier form below instead, unused: with this one in them,
+/// unused, their binaries changed (findings O31), and they are kept as
+/// they were while the Cortex-A76 is not available for timing.
+#[cfg(any(test, not(any(target_feature = "sse2", target_feature = "neon"))))]
+#[inline(never)]
+fn last_straight_stage(re: &mut [f32; N], im: &mut [f32; N]) {
+    last_range::<0>(re, im);
+    last_range::<1>(re, im);
+    last_range::<2>(re, im);
+    last_range::<3>(re, im);
+    last_range::<4>(re, im);
+    last_range::<5>(re, im);
+}
+
+/// The butterflies of the last stage at k in range `I` of [`LAST_RANGES`],
+/// each written out term by term ([`straight_butterfly`]). For each m the
+/// butterfly reads one row of [`LAST_ROWS`], m·k − `LAST_L`·s(m), and
+/// within it entry (s(m) + m·q mod `LAST_R`) mod `LAST_R`, a constant in
+/// the range: the twiddle `twiddle_index` gives, W_N^((m·k + `LAST_L`·m·q)
+/// mod N) (see [`LAST_ROWS`]). The four rows advance by m a butterfly, as
+/// chunks of m rows, so each twiddle is a load at a constant offset from
+/// one of four pointers.
+///
+/// The rows' slices pass through `black_box`, so the compiler takes their
+/// starts as unknown. Seeing them as constants, it moved each start into
+/// the loads' offsets, past the reach of the Cortex-M33's floating-point
+/// load (±1 020 bytes), and added an address for each load: about 247
+/// instructions a butterfly in the ranges whose rows do not start at 0,
+/// 211 with `black_box` (rustc 1.93.0, opt-level "s"; findings O31). Only
+/// the code depends on it; the values do not.
+#[cfg(any(test, not(any(target_feature = "sse2", target_feature = "neon"))))]
+#[inline(always)]
+fn last_range<const I: usize>(re: &mut [f32; N], im: &mut [f32; N]) {
+    let (lo, hi) = LAST_RANGES[I];
+    let s = |m: usize| m * lo / LAST_L;
+    let rows = |m: usize| &LAST_ROWS[m * lo - LAST_L * s(m)..m * hi - LAST_L * s(m)];
+    let [r1, r2, r3, r4] = core::hint::black_box([rows(1), rows(2), rows(3), rows(4)]);
+    let rows = (lo..hi)
+        .zip(r1)
+        .zip(r2.chunks_exact(2))
+        .zip(r3.chunks_exact(3))
+        .zip(r4.chunks_exact(4));
+    for ((((k, w1), w2), w3), w4) in rows {
+        let w = [w1, &w2[0], &w3[0], &w4[0]];
+        let (r, i) = (
+            &mut re[k..k + (LAST_R - 1) * LAST_L + 1],
+            &mut im[k..k + (LAST_R - 1) * LAST_L + 1],
+        );
+        straight_butterfly!(r, i, LAST_L, [1 2 3 4], [0 1 2 3 4], (m, q) => w[m - 1][(s(m) + (m * q) % LAST_R) % LAST_R]);
+    }
+}
+
+/// The hosts' unused one-lane last stage, as before the rows (see the
+/// other [`last_straight_stage`]): each butterfly reads its twiddles from
+/// `TWIDDLES` where it uses them.
+#[cfg(not(any(test, not(any(target_feature = "sse2", target_feature = "neon")))))]
 #[inline(always)]
 fn last_straight_stage(re: &mut [f32; N], im: &mut [f32; N]) {
     const R: usize = 5;
@@ -728,8 +882,8 @@ fn first_stage<const G: usize>(samples: &[f32; WINDOW], re: &mut [f32; N], im: &
 /// operations of `stage::<4, 1, 1>` in its order.
 #[inline(always)]
 fn straight_first_stage(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f32; N]) {
-    // W₄^(m·q) as `stage::<4, 1, 1>` reads it: TWIDDLES[m·q·N/4 mod N]
-    // (row m − 1).
+    // W₄^(m·q) as `stage::<4, 1, 1>` reads it: TWIDDLES[m·q·N/4 mod N],
+    // here FIFTH_TWIDDLES[m·q·N/20 mod N/5] (row m − 1).
     let w: [[[f32; 2]; 4]; 3] = straight_twiddles!(4, 0, [1 2 3], [0 1 2 3]);
     for (c, (r, i)) in re
         .chunks_exact_mut(4)
@@ -912,15 +1066,25 @@ fn bin_powers_as<const INDEXED: bool>(re: &[f32; N], im: &[f32; N], k0: usize, o
 }
 
 /// Bytes of the static tables this module uses (twiddles, real-split
-/// twiddles, half window, digit-reversal permutation).
-pub const TABLE_BYTES: usize = core::mem::size_of::<[[f32; 2]; TWIDDLE_ENTRIES]>()
-    + core::mem::size_of::<[[f32; 2]; 961]>()
+/// twiddles, half window, digit-reversal permutation). The twiddles are
+/// [`TWIDDLES`] where vectors are taken, else [`FIFTH_TWIDDLES`] and
+/// [`LAST_ROWS`].
+pub const TABLE_BYTES: usize = if LANES > 1 {
+    core::mem::size_of::<[[f32; 2]; LAST_TWIDDLES]>()
+} else {
+    core::mem::size_of::<[[f32; 2]; N / FIFTH]>() + core::mem::size_of::<[LastRow; LAST_L]>()
+} + core::mem::size_of::<[[f32; 2]; 961]>()
     + core::mem::size_of::<[f32; WINDOW / 2 + 1]>()
     + core::mem::size_of::<[u16; N]>();
 
 #[cfg(test)]
 pub(crate) fn table_bytes_of_statics() -> usize {
-    core::mem::size_of_val(&TWIDDLES)
+    let twiddles = if LANES > 1 {
+        core::mem::size_of_val(&TWIDDLES)
+    } else {
+        core::mem::size_of_val(&FIFTH_TWIDDLES) + core::mem::size_of_val(&LAST_ROWS)
+    };
+    twiddles
         + core::mem::size_of_val(&SPLIT_TWIDDLES)
         + core::mem::size_of_val(&HANN_HALF)
         + core::mem::size_of_val(&DIGIT_REV)

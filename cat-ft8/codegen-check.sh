@@ -17,6 +17,7 @@
 # clamp and its reference's loads and stores are still vectorised on
 # AArch64, that the clamp keeps its form on the microcontroller targets,
 # that the FFT stays written out butterfly by butterfly on the Cortex-M33
+# (its last stage out of line, by rows of twiddles, `last_straight_stage`)
 # and its last stage one vectorised loop on AArch64 and x86-64, and that
 # the sync search's running sums keep their loop there and its column sums
 # their 16-bit vectors on the hosts, that min-sum's checks stay written
@@ -203,8 +204,16 @@ checks=(
   "a64 6blocks vec4 400"
   # The removal's clamp as vmaxnm/vminnm with the cfg.
   "m33 7Removal4refs vminmax 8"
-  # The FFT written out butterfly by butterfly.
-  "m33s 10finish_row fpmul 199"
+  # The FFT written out butterfly by butterfly: its stages before the last
+  # in `finish_row` (118), the last out of line (below).
+  "m33s 10finish_row fpmul 118"
+  # The last stage by rows of twiddles, range by range: each of its six
+  # ranges written out (80 multiplies a butterfly), its shortest loop (204)
+  # and the whole stage (1 584), whose ranges' loops grow when the rows'
+  # starts are seen as constants (`black_box`).
+  "m33s last_straight_stage fpmul 480"
+  "m33s last_straight_stage fploop60 210"
+  "m33s last_straight_stage insns 1630"
   # The FFT's twiddle index without a division.
   "m33s 10finish_row divides 0"
   # The FFT without zero fills beyond the one.

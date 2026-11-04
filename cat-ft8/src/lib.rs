@@ -270,6 +270,8 @@ mod tests {
     ];
     const DECODE_COUNTED: &[&str] = &[
         "TWIDDLES",
+        "FIFTH_TWIDDLES",
+        "LAST_ROWS",
         "SPLIT_TWIDDLES",
         "HANN_HALF",
         "DIGIT_REV",
@@ -287,10 +289,11 @@ mod tests {
         "PARITY_CHECKS",
         "COSTAS_POSITIONS", // frame-layout constants, folded into code
         "DATA_BLOCKS",
-        "STAGES", // FFT stage radices, folded into code
-        "ONES",   // Gray bit masks for soft bits, folded into code
-        "ALL",    // the decoder's profiling stages, folded into code
-        "STEPS",  // the decode command's profile names (not in the library)
+        "STAGES",      // FFT stage radices, folded into code
+        "LAST_RANGES", // the FFT's last stage's ranges of k, folded into code
+        "ONES",        // Gray bit masks for soft bits, folded into code
+        "ALL",         // the decoder's profiling stages, folded into code
+        "STEPS",       // the decode command's profile names (not in the library)
         // The contents of DIGIT_REV as a constant, for compile-time checks.
         "DIGIT_REV_TABLE",
         // One turn of the FFT's twiddles, compile-time input to TWIDDLES.
