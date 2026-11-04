@@ -49,8 +49,19 @@ use cat_ft8::decode::{
 use cat_ft8::message::CallTable;
 use cat_ft8::{wav, SAMPLE_RATE, SLOT_SAMPLES};
 
-const USAGE: &str =
-    "usage: cat-ft8-decode FILE.wav [--config host|small[,passes=N][,osd=C:T|off][,lone=X|off]] [--raw] [--profile]";
+/// The options after `host` or `small` in `--config`, for the usage and
+/// its error (one spelling).
+macro_rules! config_options {
+    () => {
+        "[,passes=N][,osd=C:T|off][,lone=X|off]"
+    };
+}
+
+const USAGE: &str = concat!(
+    "usage: cat-ft8-decode FILE.wav [--config host|small",
+    config_options!(),
+    "] [--raw] [--profile]"
+);
 
 /// Calls remembered for hashed-call messages within the file.
 const CALLS: usize = 64;
@@ -123,8 +134,12 @@ fn parse() -> Result<Parsed, String> {
 /// `,osd=C:T` (C 0–65 535 candidates, T 0–255 bits) or `,osd=off`, and
 /// `,lone=X` (dB, finite) or `,lone=off`.
 fn parse_config(spec: Option<&str>) -> Result<Setup, String> {
-    let bad =
-        || format!("--config needs host or small[,passes=N][,osd=C:T|off], not {spec:?}\n{USAGE}");
+    let bad = || {
+        format!(
+            "--config needs host or small{}, not {spec:?}\n{USAGE}",
+            config_options!()
+        )
+    };
     let mut parts = spec.ok_or_else(bad)?.split(',');
     let mut setup = match parts.next() {
         Some("host") => HOST,

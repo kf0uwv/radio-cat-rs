@@ -436,7 +436,11 @@ fn unusable_files_and_arguments_are_errors() {
     std::fs::write(&text, b"not audio").unwrap();
     fail(decode_cmd(&text, &[]), 1, "RIFF");
     fail(decode_cmd(&temp("missing.wav"), &[]), 1, "missing.wav");
-    fail(decode_cmd(&rate, &["--config", "fast"]), 2, "host or small");
+    fail(
+        decode_cmd(&rate, &["--config", "fast"]),
+        2,
+        "--config needs host or small[,passes=N][,osd=C:T|off][,lone=X|off], not",
+    );
     fail(
         decode_cmd(&rate, &["--config", "host,passes=4"]),
         2,
