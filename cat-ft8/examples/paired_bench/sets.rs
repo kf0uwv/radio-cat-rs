@@ -231,16 +231,39 @@ fn crowd(r: &mut Rng, n: usize, lo_db: f64, span_db: f64) -> Vec<Sent> {
 /// with one beside it at −22 dB up to 2 dB below it (`low`, 500 slots).
 /// Slots where the first pass decodes one or two signals and a weaker
 /// one may only show once they are removed.
-const MASKED: [(&str, usize); 5] = [
-    ("near", 250),
-    ("near2", 250),
-    ("far", 250),
-    ("pair", 250),
-    ("low", 500),
+const MASKED: [(Masked, usize); 5] = [
+    (Masked::Near, 250),
+    (Masked::Near2, 250),
+    (Masked::Far, 250),
+    (Masked::Pair, 250),
+    (Masked::Low, 500),
 ];
 
+/// A `masked` point (see [`MASKED`]).
+#[derive(Clone, Copy)]
+enum Masked {
+    Near,
+    Near2,
+    Far,
+    Pair,
+    Low,
+}
+
+impl Masked {
+    /// The point's name in the records.
+    fn name(self) -> &'static str {
+        match self {
+            Masked::Near => "near",
+            Masked::Near2 => "near2",
+            Masked::Far => "far",
+            Masked::Pair => "pair",
+            Masked::Low => "low",
+        }
+    }
+}
+
 /// The `masked` point of slot `index`.
-fn masked_point(index: usize) -> &'static str {
+fn masked_point(index: usize) -> Masked {
     let mut end = 0;
     for (kind, n) in MASKED {
         end += n;
@@ -280,42 +303,47 @@ fn beside(r: &mut Rng, f: f64) -> f64 {
     }
 }
 
-/// The signals of a `masked` slot of point `kind` (draw order fixed).
-fn masked(r: &mut Rng, kind: &str) -> Vec<Sent> {
-    let mut sent = Vec::new();
-    let strong = |r: &mut Rng| -4.0 + 24.0 * r.uniform();
-    let weak = |r: &mut Rng| -20.0 + 12.0 * r.uniform();
-    if kind == "low" {
-        let f = 260.0 + 2_480.0 * r.uniform();
-        let snr = -20.0 + 20.0 * r.uniform();
-        push_signal(r, &mut sent, f, snr);
+/// Appends a signal anywhere in the band (260–2 740 Hz) at `snr_lo` to
+/// `snr_lo + snr_span` dB, then `weak` signals (−20…−8 dB) 5–60 Hz
+/// beside it; returns its frequency and SNR.
+fn group(r: &mut Rng, sent: &mut Vec<Sent>, snr_lo: f64, snr_span: f64, weak: usize) -> (f64, f64) {
+    let f = 260.0 + 2_480.0 * r.uniform();
+    let snr = snr_lo + snr_span * r.uniform();
+    push_signal(r, sent, f, snr);
+    for _ in 0..weak {
         let fw = beside(r, f);
-        let weak = -22.0 + (snr - 2.0 + 22.0) * r.uniform();
-        push_signal(r, &mut sent, fw, weak);
-        return sent;
+        let snr = -20.0 + 12.0 * r.uniform();
+        push_signal(r, sent, fw, snr);
     }
-    let (groups, beside_count) = match kind {
-        "near" => (1, 1),
-        "near2" => (1, 2),
-        "pair" => (2, 1),
-        _ => (1, 0),
-    };
-    for _ in 0..groups {
-        let f = 260.0 + 2_480.0 * r.uniform();
-        let snr = if kind == "far" {
-            5.0 + 15.0 * r.uniform()
-        } else {
-            strong(r)
-        };
-        push_signal(r, &mut sent, f, snr);
-        for _ in 0..beside_count {
-            let (fw, snr) = (beside(r, f), weak(r));
-            push_signal(r, &mut sent, fw, snr);
+    (f, snr)
+}
+
+/// The signals of a `masked` slot of point `kind` (draw order fixed).
+fn masked(r: &mut Rng, kind: Masked) -> Vec<Sent> {
+    let mut sent = Vec::new();
+    match kind {
+        Masked::Near => {
+            group(r, &mut sent, -4.0, 24.0, 1);
         }
-    }
-    if kind == "far" {
-        let (f, snr) = (200.0 + 2_600.0 * r.uniform(), -21.0 + 6.0 * r.uniform());
-        push_signal(r, &mut sent, f, snr);
+        Masked::Near2 => {
+            group(r, &mut sent, -4.0, 24.0, 2);
+        }
+        Masked::Pair => {
+            group(r, &mut sent, -4.0, 24.0, 1);
+            group(r, &mut sent, -4.0, 24.0, 1);
+        }
+        Masked::Far => {
+            group(r, &mut sent, 5.0, 15.0, 0);
+            let f = 200.0 + 2_600.0 * r.uniform();
+            let snr = -21.0 + 6.0 * r.uniform();
+            push_signal(r, &mut sent, f, snr);
+        }
+        Masked::Low => {
+            let (f, snr) = group(r, &mut sent, -20.0, 20.0, 0);
+            let fw = beside(r, f);
+            let weak = -22.0 + (snr - 2.0 + 22.0) * r.uniform();
+            push_signal(r, &mut sent, fw, weak);
+        }
     }
     sent
 }
@@ -430,7 +458,12 @@ pub fn build(set: &str, block: &str, index: usize) -> Slot {
         "empty" => return empty_slot(index, &mut r, noise_seed),
         "masked" => {
             let kind = masked_point(index);
-            (kind.to_string(), masked(&mut r, kind), 0, SLOT_SAMPLES)
+            (
+                kind.name().to_string(),
+                masked(&mut r, kind),
+                0,
+                SLOT_SAMPLES,
+            )
         }
         _ => unreachable!(),
     };
