@@ -22,7 +22,9 @@
 //!   (innermost first) run butterflies whose twiddles come from one static
 //!   table of e^(−2πit/1920). The first stage loads its inputs in
 //!   digit-reversed order (a compile-time table, read once per group of
-//!   blocks) and applies the window as it loads them; the later stages
+//!   blocks; with one lane, the blocks in the order of their inputs and a
+//!   table of where each is stored) and applies the window as it loads
+//!   them; the later stages
 //!   work in place. With vectors ([`LANES`] above one), independent
 //!   butterflies run side by side so that vector units take them together
 //!   (the last stage, whose twiddles are strided, as a plain loop the
@@ -134,6 +136,24 @@ const _: () = {
         }
         b += 1;
     }
+};
+
+/// The first stage's block of each base element: block `BLOCK_OF[n]`
+/// (positions 4·`BLOCK_OF[n]` .. 4·`BLOCK_OF[n]` + 4) holds elements
+/// n + (N/4)·m, m = 0..4, that is `DIGIT_REV[4·BLOCK_OF[n]]` = n, for
+/// n < N/4. [`straight_first_stage`] takes the blocks in this order.
+/// Computed at compile time from [`DIGIT_REV_TABLE`], whose blocks' base
+/// elements are each below N/4 (checked above): one block for each n.
+static BLOCK_OF: [u16; N / 4] = {
+    let mut table = [u16::MAX; N / 4];
+    let mut b = 0;
+    while b < N / 4 {
+        let n = DIGIT_REV_TABLE[4 * b] as usize;
+        assert!(table[n] == u16::MAX, "two blocks with one base element");
+        table[n] = b as u16;
+        b += 1;
+    }
+    table
 };
 
 /// Group sizes [`first_stage`] takes: `Group::<G>::OK` fails to compile
@@ -906,20 +926,27 @@ fn first_stage<const G: usize>(samples: &[f32; WINDOW], re: &mut [f32; N], im: &
 /// `stage::<4, 1, 1>` in its order. Block b's inputs m = 0..4 are samples
 /// first + m·`INPUT_STEP` (and the next), with first + 1 < `INPUT_STEP`, so
 /// input m lies in quarter m at `first`, whichever buffer holds it.
+///
+/// The blocks are taken in the order of their base elements n = 0, 1, …
+/// (first = 2n), each stored at its block [`BLOCK_OF`]`[n]`, rather than
+/// in the order of the blocks: the blocks are independent, so only the
+/// order of the stores changes. The samples and window entries then
+/// advance by two a block, and a build with one lane does not link
+/// [`DIGIT_REV`] (3 840 bytes) but `BLOCK_OF` (960 bytes). On the
+/// Cortex-M33 the slot took 0.26% fewer instructions (rustc 1.93.0,
+/// opt-level "s"; findings O32).
 #[inline(always)]
 fn straight_first_stage(quarters: Quarters<'_>, re: &mut [f32; N], im: &mut [f32; N]) {
     // W₄^(m·q) as `stage::<4, 1, 1>` reads it: TWIDDLES[m·q·N/4 mod N],
     // here FIFTH_TWIDDLES[m·q·N/20 mod N/5] (row m − 1).
     let w: [[[f32; 2]; 4]; 3] = straight_twiddles!(4, 0, [1 2 3], [0 1 2 3]);
-    for (c, (r, i)) in re
-        .chunks_exact_mut(4)
-        .zip(im.chunks_exact_mut(4))
-        .enumerate()
-    {
+    for (n, &block) in BLOCK_OF.iter().enumerate() {
         // As in `first_stage` with one block: its first sample, and the
         // window entries low[t] = HANN_HALF[first + t] and high[t] =
-        // HANN_HALF[INPUT_STEP − 1 − first + t].
-        let first = 2 * usize::from(DIGIT_REV[4 * c]);
+        // HANN_HALF[INPUT_STEP − 1 − first + t]; its outputs.
+        let first = 2 * n;
+        let at = 4 * usize::from(block);
+        let (r, i) = (&mut re[at..at + 4], &mut im[at..at + 4]);
         // Each quarter's pair named (an array of them was built on the
         // stack each block on the Cortex-M33: findings O31).
         let (x0, x1, x2, x3) = (
@@ -1105,24 +1132,25 @@ fn bin_powers_as<const INDEXED: bool>(re: &[f32; N], im: &[f32; N], k0: usize, o
     }
 }
 
-/// Bytes of the static tables this module uses (twiddles, real-split
-/// twiddles, half window, digit-reversal permutation): [`table_bytes`] of
+/// Bytes of the static tables this module uses (twiddles, the input's
+/// order, real-split twiddles, half window): [`table_bytes`] of
 /// [`ONE_LANE`].
 pub const TABLE_BYTES: usize = table_bytes(ONE_LANE);
 
 /// [`TABLE_BYTES`] where the transform takes one lane or not: the twiddles
-/// are [`FIFTH_TWIDDLES`] and [`LAST_ROWS`] with one lane, else
-/// [`TWIDDLES`].
+/// and the input's order are [`FIFTH_TWIDDLES`], [`LAST_ROWS`] and
+/// [`BLOCK_OF`] with one lane, else [`TWIDDLES`] and [`DIGIT_REV`].
 const fn table_bytes(one_lane: bool) -> usize {
-    let twiddles = if one_lane {
-        core::mem::size_of::<[[f32; 2]; N / FIFTH]>() + core::mem::size_of::<[LastRow; LAST_L]>()
+    let lane_tables = if one_lane {
+        core::mem::size_of::<[[f32; 2]; N / FIFTH]>()
+            + core::mem::size_of::<[LastRow; LAST_L]>()
+            + core::mem::size_of::<[u16; N / 4]>()
     } else {
-        core::mem::size_of::<[[f32; 2]; LAST_TWIDDLES]>()
+        core::mem::size_of::<[[f32; 2]; LAST_TWIDDLES]>() + core::mem::size_of::<[u16; N]>()
     };
-    twiddles
+    lane_tables
         + core::mem::size_of::<[[f32; 2]; 961]>()
         + core::mem::size_of::<[f32; WINDOW / 2 + 1]>()
-        + core::mem::size_of::<[u16; N]>()
 }
 
 /// The sizes of the statics [`TABLE_BYTES`] counts.
@@ -1134,15 +1162,14 @@ pub(crate) fn table_bytes_of_statics() -> usize {
 /// [`table_bytes_of_statics`] where the transform takes one lane or not.
 #[cfg(test)]
 fn table_bytes_of_statics_as(one_lane: bool) -> usize {
-    let twiddles = if one_lane {
-        core::mem::size_of_val(&FIFTH_TWIDDLES) + core::mem::size_of_val(&LAST_ROWS)
+    let lane_tables = if one_lane {
+        core::mem::size_of_val(&FIFTH_TWIDDLES)
+            + core::mem::size_of_val(&LAST_ROWS)
+            + core::mem::size_of_val(&BLOCK_OF)
     } else {
-        core::mem::size_of_val(&TWIDDLES)
+        core::mem::size_of_val(&TWIDDLES) + core::mem::size_of_val(&DIGIT_REV)
     };
-    twiddles
-        + core::mem::size_of_val(&SPLIT_TWIDDLES)
-        + core::mem::size_of_val(&HANN_HALF)
-        + core::mem::size_of_val(&DIGIT_REV)
+    lane_tables + core::mem::size_of_val(&SPLIT_TWIDDLES) + core::mem::size_of_val(&HANN_HALF)
 }
 
 #[cfg(test)]

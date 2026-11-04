@@ -388,11 +388,13 @@ fn table_bytes_matches_the_statics() {
             "{one_lane}"
         );
     }
-    // The twiddles' bytes `decode::TABLE_BYTES` gives: 18 432 with one
-    // lane, 24 552 with vectors.
-    let rest = table_bytes(false) - core::mem::size_of_val(&TWIDDLES);
-    assert_eq!(table_bytes(true) - rest, 18_432);
-    assert_eq!(table_bytes(false) - rest, 24_552);
+    // The bytes of the twiddles and the input's order that
+    // `decode::TABLE_BYTES` gives: 19 392 with one lane, 28 392 with
+    // vectors.
+    let rest =
+        table_bytes(false) - core::mem::size_of_val(&TWIDDLES) - core::mem::size_of_val(&DIGIT_REV);
+    assert_eq!(table_bytes(true) - rest, 19_392);
+    assert_eq!(table_bytes(false) - rest, 28_392);
 }
 
 #[test]

@@ -73,9 +73,10 @@ pub use subtract::{
 pub use subtract::{subtract_fixed, Fixed};
 pub use sync::{Candidate, SyncReport};
 
-/// Bytes of the decoder's static tables (FFT twiddles, 18 432 bytes where
-/// the transform takes one lane, as on a Cortex-M, and 24 552 where it
-/// takes vectors; real-split twiddles, half Hann window, digit-reversal table, belief
+/// Bytes of the decoder's static tables (FFT twiddles and the input's
+/// order, 19 392 bytes where the transform takes one lane, as on a
+/// Cortex-M, and 28 392 where it takes vectors; real-split twiddles, half
+/// Hann window, belief
 /// propagation's check degrees, each variable's edges and each edge's
 /// variable, the level-to-power table, and the generator's rows for
 /// ordered-statistics decoding, 2 184 bytes on every target; and where

@@ -275,6 +275,7 @@ mod tests {
         "SPLIT_TWIDDLES",
         "HANN_HALF",
         "DIGIT_REV",
+        "BLOCK_OF",
         "DEGREES",
         "VAR_EDGES",
         "EDGE_VARS",

@@ -237,13 +237,15 @@ checks=(
   # The FFT without zero fills beyond the one.
   "m33s 10finish_row zerofills 1"
   # The row from the window's ring of quarters, each quarter's pair of
-  # samples read without an array of the four built a block (849; the
-  # whole row, so a form that adds work anywhere in it can pass by
-  # removing it elsewhere: re-measure on such a change).
-  "m33s 10finish_row insns 870"
+  # samples read without an array of the four built a block, the first
+  # stage's blocks in the order of their inputs (758; 849 in the order of
+  # the blocks; the whole row, so a form that adds work anywhere in it can
+  # pass by removing it elsewhere: re-measure on such a change).
+  "m33s 10finish_row insns 780"
   # The same scoped to the first stage's loop, the row's one loop with
-  # its eight window products (146).
-  "m33s 10finish_row vmulloop8 150"
+  # its eight window products (116; 146 in the order of the blocks,
+  # through the digit-reversal table).
+  "m33s 10finish_row vmulloop8 120"
   # The window as a ring: no slide of the window (a memmove of 11 520
   # bytes a row) in the front end's feeds.
   "m33s 11Spectrogram4feed memmoves 0"
