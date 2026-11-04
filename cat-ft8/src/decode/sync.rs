@@ -321,6 +321,36 @@ pub fn refine(spec: &Spectrogram<'_>, c: &Candidate) -> (f32, f32) {
 /// No score at this point of the grid.
 const NONE: i32 = i32::MIN;
 
+/// Places a local maximum, `entry`, in `out`, whose first `count` entries
+/// are ordered: after every entry `before` holds of (a prefix of them). If
+/// the list is full, the entry or the list's last is dropped. Counts it in
+/// `report` as found, and as dropped if so. For [`select`] and
+/// [`select_paired`], as the last statement of their loop over a row's
+/// bins, which a dropped entry `continue`s.
+// A macro rather than a function: as a function (inlined always or as the
+// compiler chose, with an early return or without, its entry built at once
+// or by a closure) the insertion changed the hosts' `search_rows` (x86-64: 464 or 465
+// instructions, against 349), and so did this macro with an `else` for
+// its `continue` (441). The statements as both selections wrote them keep
+// it (findings O33b).
+macro_rules! insert_ranked {
+    ($out:expr, $count:expr, $report:expr, $before:expr, $entry:expr $(,)?) => {{
+        $report.found += 1;
+        let pos = $out[..$count].partition_point($before);
+        if pos >= $out.len() {
+            $report.dropped += 1;
+            continue;
+        }
+        if $count == $out.len() {
+            $report.dropped += 1;
+        } else {
+            $count += 1;
+        }
+        $out.copy_within(pos..$count - 1, pos + 1);
+        $out[pos] = $entry;
+    }};
+}
+
 /// Local-maximum suppression and top-K selection over a `rows × cols` score
 /// grid whose row q `score(q, row)` fills with cells ([`NONE`] for no score),
 /// visited row by row with a rolling three-row buffer. Every row is filled
@@ -345,6 +375,7 @@ where
         return Err(Error::BufferTooSmall);
     }
     let mut report = SyncReport::default();
+    let mut count = 0usize;
     let fill = |scratch: &mut [ScoreCell], q: usize| {
         score(q, &mut scratch[(q % 3) * cols..(q % 3 + 1) * cols]);
     };
@@ -390,36 +421,11 @@ where
             }
             // After every entry scoring ≥ s (found in (q, b) order, so
             // earlier points first).
-            insert_ranked(out, &mut report, |e| e.score() >= s, || make(q, b, s));
+            insert_ranked!(out, count, report, |e| e.score() >= s, make(q, b, s));
         }
     }
+    report.kept = count;
     Ok(report)
-}
-
-/// Places a local maximum in `out`, whose first `report.kept` entries are
-/// ordered: after every entry `before` holds of (a prefix of them). If the
-/// list is full, the entry or the list's last is dropped. Counts it as
-/// found, and as dropped if so.
-#[inline(always)]
-fn insert_ranked<T: Copy>(
-    out: &mut [T],
-    report: &mut SyncReport,
-    before: impl FnMut(&T) -> bool,
-    entry: impl FnOnce() -> T,
-) {
-    report.found += 1;
-    let pos = out[..report.kept].partition_point(before);
-    if pos >= out.len() {
-        report.dropped += 1;
-        return;
-    }
-    if report.kept == out.len() {
-        report.dropped += 1;
-    } else {
-        report.kept += 1;
-    }
-    out.copy_within(pos..report.kept - 1, pos + 1);
-    out[pos] = entry();
 }
 
 /// An entry with a sync score (for [`select`]).
@@ -728,6 +734,7 @@ where
     if rows == 0 {
         return Ok(report);
     }
+    let mut count = 0usize;
     // Bins a span selects: all of them if five rows of the band fit, else
     // as many as leave room for a neighbour on either side.
     let fit = scratch.len() / PAIRED_ROWS;
@@ -792,16 +799,18 @@ where
                 let b = lo + i;
                 // After every entry scoring more, or as much at an earlier
                 // point.
-                insert_ranked(
+                insert_ranked!(
                     out,
-                    &mut report,
+                    count,
+                    report,
                     |e| e.score() > s || (e.score() == s && e.point() < (q, b)),
-                    || make(q, b, s),
+                    make(q, b, s),
                 );
             }
         }
         c0 = c1;
     }
+    report.kept = count;
     Ok(report)
 }
 
