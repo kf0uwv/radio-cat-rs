@@ -51,7 +51,7 @@
 //! feed to the next. The FFT work is free between rows, and the decoder's
 //! sync search uses it then.
 
-use super::fft::{power_bins, power_bins_quarters, FftBuffer, BINS, ONE_LANE, WINDOW};
+use super::fft::{power_bins, spectrum, spectrum_of_quarters, FftBuffer, BINS, ONE_LANE, WINDOW};
 use super::math::{log2_power, POWER_FLOOR, SCALAR_FORMS};
 use super::tables::LEVEL_STEPS;
 use crate::{Error, SLOT_SAMPLES};
@@ -585,9 +585,11 @@ impl<'a> Spectrogram<'a> {
         // The ring where the transform takes one lane, as its quarters in
         // order; else the window as it slides.
         if ONE_LANE {
-            power_bins_quarters(ring_quarters(window, r), fft, first, width, levels);
+            let quarters = ring_quarters(window, r);
+            let transform = |b: &mut FftBuffer| spectrum_of_quarters(quarters, b);
+            power_bins(transform, fft, first, width, levels);
         } else {
-            power_bins(window, fft, first, width, levels);
+            power_bins(|b| spectrum(window, b), fft, first, width, levels);
         }
         let (floored, top) = level_counts(row);
         self.floored += floored;

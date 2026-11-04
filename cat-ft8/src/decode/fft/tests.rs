@@ -622,17 +622,22 @@ fn a_transform_does_not_read_what_its_cells_held() {
 }
 
 #[test]
-fn power_bins_quarters_equals_power_bins_bit_for_bit() {
+fn power_bins_of_quarters_equals_power_bins_of_the_window_bit_for_bit() {
     // Every bin of every test window, with the window's quarters held in
     // one buffer in each rotation (as the front end's ring holds them) and
-    // handed in order, from cells that held stale values.
+    // handed in order, from cells that held stale values, against the
+    // joined window (with this build's lanes).
     let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
     for (n, x) in test_windows().iter().enumerate() {
         let mut buf = FftBuffer::new();
         let mut want = std::vec![0.0f32; BINS];
-        power_bins(x, &mut buf, 0, BINS, |i, p| {
-            want[i..i + p.len()].copy_from_slice(p)
-        });
+        power_bins(
+            |b| spectrum(x, b),
+            &mut buf,
+            0,
+            BINS,
+            |i, p| want[i..i + p.len()].copy_from_slice(p),
+        );
         for rotation in 0..4 {
             let at = |m: usize| ((m + rotation) % 4) * INPUT_STEP;
             let mut ring = [0.0f32; WINDOW];
@@ -640,13 +645,17 @@ fn power_bins_quarters_equals_power_bins_bit_for_bit() {
                 ring[at(m)..at(m) + INPUT_STEP]
                     .copy_from_slice(&x[m * INPUT_STEP..(m + 1) * INPUT_STEP]);
             }
-            let quarters: [&[f32; INPUT_STEP]; 4] =
+            let quarters: Quarters<'_> =
                 core::array::from_fn(|m| ring[at(m)..at(m) + INPUT_STEP].try_into().unwrap());
             buf.cells().fill(f32::NAN);
             let mut got = std::vec![0.0f32; BINS];
-            power_bins_quarters(quarters, &mut buf, 0, BINS, |i, p| {
-                got[i..i + p.len()].copy_from_slice(p)
-            });
+            power_bins(
+                |b| spectrum_of_quarters(quarters, b),
+                &mut buf,
+                0,
+                BINS,
+                |i, p| got[i..i + p.len()].copy_from_slice(p),
+            );
             assert!(bits(&got) == bits(&want), "window {n}, rotation {rotation}");
         }
     }
@@ -674,12 +683,13 @@ fn spectrum_is_the_same_for_every_lane_count() {
 
 #[test]
 fn straight_first_stage_equals_first_stage_with_a_group_of_one() {
-    // The form the decoder runs with one lane against the looped form, every
-    // bit including the sign of zero.
+    // The form the decoder runs with one lane, from the joined window's
+    // quarters, against the looped form, every bit including the sign of
+    // zero.
     let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
     for (n, x) in test_windows().iter().enumerate() {
         let (mut ar, mut ai) = ([f32::NAN; N], [f32::NAN; N]);
-        straight_first_stage(x, &mut ar, &mut ai);
+        straight_first_stage(quarters(x), &mut ar, &mut ai);
         let (mut br, mut bi) = ([f32::NAN; N], [f32::NAN; N]);
         first_stage::<1>(x, &mut br, &mut bi);
         assert!(

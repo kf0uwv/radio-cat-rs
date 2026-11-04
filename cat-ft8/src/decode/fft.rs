@@ -27,7 +27,8 @@
 //!   butterflies run side by side so that vector units take them together
 //!   (the last stage, whose twiddles are strided, as a plain loop the
 //!   compiler vectorises, over a table that runs past one turn); with one
-//!   lane, each butterfly is written out term by term. Each
+//!   lane ([`ONE_LANE`]), each butterfly is written out term by term and
+//!   the first stage reads the window as its four quarters. Each
 //!   butterfly keeps its own operations in the same order, so the result
 //!   does not depend on the group size, the lane count or the target.
 //! - **Real split.** The 3 840 real samples are packed as 1 920 complex
@@ -270,10 +271,10 @@ const LANES: usize = if cfg!(any(target_feature = "sse2", target_feature = "neon
 /// that goes with it. With one lane the stages are written out term by
 /// term ([`straight_stages`]) and read their twiddles from
 /// [`FIFTH_TWIDDLES`] and [`LAST_ROWS`] ([`TABLE_BYTES`]), and the front
-/// end holds its window as a ring of quarters ([`power_bins_quarters`]).
-/// Not [`SCALAR_FORMS`], which is also true on 32-bit x86 (and on 32-bit
-/// ARM with NEON): there the transform takes vectors and the window slides
-/// (findings O31b).
+/// end holds its window as a ring of quarters, which the first stage reads
+/// in place ([`Quarters`]). Not [`SCALAR_FORMS`], which is also true on
+/// 32-bit x86 (and on 32-bit ARM with NEON): there the transform takes
+/// vectors and the window slides (findings O31b).
 pub(crate) const ONE_LANE: bool = LANES == 1;
 
 const _: () = Lanes::<LANES>::OK;
@@ -771,25 +772,53 @@ pub(crate) fn fft_reference(buf: &mut [Complex; N]) {
 }
 
 /// The windowed spectrum of `samples`: the complex transform of the
-/// packed samples (Z[k], k = 0..1 920) in `buf`.
-fn spectrum(samples: &[f32; WINDOW], buf: &mut FftBuffer) {
+/// packed samples (Z[k], k = 0..1 920) in `buf`, with [`LANES`] lanes.
+pub(crate) fn spectrum(samples: &[f32; WINDOW], buf: &mut FftBuffer) {
     spectrum_lanes::<LANES>(samples, buf);
 }
 
-/// [`spectrum`] with `L` lanes: with one, the stages written out term by
-/// term; with more, groups of `L` blocks in the first stage and `L`
-/// butterflies side by side after it. The lane count is a parameter so that
-/// the tests run every form on any host.
+/// [`spectrum`] with `L` lanes: with one, [`spectrum_of_quarters`] of the
+/// window's quarters; with more, groups of `L` blocks in the first stage
+/// and `L` butterflies side by side after it. The lane count is a parameter
+/// so that the tests run every form on any host.
 #[inline(always)]
 fn spectrum_lanes<const L: usize>(samples: &[f32; WINDOW], buf: &mut FftBuffer) {
-    let (re, im) = buf.parts();
     if L == 1 {
-        straight_first_stage(samples, re, im);
-        straight_stages(re, im);
-    } else {
-        first_stage::<L>(samples, re, im);
-        side_by_side_stages::<L>(re, im);
+        spectrum_of_quarters(quarters(samples), buf);
+        return;
     }
+    let (re, im) = buf.parts();
+    first_stage::<L>(samples, re, im);
+    side_by_side_stages::<L>(re, im);
+}
+
+/// The window as its four quarters in order: `quarters[m]` holds samples
+/// m·`INPUT_STEP` .. (m + 1)·`INPUT_STEP` (`INPUT_STEP` is the front end's
+/// hop). The one-lane transform reads the window in this form, so that the
+/// front end can hand it the quarters of its ring in place.
+pub(crate) type Quarters<'a> = [&'a [f32; INPUT_STEP]; 4];
+
+/// The joined window `samples` as its [`Quarters`].
+#[inline(always)]
+fn quarters(samples: &[f32; WINDOW]) -> Quarters<'_> {
+    let mut chunks = samples.chunks_exact(INPUT_STEP);
+    core::array::from_fn(
+        |_| match chunks.next().map(<&[f32; INPUT_STEP]>::try_from) {
+            Some(Ok(quarter)) => quarter,
+            _ => unreachable!(),
+        },
+    )
+}
+
+/// The windowed spectrum of the window held as its [`Quarters`], as
+/// [`spectrum`] gives it bit for bit, by the transform with one lane:
+/// [`straight_first_stage`], then the later stages written out term by
+/// term ([`straight_stages`]).
+#[inline(always)]
+pub(crate) fn spectrum_of_quarters(quarters: Quarters<'_>, buf: &mut FftBuffer) {
+    let (re, im) = buf.parts();
+    straight_first_stage(quarters, re, im);
+    straight_stages(re, im);
 }
 
 /// The first stage (radix 4, `l` = 1) from the samples: position p's input
@@ -868,10 +897,13 @@ fn first_stage<const G: usize>(samples: &[f32; WINDOW], re: &mut [f32; N], im: &
 }
 
 /// [`first_stage`] with a group of one, its butterfly written out term by
-/// term (see [`straight_butterfly`]): the same window products, then the
-/// operations of `stage::<4, 1, 1>` in its order.
+/// term (see [`straight_butterfly`]), from the window held as its
+/// [`Quarters`]: the same window products, then the operations of
+/// `stage::<4, 1, 1>` in its order. Block b's inputs m = 0..4 are samples
+/// first + m·`INPUT_STEP` (and the next), with first + 1 < `INPUT_STEP`, so
+/// input m lies in quarter m at `first`, whichever buffer holds it.
 #[inline(always)]
-fn straight_first_stage(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f32; N]) {
+fn straight_first_stage(quarters: Quarters<'_>, re: &mut [f32; N], im: &mut [f32; N]) {
     // W₄^(m·q) as `stage::<4, 1, 1>` reads it: TWIDDLES[m·q·N/4 mod N],
     // here FIFTH_TWIDDLES[m·q·N/20 mod N/5] (row m − 1).
     let w: [[[f32; 2]; 4]; 3] = straight_twiddles!(4, 0, [1 2 3], [0 1 2 3]);
@@ -883,41 +915,6 @@ fn straight_first_stage(samples: &[f32; WINDOW], re: &mut [f32; N], im: &mut [f3
         // As in `first_stage` with one block: its first sample, and the
         // window entries low[t] = HANN_HALF[first + t] and high[t] =
         // HANN_HALF[INPUT_STEP − 1 − first + t].
-        let first = 2 * usize::from(DIGIT_REV[4 * c]);
-        let x = &samples[first..][..BLOCK_SAMPLES];
-        let low = &HANN_HALF[first..][..INPUT_STEP + 2];
-        let high = &HANN_HALF[INPUT_STEP - 1 - first..][..INPUT_STEP + 2];
-        let ar = [
-            x[0] * low[0],
-            x[INPUT_STEP] * low[INPUT_STEP],
-            x[2 * INPUT_STEP] * high[INPUT_STEP + 1],
-            x[3 * INPUT_STEP] * high[1],
-        ];
-        let ai = [
-            x[1] * low[1],
-            x[INPUT_STEP + 1] * low[INPUT_STEP + 1],
-            x[2 * INPUT_STEP + 1] * high[INPUT_STEP],
-            x[3 * INPUT_STEP + 1] * high[0],
-        ];
-        straight_butterfly!(@store ar, ai, r, i, 1, [1 2 3], [0 1 2 3], (m, q) => w[m - 1][q]);
-    }
-}
-
-/// [`straight_first_stage`] from the window held as its four quarters
-/// (`quarters[m]` holds samples m·`INPUT_STEP` .. (m + 1)·`INPUT_STEP`):
-/// block b's inputs m = 0..4 are samples first + m·`INPUT_STEP` (and the
-/// next), with first + 1 < `INPUT_STEP`, so input m lies in quarter m at
-/// `first`. The same window products and butterfly as
-/// [`straight_first_stage`] on the joined window.
-#[inline(always)]
-fn quarters_first_stage(quarters: [&[f32; INPUT_STEP]; 4], re: &mut [f32; N], im: &mut [f32; N]) {
-    // As in `straight_first_stage`.
-    let w: [[[f32; 2]; 4]; 3] = straight_twiddles!(4, 0, [1 2 3], [0 1 2 3]);
-    for (c, (r, i)) in re
-        .chunks_exact_mut(4)
-        .zip(im.chunks_exact_mut(4))
-        .enumerate()
-    {
         let first = 2 * usize::from(DIGIT_REV[4 * c]);
         // Each quarter's pair named (an array of them was built on the
         // stack each block on the Cortex-M33: findings O31).
@@ -1005,9 +1002,13 @@ pub(crate) fn power_spectrum(
     out: &mut [f32],
 ) {
     let count = out.len();
-    power_bins(samples, buf, first_bin, count, |i, p| {
-        out[i..i + p.len()].copy_from_slice(p)
-    });
+    power_bins(
+        |b| spectrum(samples, b),
+        buf,
+        first_bin,
+        count,
+        |i, p| out[i..i + p.len()].copy_from_slice(p),
+    );
 }
 
 /// Powers handed to the caller at a time by [`power_bins`].
@@ -1015,51 +1016,28 @@ pub(crate) const POWER_CHUNK: usize = 64;
 
 /// Calls `f(i, powers)` with the powers of bins `first_bin + i ..`, in
 /// order and in chunks of at most [`POWER_CHUNK`], for bins `first_bin ..
-/// first_bin + count` of the Hann-windowed spectrum of `samples`
-/// (normalised as in [`power_spectrum`]). Chunks let the caller's
-/// per-bin work run as a plain loop over values (which vectorises).
+/// first_bin + count` of the Hann-windowed spectrum that `transform`
+/// leaves in `buf` (normalised as in [`power_spectrum`]): [`spectrum`] of
+/// the window's samples in order, or [`spectrum_of_quarters`] of its
+/// quarters, as the front end's ring holds them where the transform takes
+/// one lane. Chunks let the caller's per-bin work run as a plain loop over
+/// values (which vectorises).
 ///
-/// `samples` must be finite and within ±[`INPUT_LIMIT`], as the front end's
-/// `classify` leaves them: the transform's stages rely on it to be bit for
-/// bit the full set of products (see `stage`).
+/// The samples must be finite and within ±[`INPUT_LIMIT`], as the front
+/// end's `classify` leaves them: the transform's stages rely on it to be
+/// bit for bit the full set of products (see `stage`).
 ///
 /// [`INPUT_LIMIT`]: super::frontend::INPUT_LIMIT
-pub(crate) fn power_bins<F: FnMut(usize, &[f32])>(
-    samples: &[f32; WINDOW],
+pub(crate) fn power_bins<T: FnOnce(&mut FftBuffer), F: FnMut(usize, &[f32])>(
+    transform: T,
     buf: &mut FftBuffer,
     first_bin: usize,
     count: usize,
     mut f: F,
 ) {
     assert!(first_bin + count <= BINS, "bins beyond the transform");
-    spectrum(samples, buf);
+    transform(buf);
     let (re, im) = buf.parts();
-    let mut p = [0.0f32; POWER_CHUNK];
-    let mut i = 0;
-    while i < count {
-        let n = (count - i).min(POWER_CHUNK);
-        bin_powers(re, im, first_bin + i, &mut p[..n]);
-        f(i, &p[..n]);
-        i += n;
-    }
-}
-
-/// [`power_bins`] of the window held as its four quarters
-/// (`quarters[m]` holds samples m·960 .. (m + 1)·960, as the front end's
-/// ring hands them where the transform takes one lane), by the one-lane
-/// transform ([`quarters_first_stage`], [`straight_stages`]): the same
-/// powers bit for bit.
-pub(crate) fn power_bins_quarters<F: FnMut(usize, &[f32])>(
-    quarters: [&[f32; INPUT_STEP]; 4],
-    buf: &mut FftBuffer,
-    first_bin: usize,
-    count: usize,
-    mut f: F,
-) {
-    assert!(first_bin + count <= BINS, "bins beyond the transform");
-    let (re, im) = buf.parts();
-    quarters_first_stage(quarters, re, im);
-    straight_stages(re, im);
     let mut p = [0.0f32; POWER_CHUNK];
     let mut i = 0;
     while i < count {
