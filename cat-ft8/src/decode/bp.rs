@@ -60,15 +60,13 @@ pub enum CheckRule {
     MinSum,
 }
 
-/// Working storage for one decode (3 656 bytes). One per decoding thread;
+/// Working storage for one decode (3 288 bytes). One per decoding thread;
 /// every decode re-initialises it.
 #[derive(Debug, Clone)]
 pub struct BpScratch {
-    /// The totals and the next round's sums. Each round swaps their
-    /// roles: after an even number of rounds the totals are in `total`,
-    /// after an odd number in `next`.
-    total: [f32; N],
-    next: [f32; N],
+    /// Each variable's total ([`Totals`]). A round reads them, then
+    /// replaces them with its sums.
+    total: Totals,
     /// The check-to-variable messages, one per edge, laid out by check
     /// degree in groups ([`place`]).
     msg: [f32; EDGES],
@@ -82,8 +80,7 @@ impl BpScratch {
     /// Zeroed storage (usable in a `static` initialiser).
     pub const fn new() -> Self {
         BpScratch {
-            total: [0.0; N],
-            next: [0.0; N],
+            total: [0.0; TOTALS],
             msg: [0.0; EDGES],
             hard: [0; N],
             rounds: 0,
@@ -209,12 +206,9 @@ fn hard_bit(x: f32, i: usize) -> u8 {
 /// stops at its first failing check without deciding the other bits. `G`
 /// is the layout's group size; the decoder uses [`GROUP`], the tests
 /// both.
-fn checks_hold<const G: usize>(values: &[f32; N]) -> bool {
+fn checks_hold<const G: usize>(values: &Totals) -> bool {
     let (edge_vars, _) = tables::<G>();
-    let decide = |acc: u8, &i: &u8| {
-        let i = usize::from(i);
-        acc ^ hard_bit(values[i], i)
-    };
+    let decide = |acc: u8, &i: &u8| acc ^ hard_bit(total_of(values, i), usize::from(i));
     check_edges::<G>().all(|(e, n, k)| {
         let parity = if k == 1 {
             edge_vars[e..][..n].iter().fold(0u8, decide)
@@ -258,17 +252,13 @@ pub fn decode_soft(
 ) -> Result<BpDecode, BpFailure> {
     let BpScratch {
         total,
-        next,
         msg,
         hard,
         rounds: rounds_run,
     } = scratch;
     *rounds_run = 0;
-    *total = *llr;
+    *variables_mut(total) = *llr;
     *msg = [0.0; EDGES];
-    // Each round sums into `next`, then the two swap roles: the
-    // references swap, not the arrays' contents.
-    let (mut total, mut next) = (total, next);
     let hard_errors = |hard: &[u8; N]| {
         let n = hard
             .iter()
@@ -281,7 +271,7 @@ pub fn decode_soft(
     let mut round = 0;
     loop {
         if checks_hold::<GROUP>(total) {
-            hard_decisions(total, hard);
+            hard_decisions(variables(total), hard);
             let payload = accept(hard)?;
             return Ok(BpDecode {
                 payload,
@@ -295,11 +285,10 @@ pub fn decode_soft(
         round += 1;
         *rounds_run = round;
         if rule == CheckRule::SumProduct {
-            sum_product_round::<VECTOR, PASS_LANES, GROUP>(llr, total, next, msg);
+            sum_product_round::<VECTOR, PASS_LANES, GROUP>(llr, total, msg);
         } else {
-            min_sum_round::<VECTOR, GROUP>(llr, total, next, msg);
+            min_sum_round::<VECTOR, GROUP>(llr, total, msg);
         }
-        core::mem::swap(&mut total, &mut next);
     }
 }
 
@@ -404,28 +393,27 @@ fn tables<const G: usize>() -> (&'static [u8; EDGES], &'static [[u16; 3]; N]) {
 }
 
 /// One sum-product round, in place on the messages: every check's new
-/// messages into `msg`, added to `next` check by check in order. Done in
-/// phases over all edges (inputs, tanh, products, atanh, then the sums), so
-/// the tanh and atanh passes are long plain loops; each value's arithmetic
-/// is that of one check at a time. With the edges laid out by check degree
-/// in groups of `G` ([`place`]), the products run over whole groups of a
-/// fixed size. `V` picks the form of `tanh_half`, `W` the values the tanh
-/// and atanh passes take together and `G` the layout; the decoder uses
-/// [`VECTOR`], [`PASS_LANES`] and [`GROUP`], the tests both targets' forms.
-/// Not inlined, so its frame is measured on its own.
+/// messages into `msg`, then each variable's sum of them in check order
+/// into the totals. Done in phases over all edges (inputs, tanh,
+/// products, atanh, then the sums), so the tanh and atanh passes are long
+/// plain loops; each value's arithmetic is that of one check at a time.
+/// With the edges laid out by check degree in groups of `G` ([`place`]),
+/// the products run over whole groups of a fixed size. `V` picks the
+/// form of `tanh_half`, `W` the values the tanh and atanh passes take
+/// together and `G` the layout; the decoder uses [`VECTOR`],
+/// [`PASS_LANES`] and [`GROUP`], the tests both targets' forms. The sums
+/// replace the totals: every input has been taken by then. Not inlined,
+/// so its frame is measured on its own.
 #[inline(never)]
 fn sum_product_round<const V: bool, const W: usize, const G: usize>(
     llr: &[f32; N],
-    total: &[f32; N],
-    next: &mut [f32; N],
+    total: &mut Totals,
     msg: &mut [f32; EDGES],
 ) {
     let (edge_vars, var_edges) = tables::<G>();
     if INPUT_BLOCK == 1 {
-        // Checked, not [`total_of`]: the edges go one at a time here
-        // (x86-64, the microcontrollers) and the clamp was not measured.
         for (m, &i) in msg.iter_mut().zip(edge_vars) {
-            *m = total[usize::from(i)] - *m;
+            *m = total_of(total, i) - *m;
         }
     } else {
         inputs::<INPUT_BLOCK>(total, msg, edge_vars);
@@ -435,7 +423,7 @@ fn sum_product_round<const V: bool, const W: usize, const G: usize>(
     products::<6, G>(t6);
     products::<7, G>(t7);
     each_value::<W>(msg, twice_atanh);
-    sums(llr, next, msg, var_edges);
+    sums(llr, total, msg, var_edges);
 }
 
 /// Edges whose inputs [`inputs`] takes together: eight on AArch64, one
@@ -451,11 +439,11 @@ const INPUT_BLOCK: usize = if cfg!(target_arch = "aarch64") { 8 } else { 1 };
 /// parameter of the round, so the round with blocked inputs is tested
 /// only where it is built, on AArch64; elsewhere the tests compare
 /// `inputs` itself at several block sizes with the plain loop. A block
-/// takes its totals through [`total_of`], so it has no bounds-check
-/// branch and its subtractions vectorise (the checks `sum_product_round
-/// sumloop8` in `codegen-check.sh`; findings O27).
+/// takes its totals with no bounds-check branch ([`Totals`]), so its
+/// subtractions vectorise (the checks `sum_product_round sumloop8` in
+/// `codegen-check.sh`; findings O27).
 #[inline(always)]
-fn inputs<const U: usize>(total: &[f32; N], msg: &mut [f32; EDGES], edge_vars: &[u8; EDGES]) {
+fn inputs<const U: usize>(total: &Totals, msg: &mut [f32; EDGES], edge_vars: &[u8; EDGES]) {
     let mut blocks = msg.chunks_exact_mut(U);
     let mut vars = edge_vars.chunks_exact(U);
     for (block, v) in (&mut blocks).zip(&mut vars) {
@@ -465,9 +453,8 @@ fn inputs<const U: usize>(total: &[f32; N], msg: &mut [f32; EDGES], edge_vars: &
             block[k] = total_of(total, v[k]) - block[k];
         }
     }
-    // Checked: at most `U - 1` edges, once a round; not hot.
     for (m, &i) in blocks.into_remainder().iter_mut().zip(vars.remainder()) {
-        *m = total[usize::from(i)] - *m;
+        *m = total_of(total, i) - *m;
     }
 }
 
@@ -513,19 +500,47 @@ const _: () = {
     }
 };
 
+/// The variables' totals, with room for any `u8` index: the entries from
+/// `N` on are never read and stay zero. A round's gathers take their
+/// variables' indices from [`EDGE_VARS`] as `u8`, so with this length the
+/// compiler needs no bounds check for them (a branch or a select per
+/// gather otherwise).
+type Totals = [f32; TOTALS];
+/// The totals' length: every `u8` index.
+const TOTALS: usize = u8::MAX as usize + 1;
+
+/// The first `N` totals, the variables'.
+#[inline(always)]
+fn variables(total: &Totals) -> &[f32; N] {
+    total[..N].try_into().unwrap()
+}
+
+/// [`variables`], to write.
+#[inline(always)]
+fn variables_mut(total: &mut Totals) -> &mut [f32; N] {
+    (&mut total[..N]).try_into().unwrap()
+}
+
 /// Variable `i`'s total, from an index read from [`EDGE_VARS`] (or the
 /// tests' tables for other group sizes, built the same way).
-///
 /// [`edge_vars`] writes only `i as u8` for `i < N`, so every index is
-/// below `N` and the clamp to `N - 1` never changes it; it is there so
-/// the compiler can take the total by a select rather than a bounds-check
-/// branch. The sum-product inputs' blocks need that to vectorise (the
-/// `sumloop8` entries of `codegen-check.sh`); min-sum's groups vectorise
-/// in the release form (16 codegen units) with the index checked too, so
-/// there the clamp only removes the branch. With debug assertions the bound is asserted, so a
-/// bad table panics there rather than reading the last total.
+/// below `N`. With debug assertions the bound is asserted, so a bad table
+/// panics there rather than reading a zero past the variables.
 #[inline(always)]
-fn total_of(total: &[f32; N], i: u8) -> f32 {
+fn total_of(total: &Totals, i: u8) -> f32 {
+    debug_assert!(usize::from(i) < N);
+    total[usize::from(i)]
+}
+
+/// [`total_of`] with the index taken no further than the last variable,
+/// which it never changes (every index is below `N`) and which costs a
+/// compare and a select a gather: for min-sum's groups ([`group_min_sum`])
+/// only. Under the release profile (16 codegen units, local ThinLTO) the
+/// groups of degree 6 compiled to scalar code on AArch64 with the plain
+/// index and keep their vector form with this one (the check `a64r
+/// min_sum_round` in `codegen-check.sh`; findings O28).
+#[inline(always)]
+fn total_of_clamped(total: &Totals, i: u8) -> f32 {
     debug_assert!(usize::from(i) < N);
     total[usize::from(i).min(N - 1)]
 }
@@ -585,11 +600,11 @@ const fn edge_vars(var_edges: &[[u16; 3]; N]) -> [u8; EDGES] {
     out
 }
 
-/// The next totals: each variable's soft bit plus its three checks'
-/// messages (at `var_edges`), added in check order.
+/// The next totals, in place of the totals: each variable's soft bit plus
+/// its three checks' messages (at `var_edges`), added in check order.
 #[inline(always)]
-fn sums(llr: &[f32; N], next: &mut [f32; N], msg: &[f32; EDGES], var_edges: &[[u16; 3]; N]) {
-    for ((x, &l), e) in next.iter_mut().zip(llr).zip(var_edges) {
+fn sums(llr: &[f32; N], total: &mut Totals, msg: &[f32; EDGES], var_edges: &[[u16; 3]; N]) {
+    for ((x, &l), e) in variables_mut(total).iter_mut().zip(llr).zip(var_edges) {
         *x = l + msg[usize::from(e[0])] + msg[usize::from(e[1])] + msg[usize::from(e[2])];
     }
 }
@@ -624,18 +639,18 @@ fn each_value<const W: usize>(values: &mut [f32; EDGES], f: impl Fn(f32) -> f32)
 
 /// One normalised min-sum round, in place on the messages: check by check
 /// in order, the inputs (totals less the check's own messages) replace its
-/// messages, then its new messages, which are added to `next`. `V` picks
-/// the form for targets where the loops vectorise or not and `G` the
-/// layout (the decoder uses [`VECTOR`] and [`GROUP`], the tests both).
+/// messages, then its new messages; then each variable's sum of them in
+/// check order into the totals. `V` picks the form for targets where the
+/// loops vectorise or not and `G` the layout (the decoder uses [`VECTOR`] and [`GROUP`], the tests both).
 /// With groups of more than one ([`place`]), each degree's whole groups
 /// come first ([`group_min_sum`]), then its checks left over; the checks
-/// are independent, so their order does not matter. Not inlined, so its
-/// frame is measured on its own.
+/// are independent, so their order does not matter. The sums replace the
+/// totals once every check has taken its inputs. Not inlined, so its frame
+/// is measured on its own.
 #[inline(never)]
 fn min_sum_round<const V: bool, const G: usize>(
     llr: &[f32; N],
-    total: &[f32; N],
-    next: &mut [f32; N],
+    total: &mut Totals,
     msg: &mut [f32; EDGES],
 ) {
     let (edge_vars, var_edges) = tables::<G>();
@@ -650,7 +665,7 @@ fn min_sum_round<const V: bool, const G: usize>(
         min_sum_groups::<V, 6, G>(total, v6, m6);
         min_sum_groups::<V, 7, G>(total, v7, m7);
     }
-    sums(llr, next, msg, var_edges);
+    sums(llr, total, msg, var_edges);
 }
 
 /// [`min_sum_round`]'s checks of degree `D` in the layout of groups of
@@ -658,7 +673,7 @@ fn min_sum_round<const V: bool, const G: usize>(
 /// groups, then the checks left over one by one.
 #[inline(always)]
 fn min_sum_groups<const V: bool, const D: usize, const G: usize>(
-    total: &[f32; N],
+    total: &Totals,
     vars: &[u8],
     edges: &mut [f32],
 ) {
@@ -680,7 +695,7 @@ fn min_sum_groups<const V: bool, const D: usize, const G: usize>(
 /// for both sizes, its inputs taken in the loop that finds the two
 /// smallest magnitudes.
 #[inline(always)]
-fn min_sum_check_sized<const V: bool>(total: &[f32; N], v: &[u8], row: &mut [f32]) {
+fn min_sum_check_sized<const V: bool>(total: &Totals, v: &[u8], row: &mut [f32]) {
     match (V, v.len()) {
         (true, 6) => min_sum_check::<false>(total, &v[..6], &mut row[..6]),
         (true, _) => min_sum_check::<false>(total, &v[..7], &mut row[..7]),
@@ -695,7 +710,7 @@ fn min_sum_check_sized<const V: bool>(total: &[f32; N], v: &[u8], row: &mut [f32
 /// own. Each value goes through the same operations in the same order
 /// either way.
 #[inline(always)]
-fn min_sum_check<const ONE_PASS: bool>(total: &[f32; N], v: &[u8], row: &mut [f32]) {
+fn min_sum_check<const ONE_PASS: bool>(total: &Totals, v: &[u8], row: &mut [f32]) {
     let (mut min1, mut min2, mut at) = (f32::MAX, f32::MAX, 0);
     let mut negatives = 0u32;
     // One input's magnitude and sign into the two smallest and the count.
@@ -721,17 +736,14 @@ fn min_sum_check<const ONE_PASS: bool>(total: &[f32; N], v: &[u8], row: &mut [f3
             }
         }};
     }
-    // Checked, not [`total_of`]: on the hosts only the checks left over
-    // take this (not hot); where every check does (no vector unit) the
-    // clamp was not measured.
     if ONE_PASS {
         for (j, (m, &i)) in row.iter_mut().zip(v).enumerate() {
-            *m = total[usize::from(i)] - *m;
+            *m = total_of(total, i) - *m;
             take!(j, *m);
         }
     } else {
         for (m, &i) in row.iter_mut().zip(v) {
-            *m = total[usize::from(i)] - *m;
+            *m = total_of(total, i) - *m;
         }
         for (j, &x) in row.iter().enumerate() {
             take!(j, x);
@@ -752,13 +764,14 @@ fn min_sum_check<const ONE_PASS: bool>(total: &[f32; N], v: &[u8], row: &mut [f3
 /// selects here, which choose the same values.
 ///
 /// Each row's inputs replace its messages in the step that compares
-/// them, and the row takes its totals through [`total_of`], so it has no
-/// bounds-check branch. Under the release profile (16 codegen units,
-/// local ThinLTO), with the inputs first in a local array and the indices
-/// checked, the group compiled to scalar code on AArch64 (the check
-/// `a64r min_sum_round` in `codegen-check.sh`; findings O27).
+/// them, and the row takes its totals through [`total_of_clamped`].
+/// Under the release profile (16 codegen units, local ThinLTO), with the
+/// inputs first in a local array and the indices checked (findings O27),
+/// or taken in place with the plain index (findings O28), the groups of
+/// degree 6 compiled to scalar code on AArch64 (the check `a64r
+/// min_sum_round` in `codegen-check.sh`).
 #[inline(always)]
-fn group_min_sum<const D: usize, const K: usize>(total: &[f32; N], vars: &[u8], group: &mut [f32]) {
+fn group_min_sum<const D: usize, const K: usize>(total: &Totals, vars: &[u8], group: &mut [f32]) {
     let (mut min1, mut min2) = ([f32::MAX; K], [f32::MAX; K]);
     let (mut at, mut negatives) = ([0u32; K], [0u32; K]);
     let rows = group.chunks_exact_mut(K).zip(vars.chunks_exact(K));
@@ -766,7 +779,7 @@ fn group_min_sum<const D: usize, const K: usize>(total: &[f32; N], vars: &[u8], 
         let row: &mut [f32; K] = row.try_into().unwrap();
         let v: &[u8; K] = v.try_into().unwrap();
         for l in 0..K {
-            row[l] = total_of(total, v[l]) - row[l];
+            row[l] = total_of_clamped(total, v[l]) - row[l];
         }
         for l in 0..K {
             let x = row[l];
@@ -852,10 +865,6 @@ impl BpScratch {
     /// The totals after the last decode's final round (the channel's
     /// soft bits if it ran none), whatever its result.
     pub fn last_totals(&self) -> &[f32; N] {
-        if self.rounds % 2 == 0 {
-            &self.total
-        } else {
-            &self.next
-        }
+        variables(&self.total)
     }
 }

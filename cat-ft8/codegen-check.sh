@@ -18,7 +18,9 @@
 # AArch64, that the clamp keeps its form on the microcontroller targets,
 # that the FFT stays written out butterfly by butterfly on the Cortex-M33
 # and its last stage one vectorised loop on AArch64 and x86-64, and that
-# the sync search's running sums keep their loop there.
+# the sync search's running sums keep their loop there, and that the
+# belief-propagation rounds take their variables' totals without a
+# bounds check.
 # Their speed depends on code generation that no test sees: the
 # sum-product round's tanh and atanh passes 24 values at a time
 # (`PASS_LANES`), its products over four checks in the lanes of one
@@ -129,14 +131,20 @@ checks=(
   "a64 min_sum_round vec4 100"
   # The same in the release form, which left the groups scalar while the one-unit build passed.
   "a64r min_sum_round vec4 100 one"
+  # Its groups of degree 6 vectorised there too (with them scalar the round is about 1 240 instructions).
+  "a64r min_sum_round insns 1000 one"
   # The correction's lanes out of line, so their loop is two-lane 64-bit adds: each of `blocks`' two instantiations.
   "a64 6blocks add2d 2 each"
   # The same in the release form (the second `blocks` is inlined into `subtract::run` there, unchecked).
   "a64r 6blocks add2d 2 each"
-  # The sum-product inputs' blocks of eight without a bounds-check branch per edge (61-63 with them).
-  "a64 sum_product_round sumloop8 54"
+  # The sum-product inputs' blocks of eight without a bounds check or clamp per edge (46-48 clamped, 61-63 checked).
+  "a64 sum_product_round sumloop8 40"
   # The same in the release form.
-  "a64r sum_product_round sumloop8 54 one"
+  "a64r sum_product_round sumloop8 40 one"
+  # Min-sum check by check, its inputs' totals without a bounds check (the totals padded to any u8 index).
+  "m33s min_sum_round sumloop1 31"
+  # The sum-product inputs likewise, one edge at a time.
+  "m33s sum_product_round sumloop1 10"
   # The removal's clamp as four-lane fmaxnm/fminnm.
   "a64 7Removal4refs minmax 2"
   # The time search's clamp likewise.

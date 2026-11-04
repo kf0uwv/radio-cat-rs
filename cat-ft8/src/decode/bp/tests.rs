@@ -21,6 +21,14 @@ use crate::{crc, ldpc};
 
 const RULES: [CheckRule; 2] = [CheckRule::SumProduct, CheckRule::MinSum];
 
+/// `values` as the decoder's totals, the entries past the variables NaN,
+/// so that a gather past the variables would show in the results.
+fn padded(values: &[f32; N]) -> Totals {
+    let mut total = [f32::NAN; TOTALS];
+    *variables_mut(&mut total) = *values;
+    total
+}
+
 /// The parity checks with 0-based variable indices (unused entries 0),
 /// derived at compile time from the 1-based, 0-padded `PARITY_CHECKS`,
 /// in the same order: the tests' own form of the graph, independent of
@@ -174,8 +182,8 @@ fn the_stopping_test_matches_its_first_form() {
         }
         let mut want = [0u8; N];
         let holds = hard_decide_first_form(&values, &mut want);
-        assert_eq!(checks_hold::<1>(&values), holds, "state {state}");
-        assert_eq!(checks_hold::<4>(&values), holds, "state {state}");
+        assert_eq!(checks_hold::<1>(&padded(&values)), holds, "state {state}");
+        assert_eq!(checks_hold::<4>(&padded(&values)), holds, "state {state}");
         held += usize::from(holds);
         let mut hard = [9u8; N];
         hard_decisions(&values, &mut hard);
@@ -283,19 +291,19 @@ fn the_stopping_test_fails_first_at_every_check() {
             assert_eq!(first_failing_check(&want), Some(c), "check {c}");
             assert!(!holds);
             assert_eq!(
-                checks_hold::<1>(&values),
+                checks_hold::<1>(&padded(&values)),
                 holds,
                 "check {c}, variant {variant}"
             );
             assert_eq!(
-                checks_hold::<4>(&values),
+                checks_hold::<4>(&padded(&values)),
                 holds,
                 "check {c}, variant {variant}"
             );
             *seen += 1;
         }
         // The codeword itself holds.
-        assert!(checks_hold::<1>(&clean) && checks_hold::<4>(&clean));
+        assert!(checks_hold::<1>(&padded(&clean)) && checks_hold::<4>(&padded(&clean)));
     }
     assert!(seen.iter().all(|&n| n == 12), "{seen:?}");
 }
@@ -518,8 +526,7 @@ fn rows_into<const G: usize>(rows: &[[f32; MAX_DEGREE]; M], msg: &mut [f32; EDGE
 fn state_hash(s: &BpScratch) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     let rows = rows_of::<GROUP>(&s.msg);
-    let totals = if s.rounds % 2 == 0 { &s.total } else { &s.next };
-    let words = totals.iter().chain(rows.iter().flatten());
+    let words = variables(&s.total).iter().chain(rows.iter().flatten());
     for x in words {
         for b in x.to_bits().to_le_bytes() {
             h ^= u64::from(b);
@@ -594,19 +601,19 @@ fn the_edge_layout_places_every_edge_once_for_both_group_sizes() {
 
 #[test]
 fn a_variable_takes_its_own_total() {
-    let total: [f32; N] = core::array::from_fn(|i| i as f32);
+    let total: Totals = core::array::from_fn(|i| i as f32);
     for i in 0..N {
         assert_eq!(total_of(&total, i as u8), i as f32);
     }
 }
 
 /// With debug assertions, an index past the variables panics rather than
-/// reading the last total.
+/// reading a zero past them.
 #[test]
 #[cfg(debug_assertions)]
 #[should_panic]
 fn an_index_past_the_variables_panics_with_debug_assertions() {
-    total_of(&[0.0; N], N as u8);
+    total_of(&[0.0; TOTALS], N as u8);
 }
 
 /// The layout of groups of `G` ([`place`]), checked from the tables of
@@ -748,18 +755,19 @@ fn the_sum_product_round_matches_the_check_by_check_form_bit_for_bit() {
         ];
         for (form, round, group) in forms {
             let mut msg = [f32::NAN; EDGES];
-            let mut got_next = [f32::NAN; N];
+            let mut got = padded(&total);
             let got_rows = if group == 1 {
                 rows_into::<1>(&given, &mut msg);
-                round(&next, &total, &mut got_next, &mut msg);
+                round(&next, &mut got, &mut msg);
                 rows_of::<1>(&msg)
             } else {
                 rows_into::<4>(&given, &mut msg);
-                round(&next, &total, &mut got_next, &mut msg);
+                round(&next, &mut got, &mut msg);
                 rows_of::<4>(&msg)
             };
+            assert!(got[N..].iter().all(|x| x.is_nan()), "state {state}, {form}");
             assert_eq!(
-                bits(&mut got_next.iter()),
+                bits(&mut variables(&got).iter()),
                 bits(&mut want_next.iter()),
                 "state {state}, {form}: sums"
             );
@@ -772,8 +780,9 @@ fn the_sum_product_round_matches_the_check_by_check_form_bit_for_bit() {
     }
 }
 
-/// A round: the soft bits, the totals, the next totals, the messages.
-type Round = fn(&[f32; N], &[f32; N], &mut [f32; N], &mut [f32; EDGES]);
+/// A round: the soft bits, the totals (replaced by the next ones), the
+/// messages.
+type Round = fn(&[f32; N], &mut Totals, &mut [f32; EDGES]);
 
 /// The min-sum round as first written (inside `decode_soft`, the inputs
 /// in a separate row), over rows by check: the reference the in-place
@@ -866,18 +875,19 @@ fn the_min_sum_round_matches_its_first_form_bit_for_bit() {
         ];
         for (form, round, group) in forms {
             let mut msg = [f32::NAN; EDGES];
-            let mut got_next = [f32::NAN; N];
+            let mut got = padded(&total);
             let got_rows = if group == 1 {
                 rows_into::<1>(&given, &mut msg);
-                round(&next, &total, &mut got_next, &mut msg);
+                round(&next, &mut got, &mut msg);
                 rows_of::<1>(&msg)
             } else {
                 rows_into::<4>(&given, &mut msg);
-                round(&next, &total, &mut got_next, &mut msg);
+                round(&next, &mut got, &mut msg);
                 rows_of::<4>(&msg)
             };
+            assert!(got[N..].iter().all(|x| x.is_nan()), "state {state}, {form}");
             assert_eq!(
-                got_next.map(f32::to_bits),
+                variables(&got).map(f32::to_bits),
                 want_next.map(f32::to_bits),
                 "state {state}, {form}: sums"
             );
@@ -891,7 +901,7 @@ fn the_min_sum_round_matches_its_first_form_bit_for_bit() {
 }
 
 /// The inputs' form: the totals, the messages, the edges' variables.
-type Inputs = fn(&[f32; N], &mut [f32; EDGES], &[u8; EDGES]);
+type Inputs = fn(&Totals, &mut [f32; EDGES], &[u8; EDGES]);
 
 #[test]
 fn the_inputs_are_the_same_in_blocks_of_any_size() {
@@ -915,7 +925,7 @@ fn the_inputs_are_the_same_in_blocks_of_any_size() {
         ];
         for (k, f) in blocks.iter().enumerate() {
             let mut got = msg;
-            f(&total, &mut got, edge_vars);
+            f(&padded(&total), &mut got, edge_vars);
             assert_eq!(
                 got.map(f32::to_bits),
                 want.map(f32::to_bits),
@@ -972,7 +982,7 @@ fn each_value_gives_the_same_bits_at_any_lane_count() {
 fn the_scratch_holds_one_message_per_edge() {
     assert_eq!(
         core::mem::size_of::<BpScratch>(),
-        4 * (2 * N + EDGES) + N + 1 + 1
+        4 * (TOTALS + EDGES) + N + 1 + 1
     );
 }
 
@@ -1076,13 +1086,8 @@ fn decode_soft_against_its_first_form(vectors: usize) -> [usize; 6] {
                 let at = std::format!("vector {k}, {rule:?}, limit {max_rounds}");
                 assert_eq!(got, want, "{at}");
                 assert_eq!(scratch.rounds(), want_rounds, "{at}");
-                let totals = if scratch.rounds % 2 == 0 {
-                    &scratch.total
-                } else {
-                    &scratch.next
-                };
                 assert_eq!(
-                    totals.map(f32::to_bits),
+                    variables(&scratch.total).map(f32::to_bits),
                     want_total.map(f32::to_bits),
                     "{at}"
                 );

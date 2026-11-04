@@ -482,7 +482,7 @@ pub type CandidateResult = Result<Decode, BpFailure>;
 
 /// Working storage for one candidate (soft bits, belief-propagation
 /// messages or the ordered-statistics decoder's storage, and the noise
-/// histogram, about 5.1 KB). One per worker; every candidate
+/// histogram, 4 800 bytes). One per worker; every candidate
 /// re-initialises it.
 #[derive(Clone)]
 pub struct CandidateScratch {
@@ -495,8 +495,10 @@ pub struct CandidateScratch {
 /// runs only after belief propagation has failed, when its storage is
 /// idle, and the next candidate's belief propagation re-initialises it.
 /// A safe enum (the crate forbids `unsafe`): its tag is the only memory
-/// the sharing costs.
+/// the sharing costs. The variants' sizes differ (OSD-1's is the larger)
+/// by design: boxing one would need a heap.
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 enum Work {
     Bp(BpScratch),
     Osd(OsdWork),
