@@ -2509,7 +2509,7 @@
 
 ## Session: 2026-11-04 (O31b one predicate for the one-lane forms)
 
-- Fixes from O31's reviews. The one-lane forms were chosen by three
+- Fixes to O31. The one-lane forms were chosen by three
   predicates that disagreed on 32-bit x86 (SSE2): there the front end took
   the ring and the one-lane transform, with the hosts' unused last stage,
   where the transform has vectors (`finish_row` 256 → 171 `mulps`).
@@ -2526,10 +2526,33 @@
 - 0243ded: a restart test at rows not a multiple of four; CI's debug
   group-one front-end run; comments (`ring_at`, `black_box`, the slide's
   1.6% of the slot and 1.7% after setup).
-- Host binaries now differ from a756578 (decided for this round:
-  layout changes are accepted): hot functions equal but for addresses; x86-64 records (73 800)
-  and WAV outputs equal 6b8013c's; x86-64 time within noise (−0.15%, +0.12%).
+- Host binaries now differ from a756578 (layout changes are accepted):
+  hot functions equal but for addresses; x86-64 records (73 800) and WAV
+  outputs equal 6b8013c's; x86-64 time within noise (−0.15%, +0.12%).
 - M33 images equal 8faab0a's at each commit (counts equal), identity 16 of
   16, encoder 45; local CI 19 of 19 at each commit; forced forms fail;
   mutants caught (p1 and p2 equivalent in values).
 - Open: the A76 confirmation run of 0243ded against a756578.
+
+## Session: 2026-11-04 (O31c closing fixes)
+
+- Fixes to O31b. codegen-check pins i686's `feed`, `feed_i16` and
+  `skip` (one memmove, no division: 15ac58c, 5b9df85); each of the three
+  window choices forced to `SCALAR_FORMS` alone fails it (index:
+  `divides`; slide: `memmovefloor`; row: `onelane`, `mulps`).
+- A `Layout` type for the three (184fe8b) moved `paired_bench`'s
+  partition on AArch64 (`snr::estimate`, `soft_bits_at`); reverted
+  (128fff4).
+- Not applied: the `!ONE_LANE || SCALAR_FORMS` assertion (false on
+  soft-float x86-64 and AArch64 targets; documented instead) and a
+  plainer `quarters()` (both forms tried changed the hosts' code).
+- 1d1bb84: the row's closures bound alike. bb5622a: comments
+  (`ONE_LANE` on NEON, the group-one cfg's one lane in `Cargo.toml` and
+  CI).
+- The comparison tool's docstring and per-name arguments; summaries rerun;
+  findings' wording (the AArch64 normalisation, the timed bench's
+  `soft_bits_at`, O31's trial build named).
+- At 5b9df85 all eight binaries' sections equal 0243ded's; M4F sections
+  equal; i686 rows and feeds line for line; local CI 19 of 19;
+  codegen-check 92 of 92.
+- Open: the A76 confirmation run of 0243ded (= 5b9df85) against a756578.

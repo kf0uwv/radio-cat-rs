@@ -16913,13 +16913,12 @@ stage 3.1% (25); the bins' powers 4.4% (33 a bin); the levels 1.9%.
 
 ## One predicate for the one-lane forms, thirty-first round's fixes (O31b, 2026-11-04)
 
-Base: da9f8e2 (O31). Fixes from O31's three reviews: the open-source
-review was clean, but for one figure; the QA and code reviews both
-found that the one-lane forms were chosen by three predicates that
-disagree on 32-bit x86. Four code commits: 50805de (one predicate),
-f79538a (the hosts' kept one-lane last stage removed), 72810f6 (one
-first stage for one lane) and 0243ded (tests and CI for the ring). The
-Cortex-A76 board was still not available for timing.
+Base: da9f8e2 (O31). Fixes to O31: the one-lane forms were chosen by
+three predicates that disagree on 32-bit x86, and one figure (the
+slide's cost) was given two ways. Four code commits: 50805de (one
+predicate), f79538a (the hosts' kept one-lane last stage removed),
+72810f6 (one first stage for one lane) and 0243ded (tests and CI for
+the ring). The Cortex-A76 board was still not available for timing.
 
 This corrects O31's section above: its "the hosts", "where loops do not
 vectorise (`SCALAR_FORMS`)" and "the hosts' kept one-lane last stage,
@@ -17045,12 +17044,16 @@ there.
 ### The hosts' code against a756578
 
 Every function of the four host binaries compared (`llvm-objdump
---symbolize-operands`, normalised for layout only: addresses, local
-labels, symbol hashes, x86-64 RIP-relative displacements by the symbol
-objdump names, AArch64 pages and their low bits, the linker's adrp to
-adr relaxation, anonymous constants' names, objdump's elided padding;
-every other immediate kept). The tool finds O31's trial with the rows
-built unused into the hosts (`bL`), whose `.text` f79538a's equals,
+--symbolize-operands`, normalised for layout: addresses, local labels,
+symbol hashes, x86-64 RIP-relative displacements by the symbol objdump
+names, AArch64 pages, the linker's adrp to adr relaxation, anonymous
+constants' names, objdump's elided padding; and on AArch64 more than
+layout: every immediate added to or loaded from an adrp's register,
+which is also the offset of the table or constant addressed within its
+page; every other immediate kept). Code only: constant pools, jump
+tables and `.rodata` are not compared (the sections' hashes and the run
+records cover values). The tool finds O31's trial build with the rows
+compiled, unused, into the hosts, whose `.text` f79538a's equals,
 different in the decoder's code.
 
 At 0243ded:
@@ -17062,8 +17065,9 @@ At 0243ded:
 | AArch64 `cat-ft8-decode` | 755 | 751 | `encode_payload` (143 → 144), `wav::invalid` (40 → 36) |
 | AArch64 `paired_bench` | 1 305 | 1 305 | none |
 
-The hot functions are equal but for addresses: the transform's row
-(`power_bins`, with the last stage and the first stage inlined),
+The hot functions are equal but for addresses (on AArch64, as
+normalised above): the transform's row (`power_bins`, with the last
+stage and the first stage inlined),
 `min_sum_round`, `sum_product_round`, `costas_score`, the sync search's
 `select` closure, `snr::estimate`, and the subtraction's `run`,
 `blocks`, `Removal::refs`, `correlation_whole`, `Fit4::add_all_as`,
@@ -17100,8 +17104,11 @@ medians and ranges against a756578:
 | small | 84.20 G (83.81–84.53) | 84.07 G (83.95–84.76), −0.15% | +0.02% |
 | host, host with one pass | 288.20 G (288.00–288.70) | 288.54 G (287.55–289.03), +0.12% | +0.02% |
 
-Within the rounds' spread: no regression. The A76 run of 0243ded
-against a756578 is a confirmation still to make, not a gate.
+Within the rounds' spread: no regression. The timed binary is
+`paired_bench`, whose `soft_bits_at` changed (769 → 740 lines in the
+comparison above) through the 16-unit partition, not the source; the
+times include it. The A76 run of 0243ded against a756578 is a
+confirmation still to make, not a gate.
 
 ### Forced forms (codegen-check on 0243ded, 83 entries)
 
@@ -17172,3 +17179,105 @@ the codegen check's `flipped` form.
   another) shows on i686 only; the codegen check sees the row, and the
   tests see it only where the two predicates differ, which no tested
   build has.
+
+## The thirty-first round's closing fixes (O31c, 2026-11-04)
+
+Base: 6b0161b (O31b). Code commits: 1d1bb84 (the row's two transforms
+bound alike), 15ac58c and 5b9df85 (codegen-check pins 32-bit x86's
+feeds), bb5622a (comments), and 184fe8b with its revert 128fff4 (a type
+for the window's three choices, tried and withdrawn). The Cortex-A76
+board was still not available.
+
+### The window's three choices on 32-bit x86
+
+The feeds' index (`ring_at` or the window in order), the slide and the
+row's transform each read `ONE_LANE` at their own site in `take` and
+`finish_row`. A change of one of them alone to `SCALAR_FORMS` parts
+them on i686 only, where the two differ, and only the row's was caught
+(O31b's risks). codegen-check now checks i686's `Spectrogram::feed`,
+`feed_i16` and `skip`: exactly one memmove each (`memmoves` 1 and a new
+floor, `memmovefloor` 1; the metric now reads x86's `call`s too) and no
+division (`divides` 0, which now counts x86's `mull` and `divl`: the
+ring's index divides by the hop, 960, as a widening multiply). Each
+split forced on a copy of the head:
+
+| one site keyed on `SCALAR_FORMS` | failing entries | exit |
+|---|---|---|
+| none (5b9df85, 92 entries) | none | 0 |
+| the feeds' index (the review's form) | `x86` `divides` 1 in `feed`, `feed_i16` and `skip` | 1 |
+| the slide | `x86` `memmovefloor` 0 in the three | 1 |
+| the row's transform | `x86 finish_row` `onelane` 57, `mulps` 91 | 1 |
+
+A type for the three (`Layout<const RING: bool>`, one method each,
+`ONE_LANE` read once in its alias; 184fe8b) kept the decoders' and the
+Cortex-M33 images' sections equal to 0243ded's but moved
+`paired_bench`'s 16-unit partition: on AArch64 `snr::estimate` (1 272
+→ 1 266 lines), `soft_bits_at` (675 → 659), `Decoder::pass` and
+`Decoder::decode_candidate` differ in code, in the binary the pending
+A76 run times; on x86-64 two addresses. With the checks above failing
+each split at its site the type was not needed; 128fff4 reverts it.
+
+### Left as they were
+
+- `const _: () = assert!(!ONE_LANE || SCALAR_FORMS)`: false on
+  `x86_64-unknown-none` and `aarch64-unknown-none-softfloat`, whose
+  `cfg` shows neither SSE2 nor NEON (one lane) on x86-64 or AArch64
+  (`VECTOR`, so `SCALAR_FORMS` false outside the group-one tests). The
+  crate would stop compiling on soft-float targets that its
+  determinism section includes; `ONE_LANE`'s comment says that one lane
+  does not imply `SCALAR_FORMS` instead (bb5622a).
+- `quarters()`: two plainer forms under Rust 1.75, `from_fn` over
+  `samples[at..at + 960].try_into()` (as `ring_quarters`) and over
+  `samples.get(..)` then `try_into`, kept the Cortex-M33 images equal
+  but changed the hosts' code, though no host's decoder calls it: both
+  decoders' `.text`, and `paired_bench`'s `soft_bits_at` on both hosts
+  (the first form: x86-64 740 → 772 lines, AArch64 675 → 659). The
+  function stays.
+- The row's closures (1d1bb84) are bound alike, in place: all eight
+  binaries' sections equal 0243ded's.
+
+### Comments (bb5622a)
+
+`ONE_LANE`'s note on 32-bit ARM reads as `LANES`'s (vectors where `cfg`
+shows NEON). The lint table's comment in `Cargo.toml` and CI's release
+group-one step say that `cat_ft8_test_group_one` also forces one lane in
+the FFT and with it the window's ring.
+
+### The function comparison
+
+The comparison tool (out of tree) now says what it normalises: layout,
+and on AArch64 every immediate added to or loaded from an adrp's
+register, which includes a table's or constant's offset within its
+page; constant pools, jump tables and `.rodata` are not compared. Each
+name is its own argument
+(O31b's saved summaries had passed the names as one, so their per-name
+lines read "no function"). Rerun on a756578 against 0243ded: the counts
+of O31b's table; the hot functions on x86-64 equal but for one address
+(`power_bins`' one `leaq`, and in `paired_bench` `costas_score` and
+`select`'s closure naming one constant by another symbol), on AArch64
+equal; `paired_bench`'s `soft_bits_at` the one hot function that
+differs (x86-64, 769 → 740 lines).
+
+### Sections and identity at 5b9df85
+
+- All eight binaries' `.text` and `.rodata` equal 0243ded's, so the
+  x86-64 records and WAV outputs, the Cortex-M33 identity (16 of 16)
+  and the encoder's WAVs are 0243ded's, and the timed binary is
+  0243ded's.
+- The Cortex-M4F images' `.text` and `.rodata` equal 0243ded's (built
+  at one path; the files differ in debug information only).
+- i686 assembly: `finish_row`, `feed`, `feed_i16` and `skip` line for
+  line 0243ded's (3 056, 226, 216 and 110 lines); `finish_row` 3 033
+  instructions, 256 `mulps`, `TWIDDLES` 85, `HANN_HALF` 32.
+
+### Checks
+
+- Local CI at 5b9df85: 19 of 19 (O31b's steps; the codegen step with
+  the new entries).
+- codegen-check 92 of 92 (O31b's 83 and the nine i686 feed entries).
+
+### Risks
+
+- The new i686 entries are exact on today's code generation: a
+  compiler that copied the slide inline would fail `memmovefloor`, a
+  false alarm rather than a silent pass.
