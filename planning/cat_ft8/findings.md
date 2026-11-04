@@ -17370,9 +17370,9 @@ of bins a step, then an odd count's last bin. Integers: the same scores.
 | the same, a bin's update as a closure | 30 a pair | | | |
 | **e69130e (both parities indexed, no branch for short rows)** | **25 a pair** | **−1.70%** | **−1.76%** | **−12.5%** |
 
-(Blank cells: not emulated; the loop's length decided.) The function
-around the loop also shrank (186 → 100 instructions in its loops): the
-seven-tone starting sums have no bounds checks. O30's two-bins-a-step
+(Blank cells: not emulated; the loop's length decided.) The seven-tone
+starting sums also lost a bounds check in their loop (5 instructions a
+tone against 7). O30's two-bins-a-step
 trial (31 a pair, sync −2.2%) carried the eight tones' sum.
 
 The hosts sum by columns (`VECTOR_FORM`) and do not compile this form;
