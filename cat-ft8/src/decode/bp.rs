@@ -684,7 +684,12 @@ macro_rules! min_sum_check_bits {
                 min2 = a;
             }
         )*
-        // The parity of the negatives' count, in bit 0 (7 bits folded).
+        // The parity of the negatives' count, in bit 0: the three folds
+        // cover bits 0 to 7, so at most 8 inputs. Not `count_ones`: the
+        // Cortex-M33 has no population count instruction, and its
+        // expansion measured 11 and 18 more instructions a check of
+        // degree 6 and 7 (findings O30b).
+        const _: () = assert!($d <= 8);
         let mut odd = negative ^ (negative >> 4);
         odd ^= odd >> 2;
         odd ^= odd >> 1;
