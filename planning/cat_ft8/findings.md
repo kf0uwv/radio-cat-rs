@@ -17713,3 +17713,380 @@ tests are (227 release library tests).
 - The pairing's saving stated as a saving; wording.
 - Release sections of all eight binaries are unchanged.
 
+## The radix-4 stages' twiddles turned and the sync search's start rows in pairs, thirty-third round (O33, bit-identical, 2026-11-04)
+
+Base: 042e82a (feat/cat-ft8 with O32, O32b and O32c). The Cortex-A76
+board was still not available for timing, so this round again worked on
+the Cortex-M33 (emulated instruction counts on s0086 and s0407), in forms
+only targets without a vector unit compile. Two code commits: e718c6e
+(the one-lane radix-4 stages take their twiddles of q = 0 turned) and
+1f7feb0 (the sync search without a vector unit scores start rows in
+pairs); f471eb4 adds a test. Decodes, dumps, residuals and encoder output
+are identical; the x86-64 and AArch64 binaries of every commit have
+042e82a's `.text` and `.rodata`.
+
+| target | measure | 042e82a | 1f7feb0 | change |
+|---|---|---|---|---|
+| Cortex-M33, small image | s0086 slot | 137 690 327 | 128 083 461 | **−6.98%** |
+| | s0407 slot | 133 294 619 | 123 742 469 | **−7.17%** |
+| | feed (each slot) | 65 632 799 | 61 685 083 | −6.01% |
+| | sync (s0086) | 16 807 642 | 11 271 650 | −32.9% |
+| Cortex-M33, host image | s0086 slot | 1 360 507 199 | 1 329 414 324 | **−2.29%** |
+| | s0407 slot | 1 357 242 705 | 1 326 167 864 | **−2.29%** |
+| x86-64, AArch64 | `.text` and `.rodata` of `cat-ft8-decode` and `paired_bench` | | | unchanged |
+| Cortex-M33 flash | small, host image (`check.sh`) | 100 214, 113 018 B | 101 338, 114 082 B | +1 124, +1 064 B |
+
+Emulated instructions of the staged images (whole slot, setup included):
+
+| Cortex-M33 | 042e82a | e718c6e | 1f7feb0 |
+|---|---|---|---|
+| s0086 small | 137 690 327 | 133 619 453 (−2.96%) | 128 083 461 (−6.98%) |
+| s0407 small | 133 294 619 | 129 251 653 (−3.03%) | 123 742 469 (−7.17%) |
+| s0086 host | 1 360 507 199 | 1 348 257 408 (−0.90%) | 1 329 414 324 (−2.29%) |
+| s0407 host | 1 357 242 705 | 1 344 994 211 (−0.90%) | 1 326 167 864 (−2.29%) |
+
+Per stage (s0086; s0407 the same changes): feed 65 632 799 → 61 685 083
+at e718c6e (−6.01%; host image 200 136 917 → 188 294 873, −5.92%); sync
+16 807 642 → 11 271 650 at 1f7feb0 (−32.94%; host image 56 392 559 →
+37 549 475, −33.41%). At e718c6e the soft bits fell 2.19% and the SNR
+rose 4.31% (the host image likewise), with no change to their code:
+both run in `Decoder::pass`, which holds the transform's stages, so its
+layout moved (O31's `Rows::row` case). Refine −0.03%; belief
+propagation −0.01%. Decodes (23, 40, 30, 38) unchanged. Stack high
+water in the staged images: small 10 312 → 10 296 (e718c6e) → 10 408 B
+(1f7feb0), host 10 276 B throughout.
+
+### Baselines
+
+042e82a was rebuilt in this round's scratch directory; its small-image
+counts equal 1aa9ab2's (O32: its code is 1aa9ab2's). Its dump images on
+seven slots and the multi-pass residuals of s0086 and s0407 equal
+e962403's (16 of 16), as do the encoder WAVs (equal to 70be604's);
+per-function and per-block counts, `check.sh --stack` and the M4F images
+were taken at 042e82a. Every comparison below is against that build.
+
+### The profile at 042e82a (Cortex-M33, small image, s0086, per block)
+
+Of the slot after setup (128.7 M): the sync search's running sums 9.0%
+(25 instructions a pair of bins and row) and its local maxima 3.5%
+(4.48 M, `select`'s neighbours each through a bounds-checked index taken
+mod 3); the FFT's first stage 7.8% (113 a block), the third stage 5.9%
+(95 a butterfly at k ≠ 0) and the second 5.3% (103); the bins' powers
+4.2%; the radix-3 stage 4.0%; the radix-2 stage 3.2%. A radix-4
+butterfly at k ≠ 0 read 24 twiddle values, 16 of them reloaded from the
+stack each block.
+
+### The radix-4 stages' twiddles of q = 0 turned (e718c6e)
+
+A radix-4 stage's twiddle of (m, q) at k is entry m·k·(N/span)/5 +
+(N/20)·(m·q mod 4) of `FIFTH_TWIDDLES`: that of (m, 0) and m·q quarter
+turns on. The table turns exactly: entry i + N/20 is (wi, −wr) of entry
+i = (wr, wi), bit for bit, at every i but the four on the axes (where it
+holds ±1 and a rounding residue, 2.8·10⁻¹⁶ for cos(π/2), which a turn
+does not carry to the next). So with x₁ = ar·wr, x₂ = ai·wi, x₃ = ar·wi,
+x₄ = ai·wr, the product a·w′ that `straight_butterfly` computes for w′
+= w turned r times is
+
+| r | w′ | a·w′ (real, imaginary) |
+|---|---|---|
+| 0 | (wr, wi) | (x₁ − x₂, x₃ + x₄) |
+| 1 | (wi, −wr) | (x₃ + x₄, x₂ − x₁) |
+| 2 | (−wr, −wi) | (x₂ − x₁, −x₃ − x₄) |
+| 3 | (−wi, wr) | (−x₃ − x₄, x₁ − x₂) |
+
+each the same operation on the same operands, the sign of zero included:
+a product by −w is the product by w negated (exact), x − (−y) is x + y,
+and −x + y is y − x. (−x₃ − x₄ is not −(x₃ + x₄): for x₃ = +0, x₄ = −0
+the first is +0, the second −0; nor is x₂ − x₁ the negation of x₁ − x₂.)
+An input's four products, taken once, give every q's: three twiddles a
+k rather than twelve, and 12 multiplies a butterfly rather than 48.
+
+At k = l/2 the twiddle of m = 2 is on an axis (W_N^(N/4)), so that k is
+not turned; it runs on its own with its twiddles at constant indices, as
+k = 0 does (the stages' other m and k are off the axes: m·k is a
+multiple of l only for m = 2, k = l/2, checked at compile time). The
+radix-2 stage's loop was no shorter turned (25 instructions either way),
+so it is not; the radix-3 and radix-5 stages have no exact turn.
+
+| form (on 042e82a, small image) | radix-4 loop at k ≠ 0 | s0086 | flash |
+|---|---|---|---|
+| 042e82a (the table's twelve twiddles a k) | 103 and 95 | | |
+| turned, the radix-2 stage too, k = l/2 through the table in the loop | 72; k = l/2's 113 and 119 | | +1.3 KB |
+| the same without the radix-2 stage | 72; 113 and 119 | | +1.2 KB |
+| **turned, k = l/2 on its own (e718c6e)** | **72; k = l/2's 76** | **−2.96%** | **−104 B** |
+
+(Flash: staged images' text to 0.1 KB for the trials, the small
+`check.sh` image's for the commit.) The turned loop has 12 `vmul.f32`,
+3 `vnmul.f32` (the compiler's −x₃), 36 adds and subtracts and no chained
+multiply-add; its 8 loads are the inputs (the twiddles stay in
+registers across the blocks). `finish_row`'s largest stack frame fell
+from 472 to 400 bytes.
+
+The vector form (`stage`, the hosts') is unchanged. With one lane the
+tests run the new form on the hosts: `straight_stages_equal_the_side_by_side_stages_bit_for_bit`
+and the transform tests, and two new ones:
+`fifth_twiddles_turn_exactly_off_the_axes` (the table turns bit for bit
+off the axes and not on them; `off_the_axes` names every k but 0 and
+l/2) and `turned_products_are_the_products_of_the_turned_twiddle_bit_for_bit`
+(every turn of every seventh table entry and five others, on inputs with
+signed zeros, subnormals, exact cancellations and the largest values).
+f471eb4 adds `turned_radix4_stages_equal_stage_alone_bit_for_bit`: each
+radix-4 stage on its own against `stage`, with inputs at k = l/2's m = 2.
+At e718c6e and 1f7feb0 the mutant that runs k = l/2 turned passed every
+test: the whole transform rounds the axes' residues away in the later
+stages for every input the tests take. One stage alone sees them.
+
+### The sync search's start rows in pairs (1f7feb0)
+
+Start row q's array symbol j lies on the row of start row q + 2's
+symbol j − 1, so the two read the same rows but one of each array: six
+of each array's seven. A row's running sums of the eight tones do not
+depend on the tone sent, so where the target has no vector unit
+(`SCALAR_FORMS`) the search scores q and q + 2 together
+(`costas_scores_paired`): a shared row's running sums serve both
+(`add_row_paired`, one parity at a time: 18 instructions a bin for two
+start rows, against 12.5 for one), and each start row adds its own one
+(`add_row_running`). An array only one of the two has is added to that
+one alone, and each start row takes its own scale or `NONE`. Integers:
+the same scores.
+
+A pair is scored when its first row is needed (q + 1 ≡ 0 or 1 mod 4), so
+up to five rows of scores are live: q − 1 to q + 1 for row q's local
+maxima and the q + 2 scored with q (`PAIRED_ROWS`). Every live row lies
+within five consecutive rows, so row q keeps slot q mod 5, which the
+search keeps as q steps (no division a row or a bin). Five rows of the
+small band (4 325 cells) do not fit the FFT's work area (3 840), so the
+band is taken in spans, each scored a bin beyond on either side for its
+neighbours: two for the small band and the default band (961 bins, the
+host image), more in narrow scratch. Each span runs every start row, so
+the order in which maxima are found no longer follows (q, b); an entry
+is placed after every entry of a higher score or of an equal score at
+an earlier grid point, which is the order `select` gives (in (q, b)
+order, every earlier equal entry precedes), and the drops are found less
+kept either way: the list and the report are `select`'s.
+
+The local maxima (`select_paired`) read each neighbour from slices of
+rows q − 1, q and q + 1, an edge test only where a bin's neighbour is
+past the band; a neighbour with no score (`i32::MIN`) beats no score, so
+it needs no test. `select` took each neighbour through a closure that
+checked both ranges and took the row's slot mod 3 (a division) at every
+neighbour.
+
+| form (on e718c6e, small image) | pair loop | single-row loop | s0086 | sync |
+|---|---|---|---|---|
+| pairs, both parities side by side, `select`'s neighbours (mod 5) | 37 a pair of bins | | −1.19% | −9.4% |
+| the same, one parity at a time | 18 a bin | | | |
+| one parity at a time, the neighbours from row slices | 18 a bin | 25, and 30 in a second copy | −3.92% | −31.1% |
+| the slices and spans, no pairs | | 25 | −1.58% | −12.6% |
+| pairs and slices, the row adds out of line | 18 a bin | 25 | −4.08% | −32.4% |
+| the same, both parities side by side out of line | 39 a pair | 25 | | |
+| the same, each row's slot kept as q steps | 18 a bin | 25 | −4.17% | −33.2% |
+| the same, no division in a scale or a pair's slots, `select_paired` out of line | 18 a bin | 25 | −4.11% | −32.7% |
+| **1f7feb0 (the same, inlined)** | **18 a bin** | **25** | **−4.14%** | **−32.9%** |
+
+(s0086 against e718c6e's 133 619 453; blank cells were not emulated, the
+loop's length decided.) Inlined, `add_row_running` took two copies, one
+with a bounds check in its loop and stack reloads (30 instructions a
+pair); out of line, one (`add_row_alone`, 25 as in O32). Of the −4.14%,
+the slices take about −1.6% (the slices and spans without pairs) and the
+pairs the rest.
+
+Hosts: `search_rows` takes `search_paired` under `if SCALAR_FORMS`, so
+the hosts' `select` over `costas_scores::<true>` is unchanged, and the
+new code sits after every function the hosts compile, with the doc lines
+above them trimmed by as many as `search_rows` gained: every line the
+hosts compile from `add_row_running` on keeps its number, so no panic
+location moved. All four host binaries' sections equal 042e82a's.
+`scratch_len` (and so `Decoder::sync_scratch_len`) is 3·max(bins, 5)
+without a vector unit, three rows of the band otherwise: the same for
+every band `Band::from_hz` gives (nine bins or more).
+`costas_scores::<false>` is now compiled only by the tests.
+
+Tests (host and group-one builds): `paired_scores_equal_the_single_scores`
+(start rows q and q + 2, and q alone, over spans at both ends and within
+the band, odd and even, against `costas_score` at every bin; twelve band
+widths: the presets, two `Band::from_hz` widths and 1, 2, 3, 4, 5, 6, 8
+and 64 bins; slots with one, two and three arrays),
+`paired_search_equals_the_search_by_rows` (the whole search against
+`select` over `costas_scores::<true>`, from the least scratch to one span,
+lists that drop entries), `paired_selection_keeps_the_maxima_by_definition`
+(random grids of 1 × 1 to 63 × 11 with ties and no-score points, against
+the module's rule, every list length and scratch size, stale scratch),
+`paired_selection_equals_select_on_plateaus_and_ties` and
+`paired_selection_needs_its_scratch`. Two `_widely` variants (ignored, run
+by CI in release) widen the first two.
+
+### Sizes and memory
+
+| image | 042e82a | e718c6e | 1f7feb0 |
+|---|---|---|---|
+| M33 small (`check.sh`, flash) | 100 214 | 100 110 (−104) | 101 338 (+1 124) |
+| M33 host | 113 018 | 112 914 (−104) | 114 082 (+1 064) |
+| M33 encoder only | 35 190 | 35 190 | 35 186 (−4) |
+| M4F small (text) | 100 480 | 100 376 (−104) | 101 600 (+1 120) |
+| M4F host | 113 480 | 113 376 (−104) | 114 640 (+1 160) |
+
+Static RAM unchanged (201 592 and 230 008 B). Stack high water: small
+10 312 → 10 296 → 10 408 B (+96 at 1f7feb0: the search's frames), host
+10 276 B throughout; `check.sh --stack`'s largest frames as at 042e82a
+but `finish_row` (472 → 400 B). No fused multiply-add (`vmla` 239 / 352
+/ 17 at 042e82a, 223 / 336 / 17 at e718c6e and 1f7feb0: the turned
+butterflies chain none). M4F library
+calls `fmaxf`/`fminf` 10 and 14 at every commit; no `f64` helper.
+
+### The code-generation check
+
+New metrics: `plainmulloopN` (the shortest loop with exactly N
+`vmul.f32` and no chained multiply-add), `nomulloopN` (the shortest loop
+with at least N `f32` adds and no `vmul.f32`) and `vmuladdloopNxM` (the
+shortest loop with exactly N `vmul.f32` and at least M adds).
+
+- e718c6e: `fploop34 90` (O32's k = 0 entry) now found the turned loop
+  (72), so it becomes `nomulloop34 90`: the k = 0 loops have no
+  multiply (84); new `plainmulloop12 76` (the turned loop, 72) and
+  `vmuladdloop8x40 80` (k = l/2 on its own, 76: eight multiplies and
+  42 adds; the first stage's loop of eight has 34). `finish_row insns`
+  1 011 (ceiling 1 040). 96 entries.
+- 1f7feb0: `m33s 6select sumloop6 26` (no `select` on the Cortex-M33
+  now) becomes `m33s add_row_alone sumloop6 26` (25); new
+  `m33s add_row_pair sumloop4 19` (18), `m33s 6search divides 1` (the
+  span's one division; `select_paired` is inlined into the search) and
+  `m33s 13select_paired17 absent 0` (inlined, so the check above sees
+  it). 99 entries.
+
+Forced forms, each a fresh copy of 1f7feb0's tree with one edit, its own
+log and the check's exit status:
+
+| form | failing entries | exit |
+|---|---|---|
+| head (1f7feb0) | none (99 of 99) | 0 |
+| 042e82a's radix-4 stages (no turn) | `plainmulloop12` and `vmuladdloop8x40`: no such loop | 1 |
+| k = l/2's index through `black_box` | `vmuladdloop8x40` no loop, `finish_row` 24 divisions and 1 521 instructions | 1 |
+| k = 0 of the radix-4 stages not on its own | `nomulloop34` and `vmuladdloop8x40`: no such loop | 1 |
+| no pairs (`select` over `costas_scores::<false>`, 042e82a's search) | `add_row_alone`, `add_row_pair`: function not found | 1 |
+| the pairs' neighbours through `select`'s closure (slot mod 5) | `6search` 3 divisions | 1 |
+| the pair loop both parities side by side | `add_row_pair`: no loop with four byte loads | 1 |
+| `select_paired` out of line | `13select_paired17`: a function out of line | 1 |
+
+A form with k = l/2 written as its index `k` inside `if k == AXIS_K`
+passes, rightly: the compiler folds k to the constant there, the same
+code. The i686 entries pass at every commit.
+
+### Identity
+
+- **Cortex-M33 (emulated)**: the dump images on seven slots and the
+  multi-pass residuals of s0086 and s0407 equal 042e82a's (16 of 16,
+  exit 0) at e718c6e and 1f7feb0; decodes in the counted runs as at
+  042e82a.
+- **Encoder**: the 45 WAVs equal 70be604's at each commit.
+- **x86-64 and AArch64**: sections equal 042e82a's at each commit.
+- **A76**: not run (the board is not available).
+
+### Tests and mutants
+
+Mutants in fresh copies of 1f7feb0 (t5 also of f471eb4), release
+library tests (234 at 1f7feb0, 235 at f471eb4), and where the one-lane
+path or the decoder matters also with `--cfg cat_ft8_test_group_one`
+(`g1`), one log each:
+
+| mutant | rel failing | g1 failing |
+|---|---|---|
+| none (control) | 0 | 0 |
+| t1 turn 1 reads (A′, B) for (B, A′) | 7 | |
+| t2 −x₃ − x₄ as −(x₃ + x₄) (the sign of a zero) | 1 | |
+| t3 x₂ − x₁ as −(x₁ − x₂) (the sign of a zero) | 1 | |
+| t4 2·m·q turns for (4/R)·m·q | 6 | |
+| t5 k = l/2 turned (1f7feb0) | **0** | **0** |
+| t5 k = l/2 turned (f471eb4) | 1 | 1 |
+| t6 the twiddles of q = 1 taken for q = 0 | 6 | |
+| t7 `off_the_axes` always true | compile-time assertion | |
+| t8 x₄ = ar·wr | 7 | |
+| s1 the pair's second start row given the first's tone | 2 | |
+| s2 q + 2's array present one row past the filled rows | 2 | |
+| s3 q's array likewise | 1 | |
+| s4 q + 2's own row given q's tone | 2 | |
+| s5 the scales swapped | 2 | |
+| s6 pairs only at q ≡ 0 mod 4 | 3 | |
+| s7 spans a bin wider than the slots | 4 | |
+| s8 a span scored from its first bin (no left neighbour) | 3 | |
+| s9 equal scores placed latest point first | 3 | |
+| s10 earlier neighbours beat only a higher score | 3 | |
+| s11 the row below's right neighbour left out | 3 | |
+| s12 row q − 1 read from the wrong slot | 2 | |
+| s13 q + 2 written to slot q + 1 | 3 | |
+| s14 `paired_width` without its floor of five | 3 | |
+| s15 the pair loop's odd bins left out | 2 | |
+| s16 the second row's sent level from the first's | 2 | |
+| s17 row 2 written to slot 3 | 3 | |
+| s18 the search without a vector unit not paired (equivalent in values) | | 0 |
+
+The transform mutants fail the bit-for-bit tests (t2 and t3 only
+`turned_products_are_the_products_of_the_turned_twiddle_bit_for_bit`,
+which has inputs whose products cancel exactly); the sync mutants the
+paired tests. s18 is the form forced above: it changes the code, not the
+values.
+
+### Checks
+
+- Local CI 19 of 19 at e718c6e, 1f7feb0 and f471eb4 (O31b's steps;
+  codegen-check, with its i686 entries, 96, 99 and 99 of the same).
+  The ignored step runs the two new `_widely` tests.
+
+### Tried, not kept
+
+- **The radix-2 stage turned**: 25 instructions a butterfly either way
+  (its two twiddles a k already stay in registers).
+- **k = l/2 through the table in the turned stages' loop**: its loop 113
+  and 119 instructions (against 103 and 95 before), and 1.3 KB more
+  code than on its own.
+- **The pairs' running sums both parities side by side** (37 and 39
+  instructions a pair against 36), and through a slice of tone 7's
+  levels (no change: 18).
+- **`select_paired` out of line** (+0.04% of the slot, +32 B of stack).
+- **The scales and the pair's slots by division** (`6 / n`, `q mod 5`):
+  0.03% fewer instructions than 1f7feb0's compare and select and slots
+  kept as q steps, but three divisions where the check now pins one.
+- **The pairs with `select`'s neighbours**: sync −9.4%, the selection's
+  own cost rose 0.6 M (spans and slot mod 5).
+
+### What bounds the stages now (Cortex-M33, small image, s0086, per block at 1f7feb0)
+
+Of the slot after setup (119.1 M): `min_sum_round` 26.9%; the FFT's
+first stage 8.5% (114 a block), the turned radix-4 loops 7.2% (72), the
+radix-3 stage 4.3% (55), the radix-2 3.4% (25), the last stage 12.5%;
+the sync search's pair loop 5.8% (18 a bin) and single rows 1.7%; the
+bins' powers 4.5% (33 a bin); the levels 2.0%.
+
+### Next candidates (not built)
+
+| candidate | estimate | cost |
+|---|---|---|
+| The bins' powers' loop: 33 instructions a bin, of which 6 address adds and 6 counter updates for 6 loads and 13 operations | up to −1.2% (M33) | O32's four iterator forms gave 31 at best; a form the compiler addresses by one pointer each way |
+| `costas_scores::<false>` and `costas_scores_running`, now used by the tests alone: remove, or test the paired form against `costas_score` only | code only | the hosts' sync lines move (`.rodata` panic locations): a layout-only host change with its evidence |
+| The soft bits' two rows a symbol read once rather than for each tone | about −0.6% (M33) | the hosts' `soft_bits_at` changes: needs the A76 |
+| Belief propagation's sums without bounds checks (messages padded to 1 024) | about −0.6% | +2 KB RAM; shared with the hosts |
+| The level steps, the rows and the ring on every target, if the A76 agrees | unmeasured | one A76 timing |
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instruction counts only): the turned
+  stages trade 36 twiddle loads a butterfly for none, which a cycle count
+  would weigh more than an instruction count; the sync scale's
+  `udiv` became a compare and select (one instruction for two or three).
+- Any host timing: the hosts' binaries at every commit are 042e82a's.
+- Other slots than s0086 and s0407 for counts (identity covers seven).
+
+### Risks
+
+- The turned form depends on the twiddle table turning exactly off the
+  axes; a regenerated table that did not would fail
+  `fifth_twiddles_turn_exactly_off_the_axes` (and the transform tests).
+- `−x₃ − x₄` and `x₂ − x₁` must not be rewritten as negations of `x₃ +
+  x₄` and `x₁ − x₂`: the same values but for the sign of a zero (t2, t3).
+- The paired search keeps five rows in three rows' scratch: a band of
+  more than 768 bins (the small and default bands among them) takes two
+  spans, each a pass over every start row with its own rows' set-up.
+- Stack +96 B in the small staged image (the search's frames).
+- The sync code is now in two forms, one for the hosts (`select` over
+  column sums) and one without a vector unit (`select_paired`); the
+  tests hold them equal.

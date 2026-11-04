@@ -2604,3 +2604,34 @@
   codegen-check 94 of 94.
 - O32c (closing review): the radix-3 no-peel forced form recorded (only
   `vmulloop8 56` fails it); `Band::of_bins` without u16 wrap; wording.
+
+## Session: 2026-11-04 (O33 the radix-4 stages' twiddles turned, the sync search's start rows in pairs)
+
+- The Cortex-A76 board was still not available; the round worked on the
+  Cortex-M33 (emulated counts, s0086 and s0407) in forms only targets
+  without a vector unit compile; the hosts' sections equal 042e82a's at
+  every commit.
+- M33 references rebuilt at 042e82a (dumps and residuals equal e962403's;
+  counts equal 1aa9ab2's); profiled per block.
+- e718c6e: the one-lane radix-4 stages take the twiddles of q = 0 and
+  turn them, the table turning exactly off the axes: an input's four
+  products serve every q, 72 instructions a butterfly against 103 and 95;
+  k = l/2 (m = 2 on an axis) on its own. Feed −6.0%, small slot −2.96% /
+  −3.03%, host image −0.90%; flash −104 B.
+- 1f7feb0: without a vector unit the sync search scores start rows q and
+  q + 2 together (six shared rows an array: 18 instructions a bin for two
+  start rows), keeps five rows of scores, in two spans for the small and
+  default bands, and finds the local maxima from row slices; entries
+  placed by score then grid point, so the list and report are `select`'s.
+  Sync −32.9%, small slot a further −4.14%; flash +1.2 KB, stack +96 B.
+- f471eb4: a test of each turned radix-4 stage on its own (k = l/2 run
+  turned had passed the whole-transform tests).
+- Head: small slot −6.98% / −7.17%, host image −2.29%; flash +1 124 B.
+- Identity 16 of 16 and encoder 45 at each commit; local CI 19 of 19 at
+  each; codegen-check 99 entries, every forced form fails; mutants
+  caught (s18 equivalent; t5 caught from f471eb4).
+- Tried, not kept: the radix-2 stage turned (no shorter); k = l/2 through
+  the table (113 and 119); the pair loop with both parities (37, 39);
+  `select_paired` out of line; divisions for the scales and slots.
+- Open: the A76; the bins' powers' addressing; `costas_scores::<false>`
+  now tests-only (removing it moves host line numbers).
