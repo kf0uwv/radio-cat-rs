@@ -104,6 +104,9 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # `add2d` counts two-lane 64-bit vector adds (`add` on `.2d`), at least the
 # bound;
 # `insns` counts the function's instructions, at most the bound;
+# `fpcmps` counts scalar floating-point compares (`fcmp` on AArch64,
+# `ucomiss` and `comiss`, with or without the VEX `v`, on x86-64), at
+# least the bound;
 # `fpbranches` counts floating-point compares (`fcmp` on AArch64, `ucomiss`
 # and `comiss` on x86-64) followed at once by a conditional branch
 # (`b.cond`, `jcc`), at most the bound: a narrow pattern, which does not
@@ -165,6 +168,10 @@ checks=(
   "x64 decode_soft fpbranches 0"
   "x64 checks_hold absent 0"
   "x64 hard_bit absent 0"
+  # The stopping test's compares are in `decode_soft` (9 on AArch64, 15 on x86-64; 4 and 10 with it out of line), so its checks above cannot pass because the test went elsewhere under another name.
+  "a64 decode_soft fpcmps 8"
+  "a64r decode_soft fpcmps 8 one"
+  "x64 decode_soft fpcmps 14"
   # The removal's clamp as four-lane fmaxnm/fminnm.
   "a64 7Removal4refs minmax 2"
   # The time search's clamp likewise.
@@ -337,8 +344,9 @@ for entry in "${checks[@]}"; do
     metric == "insns" && /^\t[a-z]/ { n++; nf[found]++ }
     metric == "fpbranches" && /^\t[a-z]/ {
       if (fcmp && ($1 ~ /^b\.[a-z]+$/ || ($1 ~ /^j[a-z]+$/ && $1 != "jmp"))) { n++; nf[found]++ }
-      fcmp = $1 ~ /^(fcmp|u?comiss)$/
+      fcmp = $1 ~ /^(fcmp|v?u?comiss)$/
     }
+    metric == "fpcmps" && /^\t(fcmp|v?u?comiss)\t/ { n++; nf[found]++ }
     metric == "ldn" && /^\tld[234]\t/ { n++; nf[found]++ }
     metric == "vec2" && /^\t[a-z][^\t]*\t.*\.2d/ { n++; nf[found]++ }
     metric == "add2d" && /^\tadd\tv[0-9]+\.2d/ { n++; nf[found]++ }
@@ -354,7 +362,7 @@ for entry in "${checks[@]}"; do
       }
       else print n + 0
     }' "${asm[$key]}")
-  if [ "$n" = noteach ] || { [ "$only" = each ] && ! [[ "$metric" =~ ^(vec4|minmax|vminmax|fpmul|vecor|calls_within_limit|ldn|add2d)$ ]]; }; then
+  if [ "$n" = noteach ] || { [ "$only" = each ] && ! [[ "$metric" =~ ^(vec4|minmax|vminmax|fpmul|vecor|calls_within_limit|ldn|add2d|fpcmps)$ ]]; }; then
     echo "FAIL $key $name: \`each\` takes a floor, not $metric"
     fail=1
     continue
@@ -399,6 +407,7 @@ for entry in "${checks[@]}"; do
     interleaved) what="interleaving loads and stores (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     shuffles) what="shuffles (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     fpmul) what="f32 multiplies (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
+    fpcmps) what="f32 compares (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     divides) what="divisions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     zerofills) what="zero-fill calls (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     sumloop*) what="instructions in the summing loop (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
