@@ -138,6 +138,8 @@ fn decodes_print_one_json_object_each() {
         ("small", "small,osd=0:255"),
         ("small", "small,osd=off"),
         ("host", "host,osd=10:21"),
+        ("host", "host,lone=-17"),
+        ("host,lone=off", "host,lone=-30"),
     ] {
         let a = decode_cmd(&path, &["--raw", "--config", plain]);
         let b = decode_cmd(&path, &["--raw", "--config", osd]);
@@ -434,7 +436,11 @@ fn unusable_files_and_arguments_are_errors() {
     std::fs::write(&text, b"not audio").unwrap();
     fail(decode_cmd(&text, &[]), 1, "RIFF");
     fail(decode_cmd(&temp("missing.wav"), &[]), 1, "missing.wav");
-    fail(decode_cmd(&rate, &["--config", "fast"]), 2, "host or small");
+    fail(
+        decode_cmd(&rate, &["--config", "fast"]),
+        2,
+        "--config needs host or small[,passes=N][,osd=C:T|off][,lone=X|off], not",
+    );
     fail(
         decode_cmd(&rate, &["--config", "host,passes=4"]),
         2,
@@ -455,6 +461,10 @@ fn unusable_files_and_arguments_are_errors() {
         "host,osd=x:21",
         "host,osd=65536:21",
         "host,osd=10:256",
+        "host,lone=x",
+        "host,lone=NaN",
+        "host,lone=inf",
+        "host,lone=",
     ] {
         fail(decode_cmd(&rate, &["--config", bad]), 2, "host or small");
     }

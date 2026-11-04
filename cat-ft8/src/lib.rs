@@ -100,21 +100,25 @@
 //!
 //! # Decode command output (format version 0)
 //!
-//! `cat-ft8-decode FILE.wav [--config host|small[,passes=N][,osd=C:T|off]] [--raw] [--profile]`
+//! `cat-ft8-decode FILE.wav [--config host|small[,passes=N][,osd=C:T|off][,lone=X|off]] [--raw] [--profile]`
 //! reads a 12 kHz mono 16-bit PCM WAV file. Its first 15 s are the slot: a
 //! shorter file is decoded as a partial slot, and samples after 15 s are
 //! ignored (and not read). Other sample rates and channel counts are
 //! errors (exit status 1; usage errors exit with 2; `--help` prints the
 //! usage on standard output and exits with 0). `--config host` (the
 //! default) is `decode::DecodeConfig::HOST` over 100–3100 Hz with 128
-//! decodes (three passes, OSD-1 at 10:21); `--config small` is `SMALL`
+//! decodes (three passes, OSD-1 at 10:21, pass 2 skipped after a single
+//! pass-1 decode below −17 dB); `--config small` is `SMALL`
 //! over 200–2900 Hz with 64 decodes (one pass, no OSD-1).
 //! `,passes=N` (1–3) sets the configuration's pass count: after each pass
 //! but the last, its decodes are subtracted from the audio and the
 //! residual is decoded again (`decode::Decoder::decode_passes`).
 //! `,osd=C:T` sets the ordered-statistics decoding
 //! (`decode::DecodeConfig::with_osd` with `decode::OsdConfig::new(C, T)`;
-//! `osd=off` or `osd=0:T` turns it off); the output format is the same.
+//! `osd=off` or `osd=0:T` turns it off); `,lone=X` sets
+//! `decode::DecodeConfig::with_lone_decode_min_snr` (pass 2 after a
+//! single pass-1 decode runs only if its SNR is at least X dB; `host` has
+//! −17) and `,lone=off` always runs it; the output format is the same.
 //!
 //! Output is one JSON object per line, one per distinct decode whose
 //! payload unpacked, in the order found: pass by pass, and in candidate
@@ -156,7 +160,13 @@
 //! the spectrogram's buffer, idle between passes, so it adds nothing),
 //! `passes`, `passes_run`,
 //! `passes_end` (why no further pass ran: `"all_passes"`,
-//! `"nothing_new"`, `"list_full"`, `"subtraction_cap"` or `"stopped"`),
+//! `"nothing_new"`, `"weak_lone_decode"`, `"list_full"`,
+//! `"subtraction_cap"` or `"stopped"`; diagnostic only: it names the
+//! first end that applied, so a stop asked for during a pass can show as
+//! the end that applies after it (`"nothing_new"`, `"list_full"`,
+//! `"weak_lone_decode"` after pass 1, `"all_passes"` after the last),
+//! and deadline logic should not infer an overrun, or its absence, from
+//! it),
 //! and per pass N `passN_feed_seconds`,
 //! `passN_sync_seconds`, `passN_candidates_seconds`,
 //! `passN_subtract_seconds` (N ≥ 2) and the pass's own counts

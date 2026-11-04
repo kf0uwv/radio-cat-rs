@@ -58,6 +58,15 @@
 //! - `edges`: one signal at −18 dB (near the decode threshold, so a loss
 //!   shows), 100 slots per case: starts at ±1.6/±2.0/±2.4 s, tone 0 near
 //!   each end of both bands, input cut at 13.5 s, input starting 1 s late;
+//! - `masked`: one or two strong signals with weaker ones hidden beside
+//!   them, the slots a later pass exists for when the first pass decodes
+//!   only one or two signals: a strong signal (−4…+20 dB) with one
+//!   (`near`) or two (`near2`) weak ones (−20…−8 dB) 5–60 Hz away; a
+//!   strong one (+5…+20 dB) with a weak one near the decode threshold
+//!   (−21…−15 dB) anywhere (`far`); two strong ones each with a weak one
+//!   beside it (`pair`), 250 slots each; a weaker masking signal
+//!   (−20…0 dB) with one beside it at −22 dB up to 2 dB below it (`low`,
+//!   500 slots); its own seeds (not in the default SETS);
 //! - `empty`: no signal — noise; noise with weak (0–20 dB) or strong
 //!   (20–50 dB) carriers; clipped full-scale noise; floored low-level
 //!   noise; impulsive noise.
@@ -78,6 +87,9 @@
 //! 10:21 (since 748f34d), `small` off, and `osd=0:T` means off too. So a
 //! `host` run, and a `compare` against one, includes OSD-1 from 748f34d
 //! on; earlier `host` records are OSD-1 off (`host,osd=off` now).
+//! `lone=X` runs pass 2 after a single pass-1 decode only if its SNR is
+//! at least X dB, `lone=off` always; `host` has −17 (earlier `host`
+//! records are `host,lone=off`).
 //! The OSD measurement commands (`osd`, `osdcost`, `osdlib`, `osddump`,
 //! `osdcal`, `osdpath`'s inputs) always decode with the decoder's own OSD
 //! off, whatever CONFIG says. Examples:
@@ -307,6 +319,8 @@ pub fn parse_config(spec: &str) -> Result<Setup, String> {
                 s.config
                     .with_osd((c > 0).then(|| cat_ft8::decode::OsdConfig::new(c, t)))
             }
+            "lone" if v == "off" => s.config.with_lone_decode_min_snr(None),
+            "lone" => s.config.with_lone_decode_min_snr(Some(num(v)? as f32)),
             "seg" | "drift" => s
                 .config
                 .with_subtract(subtraction::merge_subtract(s.config.subtract, kv)?),

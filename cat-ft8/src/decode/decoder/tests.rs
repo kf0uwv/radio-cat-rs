@@ -105,6 +105,7 @@ fn configuration_and_buffer_sizes_are_checked() {
         DecodeConfig::HOST.with_later_candidates(0),
         DecodeConfig::HOST.with_later_candidates(70_000),
         DecodeConfig::HOST.with_subtract(SubtractConfig::DEFAULT.with_segment(100)),
+        DecodeConfig::HOST.with_lone_decode_min_snr(Some(f32::NAN)),
     ] {
         let r = Decoder::new(
             &mut b.front,
@@ -1196,6 +1197,155 @@ fn the_subtraction_cap_runs_a_prefix_of_the_passes() {
     let (got, report, residual, _) = passes(&slot, 0, host.with_max_subtractions(cap));
     assert_eq!((got, report), (all, all_report));
     assert!(same_bits(&residual, &all_res));
+}
+
+#[test]
+fn a_weak_lone_decode_ends_the_passes_when_asked() {
+    // One signal at each SNR, with and without the minimum.
+    let lone = |snr: f64| {
+        let mut slot = empty_slot();
+        add_noise(&mut slot, NOISE_RMS, 3);
+        add_signal(
+            &mut slot,
+            &symbols_of("CQ K1ABC FN42"),
+            1_200.0,
+            0.1,
+            amplitude_for(snr),
+        );
+        slot
+    };
+    let always = DecodeConfig::HOST.with_lone_decode_min_snr(None);
+    for (snr, min, skipped) in [
+        (-5.0, Some(-17.0), false),
+        (-19.0, Some(-17.0), true),
+        (-19.0, None, false),
+        (-19.0, Some(-30.0), false),
+        (-5.0, Some(30.0), true),
+    ] {
+        let slot = lone(snr);
+        let config = always.with_lone_decode_min_snr(min);
+        let (got, report, residual, per) = passes(&slot, 0, config);
+        let (all, _, _, all_per) = passes(&slot, 0, always);
+        // The same decodes either way (nothing hides behind one signal).
+        assert_eq!(got.len(), 1, "{snr} {min:?}");
+        assert_eq!(got, all);
+        // The decode's SNR is against the minimum as the rule reads it.
+        let s = got[0].snr_db;
+        assert_eq!(skipped, min.is_some_and(|m| s < m), "{snr} {min:?} {s}");
+        // At the boundary: a minimum equal to the decode's SNR runs pass
+        // 2, one just above it does not.
+        let at = passes(&slot, 0, always.with_lone_decode_min_snr(Some(s))).1;
+        assert_eq!((at.passes_run, at.end), (2, PassesEnd::NothingNew));
+        let above = passes(&slot, 0, always.with_lone_decode_min_snr(Some(s + 0.001))).1;
+        assert_eq!(
+            (above.passes_run, above.end),
+            (1, PassesEnd::WeakLoneDecode)
+        );
+        if skipped {
+            assert_eq!(per[..], all_per[..1]);
+            assert_eq!(
+                (report.passes_run, report.end, report.subtracted),
+                (1, PassesEnd::WeakLoneDecode, 0)
+            );
+            assert!(!report.stopped_early());
+            assert!(same_bits(&residual, &slot));
+        } else {
+            assert_eq!(per[..], all_per[..]);
+            assert_eq!((report.passes_run, report.end), (2, PassesEnd::NothingNew));
+        }
+    }
+    assert_eq!(PassesEnd::WeakLoneDecode.name(), "weak_lone_decode");
+    // HOST's minimum, and a slot of many decodes is not affected however
+    // high it is.
+    assert_eq!(DecodeConfig::HOST.lone_decode_min_snr, Some(-17.0));
+    let (slot, _) = crowded_slot(30, 9);
+    let (all, all_report, all_res, _) = passes(&slot, 0, always);
+    let (got, report, residual, _) = passes(&slot, 0, always.with_lone_decode_min_snr(Some(99.0)));
+    assert_eq!((got, report), (all, all_report));
+    assert!(same_bits(&residual, &all_res));
+    assert_eq!(report.passes_run, 3);
+    // The configured end is reported before a full list: a list of one
+    // entry that pass 1 fills with a weak lone decode.
+    let slot = lone(-19.0);
+    let (got, report, _, _) = passes_into(&slot, 0, DecodeConfig::HOST, 1, |_| {
+        ControlFlow::Continue(())
+    });
+    assert_eq!((got.len(), report.end), (1, PassesEnd::WeakLoneDecode));
+    let (_, report, _, _) = passes_into(&slot, 0, always, 1, |_| ControlFlow::Continue(()));
+    assert_eq!(report.end, PassesEnd::ListFull);
+    // Two weak signals in a list of one: pass 1 keeps one and truncates
+    // the other, so it did not decode a single message and the list is
+    // full. In a longer list pass 2 runs after them.
+    let mut slot = lone(-19.0);
+    add_signal(
+        &mut slot,
+        &symbols_of("CQ W9XYZ EN37"),
+        2_000.0,
+        0.3,
+        amplitude_for(-18.0),
+    );
+    let (got, report, _, per) = passes(&slot, 0, DecodeConfig::HOST);
+    assert_eq!(per[0].report.decoded, 2);
+    assert!(got[..2].iter().all(|d| d.snr_db < -17.0), "{got:?}");
+    assert!(report.passes_run >= 2);
+    let (got, report, _, per) = passes_into(&slot, 0, DecodeConfig::HOST, 1, |_| {
+        ControlFlow::Continue(())
+    });
+    assert_eq!((got.len(), per[0].report.decodes_truncated), (1, 1));
+    assert_eq!((report.passes_run, report.end), (1, PassesEnd::ListFull));
+    assert!(report.stopped_early());
+}
+
+#[test]
+fn a_weak_pass_2_decode_does_not_end_pass_3() {
+    // A strong signal hiding a weak one 15 Hz away: pass 1 decodes the
+    // strong one, pass 2 the weak one alone, below HOST's minimum; pass 3
+    // still runs, as with no minimum.
+    let mut slot = empty_slot();
+    add_noise(&mut slot, NOISE_RMS, 3);
+    add_signal(
+        &mut slot,
+        &symbols_of("CQ K1ABC FN42"),
+        1_200.0,
+        0.1,
+        amplitude_for(6.0),
+    );
+    add_signal(
+        &mut slot,
+        &symbols_of("K1ABC W9XYZ EN37"),
+        1_215.0,
+        0.3,
+        amplitude_for(-18.0),
+    );
+    let always = DecodeConfig::HOST.with_lone_decode_min_snr(None);
+    let (got, report, residual, per) = passes(&slot, 0, DecodeConfig::HOST);
+    let (all, all_report, all_res, _) = passes(&slot, 0, always);
+    let counts: Vec<usize> = per.iter().map(|p| p.report.decoded).collect();
+    assert_eq!(counts, [1, 1, 0]);
+    assert!(got[0].snr_db >= -17.0 && got[1].snr_db < -17.0, "{got:?}");
+    assert_eq!((report.passes_run, report.end), (3, PassesEnd::AllPasses));
+    assert_eq!((got, report), (all, all_report));
+    assert!(same_bits(&residual, &all_res));
+}
+
+#[test]
+fn the_weak_test_reads_nan_as_below_any_minimum() {
+    let mut b = Bufs::new(Band::DEFAULT);
+    let at = |snr_db: f32| Decode {
+        snr_db,
+        ..Decode::EMPTY
+    };
+    {
+        let dec = b.decoder(DecodeConfig::HOST);
+        assert!(dec.weak(&at(f32::NAN)));
+        assert!(dec.weak(&at(-17.5)));
+        assert!(!dec.weak(&at(-17.0)));
+        assert!(!dec.weak(&at(f32::INFINITY)));
+        assert!(dec.weak(&at(f32::NEG_INFINITY)));
+    }
+    let dec = b.decoder(DecodeConfig::HOST.with_lone_decode_min_snr(None));
+    assert!(!dec.weak(&at(f32::NAN)));
+    assert!(!dec.weak(&at(-99.0)));
 }
 
 #[test]
