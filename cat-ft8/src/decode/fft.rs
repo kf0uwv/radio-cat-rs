@@ -1138,10 +1138,13 @@ fn bin_power(ar: f32, ai: f32, cr: f32, ci: f32, wr: f32, wi: f32) -> f32 {
 /// `out`, the real-split twiddle of bin k + j being `tw[j]`, or, if
 /// `ROTATE`, −i · `tw[j]` (exact: W₃₈₄₀ᵏ = −i · W₃₈₄₀^(k−960)). A plain
 /// loop over bins, so it vectorises. With `INDEXED` (the targets without
-/// a vector unit, [`bin_powers_out_of_line`]) the loop indexes its slices
-/// rather than zipping their iterators, which leaves out the zipped
-/// lengths' checks: on the Cortex-M33 35 instructions a bin instead of 42 (rustc
-/// 1.93.0, opt-level "s"; findings O26). The same values either way.
+/// a vector unit, [`bin_powers_out_of_line`]) the loop takes Z[N − k − j]
+/// from the reversed parts' iterator and indexes the other slices, rather
+/// than zipping every iterator, which leaves out the zipped lengths'
+/// checks: on the Cortex-M33 33 and 31 instructions a bin (rustc 1.93.0,
+/// opt-level "s"; findings O34), against 42 zipped (findings O26) and 35
+/// and 34 with every slice indexed (O26 to O33). The same values either
+/// way.
 #[inline(always)]
 fn powers<const ROTATE: bool, const INDEXED: bool>(
     re: &[f32; N],
@@ -1156,10 +1159,10 @@ fn powers<const ROTATE: bool, const INDEXED: bool>(
     // Z[N − k − j] for j = 0..n, in reverse order.
     let (cr, ci) = (&re[N + 1 - k - n..N + 1 - k], &im[N + 1 - k - n..N + 1 - k]);
     if INDEXED {
-        for j in 0..n {
+        for (j, (&cr, &ci)) in cr.iter().zip(ci).rev().enumerate() {
             let w = tw[j];
             let (wr, wi) = if ROTATE { (w[1], -w[0]) } else { (w[0], w[1]) };
-            out[j] = bin_power(ar[j], ai[j], cr[n - 1 - j], ci[n - 1 - j], wr, wi);
+            out[j] = bin_power(ar[j], ai[j], cr, ci, wr, wi);
         }
         return;
     }

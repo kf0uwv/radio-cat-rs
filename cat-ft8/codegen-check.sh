@@ -392,8 +392,11 @@ checks=(
   "x86 11Spectrogram4skip memmoves 1"
   "x86 11Spectrogram4skip memmovefloor 1"
   "x86 11Spectrogram4skip divides 0"
-  # The bins' powers out of line with indexed slices.
-  "m33s bin_powers_out_of_line fploop4 35"
+  # The bins' powers out of line, Z[N - k - j] from a reversed iterator and
+  # the other slices indexed (the shorter of its two loops 31 instructions
+  # a bin, the other 33; with every slice indexed 34 and 35, with every
+  # iterator zipped 42).
+  "m33s bin_powers_out_of_line fploop4 32"
   # The levels of a row's powers by a guess and one step, not the logarithm, out of line.
   "m33s levels_by_steps_out_of_line shortloop 16"
   # A row's levels at 0 and 255 counted four a word, each byte's low seven
