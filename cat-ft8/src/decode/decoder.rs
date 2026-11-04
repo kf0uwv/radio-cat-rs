@@ -1086,7 +1086,11 @@ impl<'a> Decoder<'a> {
             // decode ends there too.
             out.end = if need == 0 {
                 PassesEnd::NothingNew
-            } else if pass == 2 && need == 1 && self.weak(&list.entries[begin]) {
+            } else if pass == 2
+                && need == 1
+                && list.tally.truncated == 0
+                && self.weak(&list.entries[begin])
+            {
                 PassesEnd::WeakLoneDecode
             } else if len == list.capacity() {
                 PassesEnd::ListFull
@@ -1379,7 +1383,7 @@ pub enum PassesEnd {
     AllPasses,
     /// The last pass run added no decode, so another would find the same.
     NothingNew,
-    /// Pass 1 decoded a single message, weaker than
+    /// Pass 1 decoded a single message (and truncated none), weaker than
     /// [`DecodeConfig::lone_decode_min_snr`].
     WeakLoneDecode,
     /// The list was full after the last pass run: a further pass could

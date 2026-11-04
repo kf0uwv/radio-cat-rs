@@ -1259,6 +1259,27 @@ fn a_weak_lone_decode_ends_the_passes_when_asked() {
     assert_eq!((got.len(), report.end), (1, PassesEnd::WeakLoneDecode));
     let (_, report, _, _) = passes_into(&slot, 0, always, 1, |_| ControlFlow::Continue(()));
     assert_eq!(report.end, PassesEnd::ListFull);
+    // Two weak signals in a list of one: pass 1 keeps one and truncates
+    // the other, so it did not decode a single message and the list is
+    // full. In a longer list pass 2 runs after them.
+    let mut slot = lone(-19.0);
+    add_signal(
+        &mut slot,
+        &symbols_of("CQ W9XYZ EN37"),
+        2_000.0,
+        0.3,
+        amplitude_for(-18.0),
+    );
+    let (got, report, _, per) = passes(&slot, 0, DecodeConfig::HOST);
+    assert_eq!(per[0].report.decoded, 2);
+    assert!(got[..2].iter().all(|d| d.snr_db < -17.0), "{got:?}");
+    assert!(report.passes_run >= 2);
+    let (got, report, _, per) = passes_into(&slot, 0, DecodeConfig::HOST, 1, |_| {
+        ControlFlow::Continue(())
+    });
+    assert_eq!((got.len(), per[0].report.decodes_truncated), (1, 1));
+    assert_eq!((report.passes_run, report.end), (1, PassesEnd::ListFull));
+    assert!(report.stopped_early());
 }
 
 #[test]
