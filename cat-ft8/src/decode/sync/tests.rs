@@ -355,11 +355,11 @@ fn refinement_moves_towards_sub_grid_offsets() {
 fn row_scores_equal_the_single_scores() {
     // Signals and noise, in a full slot and in slots cut where one, two
     // and all three Costas arrays of some start rows are filled; every
-    // start row the search visits and a few beyond, every base bin; both
-    // forms of the sums (the levels summed down the columns first, and
-    // running sums along each row), on band widths from one bin, odd (all
-    // that `Band::from_hz` gives are 8k + 1) and even (the running sums'
-    // pair loop then leaves no last bin on its own).
+    // start row the search visits and a few beyond, every base bin; the
+    // levels summed down the columns first, against `costas_score`, on band
+    // widths from one bin, odd (all that `Band::from_hz` gives are 8k + 1)
+    // and even. The running sums along each row, at the same widths:
+    // `paired_scores_equal_the_single_scores`.
     let mut slot = empty_slot();
     add_noise(&mut slot, NOISE_RMS, 11);
     for (k, msg) in ["CQ K1ABC FN42", "K1ABC W9XYZ -11", "W9XYZ K1ABC R-07"]
@@ -395,20 +395,11 @@ fn row_scores_equal_the_single_scores() {
                 let mut row = vec![0.0f32; cols];
                 let first = NOMINAL_START_ROW - MAX_START_OFFSET - 3;
                 for start in first..first + START_ROWS as i32 + 6 {
-                    for vector_form in [true, false] {
-                        if vector_form {
-                            costas_scores::<true>(spec.rows(), start, &mut row);
-                        } else {
-                            costas_scores::<false>(spec.rows(), start, &mut row);
-                        }
-                        for (b, &got) in row.iter().enumerate() {
-                            let want = costas_score(spec, start, b).unwrap_or(NONE);
-                            let got = score_of(got);
-                            assert_eq!(
-                                got, want,
-                                "samples {samples} start {start} base {b} {vector_form}"
-                            );
-                        }
+                    costas_scores(spec.rows(), start, &mut row);
+                    for (b, &got) in row.iter().enumerate() {
+                        let want = costas_score(spec, start, b).unwrap_or(NONE);
+                        let got = score_of(got);
+                        assert_eq!(got, want, "samples {samples} start {start} base {b}");
                     }
                 }
             });
@@ -691,7 +682,7 @@ fn check_paired_search(mins: &[i32], ks: &[usize]) {
                         let wr = select(
                             START_ROWS,
                             cols,
-                            |q, out| costas_scores::<true>(spec.rows(), first_row + q as i32, out),
+                            |q, out| costas_scores(spec.rows(), first_row + q as i32, out),
                             min_score,
                             &mut scratch,
                             &mut want,

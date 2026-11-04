@@ -136,7 +136,7 @@ pub(crate) fn search_rows(
     select(
         START_ROWS,
         cols,
-        |q, out| costas_scores::<{ !SCALAR_FORMS }>(rows, first_row + q as i32, out),
+        |q, out| costas_scores(rows, first_row + q as i32, out),
         min_score,
         scratch,
         out,
@@ -148,58 +148,20 @@ pub(crate) fn search_rows(
     )
 }
 
-/// One Costas symbol's row without a vector unit ([`costas_scores`], and a
-/// row of one start row in [`costas_scores_paired`]): adds `8 · level(b +
-/// sent_at) − Σₜ level(b + 2t)` (t = 0..8, the eight tones two bins apart;
-/// `sent_at` = 2 · the tone sent) to `out[b]` at every base bin b <
-/// `out.len()`. The eight tones' sum at bin b is tones 0 to 6's sum there
-/// plus tone 7's level, and less tone 0's level it is tones 0 to 6's sum
-/// at b + 2: running sums along the even and the odd bins, side by side, a
-/// pair of bins a step, then an odd count's last bin. Integers: the same
-/// values as adding the eight afresh.
-///
-/// A step reads tone 7's level at b + 14 and none past the last bin's, so
-/// the loop has no last step to leave out and no bounds checks: on the
-/// Cortex-M33 (rustc 1.93.0, opt-level "s") 25 instructions a pair, against
-/// 15 a bin with the eight tones' sum (findings O32).
-#[inline(always)]
-fn add_row_running(row: &[u8], sent_at: usize, out: &mut [ScoreCell]) {
-    let cols = out.len();
-    // Tone 7's level at the last bin is the row's last one used.
-    let row = &row[..cols + 14];
-    let sent = &row[sent_at..sent_at + cols];
-    let level = |k: usize| i32::from(row[k]);
-    // Tones 0 to 6's sums at bins 0 and 1.
-    let mut even = (0..7).fold(0, |s, t| s + level(2 * t));
-    let mut odd = (0..7).fold(0, |s, t| s + level(1 + 2 * t));
-    let mut b = 0;
-    while b + 1 < cols {
-        let all = even + level(b + 14);
-        out[b] = cell_of(score_of(out[b]) + 8 * i32::from(sent[b]) - all);
-        even = all - level(b);
-        let all = odd + level(b + 15);
-        out[b + 1] = cell_of(score_of(out[b + 1]) + 8 * i32::from(sent[b + 1]) - all);
-        odd = all - level(b + 1);
-        b += 2;
-    }
-    if b < cols {
-        let all = even + level(b + 14);
-        out[b] = cell_of(score_of(out[b]) + 8 * i32::from(sent[b]) - all);
-    }
-}
-
 /// Rows a start row's score reads: every symbol of every Costas array.
 const COSTAS_ROWS: usize = COSTAS_POSITIONS.len() * COSTAS.len();
 
-/// The rows one start row's scores read, for both forms of
-/// [`costas_scores`]: calls `f` with the levels of each symbol of every
-/// Costas array of `start_row` that lies in `spec`'s filled rows, in order,
-/// and its sent tone as a bin offset (2 · tone). Returns the scale, 6 / the
-/// arrays present (2 or 3: × 3 or × 2, exact), or `None` if fewer than two
-/// arrays are present (no score, as [`costas_score`]).
-// A visitor rather than an array of the rows: the M33's running sums take
-// each row as they read it, as before; an array of the rows grew its
-// images by 196 B of code (findings O29b).
+/// The rows one start row's scores read, for [`costas_scores`]: calls `f`
+/// with the levels of each symbol of every Costas array of `start_row` that
+/// lies in `spec`'s filled rows, in order, and its sent tone as a bin
+/// offset (2 · tone). Returns the scale, 6 / the arrays present (2 or 3:
+/// × 3 or × 2, exact), or `None` if fewer than two arrays are present (no
+/// score, as [`costas_score`]).
+// A visitor rather than an array of the rows: the Cortex-M33's search,
+// before it paired start rows, took each row's running sums as it read the
+// row, and an array of the rows grew its images by 196 B of code (findings
+// O29b). Its one caller now, [`costas_scores_by_columns`], keeps the rows
+// in arrays of its own.
 #[inline(always)]
 fn gather<'a>(
     spec: &'a Rows<'_>,
@@ -229,37 +191,15 @@ fn gather<'a>(
 
 /// [`costas_score`] at every base bin `0..out.len()` of one start row, into
 /// `out` as cells ([`NONE`] where there is none): the same integer sums,
-/// added in another order (exact), from the rows [`gather`] reads. With
-/// `VECTOR_FORM` (the search's, where the target has a vector unit) the
-/// rows' levels are summed down each column first, vectorised
-/// ([`costas_scores_by_columns`]); otherwise by running sums along each row
-/// ([`costas_scores_running`]), which the search without one pairs.
-// `spec` by reference: by value (a `Copy` view of the rows) the M33's
-// running sums kept their loop (codegen-check `sumloop6`) and the sync stage
-// its count, but the small slot rose 0.38% (s0086, in the feed): findings
-// O25b. That search now pairs start rows ([`search_paired`]).
-fn costas_scores<const VECTOR_FORM: bool>(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
-    let scored = if VECTOR_FORM {
-        costas_scores_by_columns(spec, start_row, out)
-    } else {
-        costas_scores_running(spec, start_row, out)
-    };
-    if scored.is_none() {
+/// added in another order (exact), from the rows [`gather`] reads, their
+/// levels summed down each column first, vectorised
+/// ([`costas_scores_by_columns`]). The search's where the target has a
+/// vector unit; without one it scores start rows in pairs
+/// ([`search_paired`]).
+fn costas_scores(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
+    if costas_scores_by_columns(spec, start_row, out).is_none() {
         out.fill(cell_of(NONE));
     }
-}
-
-/// [`costas_scores`] without a vector unit: each row's running sums
-/// ([`add_row_running`]) added along the bins, then scaled; `None` as
-/// [`gather`].
-#[inline(always)]
-fn costas_scores_running(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) -> Option<()> {
-    out.fill(cell_of(0));
-    let scale = gather(spec, start_row, |row, at| add_row_running(row, at, out))?;
-    for s in out.iter_mut() {
-        *s = cell_of(score_of(*s) * scale);
-    }
-    Some(())
 }
 
 /// Base bins [`costas_scores_by_columns`] takes at a time. Not tuned: 64
@@ -553,7 +493,11 @@ pub(crate) fn search_paired(
 /// ([`add_row_running`]). An array only one of them has is added to that
 /// one alone. Where fewer than two arrays are present, [`NONE`].
 // Every row read is below `spec.len()`, so `Rows::row` is `Some`; as
-// `gather`, a `None` would leave no score (in both start rows).
+// `gather`, a `None` would leave no score (in both start rows). `spec` by
+// reference, as the search before pairs took it: by value (a `Copy` view
+// of the rows) the Cortex-M33's running sums kept their loop (codegen-check
+// `sumloop6`) and the sync stage its count, but the small slot rose 0.38%
+// (s0086, in the feed): findings O25b. Not tried by value since.
 fn costas_scores_paired(
     spec: &Rows<'_>,
     start_row: i32,
@@ -610,6 +554,52 @@ fn costas_scores_paired(
     finish(a, in_a);
     if let Some(b) = b {
         finish(b, in_b);
+    }
+}
+
+/// One Costas symbol's row of one start row, for [`costas_scores_paired`]
+/// (through [`add_row_alone`]): adds `8 · level(b + sent_at) − Σₜ level(b +
+/// 2t)` (t = 0..8, the eight tones two bins apart; `sent_at` = 2 · the tone
+/// sent) to `out[b]` at every base bin b < `out.len()`, from the row's
+/// levels `row`. The eight tones' sum at bin b is tones 0 to 6's sum there
+/// plus tone 7's level, and less tone 0's level it is tones 0 to 6's sum
+/// at b + 2: running sums along the even and the odd bins, so a bin reads
+/// three levels rather than nine. The two sums run side by side, a pair of
+/// bins a step, then an odd count's last bin. Integers: the same values as
+/// adding the eight afresh.
+///
+/// Carrying tones 0 to 6's sum rather than the eight's, a step reads tone
+/// 7's level at b + 14 and none past the last bin's, so the loop has no
+/// last step to leave out and no bounds checks: on the Cortex-M33 (rustc
+/// 1.93.0, opt-level "s") 13 instructions a bin, one parity at a time,
+/// against 15 with the eight's sum. Running the two parities side by side
+/// takes that to 25 a pair, 12.5 a bin, saving about 0.34% more of the
+/// small slot in the search before start rows were paired (findings O32).
+/// [`add_row_paired`], whose step serves two start rows, runs one parity
+/// at a time instead: 18 instructions a bin (findings O33).
+#[inline(always)]
+fn add_row_running(row: &[u8], sent_at: usize, out: &mut [ScoreCell]) {
+    let cols = out.len();
+    // Tone 7's level at the last bin is the row's last one used.
+    let row = &row[..cols + 14];
+    let sent = &row[sent_at..sent_at + cols];
+    let level = |k: usize| i32::from(row[k]);
+    // Tones 0 to 6's sums at bins 0 and 1.
+    let mut even = (0..7).fold(0, |s, t| s + level(2 * t));
+    let mut odd = (0..7).fold(0, |s, t| s + level(1 + 2 * t));
+    let mut b = 0;
+    while b + 1 < cols {
+        let all = even + level(b + 14);
+        out[b] = cell_of(score_of(out[b]) + 8 * i32::from(sent[b]) - all);
+        even = all - level(b);
+        let all = odd + level(b + 15);
+        out[b + 1] = cell_of(score_of(out[b + 1]) + 8 * i32::from(sent[b + 1]) - all);
+        odd = all - level(b + 1);
+        b += 2;
+    }
+    if b < cols {
+        let all = even + level(b + 14);
+        out[b] = cell_of(score_of(out[b]) + 8 * i32::from(sent[b]) - all);
     }
 }
 
