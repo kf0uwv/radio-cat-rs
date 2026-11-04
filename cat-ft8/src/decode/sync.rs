@@ -178,14 +178,18 @@ fn add_row_running(row: &[u8], tone: usize, out: &mut [ScoreCell]) {
 /// `out` as cells ([`NONE`] where there is none): the same integer sums,
 /// added in another order (exact), a row of the spectrogram at a time so the
 /// inner loop runs along the bins. With `VECTOR_FORM` (where the target has
-/// a vector unit) each bin's eight tones are added afresh, which
-/// vectorises; otherwise by running sums ([`add_row_running`]).
+/// a vector unit) the rows' levels are summed down each column first
+/// ([`costas_scores_by_columns`], which vectorises); otherwise by running
+/// sums along each row ([`add_row_running`]).
 // `spec` by reference: by value (a `Copy` view of the rows) the M33's
 // running sums keep their loop (codegen-check `sumloop3`) and the sync stage
 // its count, but the small slot rose 0.38% (s0086, in the feed): findings
 // O25b.
 fn costas_scores<const VECTOR_FORM: bool>(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
-    let cols = out.len();
+    if VECTOR_FORM {
+        costas_scores_by_columns(spec, start_row, out);
+        return;
+    }
     let rows = spec.len() as i32;
     out.fill(cell_of(0));
     let mut present = 0i32;
@@ -202,27 +206,7 @@ fn costas_scores<const VECTOR_FORM: bool>(spec: &Rows<'_>, start_row: i32, out: 
                 out.fill(cell_of(NONE));
                 return;
             };
-            if !VECTOR_FORM {
-                add_row_running(row, usize::from(tone), out);
-                continue;
-            }
-            // The eight tones' levels at every base bin, as slices along
-            // the bins.
-            let at = |t: usize| &row[2 * t..2 * t + cols];
-            let (t0, t1, t2, t3) = (at(0), at(1), at(2), at(3));
-            let (t4, t5, t6, t7) = (at(4), at(5), at(6), at(7));
-            let sent = at(usize::from(tone));
-            for b in 0..cols {
-                let all = i32::from(t0[b])
-                    + i32::from(t1[b])
-                    + i32::from(t2[b])
-                    + i32::from(t3[b])
-                    + i32::from(t4[b])
-                    + i32::from(t5[b])
-                    + i32::from(t6[b])
-                    + i32::from(t7[b]);
-                out[b] = cell_of(score_of(out[b]) + 8 * i32::from(sent[b]) - all);
-            }
+            add_row_running(row, usize::from(tone), out);
         }
         present += 1;
     }
@@ -236,6 +220,85 @@ fn costas_scores<const VECTOR_FORM: bool>(spec: &Rows<'_>, start_row: i32, out: 
         *s = cell_of(score_of(*s) * scale);
     }
 }
+
+/// Rows a start row's score reads: every symbol of every Costas array.
+const COSTAS_ROWS: usize = COSTAS_POSITIONS.len() * COSTAS.len();
+
+/// Base bins [`costas_scores_by_columns`] takes at a time.
+const COLUMN_CHUNK: usize = 64;
+
+/// [`costas_scores`] where the target has a vector unit: the same integer
+/// sums, added in another order (exact). A row's eight tones' sum does not
+/// depend on the tone sent, so the levels of all the rows read (up to
+/// [`COSTAS_ROWS`]) are first added down each column, and each bin then
+/// takes eight of those column sums rather than eight levels a row: the
+/// score is 8 · Σ_rows level(b + 2·tone) − Σₜ column(b + 2t). A bin reads
+/// about 2 · 21 + 8 sums and levels instead of 21 · 9 levels (findings
+/// O29). The bins go
+/// [`COLUMN_CHUNK`] at a time, so the column sums need only small arrays on
+/// the stack (`u16`: at most 21 · 255 a column, 8 · 21 · 255 a bin's eight;
+/// checked at compile time).
+#[inline(always)]
+fn costas_scores_by_columns(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
+    let cols = out.len();
+    let rows = spec.len() as i32;
+    let mut read: [&[u8]; COSTAS_ROWS] = [&[]; COSTAS_ROWS];
+    let mut sent_at = [0usize; COSTAS_ROWS];
+    let mut n = 0;
+    let mut present = 0i32;
+    for &pos in COSTAS_POSITIONS.iter() {
+        let first = start_row + 2 * pos as i32;
+        let last = first + 2 * (COSTAS.len() as i32 - 1);
+        if first < 0 || last >= rows {
+            continue;
+        }
+        for (j, &tone) in COSTAS.iter().enumerate() {
+            let Some(row) = spec.row((first + 2 * j as i32) as usize) else {
+                // Unreachable, as in `costas_scores`.
+                out.fill(cell_of(NONE));
+                return;
+            };
+            // Tone 7's level at the last bin is the row's last one used.
+            read[n] = &row[..cols + 14];
+            sent_at[n] = 2 * usize::from(tone);
+            n += 1;
+        }
+        present += 1;
+    }
+    if present < 2 {
+        out.fill(cell_of(NONE));
+        return;
+    }
+    // 6 / n with n = 2 or 3: × 3 or × 2, exact.
+    let scale = 6 / present;
+    let (read, sent_at) = (&read[..n], &sent_at[..n]);
+    for (c, chunk) in out.chunks_mut(COLUMN_CHUNK).enumerate() {
+        let first = c * COLUMN_CHUNK;
+        let len = chunk.len();
+        let mut column = [0u16; COLUMN_CHUNK + 14];
+        let mut sent = [0u16; COLUMN_CHUNK];
+        for (row, &at) in read.iter().zip(sent_at) {
+            for (x, &v) in column[..len + 14]
+                .iter_mut()
+                .zip(&row[first..first + len + 14])
+            {
+                *x += u16::from(v);
+            }
+            for (x, &v) in sent[..len]
+                .iter_mut()
+                .zip(&row[first + at..first + at + len])
+            {
+                *x += u16::from(v);
+            }
+        }
+        for (b, cell) in chunk.iter_mut().enumerate() {
+            let all: i32 = (0..8).map(|t| i32::from(column[b + 2 * t])).sum();
+            *cell = cell_of((8 * i32::from(sent[b]) - all) * scale);
+        }
+    }
+}
+
+const _: () = assert!(COSTAS_ROWS as u32 * 8 * 255 <= u16::MAX as u32);
 
 /// The sync score of a candidate at `start_row`, base bin `base`, or
 /// `None` if fewer than two Costas arrays lie in the filled rows.

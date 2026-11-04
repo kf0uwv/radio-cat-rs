@@ -18,7 +18,8 @@
 # AArch64, that the clamp keeps its form on the microcontroller targets,
 # that the FFT stays written out butterfly by butterfly on the Cortex-M33
 # and its last stage one vectorised loop on AArch64 and x86-64, and that
-# the sync search's running sums keep their loop there, and that the
+# the sync search's running sums keep their loop there and its column sums
+# their 16-bit vectors on the hosts, and that the
 # belief-propagation rounds take their variables' totals without a
 # bounds check.
 # Their speed depends on code generation that no test sees: the
@@ -101,6 +102,10 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # `calls_within_limit` counts calls of `within_limit`, at least the bound;
 # `ldn` counts `ld2`, `ld3` and `ld4`, at least the bound;
 # `vec2` counts instructions with a two-lane `.2d` operand, at most the bound;
+# `vec8h` counts instructions with an eight-lane 16-bit `.8h` operand
+# (AArch64), at least the bound;
+# `paddw` counts `paddw` and `vpaddw` (16-bit vector adds; x86-64), at least
+# the bound;
 # `add2d` counts two-lane 64-bit vector adds (`add` on `.2d`), at least the
 # bound;
 # `insns` counts the function's instructions, at most the bound;
@@ -198,6 +203,10 @@ checks=(
   "m33s 10finish_row zerofills 1"
   # The sync search's running sums: three levels a bin.
   "m33s 6select sumloop3 16"
+  # On the hosts its column sums in 16-bit vector lanes (the eight tones
+  # added afresh a row, the form before: 13 and 0).
+  "a64 6select vec8h 24"
+  "x64 6select paddw 16"
   # The fit one lane at a time with its sums in registers.
   "m33s 4Fit410add_all_as fploop5 15"
   # The frequency correction one sample at a time, not in lanes.
@@ -349,6 +358,8 @@ for entry in "${checks[@]}"; do
     metric == "fpcmps" && /^\t(fcmp|v?u?comiss)\t/ { n++; nf[found]++ }
     metric == "ldn" && /^\tld[234]\t/ { n++; nf[found]++ }
     metric == "vec2" && /^\t[a-z][^\t]*\t.*\.2d/ { n++; nf[found]++ }
+    metric == "vec8h" && /^\t[a-z][^\t]*\t.*\.8h/ { n++; nf[found]++ }
+    metric == "paddw" && /^\tv?paddw\t/ { n++; nf[found]++ }
     metric == "add2d" && /^\tadd\tv[0-9]+\.2d/ { n++; nf[found]++ }
     END {
       if (!found) print "missing"
@@ -362,7 +373,7 @@ for entry in "${checks[@]}"; do
       }
       else print n + 0
     }' "${asm[$key]}")
-  if [ "$n" = noteach ] || { [ "$only" = each ] && ! [[ "$metric" =~ ^(vec4|minmax|vminmax|fpmul|vecor|calls_within_limit|ldn|add2d|fpcmps)$ ]]; }; then
+  if [ "$n" = noteach ] || { [ "$only" = each ] && ! [[ "$metric" =~ ^(vec4|minmax|vminmax|fpmul|vecor|calls_within_limit|ldn|add2d|fpcmps|vec8h|paddw)$ ]]; }; then
     echo "FAIL $key $name: \`each\` takes a floor, not $metric"
     fail=1
     continue
@@ -425,6 +436,8 @@ for entry in "${checks[@]}"; do
     mulloop*) what="instructions in the loop of ${metric#mulloop} four-lane multiplies (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     ldn) what="interleaving loads (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     vec2) what="two-lane .2d instructions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    vec8h) what=".8h instructions (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
+    paddw) what="16-bit vector adds (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     add2d) what="two-lane 64-bit adds (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     *) what="unknown metric $metric"; ok=0 ;;
   esac
