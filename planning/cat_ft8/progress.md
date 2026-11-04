@@ -2467,6 +2467,9 @@
   degree asserted. M33 identity 16 of 16, forced forms failing, 13
   mutants caught, local CI 18 of 18.
 - Next round's first candidate: the level steps on every target if the
-  A76 agrees (x86-64 feed about −17% by a reviewer's wall-clock), which
+  A76 agrees (x86-64 feed about −17% by one unrecorded wall-clock run), which
   removes the split, the `SCALAR_FORMS` terms in `TABLE_BYTES` and the
   risk.
+- O30c (closing review): the min-sum degree asserted at compile time; the
+  wide decode_soft test keeps its name, with CI filtering `_widely` too;
+  wording.

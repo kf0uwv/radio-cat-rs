@@ -16397,7 +16397,8 @@ equal 6b8013c's; decodes, dumps and residuals are identical.
 `--ignored _everywhere`. Two ignored tests did not match it, so CI never
 ran them: `level_steps_give_every_level` (O30) and the older
 `decode_soft_matches_its_first_form_widely` (3 000 vectors). They are now
-`level_steps_give_every_level_everywhere` and
+`level_steps_give_every_level_everywhere` and (until O30c, which gave CI
+a `_widely` filter and the old name back)
 `decode_soft_matches_its_first_form_widely_everywhere`. The local CI ran
 `--include-ignored` unfiltered, which hid the gap. Its release step now
 runs exactly CI's filter. A new step lists every ignored test of every
@@ -16426,8 +16427,9 @@ and a debug assertion checks that the bits are below `LEVEL_STEPS[255]`.
 Mutant l4 (no cap) is equivalent on hosts only.
 
 **The hosts' logarithm.** The doc said the hosts keep `level_of(log2_power(p))`
-because it vectorises. That is unmeasured, and a reviewer measured the
-steps faster on x86-64 (wall-clock, 3970X: the feed about −17%, the host
+because it vectorises. That is unmeasured; a separate wall-clock run
+outside this round's records found the steps faster on x86-64 (3970X:
+the feed about −17%, the host
 slot about −4%). The doc now says the hosts keep the logarithm only to
 leave their binaries unchanged while the Cortex-A76 is not available.
 
@@ -16544,10 +16546,20 @@ them in.
 
 | candidate | estimate | cost |
 |---|---|---|
-| **The level steps on every target, if the A76 agrees** | x86-64: feed about −17% (a reviewer's wall-clock); A76 unmeasured | one A76 timing. It would remove the `SCALAR_FORMS` split in the row, the `SCALAR_FORMS` terms in `TABLE_BYTES`, and the risk that the hosts' and the M33's levels agree only by test |
+| **The level steps on every target, if the A76 agrees** | x86-64: feed about −17% (one wall-clock run, not recorded here); A76 unmeasured | one A76 timing. It would remove the `SCALAR_FORMS` split in the row, the `SCALAR_FORMS` terms in `TABLE_BYTES`, and the risk that the hosts' and the M33's levels agree only by test |
 
 #### Not measured
 
 - A76 timing (board unavailable). Cortex-M33 cycles (emulated counts
   only). M4F counts.
+
+### Closing review (O30c)
+
+- `min_sum_check_sized` asserts its degree at compile time
+  (`Degree::<D>::OK`), so a degree other than 6 or 7 fails the build
+  instead of being cut to 7 in a release build.
+- `decode_soft_matches_its_first_form_widely` keeps its name (a wide
+  sample, not every value); CI's exhaustive step filters on `_everywhere`
+  and `_widely`, and its comment no longer gives one machine's time.
+- Release sections of all eight binaries are unchanged by these edits.
 
