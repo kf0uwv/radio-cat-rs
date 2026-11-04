@@ -505,12 +505,13 @@ pub(crate) fn search_paired(
 /// ([`add_row_paired`]) serve both, and each start row adds its own one
 /// ([`add_row_running`]). An array only one of them has is added to that
 /// one alone. Where fewer than two arrays are present, [`NONE`].
-// Every row read is below `spec.len()`, so `Rows::row` is `Some`; as
-// `gather`, a `None` would leave no score (in both start rows). `spec` by
-// reference, as the search before pairs took it: by value (a `Copy` view
-// of the rows) the Cortex-M33's running sums kept their loop (codegen-check
-// `sumloop6`) and the sync stage its count, but the small slot rose 0.38%
-// (s0086, in the feed): findings O25b. Not tried by value since.
+// Every row read is below `spec.len()`, so `Rows::row` is `Some`; were one
+// `None`, neither start row would have a score (`NONE` in both), as
+// `gather` leaves none. `spec` by reference, as the search before pairs
+// took it: by value (a `Copy` view of the rows) the Cortex-M33's running
+// sums kept their loop (codegen-check `sumloop6`) and the sync stage its
+// count, but the small slot rose 0.38% (s0086, in the feed): findings
+// O25b. Not tried by value since.
 fn costas_scores_paired(
     spec: &Rows<'_>,
     start_row: i32,
@@ -526,7 +527,6 @@ fn costas_scores_paired(
         b.fill(cell_of(0));
     }
     let (mut in_a, mut in_b) = (0i32, 0i32);
-    let mut filled = true;
     for &pos in COSTAS_POSITIONS.iter() {
         let first = start_row + 2 * pos as i32;
         // Row j of the eight: symbol j of `start_row`, j − 1 of the other.
@@ -540,21 +540,29 @@ fn costas_scores_paired(
                 continue;
             }
             let Some(levels) = row(j) else {
-                filled = false;
-                continue;
+                a.fill(cell_of(NONE));
+                if let Some(b) = b {
+                    b.fill(cell_of(NONE));
+                }
+                return;
             };
-            match (to_a, b.as_deref_mut()) {
-                (true, Some(b)) if to_b => add_row_pair(levels, tone(j), tone(j - 1), a, b),
-                (true, _) => add_row_alone(levels, tone(j), a),
-                (false, Some(b)) => add_row_alone(levels, tone(j - 1), b),
-                (false, None) => {}
+            // A row for neither was skipped, so one not for `b` is for `a`;
+            // `to_b` holds only if `b` is given.
+            if !to_b {
+                add_row_alone(levels, tone(j), a);
+            } else if let Some(b) = b.as_deref_mut() {
+                if to_a {
+                    add_row_pair(levels, tone(j), tone(j - 1), a, b);
+                } else {
+                    add_row_alone(levels, tone(j - 1), b);
+                }
             }
         }
         in_a += i32::from(has_a);
         in_b += i32::from(has_b);
     }
     let finish = |out: &mut [ScoreCell], present: i32| {
-        if filled && present >= 2 {
+        if present >= 2 {
             // 6 / n with n = 2 or 3: × 3 or × 2, exact.
             let scale = if present == 3 { 2 } else { 3 };
             for s in out.iter_mut() {
@@ -716,11 +724,14 @@ where
     if scratch.len() < 3 * paired_width(cols) {
         return Err(Error::BufferTooSmall);
     }
+    let mut report = SyncReport::default();
+    if rows == 0 {
+        return Ok(report);
+    }
     // Bins a span selects: all of them if five rows of the band fit, else
     // as many as leave room for a neighbour on either side.
     let fit = scratch.len() / PAIRED_ROWS;
     let span = if cols <= fit { cols } else { fit - 2 };
-    let mut report = SyncReport::default();
     let mut c0 = 0;
     while c0 < cols {
         let c1 = (c0 + span).min(cols);
@@ -739,11 +750,11 @@ where
         };
         // Row q's slot, q mod 5, kept as q steps (no division a row).
         let after = |slot: usize| if slot + 1 == PAIRED_ROWS { 0 } else { slot + 1 };
+        // The first pair, rows 0 and 2; the rest as their first row is
+        // needed.
+        fill(scratch, 0, 0, 2);
         let mut slot = 0;
         for q in 0..rows {
-            if q == 0 {
-                fill(scratch, 0, 0, 2);
-            }
             if (q + 1) % 4 < 2 && q + 1 < rows {
                 let next = after(slot);
                 fill(scratch, q + 1, next, after(after(next)));

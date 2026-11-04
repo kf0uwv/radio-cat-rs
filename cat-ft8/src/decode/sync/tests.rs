@@ -563,6 +563,10 @@ fn paired_selection_needs_its_scratch() {
         let mut scratch = vec![0.0f32; least];
         let r = select_paired(3, cols, fill, 0, &mut scratch, &mut out, P);
         assert!(r.is_ok(), "cols {cols}");
+        // No rows: nothing scored, nothing found.
+        let never = |_: usize, _: usize, _: &mut [f32], _: Option<&mut [f32]>| unreachable!();
+        let r = select_paired(0, cols, never, 0, &mut scratch, &mut out, P);
+        assert_eq!(r, Ok(SyncReport::default()), "cols {cols}");
     }
 }
 
