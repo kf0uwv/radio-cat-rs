@@ -119,6 +119,58 @@ fn level_scales() {
     }
 }
 
+/// The level of `bits` both ways: by the logarithm and by the steps.
+fn levels_both_ways(bits: u32) -> (u8, u8) {
+    let p = f32::from_bits(bits);
+    (level_of(log2_power(p)), level_by_steps(p))
+}
+
+#[test]
+fn level_steps_give_the_level_near_every_step_and_across_the_range() {
+    // Each step's own bits and those beside it, every 65 537th bit
+    // pattern (both signs, NaNs and infinities among them), and the ends.
+    let near = LEVEL_STEPS[..255]
+        .iter()
+        .flat_map(|&s| s - 3..=s + 3)
+        .chain((0..=u32::MAX).step_by(65_537))
+        .chain([
+            0,
+            1,
+            POWER_FLOOR.to_bits(),
+            f32::MAX.to_bits(),
+            0x7f80_0000,
+            0xff80_0000,
+            u32::MAX,
+        ]);
+    for bits in near {
+        let (want, got) = levels_both_ways(bits);
+        assert_eq!(got, want, "bits {bits:#010x}");
+    }
+}
+
+#[test]
+#[ignore = "exhaustive: every f32 (about 4.3 · 10⁹), in threads; run with --release"]
+fn level_steps_give_every_level() {
+    let threads = 16u64;
+    let span = (1u64 << 32) / threads;
+    let bad: u64 = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|t| {
+                scope.spawn(move || {
+                    (t * span..(t + 1) * span)
+                        .filter(|&b| {
+                            let (want, got) = levels_both_ways(b as u32);
+                            want != got
+                        })
+                        .count() as u64
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).sum()
+    });
+    assert_eq!(bad, 0);
+}
+
 #[test]
 fn a_tone_lands_in_its_bin() {
     // 1 503.125 Hz = bin 481, full scale; noise-free.

@@ -52,7 +52,8 @@
 //! sync search uses it then.
 
 use super::fft::{power_bins, FftBuffer, BINS, WINDOW};
-use super::math::log2_power;
+use super::math::{log2_power, POWER_FLOOR, SCALAR_FORMS};
+use super::tables::LEVEL_STEPS;
 use crate::{Error, SLOT_SAMPLES};
 
 /// Hop between rows: half a symbol.
@@ -93,6 +94,37 @@ fn quantise(x: f32, max: u32) -> u32 {
 #[inline]
 pub(crate) fn level_of(l2: f32) -> u8 {
     quantise(l2 * (DB_PER_LOG2 * 2.0) + 255.0, 255) as u8
+}
+
+/// Levels per unit of a power's bits, scaled by 2⁴⁰ for
+/// [`level_by_steps`]' guess: 2⁴⁰ · 6.0206 / 2²³ (`2 · DB_PER_LOG2` levels
+/// a unit of log2, 2²³ units of the bits an octave), rounded.
+const LEVEL_GUESS_SCALE: i64 = 789_132;
+/// The guess's offset, scaled likewise: (255.5 − 127 · 6.0206 − 0.02) ·
+/// 2⁴⁰, rounded. 127 is the exponent's bias, 255.5 the level of 0 dB and
+/// the half that rounds it; the 0.02 keeps the guess below the level where
+/// a power's bits give its log2 exactly (at a power of two).
+const LEVEL_GUESS_OFFSET: i64 = -559_801_149_968_876;
+
+/// The spectrogram level of a power value `p` (any `f32`),
+/// `level_of(log2_power(p))`, by a guess from the power's bits and one
+/// compare with [`LEVEL_STEPS`]: for the targets without a vector unit
+/// ([`levels_of_powers`]), where the logarithm's division and polynomial
+/// were most of the front end's work after the transform (findings O30).
+/// After the same floor and cap as [`log2_power`], a power's bits less
+/// 127 · 2²³, over 2²³, are within 0.09 below its log2 (the exponent, and
+/// the mantissa taken as its own logarithm), so a line in the bits guesses
+/// the level to within one below; the level is the guess or one more, by
+/// `LEVEL_STEPS[guess]`, the bits of the least power of the level above
+/// the guess. A test checks the result for every `f32`.
+#[inline(always)]
+pub(crate) fn level_by_steps(p: f32) -> u8 {
+    // Not `clamp`: NaN to the floor, as `log2_power`.
+    #[allow(clippy::manual_clamp)]
+    let bits = p.max(POWER_FLOOR).min(f32::MAX).to_bits();
+    let line = (i64::from(bits) * LEVEL_GUESS_SCALE + LEVEL_GUESS_OFFSET) >> 40;
+    let guess = (line as i32).clamp(0, 255) as u32;
+    (guess + u32::from(bits >= LEVEL_STEPS[guess as usize])) as u8
 }
 
 /// The base (tone 0) frequencies searched, as 3.125 Hz bins.
@@ -500,16 +532,36 @@ impl<'a> Spectrogram<'a> {
             &mut self.front.fft,
             self.rows.band.first_bin(),
             width,
-            |i, p| {
-                for (level, &p) in row[i..i + p.len()].iter_mut().zip(p) {
-                    *level = level_of(log2_power(p));
-                }
-            },
+            |i, p| levels_of_powers(&mut row[i..i + p.len()], p),
         );
         let (floored, top) = level_counts(row);
         self.floored += floored;
         self.top += top;
         self.rows.count += 1;
+    }
+}
+
+/// Each power's level, `level_of(log2_power(p))`, into `levels`, of the
+/// same length. Where the target has no vector unit ([`SCALAR_FORMS`]) by
+/// [`level_by_steps`], out of line: inlined into the front end's row, the
+/// transform beside it compiled to more instructions on the Cortex-M33
+/// than the levels saved (findings O30).
+#[inline(always)]
+fn levels_of_powers(levels: &mut [u8], powers: &[f32]) {
+    if SCALAR_FORMS {
+        levels_by_steps_out_of_line(levels, powers);
+    } else {
+        for (level, &p) in levels.iter_mut().zip(powers) {
+            *level = level_of(log2_power(p));
+        }
+    }
+}
+
+/// [`levels_of_powers`] where the target has no vector unit.
+#[inline(never)]
+fn levels_by_steps_out_of_line(levels: &mut [u8], powers: &[f32]) {
+    for (level, &p) in levels.iter_mut().zip(powers) {
+        *level = level_by_steps(p);
     }
 }
 

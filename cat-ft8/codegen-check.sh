@@ -277,7 +277,9 @@ checks=(
   "x64r power_bins mulloop80 470 one"
   "x64r power_bins insns 3500 one"
   # The bins' powers out of line with indexed slices.
-  "m33s bin_powers_out_of_line fploop4 35")
+  "m33s bin_powers_out_of_line fploop4 35"
+  # The levels of a row's powers by a guess and one step, not the logarithm, out of line.
+  "m33s levels_by_steps_out_of_line shortloop 16")
 
 declare -A asm
 for b in "${builds[@]}"; do

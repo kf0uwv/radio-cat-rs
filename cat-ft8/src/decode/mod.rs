@@ -78,10 +78,17 @@ pub use sync::{Candidate, SyncReport};
 /// takes vectors; real-split twiddles, half Hann window, digit-reversal table, belief
 /// propagation's check degrees, each variable's edges and each edge's
 /// variable, the level-to-power table, and the generator's rows for
-/// ordered-statistics decoding, 2 184 bytes on every target), in flash.
+/// ordered-statistics decoding, 2 184 bytes on every target; and where
+/// the targets have no vector unit, the power-to-level steps, 1 024
+/// bytes), in flash.
 pub const TABLE_BYTES: usize = fft::TABLE_BYTES
     + core::mem::size_of::<[u8; 83]>()
     + core::mem::size_of::<[[u16; 3]; 174]>()
     + core::mem::size_of::<[u8; 522]>()
     + core::mem::size_of::<[f32; 256]>()
+    + if math::SCALAR_FORMS {
+        core::mem::size_of::<[u32; 256]>()
+    } else {
+        0
+    }
     + osd::ROWS_BYTES;

@@ -18,7 +18,7 @@ use std::string::String;
 use std::vec::Vec;
 
 use super::*;
-use crate::decode::tables::LEVEL_POWER;
+use crate::decode::tables::{LEVEL_POWER, LEVEL_STEPS};
 
 /// e^(−2πit/1920) as (cos, −sin), computed in f64 and rounded.
 fn generate_twiddles() -> Vec<[f32; 2]> {
@@ -141,8 +141,54 @@ fn tables_source() -> String {
         let line: Vec<String> = chunk.iter().map(|x| std::format!("{x:?}")).collect();
         writeln!(s, "    {},", line.join(", ")).unwrap();
     }
+    writeln!(s, "];\n").unwrap();
+    let steps = generate_level_steps();
+    writeln!(
+        s,
+        "/// The bits of the least power at each spectrogram level above v, v = 0..255 (v = 255: none, `u32::MAX`)."
+    )
+    .unwrap();
+    writeln!(s, "#[rustfmt::skip]").unwrap();
+    writeln!(
+        s,
+        "pub(crate) static LEVEL_STEPS: [u32; {}] = [",
+        steps.len()
+    )
+    .unwrap();
+    for chunk in steps.chunks(8) {
+        let line: Vec<String> = chunk.iter().map(|x| std::format!("{x:#010x}")).collect();
+        writeln!(s, "    {},", line.join(", ")).unwrap();
+    }
     writeln!(s, "];").unwrap();
     s
+}
+
+/// [`LEVEL_STEPS`]: for each level v below 255, the least power's bits
+/// (from the floor to `f32::MAX`) whose level is above v, found by
+/// bisection; `u32::MAX` for 255. Bisection takes the level as rising with
+/// the power, which `level_steps_give_every_level` checks for every `f32`.
+fn generate_level_steps() -> Vec<u32> {
+    use crate::decode::frontend::level_of;
+    use crate::decode::math::{log2_power, POWER_FLOOR};
+    let level = |bits: u32| level_of(log2_power(f32::from_bits(bits)));
+    (0..=255u8)
+        .map(|v| {
+            if v == 255 {
+                return u32::MAX;
+            }
+            let (mut a, mut b) = (POWER_FLOOR.to_bits(), f32::MAX.to_bits());
+            assert!(level(a) <= v && level(b) > v);
+            while a < b {
+                let mid = a + (b - a) / 2;
+                if level(mid) > v {
+                    b = mid;
+                } else {
+                    a = mid + 1;
+                }
+            }
+            a
+        })
+        .collect()
 }
 
 /// Regenerates `tables.rs`:
@@ -174,6 +220,7 @@ fn decode_tables_match_their_definitions() {
     let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(&HANN_HALF), bits(&generate_hann_half()));
     assert_eq!(bits(&LEVEL_POWER), bits(&generate_level_power()));
+    assert_eq!(LEVEL_STEPS.to_vec(), generate_level_steps());
 }
 
 /// The recursive definition of the input order: the top-level stage splits
