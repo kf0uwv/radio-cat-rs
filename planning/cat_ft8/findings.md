@@ -18679,3 +18679,165 @@ Of the slot after setup (116.5 M): `min_sum_round` 27.5% (the sums 6.3%,
 - The sync search, the level counts, the bins' powers and now the soft
   bits each have a form for the targets without a vector unit; the A76
   timing decides which become the only form.
+
+## The soft bits' fork marked temporary, SCALAR_FORMS' list, the check's loop metrics and the soft-bit test (O34b, 2026-11-04)
+
+Base: 3044396 (O34). Six commits on that branch: 2390d45 (codegen-check
+names its loop metrics once), 6bc3231 (`divlooprows` in place of
+`rowcallloop`; `finish_row`'s ceiling 1 072), 1f1dd19 (`SCALAR_FORMS`
+lists every fork it gates; the soft bits' gate marked temporary),
+8febfff (the soft-bit test through a const form of `soft_bits_at`),
+0a851df (that const form undone: the rows-once symbol a function of its
+own, the test through it) and 091bc11 (names: `sum_lanes`, the
+remainder's comment, `found` and `row` in `tone_power_of`, the
+zero-byte test named as the classic one). The Cortex-A76 was still not
+available.
+
+### First A76 item: the soft bits' rows once a symbol on every target
+
+Kept apart, on a branch of its own from 091bc11: `soft_bits_at` with one
+body, each symbol's two rows looked up once (`row_levels`) and each
+tone's power taken from them (`tone_power_of`), on every target;
+`interpolated_tone_power` (the SNR estimate's one tone a symbol) written
+in the same two, `None` where neither row is present. The test compares
+`soft_bits_at` with the soft bits a tone at a time, through
+`interpolated_tone_power` and through a test reference that looks each
+row up as the tone reads it (the earlier form), bit for bit and with the
+same erased counts; `SCALAR_FORMS` loses the fork.
+
+| measure | 091bc11 (= 82e1670's code) | rows once everywhere | change |
+|---|---|---|---|
+| x86-64 `soft_bits_at`, `snr::estimate` (instructions, no padding) | 638, 1 078 | 583, 1 033 | −55, −45 |
+| AArch64 `soft_bits_at`, `snr::estimate` (`cat-ft8-decode`) | 526, 981 | 506, 949 | −20, −32 |
+| AArch64 `Decoder::pass` (`paired_bench`) | 706 | 710 | register allocation |
+| x86-64 `perf stat`, host and host with one pass (medians of 4) | 289.49 G cycles (287.81–290.93) | 287.82 G (287.49–288.40) | −0.58% |
+| x86-64, small | 83.56 G (83.32–84.17) | 83.74 G (83.34–84.33) | +0.21% |
+| x86-64 instructions, host / small | 774.21 G / 252.55 G | 772.04 G / 251.66 G | −0.28% / −0.35% |
+| Cortex-M33 s0086 / s0407 small slot | 125 460 639 / 121 085 475 | 125 554 908 / 121 199 355 | +0.075% / +0.094% |
+| Cortex-M33 s0086 / s0407 host image | 1 321 591 701 / 1 318 329 082 | 1 321 789 629 / 1 318 529 561 | +0.015% / +0.015% |
+| M33 soft bits, SNR (s0086 small) | 8 067 996, 2 011 958 | 8 109 725, 2 068 079 | +0.52%, +2.79% |
+| M33 flash small, host; M4F text small, host | 101 470, 114 174; 101 768, 114 768 | 101 566, 114 254; 101 916, 114 916 | +96, +80; +148, +148 B |
+| M33 stack high water small, host; static RAM | 10 384, 10 276; 201 592 B | 10 392, 10 276; the same | +8 B small |
+
+x86-64 timing: aligned builds, core 5, the x86 lock held exclusively, 4
+rounds alternated, no void sample. The host configuration's ranges
+barely overlap (−0.58%); the small one's change is within its spread;
+the instruction counts fall in both. The Cortex-M33 already looked the
+soft bits' rows up once; there the change is the SNR estimate's
+`interpolated_tone_power`, now through `row_levels`, and the layout
+around it: +0.075% of the small slot. Identity: the M33 dumps and
+residuals equal 6c81337's (16 of 16), the encoder's 45 WAVs equal
+70be604's, and the x86-64 run records (24 600 each for host, host with
+one pass, small) and the decode command's output over the 800 WAVs
+(95 491 lines) equal 6b8013c's. Local CI 19 of 19 (codegen-check 101 of
+101, `divlooprows` holding). The A76 decides: on the hosts it removes
+the last pending-A76 fork but one; on the Cortex-M33 it costs 0.08%.
+
+### Every commit on the branch: sections and identity
+
+`.text` and `.rodata` of the eight binaries (x86-64 and AArch64
+`cat-ft8-decode` and `paired_bench`; the Cortex-M33 check and staged
+images, small and host) equal 82e1670's at 2390d45, 6bc3231, 1f1dd19,
+0a851df and 091bc11. The decodes, dumps and records of 82e1670 therefore
+hold for them; the Cortex-M33 needed no new counts.
+
+8febfff is the exception: `soft_bits_at` taking its form from
+`soft_bits_at_as::<SCALAR_FORMS>` changed the hosts' code (AArch64
+`soft_bits_at` 675 → 659 instructions with a new frame,
+`Decoder::pass` 706 → 710 by register allocation; x86-64 only padding
+and a panic location), with the Cortex-M33 images equal. That is a host
+code change the A76 has to time, so 0a851df puts `soft_bits_at` back as
+it was and moves the rows-once symbol into `symbol_from_rows_once`
+(inline), which the test calls directly.
+
+### SCALAR_FORMS' list
+
+The doc names the nine forks it gates, each "vector" (the hosts' side
+vectorises: the subtraction's reference layout, the time search's sums,
+the phases' quarter turns, the generator's fused overlap runs, the sync
+search's paired running sums, the bins' powers' indexed loop, the level
+counts by words) or "pending A76" (the levels by steps and the soft
+bits' rows once a symbol), and that `!VECTOR` also covers 32-bit x86 and
+32-bit ARM, which give the same values by construction but are timed in
+neither form. The soft bits' gate says it is temporary and not a
+vector/scalar split.
+
+### The code-generation check
+
+- 2390d45: the loop metrics' alternation, written four times in the awk
+  program, is one shell variable passed with `-v`; the two patterns are
+  built from it. Output identical to 3044396's on the head (101 lines,
+  exit 0) and on 042e82a's radix-4 stages (the same three failing
+  entries, exit 1).
+- 6bc3231: `divlooprows`, the calls of `Rows::row` in the shortest loop
+  with an `f32` division, at most the bound. In `soft_bits_at` that loop
+  is the one over a symbol's tones (the logarithm's division, one a
+  tone): 0 calls with the rows looked up once a symbol, 1 with them
+  looked up a tone. It replaces `rowcallloop` (the shortest loop that
+  calls `Rows::row`, at least 70), which stood in for the property.
+  `finish_row`'s ceiling 1 076 → 1 072 (1 067 measured).
+
+Forced forms on 091bc11, each a fresh copy with one edit:
+
+| form | failing entries | exit |
+|---|---|---|
+| head | none (101 of 101) | 0 |
+| the soft bits' rows looked up a tone | `divlooprows` 1 (ceiling 0) | 1 |
+| 042e82a's radix-4 stages | `finish_row` 1 084 (ceiling 1 072), `vmuladdloop12x0p`, `vmuladdloop8x40` | 1 |
+| the hosts' level counts on the Cortex-M33 | `lowmaskloop2`: no such loop | 1 |
+| the words' lanes summed at every word | `lowmaskloop2` 23 | 1 |
+| 6c81337's bins' powers | `fploop4` 34 | 1 |
+
+(The first two also on 6bc3231, the same.) The unturned stages now fail
+`finish_row` by 12, not 8.
+
+### Tests and mutants
+
+`soft_bits_with_rows_looked_up_once_equal_those_looked_up_a_tone` runs
+`soft_bits_at` and builds both forms around `fill_and_scale`: each
+symbol through `symbol_from_rows_once` (its own erasure) and a tone at a
+time through `interpolated_tone_power`; the three equal bit for bit,
+with the same erased counts, for the first data symbol's centre from 3
+rows before the first row to 3 after, the last's either side of the last
+filled row, five row offsets, seven base bins (both band edges), four
+bin offsets, in a full and a part slot.
+
+Mutants of 091bc11 on the lines O34b changed, release library tests
+(236) and with `--cfg cat_ft8_test_group_one` (g1), one log each:
+
+| mutant | rel failing | g1 failing |
+|---|---|---|
+| none (control) | 0 | 0 |
+| s2 erased if any row is missing | **1** (was 0) | 2 |
+| s8 a symbol with no row not erased | 1 | |
+| s9 the tones reversed | 1 | |
+| s3 the tone's bin offset by the tone, not twice | 1 | |
+| s6 the band's last bin left out | 1 | |
+| s10 the first row's weight for both rows | 1 | |
+| s7 the hosts' form without a vector unit (equivalent in values) | | 0 |
+| l5 a lane of the 255s' sums dropped | 1 | |
+| l6 a block's first level after its words skipped | 1 | |
+
+s2 is now caught in every build, not only under group one.
+
+### Checks
+
+- Local CI 19 of 19 at 091bc11 (codegen-check 101 of 101).
+- Sections as above at every commit.
+
+### Not measured
+
+- The A76 (the board is not available): the first item above, then
+  `gather`, the masked sums and the level steps.
+- Cortex-M33 cycles (emulated instruction counts only).
+- Local CI at the intermediate commits (their binaries equal 82e1670's
+  or, at 8febfff, are superseded by 0a851df).
+
+### Risks
+
+- The soft bits keep two forms on o34 until the A76 has timed the
+  first; the test holds them equal on every host.
+- `divlooprows` finds the tone loop by its division: a compiler that
+  unrolled the eight tones or took the logarithm without `vdiv.f32`
+  would fail it (no loop, or the symbol loop's calls), which asks for a
+  re-measure rather than passing silently.

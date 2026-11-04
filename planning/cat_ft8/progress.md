@@ -2702,3 +2702,28 @@
 - Open: the A76 (the soft bits on every target, `gather`, the masked
   sums, the level steps and the ring); the min-sum checks (21% of the
   small slot) have no bit-exact shorter form found.
+
+## Session: 2026-11-04 (O34b the soft bits' fork, SCALAR_FORMS' list, the check's loop metrics, the soft-bit test)
+
+- The Cortex-A76 was still not available.
+- 2390d45: codegen-check's loop metrics named once (one variable passed
+  to awk); output identical to 3044396's, passing and failing.
+- 6bc3231: `divlooprows` (no `Rows::row` call in the soft bits' tone
+  loop) replaces `rowcallloop`; `finish_row` ceiling 1 072 (the
+  unturned stages 1 084 still fail).
+- 1f1dd19: `SCALAR_FORMS` lists its nine forks, "vector" or "pending
+  A76", and notes 32-bit x86 and ARM; the soft bits' gate marked
+  temporary, not a vector/scalar split.
+- 8febfff, 0a851df: the soft-bit test calls `soft_bits_at` and both
+  forms; the const form of 8febfff changed AArch64 code and was undone
+  in 0a851df (`symbol_from_rows_once`). Mutant s2 caught in release.
+- 091bc11: `sum_lanes`, the remainder's comment, the zero-byte idiom
+  named, `found`/`row` in `tone_power_of`.
+- Every commit but 8febfff: the eight binaries' `.text` and `.rodata`
+  equal 82e1670's. Local CI 19 of 19 at 091bc11.
+- First A76 item, kept apart from 091bc11: the soft bits' rows once a
+  symbol on every target, `interpolated_tone_power` through
+  `row_levels` and `tone_power_of`. x86-64 host −0.58% cycles, small
+  +0.21% (within spread), instructions −0.28% / −0.35%; Cortex-M33
+  small +0.075% (the SNR's lookups); identity on x86-64 and the M33;
+  CI 19 of 19.
