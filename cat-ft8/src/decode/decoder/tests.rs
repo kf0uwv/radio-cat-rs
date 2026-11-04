@@ -806,6 +806,11 @@ fn memory_per_item_is_bounded() {
         size_of::<Decoder<'static>>()
     );
     assert!(size_of::<Decode>() <= 48);
+    // Exact on 64-bit hosts (findings O28), so a change in either
+    // direction shows; a ceiling elsewhere.
+    #[cfg(target_pointer_width = "64")]
+    assert_eq!(size_of::<CandidateScratch>(), 4_800);
+    #[cfg(not(target_pointer_width = "64"))]
     assert!(size_of::<CandidateScratch>() <= 5_200);
     assert!(size_of::<Candidate>() <= 8);
     // Borrows, counters and the configuration (200 B with 64-bit

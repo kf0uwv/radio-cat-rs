@@ -482,8 +482,8 @@ pub type CandidateResult = Result<Decode, BpFailure>;
 
 /// Working storage for one candidate (soft bits, belief-propagation
 /// messages or the ordered-statistics decoder's storage, and the noise
-/// histogram, 4 800 bytes). One per worker; every candidate
-/// re-initialises it.
+/// histogram, 4 800 bytes on 64-bit hosts). One per worker; every
+/// candidate re-initialises it.
 #[derive(Clone)]
 pub struct CandidateScratch {
     llr: [f32; N],
