@@ -2556,3 +2556,29 @@
   equal; i686 rows and feeds line for line; local CI 19 of 19;
   codegen-check 92 of 92.
 - Open: the A76 confirmation run of 0243ded (= 5b9df85) against a756578.
+
+## Session: 2026-11-04 (O32 the running sums two bins a step, the first stage in input order, k = 0 on its own)
+
+- The Cortex-A76 board was still not available; the round worked on the
+  Cortex-M33 (emulated counts, s0086 and s0407) in forms only it
+  compiles; the hosts' sections equal e962403's at every commit.
+- M33 references rebuilt at e962403 (dumps and residuals equal
+  a756578's); profiled per block: running sums 10.6% (15 a bin), first
+  stage 7.8%, second 6.8%.
+- e69130e: the running sums carry tones 0 to 6's sum, so the loop has no
+  last step to leave out; even and odd side by side, 25 instructions a
+  pair. Sync −12.5%, small slot −1.70% / −1.76%.
+- 54904ad: the one-lane first stage in the order of its base elements
+  (`BLOCK_OF`), `DIGIT_REV` no longer linked with one lane: −0.26% more,
+  flash −2.9 KB; `TABLE_BYTES` counts the input's order per form.
+- 1aa9ab2: each one-lane stage's k = 0 on its own, its twiddles
+  constants: −0.50% more, +1 KB code. 10f454a: comment figures.
+- Head: small slot −2.45% / −2.53%, host image −0.81%; flash −1 808 B.
+- Identity 16 of 16 and encoder 45 at each commit; local CI 19 of 19 at
+  each; codegen-check 93 entries, every forced form fails; mutants caught
+  (k4 equivalent).
+- Tried, not kept: output 0 of the first stage as plain sums (−0.54%, but
+  the cells' sign of zero would differ from the vector form's); shared
+  radix-4 twiddles; other running-sum and bin-power loop shapes.
+- Open: the A76; sync start rows in pairs (needs `select` and its
+  scratch); the soft bits' row lookups (a host change).

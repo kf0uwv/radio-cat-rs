@@ -17281,3 +17281,315 @@ differs (x86-64, 769 → 740 lines).
 - The new i686 entries are exact on today's code generation: a
   compiler that copied the slide inline would fail `memmovefloor`, a
   false alarm rather than a silent pass.
+
+## The sync search's running sums two bins a step, the one-lane first stage in the order of its inputs and each stage's k = 0 on its own, thirty-second round (O32, bit-identical, 2026-11-04)
+
+Base: e962403 (feat/cat-ft8 with O31, O31b and O31c). The Cortex-A76
+board was still not available for timing, so this round again worked on
+the Cortex-M33 (emulated instruction counts on s0086 and s0407). Three
+code commits, each in a form only the Cortex-M33 compiles: e69130e (the
+sync search's running sums two bins a step), 54904ad (the one-lane first
+stage in the order of its inputs) and 1aa9ab2 (the one-lane stages' k = 0
+on its own); 10f454a corrects two figures in codegen-check's comments.
+Decodes, dumps, residuals and encoder output are identical; the x86-64
+and AArch64 binaries of every commit have e962403's `.text` and
+`.rodata`.
+
+| target | measure | e962403 | 1aa9ab2 | change |
+|---|---|---|---|---|
+| Cortex-M33, small image | s0086 slot | 141 146 286 | 137 690 327 | **−2.45%** |
+| | s0407 slot | 136 750 602 | 133 294 619 | **−2.53%** |
+| | sync (each slot) | 19.21 M | 16.81 M | −12.5% |
+| | feed (each slot) | 66 685 129 | 65 632 799 | −1.58% |
+| Cortex-M33, host image | s0086 slot | 1 371 651 149 | 1 360 507 199 | **−0.81%** |
+| | s0407 slot | 1 368 386 658 | 1 357 242 705 | **−0.81%** |
+| x86-64, AArch64 | `.text` and `.rodata` of `cat-ft8-decode` and `paired_bench` | | | unchanged |
+| Cortex-M33 flash | small, host image (`check.sh`) | 102 022, 114 826 B | 100 214, 113 018 B | −1 808, −1 808 B |
+
+Emulated instructions of the staged images (whole slot, setup included):
+
+| Cortex-M33 | e962403 | e69130e | 54904ad | 1aa9ab2 |
+|---|---|---|---|---|
+| s0086 small | 141 146 286 | 138 742 731 (−1.70%) | 138 379 141 (−1.96%) | 137 690 327 (−2.45%) |
+| s0407 small | 136 750 602 | 134 347 047 (−1.76%) | 133 983 457 (−2.02%) | 133 294 619 (−2.53%) |
+| s0086 host | 1 371 651 149 | −0.58% | −0.66% | −0.81% |
+| s0407 host | 1 368 386 658 | −0.58% | −0.66% | −0.81% |
+
+Per stage (s0086, small; s0407 the same changes): sync 19 211 202 →
+16 807 647 at e69130e and after (−12.51%); feed 66 685 129 → 66 321 539
+at 54904ad (−0.55%) → 65 632 799 at 1aa9ab2 (−1.58%); refine and SNR
+change by a few tens of instructions (layout); belief propagation, soft
+bits and the rest unchanged. Host image: sync −12.41%, feed −1.55%.
+Decodes (23, 40, 30, 38) and stack high water (10 312 and 10 276 B in the
+staged images) unchanged at every commit.
+
+### Baselines
+
+Every binary was built from one scratch directory of this round's,
+whose path is in the binaries, so e962403 was rebuilt there and every
+section comparison is against that build (its sections differ from
+O31c's builds of the same tree; their sizes are equal). Its small-image
+counts equal 8faab0a's (O31). The M33 references were rebuilt at
+e962403: dumps on seven slots and the multi-pass residuals of s0086 and
+s0407, equal to a756578's (16 of 16), per-function and per-block counts,
+`check.sh --stack`, the encoder WAVs (equal to 70be604's) and the M4F
+images.
+
+### The profile at e962403 (Cortex-M33, small image, s0086, per block)
+
+Of the slot after setup (132.2 M): the sync search's running sums 10.6%
+(15 instructions a bin and Costas row); the FFT's first stage 7.8% (116
+a block) and its second 6.8% (103 a butterfly); the bins' powers 4.0%
+(33 a bin); the radix-3 stage 4.0% (56); `min_sum_round`'s sums 5.6% (27
+a variable, 6 of them its three bounds checks) and its checks 18.6%;
+the third stage 6.4% (97); the radix-2 stage 3.1% (25); `Rows::row`
+1.2% (20 a call, most from the soft bits); the levels 1.8%.
+
+### The running sums two bins a step (e69130e)
+
+Each Costas row's running sum carried the eight tones' sum at bin b and
+left the loop before its last step, which would have read tone 7's level
+one bin past the row; the even bins, then the odd. Carrying tones 0 to
+6's sum instead (`all = seven + level(b + 14)`, then `seven = all −
+level(b)`), a step reads no level past the last bin's, so the loop has
+no step to leave out, and the even and odd sums run side by side, a pair
+of bins a step, then an odd count's last bin. Integers: the same scores.
+
+| form (on e962403, small image) | loop | s0086 | s0407 | sync |
+|---|---|---|---|---|
+| e962403 (eight tones' sum, one parity at a time) | 15 a bin | | | |
+| tones 0 to 6's sum, one parity at a time | 13 a bin | −1.36% | −1.41% | −10.0% |
+| the same, tone 7's levels as a slice of their own | 13 a bin | | | |
+| the same through `step_by(2)` iterators | 28 a bin | | | |
+| the same through `chunks(2)` | 15 a bin | | | |
+| both parities, `chunks_exact(2)` zipped | 27 a pair, a test in the loop | | | |
+| both parities indexed, `while b + 1 < cols`, a branch for fewer than two bins | 25 a pair | −1.70% | −1.76% | −12.5% |
+| the same by a pair count (`for pair in 0..cols / 2`) | 28 a pair, bounds checks | | | |
+| the same to `cols − 1` or by `step_by(2)` on the range | 33, 32 a pair | | | |
+| the same through sub-slices of each pair | 28 a pair | | | |
+| the same, a bin's update as a closure | 30 a pair | | | |
+| **e69130e (both parities indexed, no branch for short rows)** | **25 a pair** | **−1.70%** | **−1.76%** | **−12.5%** |
+
+(Blank cells: not emulated; the loop's length decided.) The function
+around the loop also shrank (186 → 100 instructions in its loops): the
+seven-tone starting sums have no bounds checks. O30's two-bins-a-step
+trial (31 a pair, sync −2.2%) carried the eight tones' sum.
+
+The hosts sum by columns (`VECTOR_FORM`) and do not compile this form;
+their binaries are unchanged. The existing test
+`row_scores_equal_the_single_scores` runs this form on the hosts against
+`costas_score` at every base bin for four band widths (nine base bins,
+odd, among them).
+
+### The one-lane first stage in the order of its inputs (54904ad)
+
+With one lane the first stage took its blocks in order and read each
+block's base element from `DIGIT_REV` (3 840 bytes). It now takes them in
+the order of their base elements n = 0, 1, … (first sample 2n) and
+stores each at its block, from `BLOCK_OF` (960 bytes, computed at compile
+time from the digit reversal, which asserts that each n has one block).
+The blocks are independent, so the operations are the same and only the
+order of the stores changes; a build with one lane no longer links
+`DIGIT_REV`.
+
+| form (on e962403) | first-stage loop | s0086 | s0407 | flash (staged small) |
+|---|---|---|---|---|
+| e962403 | 120 | | | |
+| inputs in order through zipped `chunks_exact` and reversed chunks | 152 | | | −2.5 KB |
+| **inputs in order, indexed (54904ad)** | **115** | **−0.26%** | **−0.27%** | **−2.8 KB** |
+| the same and output 0 as plain sums (below) | 109 | −0.80% | −0.82% | −2.8 KB |
+
+`TABLE_BYTES` now counts the input's order with the twiddles of each form
+(one lane: the fifths, the rows and `BLOCK_OF`, 19 392 bytes; vectors:
+`TWIDDLES` and `DIGIT_REV`, 28 392); `decode::TABLE_BYTES`' comment and
+its test give the same, and `BLOCK_OF` is in the library's list of
+counted tables.
+
+### Each stage's k = 0 on its own (1aa9ab2)
+
+With one lane every stage before the last now runs its butterflies at
+k = 0 on their own (`straight_stage!`'s `@blocks` arm, then k = 1..l).
+Their twiddles are read at constant indices, W_N^((m·q mod R)·N/R), whose
+values the compiler knows: it leaves out the products by 1 and turns
+those by −1 into negations (exact, the sign of zero included), and keeps
+no twiddle across the blocks. A radix-4 butterfly there takes 84
+instructions against 103 at other k (the second stage: a quarter of its
+butterflies).
+
+| form (on 54904ad) | s0086 | s0407 | code |
+|---|---|---|---|
+| k = 0 on its own in the second stage only | −0.36% | −0.37% | +436 B |
+| **in every stage before the last (1aa9ab2)** | **−0.50%** | **−0.51%** | **+1 036 B** |
+
+The last stage's k = 0 is one butterfly of 384 and was not split out.
+The transform tests (`transform_equals_the_reference_bit_for_bit` with
+one lane, `spectrum_is_the_same_for_every_lane_count`, the sign of zero
+included) run the new form on the hosts.
+
+### Sizes and memory
+
+| image | e962403 | e69130e | 54904ad | 1aa9ab2 |
+|---|---|---|---|---|
+| M33 small (`check.sh`, flash) | 102 022 | 101 978 | 99 102 | 100 214 (−1 808) |
+| M33 host | 114 826 | 114 782 | 111 906 | 113 018 (−1 808) |
+| M33 encoder only | 35 190 | 35 190 | 35 190 | 35 190 |
+| M4F small (text) | 102 288 | 102 244 | 99 368 | 100 480 (−1 808) |
+| M4F host | 115 288 | 115 244 | 112 368 | 113 480 (−1 808) |
+
+Static RAM unchanged (201 592 and 230 008 B). Stack high water
+unchanged (10 312 and 10 276 B in the staged images); `check.sh
+--stack`'s largest frames as at e962403. No fused multiply-add (`vmla`
+222 / 335 / 17 at e962403 and through 54904ad, 239 / 352 / 17 at
+1aa9ab2: the k = 0 butterflies' multiply-adds by constants). M4F library
+calls `fmaxf`/`fminf` 10 and 14 at every commit; no `f64` helper.
+
+### Sections of all eight binaries
+
+| commit | x86-64 `cat-ft8-decode`, `paired_bench` | AArch64 both | M33 check and staged, small and host |
+|---|---|---|---|
+| e69130e | = e962403 | = e962403 | differ |
+| 54904ad | = e962403 | = e962403 | differ |
+| 1aa9ab2 | = e962403 | = e962403 | differ |
+
+No host section changed, so the function comparison, the x86-64 records,
+the WAV identity and `perf stat` were not rerun: the hosts' binaries are
+e962403's, whose code O31b and O31c measured against 6b8013c and
+a756578. 10f454a changes comments in `codegen-check.sh` only.
+
+### The code-generation check
+
+- e69130e: `m33s 6select sumloop3 16` becomes `sumloop6 26` (six byte
+  loads a pair of bins, 25 instructions).
+- 54904ad: `m33s 10finish_row insns` 870 → 780 (758) and `vmulloop8`
+  150 → 120 (116).
+- 1aa9ab2: `vmulloopN` now takes the *longest* loop with exactly N
+  `vmul.f32` (the radix-3 stage's k = 0 loop has eight too, 53
+  instructions); `finish_row insns` 1 040 (1 032); a new entry,
+  `m33s 10finish_row fploop34 90`: the shortest loop with at least 34
+  `f32` adds or multiply-adds, the radix-4 k = 0 loops (84; 95 at other
+  k).
+
+92 entries at e69130e and 54904ad, 93 from 1aa9ab2. Forced forms, each a
+fresh copy of 1aa9ab2's tree with one edit, its own log and the check's
+exit status:
+
+| form | failing entries | exit |
+|---|---|---|
+| head (1aa9ab2) | none (93 of 93) | 0 |
+| e962403's running sums | `m33s 6select sumloop6` 80 (no 25-instruction loop of six loads) | 1 |
+| the first stage in the order of the blocks (`DIGIT_REV`) | `finish_row` 1 128 instructions, first-stage loop 147 | 1 |
+| every k in the stages' loop (no k = 0 on its own) | `fploop34` 98 | 1 |
+| k = 0 on its own, its index through `black_box` | `fploop34` 95, `finish_row` 1 620 instructions and 32 divisions | 1 |
+| a block's quarters as an array (O31's form) | `finish_row` 1 077 instructions, first-stage loop 139 | 1 |
+| the sliding window on the Cortex-M33 (O31b's form) | `memmoves` 1 in `feed`, `feed_i16` and `skip` | 1 |
+
+The last form no longer fails the first-stage entry, which now finds the
+radix-3 k = 0 loop's eight multiplies when the first stage has none
+there; its memmove entries still fail it.
+
+### Identity
+
+- **Cortex-M33 (emulated)**: the dump images on seven slots and the
+  multi-pass residuals of s0086 and s0407 equal e962403's (16 of 16,
+  exit 0) at each commit; decodes in the counted runs as at e962403.
+- **Encoder**: the 45 WAVs equal 70be604's at each commit.
+- **x86-64 and AArch64**: sections equal e962403's at each commit.
+- **A76**: not run (the board is not available).
+
+### Tests and mutants
+
+Mutants in fresh copies of 1aa9ab2, release library tests (226), and
+where the one-lane path matters also with `--cfg cat_ft8_test_group_one`
+(`g1`), one log each:
+
+| mutant | rel failing | g1 failing |
+|---|---|---|
+| none (control) | 0 | 0 |
+| a1 tone 7's level two bins on (even) | 1 | |
+| a2 the odd sum's tone 7 at an even bin | 1 | |
+| a3 the leaving level two bins on | 1 | |
+| a4 eight tones in the even starting sum | 1 | |
+| a5 the odd starting sum from the even bins | 1 | |
+| a6 an odd count's last bin left out | 1 | |
+| a7 the pair loop one pair short | 1 | |
+| a8 the odd bin's sent level from the even bin | 1 | |
+| a9 the odd sum's leaving level from the even bin | 1 | |
+| b1 `BLOCK_OF` with neighbouring blocks swapped | 4 | 33 |
+| b2 the first sample of the neighbouring element | 4 | |
+| b3 the outputs into the neighbouring block | 4 | |
+| b4 one lane's bytes without `BLOCK_OF` | 1 | |
+| b5 the statics' one-lane bytes with `DIGIT_REV` | 1 | |
+| k1 k = 1 left out | 6 | |
+| k2 k = 1 run in place of k = 0 | 6 | |
+| k3 k = 0 run twice | 6 | 23 |
+| k4 k = 0's index through `black_box` (equivalent; the forced form above) | 0 | |
+
+The running-sum mutants fail `row_scores_equal_the_single_scores`; the
+transform mutants the bit-for-bit transform tests (and under `g1` the
+decoder's); b4 and b5 `table_bytes_matches_the_statics`. The compile-time
+assertions (`BLOCK_OF`'s one block an element) are not mutated.
+
+### Checks
+
+- Local CI 19 of 19 at e69130e, 54904ad and 1aa9ab2 (O31b's steps;
+  codegen-check, with its i686 entries, 92, 92 and 93 of the same). The
+  new tests are none; no test is ignored that was not.
+
+### Tried, not kept
+
+- **Output 0 of the first stage as plain sums** (its twiddles are
+  [1, −0], so a[m]·w is a[m] but for the sign of a zero): 109
+  instructions a block against 115, the slot −0.54% more. The powers
+  would be the same bits, but the one-lane cells would then differ from
+  the vector form's in the sign of a zero, which the tests forbid
+  (`spectrum_is_the_same_for_every_lane_count`); applying it to the
+  vector form too would change the hosts' code. Not kept.
+- **The radix-4 stages' twiddles shared where m·q mod 4 repeats** (m = 2:
+  q and q + 2 read one entry; the index as `(m·q) % R`): 20 distinct
+  twiddle values instead of 24, but the second stage's loop still
+  reloaded 17 from the stack (104 against 103 instructions).
+- **The bins' powers' loop by iterators** (four forms): 33 and 31
+  instructions a bin against 35 and 34 at best (−0.25%), most forms
+  longer.
+- **The running sums' other forms** (table above).
+
+### What bounds the stages now (Cortex-M33, small image, s0086, per block at 1aa9ab2)
+
+Of the slot after setup (128.7 M): `min_sum_round` 24.8% (its sums 5.8%,
+27 instructions a variable; its checks about 19%); the sync search's
+running sums 9.0% (25 instructions a pair of bins and row); the FFT's
+first stage 7.8% (113 a block), the second 5.3% at k ≠ 0 (103), the
+third 5.9% at k ≠ 0 (95), the radix-3 stage 4.0% (55), the radix-2 3.2%
+(25), the last 11.3%; the bins' powers 4.2% (33 a bin); the levels 1.9%.
+
+### Next candidates (not built)
+
+| candidate | estimate | cost |
+|---|---|---|
+| The sync search's start rows q and q + 2 together: they read the same rows, so a row's running sums serve both | about −40% of sync, −4% of the small slot | two more score rows in `select`'s scratch (5 × 865 × 4 B, over the FFT's 15 360-byte work area for the small band) and `select`'s order; the hosts' code changes |
+| The soft bits' two rows a symbol read once rather than for each tone (`Rows::row`, 16 calls a symbol) | about −0.6% (M33) | the hosts' `soft_bits_at` changes: needs the A76 |
+| Belief propagation's sums without bounds checks (messages padded to 1 024) | about −0.6% | +2 KB RAM; shared with the hosts |
+| The FFT's radix-4 stages at k ≠ 0: 16 of a butterfly's 24 loads are twiddles reloaded from the stack | up to −2% | a form the register allocator keeps in registers; none found |
+| The level steps, the rows and the ring on every target, if the A76 agrees | unmeasured | one A76 timing |
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instruction counts only); M4F counts.
+- Any host timing: the hosts' binaries at every commit are e962403's.
+- Other slots than s0086 and s0407 for counts (identity covers seven).
+
+### Risks
+
+- The running sums' 25-instruction loop depends on the source's exact
+  shape: six other shapes of the same loop compiled to 27 to 33
+  instructions (rustc 1.93.0, opt-level "s"). codegen-check's `sumloop6`
+  guards it.
+- The k = 0 loops' gain depends on the compiler folding loads from
+  `FIFTH_TWIDDLES` at constant indices; through `black_box` the stage
+  divides again (32 divisions) and `fploop34` fails.
+- `vmulloopN` now takes the longest such loop: a form that removed the
+  first stage's window loop and kept the radix-3 k = 0 loop would pass
+  that entry (the sliding-window form does; its memmove entries catch
+  it).
+- Flash +1 KB for the k = 0 loops, more than repaid here by `DIGIT_REV`
+  (−2.9 KB), which a build with one lane no longer links.
