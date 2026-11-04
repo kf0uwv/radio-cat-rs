@@ -651,14 +651,61 @@ fn each_value<const W: usize>(values: &mut [f32; EDGES], f: impl Fn(f32) -> f32)
     }
 }
 
-/// One normalised min-sum round, in place on the messages: check by check
-/// in order, the inputs (totals less the check's own messages) replace its
+/// [`min_sum_check`] where the loops do not vectorise (the Cortex-M33),
+/// for a check of `$d` edges (`$j` lists 0 .. `$d`), written out edge by
+/// edge (opt-level "s" does not unroll loops). One pass takes each input,
+/// the two smallest magnitudes and which inputs are negative, a bit each;
+/// then the messages are written as bits. A message is ±α · min1 (±α ·
+/// min2 at min1's own edge), negative when an odd number of the other
+/// inputs are: its bits are α · min1's (or α · min2's) with the sign bit
+/// flipped where the parity of all the negatives and the edge's own bit
+/// differ. Negating an `f32` flips its sign bit and nothing else, so the
+/// messages are the same bits as [`min_sum_check`]'s; the comparisons are
+/// its own, in its order. Written out with the degree constant, the round
+/// takes 28% fewer instructions on the Cortex-M33 than the loops of
+/// [`min_sum_check`] did (findings O30), for about 1.6 KB of code.
+macro_rules! min_sum_check_bits {
+    ($total:expr, $v:expr, $row:expr, $d:literal, [$($j:literal)*]) => {{
+        let v: &[u8; $d] = $v[..$d].try_into().unwrap();
+        let row: &mut [f32; $d] = (&mut $row[..$d]).try_into().unwrap();
+        let (mut min1, mut min2, mut at) = (f32::MAX, f32::MAX, 0);
+        // Bit d − 1 − j: input j is negative.
+        let mut negative = 0u32;
+        $(
+            let x = total_of($total, v[$j]) - row[$j];
+            row[$j] = x;
+            let a = if x < 0.0 { -x } else { x };
+            negative = negative << 1 | u32::from(x < 0.0);
+            if a < min1 {
+                min2 = min1;
+                min1 = a;
+                at = $j;
+            } else if a < min2 {
+                min2 = a;
+            }
+        )*
+        // The parity of the negatives' count, in bit 0 (7 bits folded).
+        let mut odd = negative ^ (negative >> 4);
+        odd ^= odd >> 2;
+        odd ^= odd >> 1;
+        let sign = (odd & 1) << 31;
+        let (one, two) = ((ALPHA * min1).to_bits() ^ sign, (ALPHA * min2).to_bits() ^ sign);
+        $(
+            row[$j] = f32::from_bits(one ^ ((negative >> ($d - 1 - $j)) << 31));
+        )*
+        row[at] = f32::from_bits(two ^ ((negative >> ($d - 1 - at)) << 31));
+    }};
+}
+
+/// One normalised min-sum round, in place on the messages: check by
+/// check, the inputs (totals less the check's own messages) replace its
 /// messages, then its new messages; then each variable's sum of them in
 /// check order into the totals. `V` picks the form for targets where the
 /// loops vectorise or not and `G` the layout (the decoder uses [`VECTOR`] and [`GROUP`], the tests both).
-/// With groups of more than one ([`place`]), each degree's whole groups
-/// come first ([`group_min_sum`]), then its checks left over; the checks
-/// are independent, so their order does not matter. The sums replace the
+/// With groups of one, the checks of degree 6, then those of degree 7
+/// ([`min_sum_checks`]); with groups of more than one ([`place`]), each
+/// degree's whole groups come first ([`group_min_sum`]), then its checks
+/// left over. The checks are independent, so their order does not matter. The sums replace the
 /// totals once every check has taken its inputs. Not inlined, so its frame
 /// is measured on its own.
 #[inline(never)]
@@ -668,18 +715,35 @@ fn min_sum_round<const V: bool, const G: usize>(
     msg: &mut [f32; EDGES],
 ) {
     let (edge_vars, var_edges) = tables::<G>();
+    let (m6, m7) = msg.split_at_mut(LOW_EDGES);
+    let (v6, v7) = edge_vars.split_at(LOW_EDGES);
     if G == 1 {
-        for (e, n, _) in check_edges::<G>() {
-            let (v, row) = (&edge_vars[e..][..n], &mut msg[e..][..n]);
-            min_sum_check_sized::<V>(total, v, row);
-        }
+        min_sum_checks::<V, 6>(total, v6, m6);
+        min_sum_checks::<V, 7>(total, v7, m7);
     } else {
-        let (m6, m7) = msg.split_at_mut(LOW_EDGES);
-        let (v6, v7) = edge_vars.split_at(LOW_EDGES);
         min_sum_groups::<V, 6, G>(total, v6, m6);
         min_sum_groups::<V, 7, G>(total, v7, m7);
     }
     sums(llr, total, msg, var_edges);
+}
+
+/// [`min_sum_round`]'s checks of degree `D` in the layout of groups of
+/// one ([`place`]): one after another, `D` edges each. Their order (all
+/// of one degree, then the other, rather than check order) does not
+/// matter: a check reads only the totals and writes only its own
+/// messages. The degree is a constant here, so each check's form is
+/// chosen at compile time.
+#[inline(always)]
+fn min_sum_checks<const V: bool, const D: usize>(total: &Totals, vars: &[u8], edges: &mut [f32]) {
+    for (row, v) in edges.chunks_exact_mut(D).zip(vars.chunks_exact(D)) {
+        if V {
+            min_sum_check_sized::<V>(total, v, row);
+        } else if D == 6 {
+            min_sum_check_bits!(total, v, row, 6, [0 1 2 3 4 5]);
+        } else {
+            min_sum_check_bits!(total, v, row, 7, [0 1 2 3 4 5 6]);
+        }
+    }
 }
 
 /// [`min_sum_round`]'s checks of degree `D` in the layout of groups of
@@ -705,62 +769,44 @@ fn min_sum_groups<const V: bool, const D: usize, const G: usize>(
 /// [`min_sum_check`] on one check's variables `v` and messages `row`.
 /// Where the loops vectorise, the check's size as a constant (the slices
 /// cut to 6 or 7 once this is inlined), so the compiler drops the vector
-/// forms of these short loops, which no check reaches; elsewhere one form
-/// for both sizes, its inputs taken in the loop that finds the two
-/// smallest magnitudes.
+/// forms of these short loops, which no check reaches; elsewhere
+/// [`min_sum_check_bits`] for the check's size.
 #[inline(always)]
 fn min_sum_check_sized<const V: bool>(total: &Totals, v: &[u8], row: &mut [f32]) {
     match (V, v.len()) {
-        (true, 6) => min_sum_check::<false>(total, &v[..6], &mut row[..6]),
-        (true, _) => min_sum_check::<false>(total, &v[..7], &mut row[..7]),
-        (false, _) => min_sum_check::<true>(total, v, row),
+        (true, 6) => min_sum_check(total, &v[..6], &mut row[..6]),
+        (true, _) => min_sum_check(total, &v[..7], &mut row[..7]),
+        (false, 6) => min_sum_check_bits!(total, v, row, 6, [0 1 2 3 4 5]),
+        (false, _) => min_sum_check_bits!(total, v, row, 7, [0 1 2 3 4 5 6]),
     }
 }
 
 /// [`min_sum_round`] for one check: its variables `v` and its messages
-/// `row`, of the same length. With `ONE_PASS` each input (the variable's
-/// total less the message) is taken in the loop that finds the two
-/// smallest magnitudes; otherwise all of them first, in a loop of their
-/// own. Each value goes through the same operations in the same order
-/// either way.
+/// `row`, of the same length. The inputs (each variable's total less the
+/// message) first, in a loop of their own, then the two smallest
+/// magnitudes and the count of negative inputs, then the messages. On the
+/// hosts only the checks left over after the groups take this (3 of 83 a
+/// round); with one loop for the inputs and the magnitudes, and the sizes
+/// as constants, the A76's small slot's belief propagation measured 4.02
+/// → 4.03 ms (one step, never faster in 12 sides) and x86-64 within noise
+/// (−0.1%): findings O25b. Where the loops do not vectorise,
+/// [`min_sum_check_bits`] takes its place.
 #[inline(always)]
-fn min_sum_check<const ONE_PASS: bool>(total: &Totals, v: &[u8], row: &mut [f32]) {
+fn min_sum_check(total: &Totals, v: &[u8], row: &mut [f32]) {
     let (mut min1, mut min2, mut at) = (f32::MAX, f32::MAX, 0);
     let mut negatives = 0u32;
-    // One input's magnitude and sign into the two smallest and the count.
-    // On the hosts only the checks left over after the groups take this
-    // (3 of 83 a round). They keep two loops: one loop there too, with the
-    // sizes as constants dropped as well, measured the A76's small slot's
-    // belief propagation 4.02 → 4.03 ms (one step, never faster in 12
-    // sides), more likely placement than the loop, and x86-64 within
-    // noise (−0.1%): findings O25b. (A macro rather than a closure: the
-    // hosts' two loops compile as they did before, their binaries
-    // unchanged.)
-    macro_rules! take {
-        ($j:expr, $x:expr) => {{
-            let (j, x): (usize, f32) = ($j, $x);
-            let a = if x < 0.0 { -x } else { x };
-            negatives += u32::from(x < 0.0);
-            if a < min1 {
-                min2 = min1;
-                min1 = a;
-                at = j;
-            } else if a < min2 {
-                min2 = a;
-            }
-        }};
+    for (m, &i) in row.iter_mut().zip(v) {
+        *m = total_of(total, i) - *m;
     }
-    if ONE_PASS {
-        for (j, (m, &i)) in row.iter_mut().zip(v).enumerate() {
-            *m = total_of(total, i) - *m;
-            take!(j, *m);
-        }
-    } else {
-        for (m, &i) in row.iter_mut().zip(v) {
-            *m = total_of(total, i) - *m;
-        }
-        for (j, &x) in row.iter().enumerate() {
-            take!(j, x);
+    for (j, &x) in row.iter().enumerate() {
+        let a = if x < 0.0 { -x } else { x };
+        negatives += u32::from(x < 0.0);
+        if a < min1 {
+            min2 = min1;
+            min1 = a;
+            at = j;
+        } else if a < min2 {
+            min2 = a;
         }
     }
     for (j, x) in row.iter_mut().enumerate() {
