@@ -26,7 +26,8 @@
 # than the logarithm, in their own loop (`levels_by_steps_out_of_line`),
 # that the front end's window there is a ring of quarters, not slid each
 # row, that on 32-bit x86 (SSE2, which takes vectors for the transform but
-# the scalar forms elsewhere) the front end keeps the vector transform,
+# the scalar forms elsewhere) the front end keeps the vector transform
+# and its sliding window, all three of its window's choices together,
 # and that the belief-propagation rounds take their variables' totals
 # without a bounds check.
 # Their speed depends on code generation that no test sees: the
@@ -88,12 +89,15 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # `ld3`, `ld4`, `st2`, `st3` and `st4`, at most the bound; `shuffles`
 # counts `zip1`, `zip2`, `uzp1`, `uzp2`, `trn1` and `trn2`, at most the
 # bound; `fpmul` counts `vmul`, `vmla` and `vmls` on `f32`, at least the
-# bound; `divides` counts `umull` and `udiv`, at most the bound;
+# bound; `divides` counts `umull` and `udiv` (Thumb), and `mull` and
+# `divl` (32-bit x86, where a division by a constant is a widening
+# multiply), at most the bound;
 # `zerofills` counts calls of `__aeabi_memclr4`, `__aeabi_memclr` and
 # `memset`, at most the bound; `memmoves` counts calls of
 # `__aeabi_memmove4`, `__aeabi_memmove`, `memmove` and a `copy_within`
-# left out of line, at most the bound; `sumloopN` counts the instructions of the
-# shortest loop with N byte loads, at most the bound, and a function with no
+# left out of line (`bl` on Thumb, `call` on x86), at most the bound;
+# `memmovefloor` counts the same, at least the bound; `sumloopN` counts
+# the instructions of the shortest loop with N byte loads, at most the bound, and a function with no
 # such loop fails it with its own message; `fploopN` counts
 # the instructions of the shortest loop with at least N `f32`
 # multiply-accumulates or adds (`vmla`, `vmls`, `vadd`, `vsub`), at most the
@@ -322,6 +326,19 @@ checks=(
   # the one-lane transform).
   "x86 10finish_row onelane 0"
   "x86 10finish_row mulps 240"
+  # And its feeds there: the window slid once a row (one memmove; a feed
+  # that stopped sliding has none) and written in order (no division by the
+  # hop, which the ring's index takes). With the row's check above, a
+  # change to any one of the window's three choices (`Layout`) fails here.
+  "x86 11Spectrogram4feed memmoves 1"
+  "x86 11Spectrogram4feed memmovefloor 1"
+  "x86 11Spectrogram4feed divides 0"
+  "x86 11Spectrogram8feed_i16 memmoves 1"
+  "x86 11Spectrogram8feed_i16 memmovefloor 1"
+  "x86 11Spectrogram8feed_i16 divides 0"
+  "x86 11Spectrogram4skip memmoves 1"
+  "x86 11Spectrogram4skip memmovefloor 1"
+  "x86 11Spectrogram4skip divides 0"
   # The bins' powers out of line with indexed slices.
   "m33s bin_powers_out_of_line fploop4 35"
   # The levels of a row's powers by a guess and one step, not the logarithm, out of line.
@@ -415,9 +432,9 @@ for entry in "${checks[@]}"; do
     metric == "interleaved" && /^\t(ld[234]|st[234])\t/ { n++; nf[found]++ }
     metric == "shuffles" && /^\t(zip[12]|uzp[12]|trn[12])\t/ { n++; nf[found]++ }
     metric == "fpmul" && /^\tv(mul|mla|mls)\.f32\t/ { n++; nf[found]++ }
-    metric == "divides" && /^\t(umull|udiv)\t/ { n++; nf[found]++ }
+    metric == "divides" && /^\t(umull|udiv|mull|divl)\t/ { n++; nf[found]++ }
     metric == "zerofills" && /^\tbl\t(__aeabi_memclr4|__aeabi_memclr|memset)$/ { n++; nf[found]++ }
-    metric == "memmoves" && /^\tbl\t(__aeabi_memmove4|__aeabi_memmove|memmove|.*copy_within.*)$/ { n++; nf[found]++ }
+    metric ~ /^memmove(s|floor)$/ && /^\t(bl|calll?|callq)\t(__aeabi_memmove4|__aeabi_memmove|memmove|.*copy_within.*)(@PLT)?$/ { n++; nf[found]++ }
     metric == "carries" && /^\tadc/ { n++; nf[found]++ }
     metric == "fpneg" && /^\tvneg\.f32\t/ { n++; nf[found]++ }
     metric == "eors" && /^\teor\t/ { n++; nf[found]++ }
@@ -499,6 +516,7 @@ for entry in "${checks[@]}"; do
     divides) what="divisions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     zerofills) what="zero-fill calls (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     memmoves) what="memmove or copy_within calls (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    memmovefloor) what="memmove or copy_within calls (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     sumloop*) what="instructions in the summing loop (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     fploop*) what="instructions in the loop of ${metric#fploop} f32 adds (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     cvtloop*) what="instructions in the loop of ${metric#cvtloop} conversions (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
