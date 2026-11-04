@@ -765,6 +765,14 @@ fn min_sum_groups<const V: bool, const D: usize, const G: usize>(
     }
 }
 
+/// A check degree the code has; [`Degree::OK`] fails the build for any
+/// other, so no degree is cut to 7 by [`min_sum_check_sized`]'s last arms.
+struct Degree<const D: usize>;
+
+impl<const D: usize> Degree<D> {
+    const OK: () = assert!(D == 6 || D == 7, "the code's checks have degree 6 or 7");
+}
+
 /// [`min_sum_check`] on one check's variables `v` and messages `row`, of
 /// degree `D` (6 or 7: the code's checks), the one choice of form for
 /// every check of [`min_sum_round`]. Where the loops vectorise, the slices
@@ -773,7 +781,8 @@ fn min_sum_groups<const V: bool, const D: usize, const G: usize>(
 /// for the degree.
 #[inline(always)]
 fn min_sum_check_sized<const V: bool, const D: usize>(total: &Totals, v: &[u8], row: &mut [f32]) {
-    debug_assert!(D == 6 || D == 7);
+    #[allow(clippy::let_unit_value)]
+    let () = Degree::<D>::OK;
     match (V, D) {
         (true, 6) => min_sum_check(total, &v[..6], &mut row[..6]),
         (true, _) => min_sum_check(total, &v[..7], &mut row[..7]),
