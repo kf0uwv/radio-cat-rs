@@ -328,8 +328,9 @@ checks=(
   "x86 10finish_row mulps 240"
   # And its feeds there: the window slid once a row (one memmove; a feed
   # that stopped sliding has none) and written in order (no division by the
-  # hop, which the ring's index takes). With the row's check above, a
-  # change to any one of the window's three choices (`Layout`) fails here.
+  # hop, which the ring's index takes). With the row's checks above, a
+  # change to any one of the window's three choices (the feeds' index and
+  # slide in `take`, the row's transform in `finish_row`) fails.
   "x86 11Spectrogram4feed memmoves 1"
   "x86 11Spectrogram4feed memmovefloor 1"
   "x86 11Spectrogram4feed divides 0"
