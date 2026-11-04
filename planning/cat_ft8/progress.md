@@ -2240,3 +2240,42 @@
 - O27c (closing review): `each` limited to floors; the release `blocks`
   floor takes `each`; `EDGE_VARS` from one constant; `total_of`'s doc
   says which rows need the clamp; a stale shuffle count updated.
+
+## Session: 2026-11-03 (O28 one padded array of totals, the stopping test without a branch on the hosts)
+
+- Profiled 9685acf (A76 PC samples host and small, M33 per-function and
+  per-block counts on s0086). Belief propagation's gathers of the
+  totals carried a bounds check wherever O27's clamp did not reach (the
+  M33's min-sum check by check, 28% of its small slot; the plain inputs
+  loop; the stopping test), and the stopping test branched on each
+  value's sign (2.7% of the A76 small slot).
+- 09e19de: one array of totals, 256 entries, the sums written in place
+  (the second array gone); every `u8` gather in bounds by its type.
+  Min-sum's groups keep O27's clamp (`total_of_clamped`): without it the
+  release form left the degree-6 groups scalar. codegen-check:
+  `a64r min_sum_round insns`, `sumloop8` 54 → 40, the M33's
+  `sumloop1` on both rounds.
+- fde37e6: the stopping test's hard decisions without a branch where
+  the loops vectorise; the M33 keeps the branch form (its images
+  unchanged). codegen-check: a new metric `fpbranches` on `decode_soft`.
+- A76 belief propagation −4.2% crowded host (18.780 → 17.995 ms), −5.9%
+  small (2.370 → 2.230); slot −1.0% both (76.5 → 75.7, 10.4 → 10.3).
+  x86-64 user cycles −1.71% small, −0.47% host. M33 s0086 small −1.76%
+  (belief propagation −4.21%), host −0.59% (s0407 −1.69%, −0.59%).
+- Memory: `BpScratch` 3 656 → 3 288 B, `CandidateScratch` 4 872 → 4 800
+  B; M33 static RAM −76 B, flash −68 B small and −28 B host; stack high
+  water +8 B (small).
+- The A76's sticky throttle bits read 0x50000 from before the round;
+  runs were valid with no current bit set and every sample at 2 400 MHz.
+- Identity at both commits (x86-64; A76, encoder and M33 at the head;
+  M33 images of fde37e6 equal 09e19de's), comparators failing when
+  forced (the WAV comparison allows the candidate scratch's 72 B, as
+  `--profile` reports it), mutants caught (three equivalent by design,
+  their forms failing the check), forced code-generation forms failing,
+  local CI passes, A76 library tests pass.
+- Tried, not kept: min-sum's groups with the plain index or a local
+  array (scalar degree-6 groups); the sums' message index clamped (no
+  gain, M33 +0.54%); the branch-free hard decision on the M33 (+0.18%).
+- Read every AArch64 bound in the release form: only min-sum differed
+  (O27); `finish_row` is inlined into `power_bins` there, whose x86-64
+  last-stage loop is 462 instructions against the one-unit 450.

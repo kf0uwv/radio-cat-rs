@@ -14575,3 +14575,385 @@ of 2, and the inputs' `sumloop8` a ceiling of 54.
   checked too (g2), where the clamp only removes the branch.
 - The code is unchanged: release sections of all eight binaries equal
   11a783b's.
+
+## One array of totals padded to any `u8` index, and the stopping test without a branch on the hosts, twenty-eighth round (O28, bit-identical, 2026-11-03)
+
+Base: 9685acf (the code of O27b and its closing review). A profile
+first (A76 PC samples, M33 per-function and per-block counts), then two
+code commits, one optimisation each: 09e19de (one array of totals for
+belief propagation, padded to 256 entries, with the sums written in
+place) and fde37e6 (the stopping test's hard decisions without a branch
+where the loops vectorise). Each carries its code-generation bounds.
+Decodes, records, residuals and encoder output are identical. Memory
+falls: `BpScratch` 3 656 → 3 288 B, `CandidateScratch` 4 872 → 4 800 B,
+the M33's static RAM −76 B and flash −68 B (small) and −28 B (host).
+
+| target | measure | 9685acf | fde37e6 | change |
+|---|---|---|---|---|
+| Cortex-A76, crowded host slot (medians of 4) | belief propagation | 18.780 ms | 17.995 ms | **−4.2%** |
+| | slot | 76.5 ms | 75.7 ms | **−1.0%** |
+| Cortex-A76, one pass | slot (belief propagation) | 17.4 (8.810) ms | 17.1 (8.430) ms | −1.7% (**−4.3%**) |
+| Cortex-A76, `slotcost small small 200 5` | belief propagation | 2.370 ms | 2.230 ms | **−5.9%** |
+| | slot | 10.4 ms | 10.3 ms | −1.0% |
+| x86-64, user cycles of the whole program (medians of 4) | `slotcost small small 200 5` | 92.92 G | 91.33 G | **−1.71%** |
+| | `slotcost host host,passes=1 200 5` | 301.03 G | 299.61 G | **−0.47%** |
+| Cortex-M33, s0086 (s0407), emulated instructions | small slot | 178 143 738 | 175 001 269 | **−1.76%** (−1.69%) |
+| | small: belief propagation | 52 069 970 | 49 875 242 | **−4.21%** (−4.22%) |
+| | host slot | 1 436 046 961 | 1 427 542 075 | −0.59% (−0.59%) |
+| | host: belief propagation, each pass | | | −1.61% (−1.61%) |
+
+The A76 and x86-64 timings in the column fde37e6 are of a build whose
+`.text` and `.rodata` on both hosts equal fde37e6's (four binaries);
+the M33 counts are of a build whose four thumbv8m images equal 09e19de's
+and fde37e6's (fde37e6 does not change them).
+
+The M33 counts above are this round's own runs from one scratch path;
+they differ from O27's quoted totals (s0086 small 169 188 866) in what
+they sum (here every event, the setup and finish included), not in the
+code.
+
+### The profile at 9685acf
+
+One build of 9685acf from one scratch path (aligned hosts, thumbv8m with
+`--cfg cat_ft8_minmaxnm`), rustc 1.93.0. A76 PC samples (O25's sampler,
+core 3, one benchmark at a time) over `slotcost host host 200 5` (100 µs,
+1 568 771 samples in the decoder's steps) and `slotcost small small 200
+5` (50 µs, 435 381); M33 per-function and per-block counts on s0086.
+
+| target | where | share | lever |
+|---|---|---|---|
+| A76 small | `power_bins` (the FFT; its loops 11.7, 9.0, 7.0, 5.0% …) | 51.2% | none this round |
+| A76 small | `min_sum_round`: degree-6 groups / degree-7 groups / the sums loop (20 instructions a variable, three bounds-check branches) | 8.5 / 4.1 / 5.5% | the sums: tried, below |
+| A76 small | `decode_soft`: the stopping test's two loops (14 instructions an edge, a bounds-check branch and two branches on the value's sign) | 2.7% | **09e19de** the bound check, **fde37e6** the sign |
+| A76 small | `soft_bits_at`, the Costas sums, `search_rows` | 8.5, 7.7, 5.5% | none |
+| A76 host | `sum_product_round`: tanh and atanh passes / the inputs' blocks (46 instructions a block of 8) / the sums | 9.0 + 7.9% / 2.5% / 2.3% | **09e19de** the inputs |
+| A76 host | the subtraction 43.5%, the feed 21.9% | | none |
+| M33 small | `min_sum_round` (min-sum check by check, a bounds check per gather) | 28.1% | **09e19de** |
+| M33 host | `sum_product_round` (its plain inputs loop checked likewise) | 25% | **09e19de** |
+
+### One array of totals (09e19de)
+
+The rounds summed into a second array (`next`) and swapped the two.
+Every input is taken before any sum (sum-product's inputs pass,
+min-sum's checks), so the sums can replace the totals in place: the
+second array goes. The one array has 256 entries (`Totals`, `TOTALS =
+u8::MAX + 1`), so a gather by a `u8` index from `EDGE_VARS` is in bounds
+by its type and the compiler drops the check: in the plain inputs loop
+and min-sum check by check (x86-64, the microcontrollers), in the
+stopping test, and in the inputs' blocks on AArch64, which no longer
+need O27's clamp. The 82 entries past the variables are zero and never
+read: every entry of `EDGE_VARS` is below N (the const assertions of
+O27b), and with debug assertions `total_of` asserts it, so a bad table
+still panics in debug builds and their tests rather than reading a zero.
+The tests' round forms now take the totals padded with NaN, so a gather
+past the variables would show in their results.
+
+Values are unchanged: the same subtractions, comparisons, sums and
+order; the pinned state hash of five rounds holds.
+
+Memory: `BpScratch` 3 656 → 3 288 B (−368). It shares its storage with
+OSD-1's (`Work`), now the larger of the two, so a candidate's scratch
+falls by 72 B (`CandidateScratch` 4 872 → 4 800); clippy's
+`large_enum_variant` is allowed on `Work` (boxing would need a heap).
+The padding alone, with the second array kept, would have cost 656 B.
+
+**Min-sum's groups keep the clamp.** With the plain index the release
+form (16 codegen units) left the groups of degree 6 scalar on AArch64:
+`min_sum_round` 95 four-lane instructions against 162, its degree-6 loop
+703 scalar instructions a group against 259 (the degree-7 groups
+vectorised, 248 against 301). Gathering a row's totals into a local
+array first gave the same scalar loop. The groups therefore keep the
+compare and select of O27 (`total_of_clamped`, which never changes an
+index), and their code is O27's.
+
+Instructions, the head against 9685acf:
+
+- AArch64: the inputs' blocks 46 → 30 a block of eight (release form;
+  32 one-unit); the stopping test's loop 14 → 9–11 an edge; the sums
+  loop unchanged (20).
+- Cortex-M33 (images at opt-level "s"): min-sum's per-edge loop 19 → 17
+  (the check's compare and branch); the sum-product inputs loop 11 → 9.
+  `min_sum_round` −4.4% of its instructions on the small slot,
+  `sum_product_round` −1.6% on the host slot.
+- The M33's feed (−0.92% small, −0.90% host), SNR (−10%) and soft-bit
+  (+0.70%) stages also moved, though no code they run changed: they are
+  `Decoder::pass`, into which the feed's loops are inlined, compiled
+  with other registers after the scratch's layout changed (its FFT loop
+  249 + 15 → 245 + 9 instructions a turn, for example). That is a side
+  effect of this compiler's allocation, not of the change, and could go
+  either way with another; the belief-propagation figures are the
+  change's own.
+
+### The stopping test without a branch on the hosts (fde37e6)
+
+`hard_bit` decided a value's bit with branches on its sign and on zero.
+The stopping test runs it over the checks' variables every round, and
+the signs are the channel's: the branches are unpredictable. Where the
+loops vectorise (`VECTOR`) the bit is now `(x < 0) | ((x == 0) & (i %
+2))` without a branch (7–8 instructions an edge on AArch64); on the
+Cortex-M33 that form took 0.18% more instructions in belief propagation
+(91 234 on s0086 small), so it keeps the branch form and its images are
+unchanged. A new test checks that the two forms give the same bit for
+every value (±0, NaN of both signs, infinities, subnormals and 10 000
+others, both index parities).
+
+### Cortex-A76 (Raspberry Pi 5; medians of 4 alternated cycles)
+
+Aligned builds from one scratch path of 9685acf, of 09e19de's tree
+before its last comment edits (its eight binaries' sections equal
+09e19de's), of the same with the branch-free `hard_bit` everywhere (its
+host sections equal fde37e6's), and of that with the sums' message index
+clamped (below, dropped); core 3, the throttle, clock and temperature
+sampled once a second from core 0, a 5 s sampled busy loop on core 3
+before each run; per cycle `slotcost host host,passes=1 200 5` then
+`slotcost small small 200 5` of each build, forward on odd cycles and
+reversed on even.
+
+| ms (median, spread) | 9685acf | 09e19de | fde37e6 (hosts) | the sums clamped |
+|---|---|---|---|---|
+| host: belief propagation | 18.780 (0.000) | 18.270 (0.000) | **17.995 (0.010)** | 18.020 (0.000) |
+| host: subtract / feed / sync / soft bits | 33.330 / 16.835 / 4.680 / 2.380 | 33.330 / 16.835 / 4.680 / 2.380 | 33.310 / 16.840 / 4.680 / 2.380 | 33.325 / 16.830 / 4.670 / 2.380 |
+| host: slot / worst | 76.5 / 81.0 | 76.0 / 80.5 | **75.7 / 80.2** | 75.75 / 80.3 |
+| one pass: slot, belief propagation | 17.4, 8.810 | 17.2, 8.580 | 17.1, 8.430 | 17.1, 8.445 |
+| small: belief propagation | 2.370 (0.000) | 2.360 (0.000) | **2.230 (0.000)** | 2.230 (0.000) |
+| small: feed / sync / soft bits | 5.595 / 1.380 / 0.900 | 5.610 / 1.380 / 0.890 | 5.610 / 1.380 / 0.890 | 5.610 / 1.380 / 0.890 |
+| small: slot / worst | 10.4 / 10.6 | 10.4 / 10.7 | **10.3 / 10.5** | 10.3 / 10.5 |
+
+- **Placement check.** The stages neither commit touches (feed, sync,
+  soft bits, SNR, subtraction) agree within 0.02 ms across the four
+  builds. Belief propagation's gains (0.51 and 0.28 ms on the host slot,
+  0.14 ms on the small one) are many times their spreads. No placement
+  variation was run.
+- Attribution: 09e19de is the host slot's sum-product inputs and
+  stopping test (small: its min-sum groups are O27's code, −0.01 ms);
+  fde37e6 the stopping test's branches, on both slots.
+- **Validity.** All 32 timed runs valid under this round's rule: the
+  board's sticky throttle bits read 0x50000 (under-voltage and
+  throttling had occurred since its boot, before this round began) in
+  all 2 404 samples during the runs, the warm-ups and the end checks;
+  no current bit (0x1–0x8) was set in any sample, and every sample
+  during a run read 2 400 MHz; peak 56.0 °C. Rounds before this one
+  required 0x0, which the board could not show without a restart.
+
+### x86-64 (Threadripper 3970X, core 5, `perf stat` user counters over the whole `slotcost` program)
+
+Builds as on the A76 (the same scratch path), four alternated rounds; a
+check for other local jobs before and after each sample: none void.
+
+| build | small: cycles (median, range) | instructions | host: cycles (median, range) | instructions |
+|---|---|---|---|---|
+| 9685acf | 92.92 G (91.93–93.84) | 280.96 G | 301.03 G (300.87–301.88) | 824.89 G |
+| 09e19de | 92.15 G (91.75–92.62), −0.83% | 280.64 G | 300.93 G (298.69–301.53), −0.03% | 814.11 G (−1.31%) |
+| fde37e6 (hosts) | **91.33 G (91.30–91.66), −1.71%** | 280.57 G | **299.61 G (298.65–300.49), −0.47%** | 813.94 G (−1.33%) |
+| the sums clamped | 91.97 G (91.08–92.21) | 280.56 G | 299.52 G (299.41–299.69) | 813.95 G |
+
+09e19de alone is within the base's ranges in cycles (its host
+instructions fall 1.3%: the plain inputs loop without its checks);
+fde37e6's ranges clear the base's in both configurations.
+
+### Sizes (one scratch path, aligned; `.text` + `.rodata`, B)
+
+| binary | 9685acf | 09e19de | fde37e6 | against 9685acf |
+|---|---|---|---|---|
+| x86-64 `cat-ft8-decode` | 464 838 + 93 504 | 464 902 | 464 710 + 93 504 | −128 |
+| x86-64 `paired_bench` | 1 419 126 + 156 428 | 1 419 254 | 1 419 062 + 156 428 | −64 |
+| AArch64 `cat-ft8-decode` | 397 928 + 85 840 | 397 864 | 398 184 + 85 824 | +240 |
+| AArch64 `paired_bench` | 1 170 520 + 147 132 | 1 170 840 | 1 171 160 + 147 132 | +640 |
+
+- Cortex-M33 (`check.sh --stack`, 09e19de = fde37e6): flash small 92 038
+  → 91 970 B, host 104 738 → 104 710 B, encoder 35 190 B unchanged;
+  static RAM 201 668 → 201 592 B and 230 084 → 230 008 B; the stack's
+  painted high water (emulated) small 10 304 → 10 312 B, host 10 276 B
+  unchanged. No fused multiply-add; `vmla` 128 / 241 / 17 as before.
+- M4F (sizes and library calls; sections not hashed): flash 92 304 →
+  92 236 B and 105 332 → 105 244 B, static RAM −76 B each, `fmaxf` /
+  `fminf` 10 and 14, no `f64` helper, no fused multiply-add, the same
+  library calls.
+
+### Sections of all eight binaries
+
+| binary | 09e19de against 9685acf | fde37e6 against 09e19de |
+|---|---|---|
+| x86-64 and AArch64 `cat-ft8-decode`, `paired_bench` | differ | differ |
+| M33 check and staged, small and host | differ | **identical** |
+
+### The code-generation check
+
+New bounds, each with the forms that fail it:
+
+- `a64r min_sum_round insns 1000 one`: the degree-6 groups vectorised in
+  the release form (803 instructions; 1 204 with the plain index).
+- `a64` and `a64r sum_product_round sumloop8`: a ceiling of 40, from 54
+  (32 one-unit, 30 release; 48 and 46 with O27's clamp, 63 and 61
+  checked).
+- `m33s min_sum_round sumloop1 31` and `m33s sum_product_round sumloop1
+  10`: the M33's gather loops without the check (30 and 9; 32 and 11
+  checked, 33 and 12 clamped).
+- A new metric `fpbranches` (an `fcmp` followed at once by a conditional
+  branch), a ceiling of 0 on `decode_soft` in `a64` and `a64r` (3 at
+  9685acf, 4 and 3 at 09e19de). It passes if the stopping test moves out
+  of `decode_soft`.
+
+Forced forms, each a fresh copy of the commit's tree with one edit, its
+own log and the check's exit status:
+
+| form (on 09e19de) | a64r min_sum_round vec4 / insns | a64 / a64r sumloop8 | m33s min-sum / inputs sumloop1 | exit |
+|---|---|---|---|---|
+| head | 162 / 803 | 32 / 30 | 30 / 9 | 0 (49 of 49) |
+| the totals not padded (`TOTALS = N`, every gather checked) | 162 / 837 | **63 / 61** | **32 / 11** | 1 |
+| min-sum's groups with the plain index | **95 / 1 204** | 32 / 30 | 30 / 9 | 1 |
+| every gather clamped to N − 1 (O27's form; equivalent) | 162 / 816 | **48 / 46** | **33 / 12** | 1 |
+
+| form (on fde37e6) | a64 / a64r `decode_soft` fpbranches (≤ 0) | exit |
+|---|---|---|
+| head | 0 / 0 | 0 (51 of 51) |
+| the stopping test in the branch form (`hard_bit::<false>` at both callers; equivalent) | **4 / 3** | 1 |
+
+No other check failed in any form. What the check misses: x86-64 (no new
+bounds), the linked images (it reads the library), and the stopping test
+if it moved out of line.
+
+### Identity
+
+The references are b93516e's outputs (x86-64 records and WAV lines, the
+A76's compared with them), 68634cc's (M33 dumps and residuals) and
+70be604's (encoder WAVs), as in every round since.
+
+- **Records, x86-64** (09e19de and fde37e6): the 73 800 `paired_bench
+  run` records equal b93516e's (host, one pass, small: 24 600 each, 0
+  differ; exit 0 each).
+- **800 WAV slots** × 3 × 3, x86-64 (both commits): 93 091 lines
+  byte-identical; the 2 400 `--profile` lines differ by O26b's figures
+  and by this round's memory, which they report: `candidate_scratch_bytes`
+  4 872 → 4 800 and `peak_bytes` 72 B lower (one candidate scratch). The
+  comparison allows exactly that on every `--profile` line and nothing
+  else (exit 0).
+- **A76** (fde37e6): its `paired_bench` records equal x86-64 b93516e's
+  (73 800, 0 differ; exit 0 each), and its `cat-ft8-decode` over the 800
+  WAV slots × 3 × 3 gives the same 93 091 identical lines and 2 400
+  `--profile` lines as accounted above (exit 0). One benchmark at a time;
+  1 488 throttle samples, start and end included, all 0x50000 with no
+  current bit.
+- **Encoder** (both commits): the 45 `cat-ft8-encode` WAVs equal
+  70be604's.
+- **Cortex-M33 (emulated)** (both commits; fde37e6's images equal
+  09e19de's): the small and host dump images on seven slots and the
+  multi-pass residuals of s0086 and s0407 equal 68634cc's (16 of 16;
+  exit 0).
+- **Comparators on a forced difference** (copies of 09e19de's outputs,
+  each its own exit status): the records comparison 0 unforced, 1 with
+  one decoded record's SNR changed; the WAV comparison 0 unforced, 1
+  with one `candidate_scratch_bytes` 4 800 → 4 801, 1 with one
+  `peak_bytes` one higher, 1 with one decode line's frequency 874.0 →
+  875.0; the M33 comparison 0 unforced (16 identical), 1 with one bit of
+  one dump flipped (15 identical, 1 differ); `cmp` of an encoder WAV 0
+  unforced, 1 with one byte changed.
+
+### Tests and mutants
+
+New test: `both_forms_of_the_hard_decision_agree`. The round tests take
+the totals padded with NaN and check the padding is left as it was.
+Mutants in fresh copies of each commit's tree, release library tests
+(216 at 09e19de, 217 at fde37e6), one log each:
+
+| mutant | commit | failing |
+|---|---|---|
+| none (control) | 09e19de / fde37e6 | 0 / 0 |
+| p1 the decode does not set the totals from the soft bits | 09e19de | 17 |
+| p2 the sums write one variable fewer | 09e19de | 4 |
+| p3 min-sum's sums before its checks take their inputs | 09e19de | 2 |
+| p4 a gather one variable along (the last reads the padding) | 09e19de | 19 |
+| p5 the groups' clamp one short (`N - 2`) | 09e19de | 3 |
+| p6 the stopping test reads a neighbour's total | 09e19de | 12 |
+| e1 the totals not padded (equivalent; the forced form fails the check) | 09e19de | 0 |
+| e2 the groups without the clamp (equivalent; likewise) | 09e19de | 0 |
+| h1 the branch-free bit's tie to the other parity | fde37e6 | 4 |
+| h2 the branch-free bit's zero counted as negative | fde37e6 | 4 |
+| h3 the branch form's tie to the other parity (the hosts do not run it) | fde37e6 | 1 |
+| h4 the stopping test in the branch form (equivalent; likewise) | fde37e6 | 0 |
+
+### Checks
+
+- **Local CI** passes at 09e19de and at fde37e6, 17 of 17 steps: fmt;
+  clippy `-D warnings` (workspace, all targets and features, thumbv8m);
+  workspace, profile, no-std and release tests with the ignored ones;
+  the group-one step; the bulk run; MSRV 1.75; docs with and without
+  `std`; `check.sh --stack`; codegen-check (49 of 49 at 09e19de, 51 of
+  51 at fde37e6). At fde37e6 the release library tests with the ignored
+  ones: 226 pass; the group-one step 217 pass, 9 ignored.
+- **A76 release library tests** with the ignored ones, cross-built at
+  fde37e6: 225 pass, 0 fail (the source-tree test filtered
+  out); 240 throttle samples, all 0x50000 with no current bit.
+
+### The code-generation check's other bounds as the release build compiles them
+
+Every `a64` bound was also read from the release form (16 codegen units)
+at 9685acf and at 09e19de's tree. They agree, or the release form is the
+better side of the bound, for every function the check reads, except:
+
+- `6blocks vec4` (a floor of 400 on the sum): the release form has one
+  `blocks` out of line, with 154 four-lane instructions, the same as the
+  one-unit build's smaller instantiation (the other is inlined into
+  `subtract::run`); the sum's floor does not apply there, and `each`
+  would read 154 in both.
+- `finish_row` (`ldn`, `insns`, `vec2`) is inlined into `power_bins` in
+  the release form, on both hosts, so its checks see only the one-unit
+  build. Read on `power_bins` there: AArch64 `ldn` 12 (12), `vec2` 4
+  (16), instructions 2 770 (2 882 for `finish_row`); x86-64
+  `mulloop80` 462 against 450 one-unit (its ceiling is 460) and 3 242
+  instructions (3 364). The last stage is one vectorised loop in both
+  forms.
+
+The x86-64 release form was read the same way (min-sum 653 against 655
+instructions, sum-product 1 511 against 1 353). No release-form bound
+was added for `power_bins`: it would need its own forced forms (O26b's),
+which this round did not run.
+
+### Tried, not kept
+
+- **Min-sum's groups with the plain index** (the padded totals' natural
+  form): the degree-6 groups scalar in the release form (above).
+- **A row's totals gathered into a local array first**: the same.
+- **The sums' message index clamped to the last edge** (`min(EDGES −
+  1)`, so the three gathers of `sums` have no branch; the candidate of
+  O27): on AArch64 a compare and select replaces each compare and branch,
+  20 instructions a variable either way; A76 belief propagation 18.020
+  against 17.995 ms (host), 2.230 against 2.230 (small); M33 +0.54% in
+  min-sum (a select takes an `it` and a move). Not kept.
+- **The branch-free `hard_bit` on the M33**: +0.18% of belief
+  propagation's instructions; the M33 keeps the branch.
+- **The padding with the second array kept** (as first proposed): +656 B
+  of RAM on the M33 for the same gathers; the in-place sums make it −368.
+
+### Not measured
+
+- Cortex-M33 cycles (instruction counts only: whether the branch form or
+  the branch-free one is faster in cycles there is not known); M4F counts.
+- The hosts' stack frames; sparse and empty slots; off-air recordings.
+- A placement variation on the A76; the A76 per-loop profile after the
+  commits; x86-64 per-function shares.
+- Other dependents' build profiles (LTO `fat`, one unit) for the
+  release-form min-sum groups.
+
+### Risks
+
+- The degree-6 groups' vector form in the release build still rests on a
+  clamp that changes no value (`total_of_clamped`) and on the SLP
+  vectoriser's limits; bounded by `a64r min_sum_round` (`vec4` and now
+  `insns`).
+- The padding is correct only while every `EDGE_VARS` entry is below N
+  (compile-time assertion; debug assertion in `total_of`). In release a
+  wrong index would read a zero, not panic, as before O28 it read the
+  last variable's total (groups) or panicked (elsewhere).
+- The M33's feed and SNR counts moved with `Decoder::pass`'s register
+  allocation; another change to the scratch's layout may move them back.
+
+### Next candidates (not built)
+
+| candidate | estimate | cost |
+|---|---|---|
+| The FFT (`power_bins`, 51% of the A76 small slot; its radix-5 twiddles m = 3, 4) | up to a third of 10% (O26) | no load form known |
+| The sums (`sums`: three checked `u16` gathers a variable, 5.5% of the A76 small slot) | the check's two instructions of 20 | a layout whose indices the compiler can bound; clamping did not help |
+| The sum-product tanh and atanh passes (A76 host 16.9%) | none bit-identical found | — |
+| `soft_bits_at`, the Costas sums, `search_rows` (A76 small 8.5, 7.7, 5.5%) | uncertain | — |
+| Release-form bounds for `power_bins` (AArch64 `ldn`, x86-64 `mulloop80` at 462) | guards the hottest A76 function as built | forced forms as O26b's |
