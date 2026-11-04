@@ -283,8 +283,21 @@ checks=(
   "m33s 11Spectrogram4skip memmoves 0"
   # The sync search's running sums: three levels a bin, a pair of bins a
   # step (25 instructions: six byte loads a pair; with one parity at a
-  # time and the eight tones' sum, 15 a bin with three).
-  "m33s 6select sumloop6 26"
+  # time and the eight tones' sum, 15 a bin with three), for the rows of
+  # one start row of a pair (`add_row_alone`, out of line).
+  "m33s add_row_alone sumloop6 26"
+  # And for the rows two start rows share (`add_row_pair`): one parity at a
+  # time, the tones' running sum taken once for both, 18 instructions a
+  # bin (four byte loads); without the pairs, no such function.
+  "m33s add_row_pair sumloop4 19"
+  # The pairs' local maxima (`select_paired`, inlined into the search)
+  # with each row's slot kept as the rows step and its neighbours read
+  # from three row slices: one division (the span's), none a row or a bin
+  # (3 with a slot's index taken mod 5 at each neighbour, as `select`
+  # takes it mod 3).
+  "m33s 6search divides 1"
+  # Inlined there, so that the check above sees it.
+  "m33s 13select_paired17 absent 0"
   # On the hosts its column sums in 16-bit vector lanes (the eight tones
   # added afresh a row, the form before: 13 and 0), the levels widened
   # into them as they are added (18 on AArch64; `vec8h` alone passes the
