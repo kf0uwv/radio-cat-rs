@@ -161,7 +161,10 @@
 //! `passes`, `passes_run`,
 //! `passes_end` (why no further pass ran: `"all_passes"`,
 //! `"nothing_new"`, `"weak_lone_decode"`, `"list_full"`,
-//! `"subtraction_cap"` or `"stopped"`),
+//! `"subtraction_cap"` or `"stopped"`; diagnostic only: it names the
+//! first end that applied, so a stop asked for during pass 1 can show as
+//! `"weak_lone_decode"`, `"nothing_new"` or `"list_full"`, and deadline
+//! logic should not infer an overrun, or its absence, from it),
 //! and per pass N `passN_feed_seconds`,
 //! `passN_sync_seconds`, `passN_candidates_seconds`,
 //! `passN_subtract_seconds` (N ≥ 2) and the pass's own counts

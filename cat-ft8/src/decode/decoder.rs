@@ -158,15 +158,23 @@ pub struct DecodeConfig {
     /// first, so a capped slot's output is a prefix of the uncapped one's
     /// and as reproducible.
     pub max_subtractions: Option<u16>,
-    /// When pass 1 decodes a single message, pass 2 runs only if that
-    /// decode's [`Decode::snr_db`] is at least this many dB (`None`: it
-    /// always runs). A later pass finds signals that the decodes
-    /// subtracted before it were hiding: a strong signal can hide weaker
-    /// ones beside it, a weak one can hide little that is still
-    /// decodable. Pass 3 is not affected. A slot ended this way is
-    /// reported as [`PassesEnd::WeakLoneDecode`]; its output is pass 1's,
-    /// as reproducible as any. −17 dB in [`DecodeConfig::HOST`]; NaN is
-    /// an invalid setting.
+    /// When pass 1 decodes a single message (and truncates none), pass 2
+    /// runs only if that decode's [`Decode::snr_db`] is at least this
+    /// many dB (`None`: it always runs). A later pass finds signals that
+    /// the decodes subtracted before it were hiding: a strong signal can
+    /// hide weaker ones beside it, a weak one can hide little that is
+    /// still decodable. A slot ended this way is reported as
+    /// [`PassesEnd::WeakLoneDecode`]; its output is pass 1's, as
+    /// reproducible as any. −17 dB in [`DecodeConfig::HOST`]; NaN is an
+    /// invalid setting.
+    ///
+    /// Checked only before pass 2; a single pass-2 decode, however weak,
+    /// does not end pass 3. A weak pass-2 decode is often a signal that
+    /// a strong pass-1 decode was hiding, and pass 3 can still find
+    /// another one beside that strong signal, so the same test before
+    /// pass 3 loses messages. Exactly one decode, because a pass 1 of
+    /// several decodes all below the minimum is too rare in the
+    /// measurements to choose a minimum for.
     pub lone_decode_min_snr: Option<f32>,
     /// Ordered-statistics decoding of the candidates belief propagation
     /// fails on ([`OsdConfig`]): `OsdConfig::new(10, 21)` in
@@ -982,9 +990,12 @@ impl<'a> Decoder<'a> {
     /// pass, or after the current subtraction (then `audio` holds a
     /// partial residual and the next pass does not run). The list then
     /// holds every pass run so far, whole, and the report says
-    /// [`PassesEnd::Stopped`]. This is a safety net for a deadline; a
-    /// count-based limit ([`DecodeConfig::max_subtractions`]) keeps the
-    /// output reproducible.
+    /// [`PassesEnd::Stopped`], unless an end checked before it applies:
+    /// a stop asked for during pass 1 reports [`PassesEnd::NothingNew`],
+    /// [`PassesEnd::WeakLoneDecode`] or [`PassesEnd::ListFull`] if pass 2
+    /// would not have run anyway. This is a safety net for a deadline; a count-based
+    /// limit ([`DecodeConfig::max_subtractions`]) keeps the output
+    /// reproducible.
     pub fn decode_passes_staged(
         &mut self,
         audio: &mut [f32],
@@ -1374,7 +1385,11 @@ impl PassesReport {
     }
 }
 
-/// Why [`Decoder::decode_passes`] ran no further pass.
+/// Why [`Decoder::decode_passes`] ran no further pass: the first end that
+/// applied. A diagnostic: a stop asked for during pass 1 shows as
+/// [`PassesEnd::NothingNew`], [`PassesEnd::WeakLoneDecode`] or
+/// [`PassesEnd::ListFull`] if one applied, so a deadline's overrun is not
+/// to be inferred from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum PassesEnd {
