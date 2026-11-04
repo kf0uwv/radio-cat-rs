@@ -534,14 +534,18 @@ impl<'a> Spectrogram<'a> {
         let mut i = before;
         self.consumed += before;
         while i < n {
+            let chunk = (n - i).min(WINDOW - self.filled);
             // Where the target has no vector unit the window is a ring of
-            // quarters ([`ring_at`]), filled up to a quarter's end at a time.
-            let (at, chunk) = if SCALAR_FORMS {
-                let chunk = (n - i).min(HOP - self.filled % HOP);
-                (ring_at(self.filled, self.rows.count), chunk)
+            // quarters ([`ring_at`]). A chunk never runs past a quarter's
+            // end there but before the first row, when the ring is the
+            // window in order: from then on the window holds three
+            // quarters at each feed, so the chunk ends with the fourth.
+            let at = if SCALAR_FORMS {
+                ring_at(self.filled, self.rows.count)
             } else {
-                (self.filled, (n - i).min(WINDOW - self.filled))
+                self.filled
             };
+            debug_assert!(self.rows.count == 0 || at % HOP + chunk <= HOP);
             let (sanitised, clamped) = fill(i, &mut self.front.window[at..at + chunk]);
             self.sanitised += sanitised;
             self.clamped += clamped;
