@@ -2473,3 +2473,36 @@
 - O30c (closing review): the min-sum degree asserted at compile time; the
   wide decode_soft test keeps its name, with CI filtering `_widely` too;
   wording.
+
+## Session: 2026-11-04 (O31 the FFT's last stage by rows and the window as a ring on the Cortex-M33)
+
+- The Cortex-A76 board was still not available for timing; the round
+  worked on the Cortex-M33 (emulated counts, s0086 and s0407) and left the
+  hosts' binaries as they were (sections equal to a756578's at every
+  commit).
+- M33 references rebuilt at a756578 (dumps and residuals equal 6b8013c's);
+  the hosts' references stay O30's at 6b8013c (same host sections).
+- Profiled a756578 per block: the FFT's last stage 16.0% of the small slot
+  (329 instructions a butterfly over its loop's three blocks), min-sum
+  22.0%, running sums 9.6%, the first stage 7.9%, the slide 1.7%.
+- 16ef2a1: with one lane the last stage reads a table of rows (row r:
+  W^(r + 384 j)) in six ranges of k where each twiddle's entry is a
+  constant, four row pointers through `black_box`; the other stages read a
+  fifth of a turn. 211 instructions a butterfly; small slot −5.49% and
+  −5.65%; flash +7.5 KB. The hosts keep the earlier unused one-lane last
+  stage by `cfg` (with the rows' form unused in their builds their binaries
+  changed).
+- 76874bb: where loops do not vectorise the front end's window is a ring
+  of four quarters (no slide), the first stage reading the quarters:
+  −3.22% more. 8faab0a: the feeds' chunks as the sliding window's (a
+  survived mutant showed the cut at a quarter's end was never needed):
+  head −8.65% and −8.90% (small), −2.84% and −2.85% (host image).
+- Identity (M33 16 of 16, encoder 45 WAVs, host sections), forced
+  code-generation forms failing, mutants caught (three equivalent), local
+  CI 18 of 18 at each commit; new codegen-check entries and a `memmoves`
+  metric.
+- Tried, not kept: eleven other forms of the last stage (the best without
+  rows −1.9% at +9.1 KB); the running sums through chunk iterators (sync
+  +19.5%); the quarters as an array (+0.75%).
+- Open: the A76 timing (O29b's gather commit; the level steps, rows and
+  ring on every target); Cortex-M33 cycles.

@@ -16563,3 +16563,350 @@ them in.
   and `_widely`, and its comment no longer gives one machine's time.
 - Release sections of all eight binaries are unchanged by these edits.
 
+
+## The FFT's last stage by rows of twiddles and the window as a ring on the Cortex-M33, thirty-first round (O31, bit-identical, 2026-11-04)
+
+Base: a756578 (feat/cat-ft8 with O30, O30b and O30c). The Cortex-A76
+board was still not available for timing, so this round again worked on
+the Cortex-M33 (emulated instruction counts on s0086 and s0407) and kept
+the hosts' binaries as they were. Three code commits: 16ef2a1 (the
+one-lane transform's twiddles from a fifth of a turn and, for the last
+stage, from rows), 76874bb (the front end's window a ring of quarters
+where loops do not vectorise) and 8faab0a (the ring's feeds take their
+chunk as the sliding window does). Decodes, dumps, residuals and encoder
+output are identical; the x86-64 and AArch64 binaries of every commit
+equal a756578's.
+
+| target | measure | a756578 | 8faab0a | change |
+|---|---|---|---|---|
+| Cortex-M33, small image | s0086 slot | 154 506 075 | 141 146 286 | **−8.65%** |
+| | s0407 slot | 150 110 367 | 136 750 602 | **−8.90%** |
+| | feed (each slot) | 80 044 992 | 66 685 129 | **−16.69%** |
+| Cortex-M33, host image | s0086 slot | 1 411 732 811 | 1 371 651 149 | **−2.84%** |
+| | s0407 slot | 1 408 468 317 | 1 368 386 658 | **−2.85%** |
+| | feed | 243 375 704 | 203 293 922 | **−16.47%** |
+| x86-64, AArch64 | `.text` and `.rodata` of `cat-ft8-decode` and `paired_bench` | | | unchanged |
+| Cortex-M33 flash | small, host image (`check.sh`) | 94 554, 107 354 B | 102 022, 114 826 B | +7 468, +7 472 B |
+
+Emulated instructions of the staged images (whole slot, setup
+included). Only the feed's counts change, but for a few tens of
+instructions in the refinement and the SNR stage.
+
+| Cortex-M33, small slot | a756578 | 16ef2a1 | 76874bb | 8faab0a |
+|---|---|---|---|---|
+| s0086 | 154 506 075 | 146 022 039 (−5.49%) | 141 314 585 (−8.54%) | 141 146 286 (−8.65%) |
+| s0407 | 150 110 367 | 141 626 339 (−5.65%) | 136 918 901 (−8.79%) | 136 750 602 (−8.90%) |
+| host image, s0086 | 1 411 732 811 | −1.80% | −2.80% | −2.84% |
+| host image, s0407 | 1 408 468 317 | −1.81% | −2.81% | −2.85% |
+
+### Baselines
+
+The hosts' code is unchanged since 6b8013c (a756578's x86-64 and AArch64
+sections, built as in O30, equal 6b8013c's), so O30's x86-64 records and
+WAV outputs at 6b8013c stand for the hosts. This round built every
+binary from one scratch directory of its own, where a756578's sections
+differ from O30's builds of the same tree (the directory is in the
+binaries), so every section comparison here is against a756578 built
+the same way. For the Cortex-M33 the references were rebuilt at a756578:
+the dump images on seven slots and the multi-pass residuals of s0086 and
+s0407 (equal to 6b8013c's, 16 of 16), the per-function and per-block
+counts, `check.sh --stack`, the encoder WAVs (equal to 70be604's) and the
+M4F images. Its small-image counts equal fe1bfe6's (O30b).
+
+### The profile at a756578 (Cortex-M33, small image, s0086, per block)
+
+Of the slot after setup (145.6 M instructions): `min_sum_round` 22.0%;
+the FFT's last stage (radix 5) 16.0%, 329 instructions a butterfly over
+the three blocks of its loop (O30 counted its largest block, 246
+instructions, 11.8%); the sync search's running sums 9.6% (15
+instructions a bin and row); the FFT's first stage 7.9% (130 a block)
+and its second 6.2% (103 a butterfly); the bins' powers 4.0%; the
+levels 1.7%; the window's slide (`memmove`) 1.7%.
+
+### The last stage by rows of twiddles (16ef2a1)
+
+With one lane the last stage read each of its 20 twiddles a butterfly
+from one turn, at (m·k + 384·(m·q mod 5)) mod N. Of the 329 instructions
+a butterfly about 180 are the arithmetic, loads and stores; the rest
+were five remainders by N (about ten instructions each), addresses and
+spills: the compiler kept an address register for most twiddles.
+
+Write m·k = 384·s + r (r < 384, s = ⌊m·k / 384⌋ ≤ 3). The twiddle of
+(m, q) at k is then W_N^(r + 384·j), j = (s + m·q mod 5) mod 5. A table
+of rows, row r holding W_N^(r + 384·j) for j = 0..5 (`LAST_ROWS`, one
+turn in another order, 15 360 bytes), puts the five twiddles of one m in
+40 bytes. s depends on k, but within each of six ranges of k (bounds 0,
+96, 128, 192, 256, 288, 384: where 2k, 3k or 4k passes a multiple of
+384) it is constant for every m, so each (m, q) reads a constant entry
+of its row. `last_range::<I>` writes out the butterflies of range I with
+four row pointers advancing by m rows a butterfly (chunks of m rows), so
+every twiddle is a load at a constant offset from one of four
+registers. Compile-time assertions check that the ranges cover 0..384
+in order, that s is constant in each, and that every row read lies in
+the table.
+
+The stages before the last read only twiddles at multiples of five
+(their indices are multiples of N/span and of N/R, both multiples of 5),
+so with one lane they read `FIFTH_TWIDDLES` (W_N^(5i), 3 072 bytes)
+instead of the turn, which a build with one lane then does not link.
+Every value read is the same entry of the generated turn, so the
+transform is the same bit for bit. Tests check both tables entry by
+entry and each range's entry for every (k, m, q) against the earlier
+index, besides the existing transform tests, which run the one-lane form
+on the hosts.
+
+Forms tried on a756578, small slot (the last stage's instructions a
+butterfly from the block counts of s0086; flash of the staged small
+image against a756578's):
+
+| form | s0086 | s0407 | a butterfly | flash |
+|---|---|---|---|---|
+| one turn, the remainder as one compare and subtraction | +1.11% | +1.14% | 355 | +88 B |
+| one turn, out of line | −0.36% | −0.37% | 324 | +28 B |
+| the hosts' turn to 3 069 entries (no remainder) | −1.50% | −1.55% | 297 | +9.1 KB |
+| the same, out of line | −1.91% | −1.97% | 290 | +9.1 KB |
+| rows in six ranges, each range out of line | −4.18% | −4.31% | 240 | +20.0 KB |
+| rows, ranges and stage inlined into the pass | −4.98% | −5.11% | | +19.8 KB |
+| rows read through chunk iterators | −4.28% | −4.41% | 238 | +19.9 KB |
+| the rows' slices as arguments, ranges out of line | −3.98% | −4.00% | 240 | +20.0 KB |
+| the same, the slices through `black_box` | −5.30% | −5.36% | 211 | +20.5 KB |
+| ranges inlined into one out-of-line stage, `black_box` | −5.42% | −5.58% | 211 | +20.2 KB |
+| the same, with `FIFTH_TWIDDLES` and no turn | −5.41% | −5.56% | 211 | +7.9 KB |
+| one table of rows for every stage (no fifths) | −4.43% | −4.56% | | +5.6 KB |
+| **16ef2a1** | **−5.49%** | **−5.65%** | **211** | **+7.6 KB** |
+
+Without `black_box` the ranges whose rows do not start at row 0 took
+about 247 instructions a butterfly against 217 in the first range: the
+compiler saw each range's row starts as constants and moved them into
+the loads' offsets, which then passed the reach of the floating-point
+load (±1 020 bytes), so each load took an address of its own. Through
+`black_box` the starts are unknown to it, and every range takes about
+211. Inlined into the decoder's pass, the ranges cost instructions
+elsewhere in it (the SNR stage +4% to +21%, by register allocation), so
+the stage is one function out of line with the ranges inlined into it.
+Reading the other stages' twiddles from the rows (each index split by
+384) cost 1.0% of the slot more than a fifth of a turn.
+
+The hosts' builds keep the earlier one-lane last stage (unused: they
+take vectors and run `last_stage`), chosen by `cfg` on the target's
+vector features; `LAST_ROWS` and the ranges are built only where one
+lane is taken and in the tests. With the rows' form in the hosts'
+builds, unused, the x86-64 and AArch64 binaries changed (on x86-64
+another size of `std::io::Error::new` and other anonymous constants: the
+compiler placed functions differently). Built with each part of the
+change alone, the fifths and the turn's new length left the hosts'
+binaries unchanged; the ranges' code changed them, with or without
+`black_box` and with or without its closures.
+
+Small slot −5.49% and −5.65%, host image −1.80% and −1.81%, the feed
+−10.6% (small) and −10.5% (host image).
+
+### The window as a ring of quarters (76874bb, 8faab0a)
+
+After each row the front end slid its window by one hop (960 samples), a
+copy of 11 520 bytes: the library's `memmove`, 1.7% of the small slot.
+Where loops do not vectorise (`SCALAR_FORMS`) the window is now a ring of
+four quarters of one hop each: sample i of the window, while r rows are
+complete, is held in quarter (i / 960 + r) mod 4 (`ring_at`), so the
+quarter a row leaves is the one the next row's last quarter fills, and
+nothing is copied. The row's transform takes the quarters in order
+(`power_bins_quarters`): its first stage reads input m of each block
+from quarter m at the same offset (`quarters_first_stage`), so the
+window products and the butterfly are those of the joined window.
+
+| form (on 16ef2a1) | s0086 small | s0407 small |
+|---|---|---|
+| 16ef2a1 | 146 022 039 | 141 626 339 |
+| the ring, a block's four pairs of samples as an array | +0.75% | +0.78% |
+| **the ring, the pairs named (76874bb)** | **−3.22%** | **−3.32%** |
+| **and the feeds' chunks as the sliding window's (8faab0a)** | **−3.34%** | **−3.44%** |
+
+Built as an array (`quarters.map`), a block's four slices were stored on
+the stack in a loop of their own each block. Named, the first stage
+takes 116 instructions a block against 128 before (four base registers
+rather than offsets of up to 11 520 bytes from one), besides the slide's
+2.25 M.
+
+76874bb cut a feed's chunk at each quarter's end. 8faab0a takes it as
+the sliding window does: before the first row the ring is the window in
+order, and from then on the window holds three quarters at each feed, so
+a chunk ends with the fourth. A debug assertion checks it; the mutant
+that left the cut out on 76874bb survived for this reason.
+
+The hosts keep the sliding window (`if SCALAR_FORMS`; their binaries are
+unchanged). A test checks `power_bins_quarters` against `power_bins` bit
+for bit for every test window with its quarters held in each rotation,
+and another each row of two bands against the levels of its own window:
+in the hosts' test build it checks the slide, built with
+`cat_ft8_test_group_one` the ring.
+
+### Sizes and memory
+
+| image | a756578 | 16ef2a1 | 76874bb | 8faab0a |
+|---|---|---|---|---|
+| M33 small (`check.sh`, flash) | 94 554 | 102 010 | 102 014 | 102 022 (+7 468) |
+| M33 host | 107 354 | 114 810 | 114 742 | 114 826 (+7 472) |
+| M33 encoder only | 35 190 | 35 190 | 35 190 | 35 190 |
+| M4F small (text) | 94 816 | 102 272 | 102 316 | 102 288 (+7 472) |
+| M4F host | 107 816 | 115 272 | 115 316 | 115 288 (+7 472) |
+
+Of 16ef2a1's +7 456 B, 3 072 are the tables (the rows and the fifths,
+18 432 B, against the turn's 15 360) and the rest the six ranges' code.
+Static RAM unchanged (201 592 and 230 008 B): the ring is the same
+window. Stack high water unchanged (10 312 and 10 276 B in the staged
+images). `check.sh --stack`'s largest frames are the same as at
+a756578. No fused multiply-add (`vmla` 122 / 235 / 17 at a756578, 222 /
+335 / 17 from 16ef2a1: the ranges' multiply-adds). M4F library calls
+`fmaxf`/`fminf` 10 and 14 at every commit; no `f64` helper.
+`decode::TABLE_BYTES` where one lane is taken counts the rows and the
+fifths (18 432 bytes) rather than the turn; the hosts' figure, and their
+`--profile` lines, are unchanged.
+
+### Sections of all eight binaries
+
+| commit | x86-64 `cat-ft8-decode`, `paired_bench` | AArch64 both | M33 check and staged, small and host |
+|---|---|---|---|
+| 16ef2a1 | = a756578 | = a756578 | differ |
+| 76874bb | = a756578 | = a756578 | differ |
+| 8faab0a | = a756578 | = a756578 | differ |
+
+No host section changed, so the x86-64 records and WAV identity were not
+rerun: those binaries are a756578's, whose sections equal 6b8013c's.
+
+### The code-generation check
+
+- 16ef2a1: `m33s 10finish_row fpmul` 199 → 118 (the stages before the
+  last; the last is out of line); `m33s last_straight_stage fpmul 480`
+  (the six ranges written out), `fploop60 210` (its shortest range loop,
+  204) and `insns 1630` (the stage, 1 584).
+- 76874bb: `m33s 10finish_row insns 870` (849) and a new metric,
+  `memmoves` (calls of `memmove` or an out-of-line `copy_within`), at 0
+  in `Spectrogram::feed`, `feed_i16` and `skip`.
+
+Forced forms, each a fresh copy of the commit's tree with one edit, its
+own log and the check's exit status, on 8faab0a. All seven were run on
+76874bb too, with the same results; the first four on 16ef2a1 also
+(head 76 of 76), with the same failing entries but `finish_row`'s
+instruction count, which that commit did not check.
+
+| form | failing entries | exit |
+|---|---|---|
+| head (8faab0a) | none (80 of 80) | 0 |
+| the rows' slices without `black_box` | `fploop60` 227 | 1 |
+| the stage inlined into the row | `last_straight_stage` not found (three entries); `finish_row` 6 divisions, 2 367 instructions | 1 |
+| the earlier one-lane last stage, out of line | `fpmul` 80, `fploop60` 324 | 1 |
+| the window slid in the ring as well | `memmoves` 1 in each of the three feeds | 1 |
+| a block's quarters as an array | `finish_row` 910 instructions | 1 |
+| the hosts' sliding window on the Cortex-M33 | `memmoves` 1 in each of the three feeds | 1 |
+
+### Identity
+
+- **Cortex-M33 (emulated)**: the dump images on seven slots and the
+  multi-pass residuals of s0086 and s0407 equal a756578's (16 of 16,
+  exit 0) at each commit; decodes in the counted runs as at a756578 (23,
+  40, 30, 38).
+- **Encoder**: the 45 WAVs equal 70be604's at each commit.
+- **x86-64 and AArch64**: the binaries equal a756578's at each commit, so
+  their records and WAV outputs are a756578's (and 6b8013c's).
+- **A76**: not run (the board is not available).
+
+### Tests and mutants
+
+Mutants in fresh copies of the head (8faab0a), release library tests
+(225), and for the ring also with `--cfg cat_ft8_test_group_one` (`g1`,
+the ring on a host), one log each:
+
+| mutant | rel failing | g1 failing |
+|---|---|---|
+| none (control) | 0 | 0 |
+| r1 the rotation s(m) left out of the row's entry | 6 | |
+| r2 s(m) at the range's end rather than its start (equivalent: constant in the range, asserted) | 0 | |
+| r3 m = 2 reading m = 1's row | 6 | |
+| r4 m = 2 reading the second row of its chunk | 6 | |
+| r5 m = 3's rows in chunks of 4 | 6 | |
+| r6 one range left out | 6 | |
+| e1 (s + m·q) mod 5 for (s + (m·q mod 5)) mod 5 (equivalent) | 0 | |
+| f1 the fifths' index without q | 8 | |
+| f2 k in steps rather than fifths of a step | 6 | |
+| f3 the fifths one entry late | 8 | |
+| t1 the rows one entry late | 7 | |
+| t2 the rows in the turn's order | 7 | |
+| b1 the one-lane table bytes without the rows (equivalent on the hosts) | 0 | |
+| q1 the ring not turned by the rows | 0 (the hosts slide) | 27 |
+| q3 the quarters handed one turn on | | 12 |
+| q4 the first stage's inputs 1 and 2 swapped | 1 | |
+| q5 input 3 one sample on | 1 | |
+| q6 the window slid in the ring too | | 28 |
+| q7 the hosts' window not slid | 27 | |
+
+The transform mutants fail the bit-for-bit transform tests (and the
+table tests where the tables change); q1, q3 and q6 fail the decoder and
+front-end tests that the group-one build runs with the ring, q7 the same
+tests in the hosts' build, and q4 and q5
+`power_bins_quarters_equals_power_bins_bit_for_bit`. On 76874bb the same
+mutants gave the same counts, and one more, the chunk not cut at a
+quarter's end, survived (0 under `g1`), which 8faab0a explains and
+removes; on 16ef2a1 the transform mutants gave one failing test fewer
+each (the quarters' test did not yet exist). The debug assertions and
+the compile-time range checks are not mutated; release tests do not
+compile the former.
+
+### Checks
+
+- Local CI 18 of 18 at 16ef2a1, 76874bb and 8faab0a (fmt; clippy `-D
+  warnings` on the workspace, thumbv8m and all features; workspace,
+  profile, no-std and release tests, with CI's ignored filter; the
+  ignored-test listing; group-one; bulk; MSRV 1.75; docs with and without
+  `std`; `check.sh --stack`; codegen-check 76 of 76 at 16ef2a1, 80 of 80
+  after). The new tests are not ignored.
+
+### Tried, not kept
+
+- **The last stage's other forms** (table above): the remainder by one
+  compare, the hosts' longer turn (+9.1 KB), rows without `black_box`,
+  rows for every stage.
+- **The sync search's running sums through chunk iterators** (each
+  parity's bins as chunks of two, the sum updated before and after each
+  bin): the loop kept bounds checks; sync +19.5%, slot +2.6% against
+  16ef2a1.
+- **A block's quarters as an array** (above).
+
+### What bounds the stages now (Cortex-M33, small image, s0086, per block at 8faab0a)
+
+Of the slot after setup (132.2 M): `min_sum_round` 24.2%; the sync
+search's running sums 10.6% (15 instructions a bin and row); the FFT's
+last stage 11.3% (211 a butterfly), its first stage 7.8% (116 a block),
+second 6.8% (103), third 6.4% (97), radix-3 stage 4.0% (56) and radix-2
+stage 3.1% (25); the bins' powers 4.4% (33 a bin); the levels 1.9%.
+
+### Next candidates (not built)
+
+| candidate | estimate | cost |
+|---|---|---|
+| The sync search's running sums (10.6% of the small slot) | uncertain: the forms measured so far were slower | a loop with post-incremented byte loads, or a row's eight-tone sums shared by the start rows that read it (RAM) |
+| The FFT's first two stages (116 and 103 instructions a radix-4 butterfly, of which 104 and 88 are arithmetic, loads and stores) | a few % of their 14.6% | addresses and spills in the stage loops |
+| The level steps, the rows and the ring on every target, if the A76 agrees | unmeasured | one A76 timing; it would remove the hosts' unused one-lane last stage and the front end's `SCALAR_FORMS` branches |
+| Belief propagation's sums: three bounds checks a variable (O30's list) | about 1% | padded messages (+2 KB RAM) |
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instruction counts only); M4F counts.
+- Any host timing: the hosts' binaries at the head equal a756578's.
+- Other slots than s0086 and s0407 for counts (identity covers seven).
+
+### Risks
+
+- Cortex-M33 flash +7.5 KB (the rows and fifths +3 KB over the turn; the
+  six ranges' code the rest).
+- The ranges' speed depends on `black_box` keeping the row starts out of
+  the loads' offsets: a compiler that sees through it would lose about 2%
+  of the small slot, not correctness (codegen-check `fploop60` and
+  `insns` fail then).
+- The hosts' builds carry an unused one-lane last stage, kept only so
+  that their binaries stay as they were. The hosts' tests run the rows'
+  form, not the kept one, and with another compiler the rows' form might
+  move the hosts' code again if it were built there.
+- The ring relies on `rows.count` advancing once a row and only there,
+  and being 0 when a slot starts (`start_slot`); the row-by-row test
+  checks the ring in the group-one build only, as the hosts' test build
+  slides the window.
