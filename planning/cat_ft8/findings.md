@@ -18290,3 +18290,392 @@ missing.
 - `.text` of all eight binaries equal cad7e87's; the doc lines move panic
   locations only.
 
+## A row's level counts by words, the bins' powers through a reversed iterator and the soft bits' rows once a symbol on the Cortex-M33, thirty-fourth round (O34, bit-identical, 2026-11-04)
+
+Base: 6c81337 (feat/cat-ft8 with O33, O33b and O33c). The Cortex-A76
+board was still not available for timing, so this round again worked on
+the Cortex-M33 (emulated instruction counts on s0086 and s0407), in forms
+only targets without a vector unit compile. Three code commits: a3c2120
+(a row's level counts four levels a word), e94bb6e (the bins' powers
+take Z[N − k − j] from a reversed iterator) and 82e1670 (the soft bits
+look up a symbol's two rows once, not once a tone). Decodes, dumps,
+residuals and encoder output are identical; the x86-64 and AArch64
+binaries of every commit have 6c81337's `.text` and `.rodata`.
+
+| target | measure | 6c81337 | 82e1670 | change |
+|---|---|---|---|---|
+| Cortex-M33, small image | s0086 slot | 128 049 755 | 125 460 639 | **−2.02%** |
+| | s0407 slot | 123 709 387 | 121 085 475 | **−2.12%** |
+| | feed (each slot) | 61 685 083 | 60 327 346 | −2.20% |
+| | soft bits (s0086) | 9 212 975 | 8 067 996 | −12.43% |
+| Cortex-M33, host image | s0086 slot | 1 329 296 094 | 1 321 591 701 | **−0.58%** |
+| | s0407 slot | 1 326 049 289 | 1 318 329 082 | **−0.58%** |
+| x86-64, AArch64 | `.text` and `.rodata` of `cat-ft8-decode` and `paired_bench` | | | unchanged |
+| Cortex-M33 flash | small, host image (`check.sh`) | 101 278, 114 042 B | 101 470, 114 174 B | +192, +132 B |
+| Cortex-M33 RAM | static; stack high water (small, host) | 201 592 B; 10 384, 10 276 B | the same | none |
+
+Emulated instructions of the staged images (whole slot, setup included):
+
+| Cortex-M33 | 6c81337 | a3c2120 | e94bb6e | 82e1670 |
+|---|---|---|---|---|
+| s0086 small | 128 049 755 | 127 013 493 (−0.81%) | 126 684 501 (−1.07%) | 125 460 639 (−2.02%) |
+| s0407 small | 123 709 387 | 122 668 936 (−0.84%) | 122 339 944 (−1.11%) | 121 085 475 (−2.12%) |
+| s0086 host | 1 329 296 094 | 1 325 894 909 (−0.26%) | 1 324 773 797 (−0.34%) | 1 321 591 701 (−0.58%) |
+| s0407 host | 1 326 049 289 | 1 322 647 368 (−0.26%) | 1 321 526 256 (−0.34%) | 1 318 329 082 (−0.58%) |
+
+Per stage (s0086 small; s0407 and the host image the same changes):
+the feed 61 685 083 → 60 655 972 at a3c2120 (−1.67%) → 60 326 980 at
+e94bb6e (−2.20%); the soft bits 9 212 975 → 8 067 996 at 82e1670
+(−12.43%; host image 24 502 800 → 21 457 952). The SNR estimate, whose
+code did not change, fell 0.55% at a3c2120 and 4.34% at 82e1670: it runs
+in `Decoder::pass` beside the soft bits, so its layout moved (O33's
+case). Sync, refine and belief propagation within 0.02%. Decodes (23,
+30, 40, 38) unchanged.
+
+### Baselines
+
+6c81337 was rebuilt from a clean checkout; its small-image counts equal
+cad7e87's (O33b), its dump images on seven slots and the multi-pass
+residuals of s0086 and s0407 equal 042e82a's (16 of 16), and its encoder
+WAVs equal 70be604's (45 of 45). Per-function and per-block counts,
+`check.sh --stack` and the M4F images were taken at 6c81337. Every
+comparison below is against that build.
+
+### The profile at 6c81337 (Cortex-M33, small image, s0086)
+
+Of the slot after setup (119.1 M): `min_sum_round` 26.9% (its checks
+about 21%; its sums 6.2%, 27 instructions a variable, of which three
+bounds checks of two each); the FFT's last stage 12.5%, first stage 8.5%
+(114 a block), radix-4 stages 7.2% (72), radix-3 4.3%, radix-2 3.4%; the
+sync search's pair loop 5.8% (18 a bin); the bins' powers 4.9% (35 and
+34 instructions a bin, of which four address adds, an offset counter
+and a bounds check); the levels 2.1%; `Rows::row` 1.4% (82 663 calls,
+most of them the soft bits': two rows for each of a symbol's eight
+tones, out of line); a row's level counts 1.2% (9 instructions a level:
+a byte load, two compares and two conditional adds, inlined into the
+row).
+
+### A row's level counts four levels a word (a3c2120)
+
+`level_counts` (how many of a row's levels are 0 and 255, for the
+spectrogram's statistics) vectorises on the hosts. Where the target has
+no vector unit (`SCALAR_FORMS`) it now takes the row a word at a time
+(`level_counts_by_words`). In a word w, `!(((w & 0x7F7F7F7F) +
+0x7F7F7F7F) | w | 0x7F7F7F7F)` has bit 7 of each byte set where that
+byte is 0 and every other bit clear: a byte's low seven bits plus 0x7F
+reach bit 7 unless they are all 0, with no carry out of the byte, and
+the byte's own bit 7 is or-ed in. `!w` has a 0 byte where w has 255.
+Each word adds those bits, shifted to bit 0, to four byte lanes; a lane
+counts at most 255 words, so the row goes in blocks of 255 words, each
+block's lanes summed across at its end, and the levels after a block's
+last whole word are counted one by one. Integers: the same counts.
+
+The word loop is 13 instructions on the Cortex-M33 (a load, eight
+logical operations and adds, two accumulating adds with a shifted
+operand, the counter and the branch), against 36 for four levels. The
+feed −1.67%, the small slot −0.81% (s0086) and −0.84% (s0407).
+
+| form (on 6c81337, small image) | loop | s0086 | s0407 |
+|---|---|---|---|
+| 6c81337 (a level at a time) | 9 a level | | |
+| words; a block's last levels one by one (a3c2120) | 13 a word | **−0.809%** | **−0.841%** |
+| words; a block's last levels as one more word, 1s past them | 13 a word | −0.672% | −0.699% |
+
+(The second form has no byte loop, but its last word's assembly, about
+35 instructions, and the row's other code cost more than the loop of at
+most three levels it replaces.)
+
+### The bins' powers through a reversed iterator (e94bb6e)
+
+`powers`' indexed loop (the targets without a vector unit, out of line
+in `bin_powers_out_of_line`) read Z[k + j] and Z[N − k − j] by index
+from the real and imaginary parts. On the Cortex-M33 the compiler shares
+one offset register between the two parts read at the same index, which
+a single-precision load cannot take as an index register, so each load
+took an address add: 35 and 34 instructions a bin, of which four
+address adds and a bounds check. Taking Z[N − k − j] from one reversed
+zip of the two parts' iterators gives those two loads pointers of their
+own: 33 and 31 instructions a bin. The same values (the test of both
+loop forms over ranges with odd and even counts at bins 0, 1, 959, 960,
+961 and 1 919). The feed a further −0.54%, the small slot −0.26% /
+−0.27%.
+
+| form (on 6c81337, small image; loops below and above bin 960) | instructions a bin |
+|---|---|
+| 6c81337 (every slice indexed) | 35, 34 |
+| every iterator zipped (O26) | 42 |
+| the reversed parts by a reversed zip, the rest indexed (e94bb6e) | **33, 31** |
+| the same, the twiddle by `get` ending the loop | 33, 31 |
+| the twiddles zipped to the forward parts | 57, 57 |
+| the forward parts zipped and the reversed zip zipped to them | 33, 35 |
+| each part its own iterator, or a slice split at each end, a bin a step | 41, 41; 34, 38 |
+| two bins a step: indexed, by exact chunks, by chunks taken as arrays, over slices of even length | 67, 67, 62 and 64 a pair |
+
+Two bins a step do not reach the 24 or so that six streams with
+pointer increments would allow: at opt-level "s" the chunks' and
+indices' bounds stay in the loop, and the two parts' shared offset
+still costs an add per load.
+
+### The soft bits' rows once a symbol (82e1670)
+
+`soft_bits_at` took each of a symbol's eight tones through
+`interpolated_tone_power`, which looks up the symbol's two rows
+(`Rows::row`, out of line, about 20 instructions a call) for each tone:
+sixteen calls a symbol. Where the target has no vector unit
+(`SCALAR_FORMS`) the two rows are now looked up once a symbol
+(`row_levels`: none for a row of zero weight, before the first row or
+not filled) and each tone's power is taken from them (`tone_power_of`):
+the same products added in the same order; a symbol with no row present
+is erased, as `interpolated_tone_power`'s `None` erased it at the first
+tone. The hosts keep their form until the Cortex-A76 has timed the
+change. The soft bits −12.43%, `Rows::row`'s count 1.65 M → 0.45 M, the
+small slot a further −0.97% (s0086) and −1.03% (s0407).
+
+`row_levels` builds its array from the two rows by a closure called
+twice: with `rows.map(..)` the array's iterator was left out of line on
+the Cortex-M33 (0.19 M more instructions; the slot −0.70% rather than
+−0.97%).
+
+### Belief propagation's sums without bounds checks (measured, not merged)
+
+`sums` adds each variable's three messages, read at `VAR_EDGES`' `u16`
+indices into the 522 messages: three bounds checks a variable (6 of 27
+instructions; the sums are 6.2% of the small slot). Two layouts give
+indices the compiler can bound: both mask the index to 1 024 entries.
+
+- **Padded messages**: `msg` padded to 1 024 entries, each index masked
+  to 10 bits (the padding never read; only the edges' 522 zeroed a
+  decode). 22 instructions a variable.
+- **Messages and totals in one array**: one array of 1 024 entries
+  holding the messages at 0..522 and the totals (`Totals`, 256) at
+  768..1 024, the sums' indices masked into it and each total written at
+  768 + i. 21 instructions a variable. The other phases take the two
+  parts as before (`split_at_mut`).
+
+Both on 82e1670, Cortex-M33, the same decodes:
+
+| layout | static RAM (small, host) | s0086 small | s0407 small | s0086 host | belief propagation (s0086 small) |
+|---|---|---|---|---|---|
+| 82e1670 | 201 592, 230 008 B | 125 460 639 | 121 085 475 | 1 321 591 701 | 34 172 336 |
+| padded messages | +1 716 B | −0.33% | −0.23% | −0.08% | −1.75% |
+| one array | **+692 B** | **−0.72%** | **−0.65%** | **−0.16%** | **−2.72%** |
+
+`BpScratch` shares its storage with OSD-1's (`Work`), so the static
+growth is less than the arrays' own (padded: +2 008 B of messages, +1 716
+B static; one array: +984 B, +692 B static). The padded form's slot
+change mixes in the SNR stage's layout (+8.6% there, its code
+unchanged); belief propagation's own change is the last column. Both
+change the hosts' rounds (the same layout on every target) and so need
+the Cortex-A76; neither is merged. The trade is +0.7 KB of RAM for about
+−0.7% of the small slot.
+
+### `gather` simplified (kept apart for the Cortex-A76)
+
+`gather`, a visitor since O29b so that the Cortex-M33's unpaired search
+could take each row's running sums as it read the row, has one caller
+since 1f7feb0: `costas_scores_by_columns`, the hosts' column form, which
+keeps the rows in arrays of its own. The visitor's loop written into
+that function (the same rows, sent tones, scale and `None`) changes the
+hosts' `select` closure: x86-64 872 → 876 instructions and AArch64 893
+→ 910 (register allocation in the rows' set-up; the column loops as
+before; in three orders of the statements tried, the same 876). The
+Cortex-M33 does not compile it (its images are equal). The hosts' run
+records and decode output equal O30's references; x86-64 time is below.
+It is kept off this branch until the Cortex-A76 has timed it.
+
+### Sizes and memory
+
+| image | 6c81337 | a3c2120 | e94bb6e | 82e1670 |
+|---|---|---|---|---|
+| M33 small (`check.sh`, flash) | 101 278 | 101 438 (+160) | 101 394 (−44) | 101 470 (+76) |
+| M33 host | 114 042 | 114 202 (+160) | 114 158 (−44) | 114 174 (+16) |
+| M33 encoder only | 35 186 | 35 186 | 35 186 | 35 186 |
+| M4F small (text) | 101 564 | 101 704 (+140) | 101 660 (−44) | 101 768 (+108) |
+| M4F host | 114 552 | 114 692 (+140) | 114 648 (−44) | 114 768 (+120) |
+
+Static RAM unchanged (201 592 and 230 008 B). Stack high water in the
+staged images unchanged (small 10 384 B, host 10 276 B);
+`check.sh --stack`'s largest frames as at 6c81337. No fused
+multiply-add (`vmla` 223 / 336 / 17 at every commit). M4F library calls
+`fmaxf`/`fminf` 10 and 14 at every commit; no `f64` helper.
+
+### The code-generation check
+
+New metrics: `lowmaskloopN` (the shortest loop with at least N
+instructions that take 0x7F7F7F7F as an immediate, at most the bound)
+and `rowcallloop` (the shortest loop that calls `Rows::row`, at least
+the bound).
+
+- a3c2120: `m33s 10finish_row lowmaskloop2 14` (13); `finish_row insns`
+  1 076 (1 067: the word loop and its blocks add 56; 1 020 before).
+- e94bb6e: `m33s bin_powers_out_of_line fploop4 32` (31, the shorter of
+  the two loops; 34 before).
+- 82e1670: `m33s soft_bits_at rowcallloop 70` (82, the loop over the
+  symbols; with the rows looked up a tone, 15, the loop over a tone's
+  rows). 101 entries.
+
+Forced forms, each a fresh copy with one edit, its own log and the
+check's exit status (e94bb6e's forms on e94bb6e, the soft bits' and a
+repeat of three on 82e1670):
+
+| form | failing entries | exit |
+|---|---|---|
+| head (e94bb6e; 82e1670) | none (100 of 100; 101 of 101) | 0 |
+| the hosts' level counts on the Cortex-M33 | `lowmaskloop2`: no such loop | 1 |
+| the words' lanes summed at every word | `lowmaskloop2` 23 | 1 |
+| 6c81337's bins' powers (every slice indexed) | `fploop4` 34 | 1 |
+| the soft bits' rows looked up a tone | `rowcallloop` 15 | 1 |
+| 042e82a's radix-4 stages | `finish_row` 1 084 (ceiling 1 076), `vmuladdloop12x0p`, `vmuladdloop8x40` | 1 |
+| k = l/2 through `black_box` | 24 divisions, 1 583 instructions, `vmuladdloop8x40` | 1 |
+| k = l/2 by its index in its branch | none (the compiler folds it) | 0 |
+| k = 0 not on its own | `vmuladdloop0x34`, `vmuladdloop8x40` | 1 |
+| no pairs | `add_row_alone`, `add_row_pair` not found | 1 |
+| the pairs' neighbours through `select`'s closure | `6search` 3 divisions | 1 |
+| the pair loop both parities side by side | `add_row_pair` no loop of four byte loads | 1 |
+| `select_paired` out of line | `13select_paired17` out of line | 1 |
+| 042e82a's radix-4 stages, the entry without `p` | `finish_row` 1 084, `vmuladdloop8x40` | 1 |
+| head, the entry without `p` | none | 0 |
+
+O33b's forms fail as before under the raised `finish_row` ceiling (the
+unturned stages' row is 1 084 now). The i686 entries pass at every
+commit.
+
+### Identity
+
+- **Cortex-M33 (emulated)**: the dump images on seven slots and the
+  multi-pass residuals of s0086 and s0407 equal 6c81337's (16 of 16,
+  exit 0) at a3c2120, e94bb6e and 82e1670; decodes in the counted runs as
+  at 6c81337.
+- **Encoder**: the 45 WAVs equal 70be604's at each commit.
+- **x86-64 and AArch64**: `.text` and `.rodata` of the four host
+  binaries equal 6c81337's at each commit; every function equal. The
+  only differences are panic `Location` lines: none at a3c2120, five in
+  fft.rs (+3) at e94bb6e and 82e1670. At e94bb6e and 82e1670 the run
+  records (24 600 each for host, host with one pass, small) and the
+  decode command's output over the 800 WAVs (95 491 lines) equal O30's
+  6b8013c references.
+- **A76**: not run (the board is not available).
+
+### Tests and mutants
+
+New tests: `level_counts_equal_the_filtered_counts` takes both count
+forms over 26 widths (0 to 5, 7, 8, 15 to 17, 31 to 33, 255, 256, 880,
+976, 1 016, 1 019 to 1 021, 1 023, 1 024, 1 919, 1 920) and seven kinds
+of row (no 0 or 255, all 0, all 255, a mix, random, random without 0
+and 255, and the bytes next to the masks: 0, 1, 0x7F, 0x80, 0x81,
+0xFE, 0xFF); `level_counts_equal_the_filtered_counts_widely` (ignored,
+run by CI in release) every width to 3 061.
+`tone_powers_from_rows_looked_up_once_equal_the_interpolated_powers`:
+the two soft-bit forms bit for bit at every tone, row offsets either
+side of the grid and on it, rows before the first and past the last
+filled, base bins at both band edges and inside, in a full and a part
+slot.
+
+Mutants in fresh copies (l and b of e94bb6e, s of 82e1670), release
+library tests (235 at e94bb6e, 236 at 82e1670), and where the scalar
+form matters also with `--cfg cat_ft8_test_group_one` (`g1`: the hosts
+then take the forms without a vector unit), one log each:
+
+| mutant | rel failing | g1 failing |
+|---|---|---|
+| none (control) | 0 | 0 |
+| l1 mask 0x7F7F7F7E | 1 | 1 |
+| l2 the word's own bit 7 not or-ed in | 1 | |
+| l3 blocks of 256 words | 1 | |
+| l4 the 255s counted from w, not !w | 1 | |
+| l5 the lanes' upper pair dropped | 1 | |
+| l6 a block's first level after its words skipped | 1 | |
+| l7 shifted by 8, not 7 | 1 | |
+| l8 the last levels' top at 254 | 1 | |
+| l9 one lane's mask 0x7F | 1 | |
+| l10 the hosts' counts without a vector unit (equivalent in values) | | 0 |
+| b1 the reversed parts not reversed | 1 | 24 |
+| b2 their real and imaginary parts swapped | 1 | |
+| b3 the twiddles reversed | 1 | |
+| b4 the reversed parts one bin short | 1 | |
+| s1 a row of zero weight looked up | 1 | |
+| s2 erased if any row is missing | 0 | 1 |
+| s3 the tone's bin offset by the tone, not twice | 1 | |
+| s4 the two rows swapped | 1 | |
+| s5 the row offsets negated | 1 | |
+| s6 the band's last bin left out | 1 | |
+| s7 the hosts' form without a vector unit (equivalent in values) | | 0 |
+
+s2 is in `soft_bits_at`'s scalar branch, which the hosts reach only
+under the group-one cfg; l10 and s7 change the code, not the values,
+and are the forced forms above.
+
+### Checks
+
+- Local CI 19 of 19 at a3c2120, e94bb6e and 82e1670 (O31b's steps;
+  codegen-check, with its i686 entries, 100, 100 and 101 of the same).
+  The ignored step runs the new `_widely` test.
+- x86-64 `perf stat` of `paired_bench slotcost` (aligned builds, core 5,
+  the x86 lock held exclusively, 4 rounds alternated, no void sample),
+  medians and ranges, 6c81337 against 82e1670: small 84.39 G cycles
+  (83.92–85.09) → 83.79 G (83.66–83.96), −0.71%; host and host with one
+  pass 289.85 G (288.95–290.72) → 290.77 G (289.07–290.96), +0.32%.
+  Instructions within 0.003%. The code is the same (`.text` equal), so
+  this is the rounds' spread. `gather` simplified, in the same rounds:
+  small 84.50 G (83.92–85.01), +0.13%; host 288.57 G (288.07–290.88),
+  −0.44%; instructions within 0.003%: within the spread.
+
+### Tried, not kept
+
+- **A block's last levels as one word** (1s past them, no byte loop):
+  −0.67% / −0.70% against the loop's −0.81% / −0.84%.
+- **Other loop forms for the bins' powers** (the table above): none
+  below 33 and 31.
+- **`row_levels` by `rows.map`**: its iterator out of line (−0.70%
+  rather than −0.97% for the soft bits' change).
+- **Belief propagation's sums masked** (both layouts above): measured;
+  RAM and the hosts' rounds, so not merged.
+- **Min-sum's magnitudes by `vabs` or the sign bit**: not built. A
+  message's bits depend on the magnitude's sign of zero (−0.0 for an
+  input of −0.0, which the first round gives for a soft bit of −0.0
+  less a message of +0.0); `vabs` gives +0.0. Nothing here rules out a
+  soft bit of −0.0, and a form that keeps the sign costs about what it
+  saves.
+
+### What bounds the stages now (Cortex-M33, small image, s0086, at 82e1670)
+
+Of the slot after setup (116.5 M): `min_sum_round` 27.5% (the sums 6.3%,
+27 instructions a variable); the FFT's last stage 12.8%, first stage
+8.5%, radix-4 stages 7.3% (72 a butterfly), radix-3 4.4% (55), radix-2
+3.5% (25); the sync search's pair loop 6.0% (18 a bin) and single rows
+1.8% (25); the bins' powers 4.7% (31 and 33 a bin); the levels 2.1%
+(15 a bin); the soft bits 6.9%.
+
+### Next candidates (not built)
+
+| candidate | estimate | cost |
+|---|---|---|
+| Belief propagation's sums masked, messages and totals in one array | −0.7% (M33 small), −0.16% (host image) | +692 B static RAM; the hosts' rounds change: needs the A76 |
+| The soft bits' rows once a symbol on every target | unmeasured on the hosts | one A76 timing; then `interpolated_tone_power`'s per-tone lookup is the SNR's alone |
+| `gather` simplified (kept apart) | none (the hosts' set-up only) | one A76 timing |
+| The level steps, the rows and the ring on every target, if the A76 agrees | unmeasured | one A76 timing |
+| The bins' powers with pointer increments for all six streams | up to −0.8% (M33) | no safe form found at opt-level "s" |
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instruction counts only): the word loop
+  trades byte loads and conditional adds for one word load and logical
+  operations, which a cycle count would weigh differently; the soft
+  bits' change removes calls and returns, which cost more cycles than
+  instructions on a pipeline that refills.
+- Any host timing beyond x86-64: the hosts' code at every commit is
+  6c81337's.
+- Other slots than s0086 and s0407 for counts (identity covers seven).
+
+### Risks
+
+- The level counts' masks assume a byte's low seven bits plus 0x7F
+  carry no further than its bit 7; a change to the lanes' block size
+  past 255 words would overflow a lane (mutant l3; the widths 1 020 and
+  1 024 in the tests).
+- The scalar soft bits are a second form of `interpolated_tone_power`'s
+  sum; the test holds them equal bit for bit, and the hosts reach the
+  scalar form only under the group-one cfg (s2 is caught there alone).
+- The sync search, the level counts, the bins' powers and now the soft
+  bits each have a form for the targets without a vector unit; the A76
+  timing decides which become the only form.

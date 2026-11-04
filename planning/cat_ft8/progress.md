@@ -2657,3 +2657,48 @@
   without `--include-ignored`.
 - O33c (closing review): `insert_ranked!` fragments as names, its comment
   citing the Cortex-M33 cost; wording.
+
+## Session: 2026-11-04 (O34 the level counts by words, the bins' powers through a reversed iterator, the soft bits' rows once a symbol)
+
+- The Cortex-A76 board was still not available; the round worked on the
+  Cortex-M33 (emulated counts, s0086 and s0407) in forms only targets
+  without a vector unit compile; the hosts' `.text` and `.rodata` equal
+  6c81337's at every commit.
+- M33 references rebuilt at 6c81337 (dumps and residuals equal
+  042e82a's; counts equal cad7e87's); profiled per block: min-sum 26.9%
+  (its sums 6.2%, three bounds checks a variable), the bins' powers 4.9%
+  (35 and 34 a bin), `Rows::row` 1.4% (sixteen calls a symbol from the
+  soft bits), the level counts 1.2% (9 a level).
+- a3c2120: without a vector unit a row's level counts go four levels a
+  word (masks that mark each 0 byte in bit 7, byte lanes summed every 255
+  words): 13 instructions a word. Feed −1.67%, small slot −0.81% / −0.84%.
+- e94bb6e: the bins' powers' indexed loop takes Z[N − k − j] from a
+  reversed zip of the parts' iterators: 33 and 31 a bin. Small slot a
+  further −0.26% / −0.27%.
+- 82e1670: without a vector unit the soft bits look up a symbol's two
+  rows once, not once a tone (`row_levels`, `tone_power_of`; the same
+  sums in the same order). Soft bits −12.4%, small slot a further
+  −0.97% / −1.03%.
+- Head: small slot −2.02% / −2.12%, host image −0.58%; flash +192 B
+  (small), +132 B (host); RAM and stack unchanged.
+- Identity 16 of 16 and encoder 45 at each commit; hosts' records and
+  WAV output equal 6b8013c's at e94bb6e and 82e1670; local CI 19 of 19
+  at each; codegen-check 101 entries (`lowmaskloopN`, `rowcallloop`
+  new; `finish_row` 1 076, the bins' loop 32), every forced form fails;
+  mutants caught (l10, s7 equivalent; s2 under group one only); x86-64
+  time 6c81337 → 82e1670 within the rounds' spread (small −0.71%, host
+  +0.32%; the same `.text`).
+- Measured, not merged: belief propagation's sums with their indices
+  masked: messages padded to 1 024 (+1 716 B static RAM, belief
+  propagation −1.75%, small slot −0.33%) or messages and totals in one
+  array of 1 024 (+692 B, −2.72%, −0.72%). Both change the hosts'
+  rounds.
+- Kept apart for the A76: `gather` written into its one caller (the
+  hosts' `select` closure 872 → 876 instructions on x86-64; M33 images
+  equal).
+- Tried, not kept: a block's last levels as one more word (−0.67%);
+  other loop forms for the bins' powers (none below 33 and 31);
+  `rows.map` in `row_levels` (its iterator out of line).
+- Open: the A76 (the soft bits on every target, `gather`, the masked
+  sums, the level steps and the ring); the min-sum checks (21% of the
+  small slot) have no bit-exact shorter form found.
