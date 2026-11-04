@@ -188,9 +188,10 @@ jobs:
         # conversion (exp2_neg, the waveform's phase increment) against
         # truncation and the levels by steps against the logarithm; and
         # decode_soft against its first form over 3 000 vectors.
-        # #[ignore]d like the bulk run; about a minute and a half together
-        # in release (16 threads). Every such test ends in `_everywhere`.
-        run: cargo test --release -p cat-ft8 --lib -- --ignored _everywhere
+        # #[ignore]d like the bulk run; a few minutes together in release,
+        # two of them single-threaded. Every such test ends in
+        # `_everywhere`, or `_widely` for a wide sample.
+        run: cargo test --release -p cat-ft8 --lib -- --ignored _everywhere _widely
 
   ft8-aarch64:
     name: cat-ft8 on aarch64 (Linux)
