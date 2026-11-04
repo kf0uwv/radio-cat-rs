@@ -104,8 +104,12 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # `add2d` counts two-lane 64-bit vector adds (`add` on `.2d`), at least the
 # bound;
 # `insns` counts the function's instructions, at most the bound;
-# `fpbranches` counts floating-point compares (`fcmp`) followed at once by
-# a conditional branch (AArch64), at most the bound;
+# `fpbranches` counts floating-point compares (`fcmp` on AArch64, `ucomiss`
+# and `comiss` on x86-64) followed at once by a conditional branch
+# (`b.cond`, `jcc`), at most the bound: a narrow pattern, which does not
+# see a compare whose branch comes later or takes another form (`fccmp`,
+# `csel` then `cbnz`), so it guards against the one form the compiler
+# gave, and needs the `absent` checks on what it inlines;
 # `mulloopN` counts the instructions of the shortest loop with at least N
 # four-lane multiplies (`mulps`; x86-64 only), at most the bound, and a
 # function with no such loop fails it likewise;
@@ -147,10 +151,20 @@ checks=(
   "m33s min_sum_round sumloop1 31"
   # The sum-product inputs likewise, one edge at a time.
   "m33s sum_product_round sumloop1 10"
-  # The stopping test's hard decisions without a branch on each value's sign (3 with it); it passes if the test moves out of line.
+  # The stopping test's hard decisions without a branch on each value's sign (4 with it); it reads `decode_soft` only, so the two checks after it.
   "a64 decode_soft fpbranches 0"
-  # The same in the release form.
+  # The stopping test inlined into `decode_soft`, so the check above cannot pass with it elsewhere.
+  "a64 checks_hold absent 0"
+  # The hard decision likewise.
+  "a64 hard_bit absent 0"
+  # The same three in the release form (3 with the branch).
   "a64r decode_soft fpbranches 0 one"
+  "a64r checks_hold absent 0"
+  "a64r hard_bit absent 0"
+  # The same three on x86-64 (`ucomiss` then a jump; 15 with the branch).
+  "x64 decode_soft fpbranches 0"
+  "x64 checks_hold absent 0"
+  "x64 hard_bit absent 0"
   # The removal's clamp as four-lane fmaxnm/fminnm.
   "a64 7Removal4refs minmax 2"
   # The time search's clamp likewise.
@@ -273,9 +287,11 @@ for entry in "${checks[@]}"; do
   # Prints the count, "missing" if no function's label holds `seg`, or,
   # for a check marked `one`, "many" if more than one does.
   n=$(awk -v f="$seg" -v metric="$metric" -v only="$only" '
-    # A function ends at its end label or at the next global label.
-    /^\.Lfunc_end[0-9]+:/ { p = 0; next }
-    /^[A-Za-z_][^ \t]*:$/ { p = index($0, f) > 0; if (p) found++; delete at; next }
+    # A function ends at its end label or at the next global label;
+    # `fpbranches` forgets a compare there, so it cannot pair with a
+    # branch at the start of the next function.
+    /^\.Lfunc_end[0-9]+:/ { p = 0; fcmp = 0; next }
+    /^[A-Za-z_][^ \t]*:$/ { p = index($0, f) > 0; if (p) found++; delete at; fcmp = 0; next }
     !p { next }
     metric ~ /^(sumloop|fploop|cvtloop|memsums|shortloop|mulloop)/ && /^\.[A-Za-z0-9_$]+:/ {
       sub(/:.*/, ""); at[$0] = k; atb[$0] = bytes; atf[$0] = fps; atc[$0] = cvs
@@ -320,8 +336,8 @@ for entry in "${checks[@]}"; do
     metric == "calls_within_limit" && /^\tbl\t.*within_limit/ { n++; nf[found]++ }
     metric == "insns" && /^\t[a-z]/ { n++; nf[found]++ }
     metric == "fpbranches" && /^\t[a-z]/ {
-      if (fcmp && $1 ~ /^b\.[a-z]+$/) { n++; nf[found]++ }
-      fcmp = $1 == "fcmp"
+      if (fcmp && ($1 ~ /^b\.[a-z]+$/ || ($1 ~ /^j[a-z]+$/ && $1 != "jmp"))) { n++; nf[found]++ }
+      fcmp = $1 ~ /^(fcmp|u?comiss)$/
     }
     metric == "ldn" && /^\tld[234]\t/ { n++; nf[found]++ }
     metric == "vec2" && /^\t[a-z][^\t]*\t.*\.2d/ { n++; nf[found]++ }
