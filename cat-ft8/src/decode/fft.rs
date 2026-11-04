@@ -660,9 +660,10 @@ fn turned_products(ar: f32, ai: f32, [wr, wi]: [f32; 2]) -> [f32; 4] {
 /// ai·w′r), for w′ = w turned `quarters` quarter turns clockwise (times
 /// (−i)^`quarters`: (wi, −wr), (−wr, −wi), (−wi, wr)), from
 /// [`turned_products`] of w. Each is the same operation on the same
-/// operands, bit for bit, the sign of zero included: a product by −w is
-/// the product by w negated (exact), x − (−y) is x + y, and −x + y is
-/// y − x. With p = [A, B, A′, B′], turn r reads (p[r], p[r + 1 mod 4]).
+/// operands, bit for bit (non-NaN), the sign of zero included: a product
+/// by −w is the product by w negated (exact), x − (−y) is x + y, and
+/// −x + y is y − x. With p = [A, B, A′, B′], turn r reads
+/// (p[r], p[r + 1 mod 4]).
 #[inline(always)]
 fn turned(p: [f32; 4], quarters: usize) -> (f32, f32) {
     match quarters % 4 {
