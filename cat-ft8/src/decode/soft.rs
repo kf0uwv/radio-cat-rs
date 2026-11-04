@@ -251,6 +251,9 @@ pub fn soft_bits_at(
     let bins = straddle(i32::from(candidate.base), frac_bin);
     fill_and_scale(target, llr, |k, v| {
         let centre = i32::from(candidate.start_row) + 2 * k as i32;
+        // Temporary, pending the Cortex-A76's timing of this form on the
+        // hosts; not a vector/scalar split: neither form depends on a
+        // vector unit.
         if SCALAR_FORMS {
             let levels = row_levels(spec, centre, &rows);
             if levels.iter().all(Option::is_none) {

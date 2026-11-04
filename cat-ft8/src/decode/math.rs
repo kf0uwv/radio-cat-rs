@@ -245,13 +245,29 @@ pub(crate) const LANES: usize = 4;
 pub(crate) const VECTOR: bool = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
 
 /// Whether the per-target forms take their side for targets without a
-/// vector unit: the subtraction's reference layout (a group of one), its
-/// time search's sums (one lane at a time) and the generator's fused
-/// overlap runs, and the sync search's running sums along the bins. That is
-/// `!VECTOR`, and also the tests built with
+/// vector unit. That is `!VECTOR`, and also the tests built with
 /// `--cfg cat_ft8_test_group_one`, so that a host runs those forms end to
-/// end. (`CHAINS`, the grouped running sum and the other `VECTOR` choices,
-/// such as belief propagation's, keep the host's.)
+/// end. `!VECTOR` is the Cortex-M33 measured, and also 32-bit x86 and
+/// 32-bit ARM, whose results are the same by construction (each fork gives
+/// the same values either way) but which are timed in neither form. The
+/// forks it gates, each with why the hosts keep the other side:
+///
+/// - the subtraction's reference layout, a group of one (`GROUP`): vector;
+/// - the time search's sums one lane at a time (`correlation`): vector;
+/// - the phases' quarter turns by `f32` selects (`cos_sin_turns_times`):
+///   vector;
+/// - the generator's fused overlap runs (`FUSED_SUM`): vector;
+/// - the sync search's paired running sums (`search_rows`,
+///   `scratch_width`): vector;
+/// - the bins' powers' indexed loop, out of line (`bin_powers`): vector;
+/// - a row's level counts four levels a word (`level_counts`): vector;
+/// - a row's levels by a guess and one step (`finish_row`, and the steps'
+///   table in `TABLE_BYTES`): pending A76;
+/// - the soft bits' rows looked up once a symbol (`soft_bits_at`): pending
+///   A76.
+///
+/// (`CHAINS`, the grouped running sum and the other `VECTOR` choices, such
+/// as belief propagation's, keep the host's.)
 pub(crate) const SCALAR_FORMS: bool = !VECTOR || cfg!(all(test, cat_ft8_test_group_one));
 
 // sin(2πt) = t·(S1 + S3·t² + S5·t⁴) and cos(2πt) = C0 + C2·t² + C4·t⁴:
