@@ -830,6 +830,77 @@ fn last_rows_give_the_last_stage_its_twiddles_in_every_range() {
     assert_eq!(covered, LAST_L);
 }
 
+#[test]
+fn fifth_twiddles_turn_exactly_off_the_axes() {
+    // Off the axes, a quarter turn on (N/20 entries on) is (wi, −wr) of
+    // the entry, bit for bit: what `turned_butterfly` takes. On them (the
+    // entries a multiple of N/20) it is not, so a radix-4 stage's k = 0
+    // and l/2 run on their own; `off_the_axes` names the k that do not.
+    const QUARTER: usize = N / 4 / FIFTH;
+    let len = FIFTH_TWIDDLES.len();
+    let mut on_axes = 0;
+    for (i, &[wr, wi]) in FIFTH_TWIDDLES.iter().enumerate() {
+        let turned = FIFTH_TWIDDLES[(i + QUARTER) % len].map(f32::to_bits);
+        if i % QUARTER == 0 {
+            assert_ne!(turned, [wi, -wr].map(f32::to_bits), "i {i}");
+            on_axes += 1;
+        } else {
+            assert_eq!(turned, [wi, -wr].map(f32::to_bits), "i {i}");
+        }
+    }
+    assert_eq!(on_axes, 4);
+    // A radix-4 stage's k whose twiddles of q = 0 are all off the axes:
+    // every k but 0 and l/2.
+    for l in [4, 16] {
+        let k_fifths = N / (4 * l) / FIFTH;
+        for k in 0..l {
+            let off = (1..4).all(|m| (m * k * k_fifths) % QUARTER != 0);
+            assert_eq!(off_the_axes(4, k * k_fifths), off, "l {l} k {k}");
+            assert_eq!(off, k != 0 && k != l / 2, "l {l} k {k}");
+        }
+    }
+}
+
+#[test]
+fn turned_products_are_the_products_of_the_turned_twiddle_bit_for_bit() {
+    // a·w′ as `straight_butterfly` computes it, for w′ = w turned r quarter
+    // turns, against `turned` of `turned_products` of w: every bit, the
+    // sign of zero included, where products cancel exactly and with
+    // signed zeros, subnormals and the largest inputs.
+    let product = |ar: f32, ai: f32, [wr, wi]: [f32; 2]| (ar * wr - ai * wi, ar * wi + ai * wr);
+    let turn = |[wr, wi]: [f32; 2]| [wi, -wr];
+    let mut seed = 0x3c6e_f372_fe94_f82bu64;
+    let mut values = std::vec![0.0f32, -0.0, 1.0, -1.0, 0.75, -0.5, 1e-39, -1e-39, 1.25e8, -3.0e9];
+    for _ in 0..24 {
+        values.push(noise(&mut seed));
+    }
+    let mut twiddles: Vec<[f32; 2]> = FIFTH_TWIDDLES.iter().step_by(7).copied().collect();
+    twiddles.extend([
+        [0.5, 0.5],
+        [-0.5, 0.5],
+        [0.0, -0.0],
+        [-0.0, 0.0],
+        [1.0, 1.0],
+    ]);
+    let bits = |(a, b): (f32, f32)| (a.to_bits(), b.to_bits());
+    for &w in &twiddles {
+        for &ar in &values {
+            for &ai in &values {
+                let p = turned_products(ar, ai, w);
+                let mut w_r = w;
+                for r in 0..8 {
+                    assert_eq!(
+                        bits(turned(p, r)),
+                        bits(product(ar, ai, w_r)),
+                        "a ({ar:e}, {ai:e}) w {w:?} r {r}"
+                    );
+                    w_r = turn(w_r);
+                }
+            }
+        }
+    }
+}
+
 /// Inputs for the stages after the first, each named: noise at several
 /// scales, signed zeros mixed with values, subnormals, the largest values
 /// the front end passes (±2¹⁶ · N) and impulses.

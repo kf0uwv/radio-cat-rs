@@ -29,8 +29,10 @@
 //!   take them together (the last stage, whose twiddles are strided, as a
 //!   plain loop the compiler vectorises, over a table that runs past one
 //!   turn); with one lane ([`ONE_LANE`]), each butterfly is written out
-//!   term by term and the first stage reads the window as its four
-//!   quarters. Each butterfly keeps its own operations in the same order,
+//!   term by term, the first stage reads the window as its four quarters
+//!   and the radix-4 stages take an input's products once for every
+//!   quarter turn of its twiddle (the same operations on the same
+//!   operands). Each butterfly keeps its own operations in the same order,
 //!   so the result does not depend on the group size, the lane count or
 //!   the target.
 //! - **Real split.** The 3 840 real samples are packed as 1 920 complex
@@ -625,6 +627,85 @@ macro_rules! straight_butterfly {
     }};
 }
 
+/// Whether every twiddle of q = 0 a radix-`radix` stage reads at the k
+/// whose k·(N/span)/5 is `k_fifths`, W_N^(5·m·k_fifths) for m = 1 ..
+/// `radix`, lies off the axes: its index in [`FIFTH_TWIDDLES`] is not a
+/// multiple of N/20 (a quarter turn). Off the axes the table turns
+/// exactly: entry i + N/20 is (wi, −wr) of entry i = (wr, wi), bit for bit
+/// (checked by a test); on them it holds ±1 and a rounding residue (as
+/// 2.8·10⁻¹⁶ for cos(π/2)), which a quarter turn does not carry to the
+/// next. So there [`turned_butterfly`] gives every product of `stage`.
+const fn off_the_axes(radix: usize, k_fifths: usize) -> bool {
+    let mut m = 1;
+    while m < radix {
+        if (m * k_fifths) % (N / 4 / FIFTH) == 0 {
+            return false;
+        }
+        m += 1;
+    }
+    true
+}
+
+/// The products of input a = (`ar`, `ai`) and the twiddle w = (wr, wi)
+/// a butterfly needs for every quarter turn of w, as [`turned`] reads
+/// them: with x₁ = ar·wr, x₂ = ai·wi, x₃ = ar·wi, x₄ = ai·wr,
+/// [x₁ − x₂, x₃ + x₄, x₂ − x₁, −x₃ − x₄].
+#[inline(always)]
+fn turned_products(ar: f32, ai: f32, [wr, wi]: [f32; 2]) -> [f32; 4] {
+    let (x1, x2, x3, x4) = (ar * wr, ai * wi, ar * wi, ai * wr);
+    [x1 - x2, x3 + x4, x2 - x1, -x3 - x4]
+}
+
+/// a·w′ as [`straight_butterfly`] computes it (ar·w′r − ai·w′i, ar·w′i +
+/// ai·w′r), for w′ = w turned `quarters` quarter turns clockwise (times
+/// (−i)^`quarters`: (wi, −wr), (−wr, −wi), (−wi, wr)), from
+/// [`turned_products`] of w. Each is the same operation on the same
+/// operands, bit for bit, the sign of zero included: a product by −w is
+/// the product by w negated (exact), x − (−y) is x + y, and −x + y is
+/// y − x. With p = [A, B, A′, B′], turn r reads (p[r], p[r + 1 mod 4]).
+#[inline(always)]
+fn turned(p: [f32; 4], quarters: usize) -> (f32, f32) {
+    match quarters % 4 {
+        0 => (p[0], p[1]),
+        1 => (p[1], p[2]),
+        2 => (p[2], p[3]),
+        _ => (p[3], p[0]),
+    }
+}
+
+/// One radix-`$radix` (2 or 4) butterfly as [`straight_butterfly`] writes
+/// it, from `$w`, the twiddles of q = 0 (entry m − 1 for m), off the axes
+/// ([`off_the_axes`]). The twiddle of (m, q) is that of (m, 0) turned
+/// (4/R)·m·q quarter turns, so each input's four products
+/// ([`turned_products`]) serve every q: 4 multiplies an input rather than
+/// 4·R, and R − 1 twiddles a k rather than R·(R − 1). The values, and the
+/// order in which output q adds them, are [`straight_butterfly`]'s.
+macro_rules! turned_butterfly {
+    ($re:ident, $im:ident, $stride:expr, $radix:literal, $ms:tt, [$($q:tt)*], $w:ident) => {{
+        let ar = straight_butterfly!(@load $re, $stride, $ms);
+        let ai = straight_butterfly!(@load $im, $stride, $ms);
+        let p = turned_butterfly!(@products ar, ai, $w, $ms);
+        $(
+            let (sr, si) = turned_butterfly!(@sum ar, ai, p, $radix, $q, $ms);
+            $re[$q * $stride] = sr;
+            $im[$q * $stride] = si;
+        )*
+    }};
+    (@products $ar:ident, $ai:ident, $w:ident, [$($m:tt)*]) => {
+        [$(turned_products($ar[$m], $ai[$m], $w[$m - 1])),*]
+    };
+    (@sum $ar:ident, $ai:ident, $p:ident, $radix:literal, $q:tt, [$($m:tt)*]) => {{
+        let mut sr = $ar[0];
+        let mut si = $ai[0];
+        $(
+            let (pr, pi) = turned($p[$m - 1], (4 / $radix) * $m * $q);
+            sr += pr;
+            si += pi;
+        )*
+        (sr, si)
+    }};
+}
+
 /// The twiddles of (m, q) for m in `$ms`, q in `$qs` (one row per m), from
 /// [`FIFTH_TWIDDLES`], for the k whose k·(N/span)/5 is `$k_fifths`.
 macro_rules! straight_twiddles {
@@ -649,6 +730,16 @@ macro_rules! straight_twiddles {
 /// slot took 0.50% fewer instructions, most of it in the second stage
 /// (a quarter of its butterflies), for about 1 KB of code (rustc 1.93.0,
 /// opt-level "s"; findings O32).
+///
+/// The radix-4 stages (`turned`) take the twiddles of q = 0 alone at
+/// every other k but l/2 ([`turned_butterfly`]): three twiddles a k
+/// rather than twelve, which stay in registers across the blocks, and 12
+/// multiplies a butterfly rather than 48. At k = l/2 the twiddle of m = 2
+/// lies on an axis ([`off_the_axes`]), so that k runs on its own as k = 0
+/// does. On the Cortex-M33 a butterfly at those k took 72 instructions
+/// against 103 and 95 (16 of whose loads reloaded twiddles from the
+/// stack), and the slot 2.96% fewer (s0086; findings O33). The radix-2
+/// stage's loop was no shorter turned (25 instructions), so it is not.
 macro_rules! straight_stage {
     ($re:ident, $im:ident, $radix:literal, $l:literal, $ms:tt, $qs:tt) => {{
         const SPAN: usize = $radix * $l;
@@ -660,6 +751,49 @@ macro_rules! straight_stage {
             straight_stage!(@blocks $re, $im, $radix, $l, $ms, $qs, k);
         }
     }};
+    // Radix 4: at every k but 0 and l/2 the butterflies take the
+    // twiddles of q = 0 turned ([`turned_butterfly`]); at l/2, that of
+    // m = 2 lies on an axis, and the butterflies run on their own with
+    // their twiddles at constant indices, as at k = 0.
+    (turned $re:ident, $im:ident, 4, $l:literal, $ms:tt, $qs:tt) => {{
+        const SPAN: usize = 4 * $l;
+        const STEP: usize = N / SPAN;
+        const _: () = assert!(STEP % FIFTH == 0 && (N / 4) % FIFTH == 0);
+        const AXIS_K: usize = $l / 2;
+        // Off the axes at every k but 0 and `AXIS_K`.
+        const _: () = {
+            let mut k = 0;
+            while k < $l {
+                assert!(off_the_axes(4, k * (STEP / FIFTH)) == (k != 0 && k != AXIS_K));
+                k += 1;
+            }
+        };
+        straight_stage!(@blocks $re, $im, 4, $l, $ms, $qs, 0);
+        for k in 1..$l {
+            if k == AXIS_K {
+                straight_stage!(@blocks $re, $im, 4, $l, $ms, $qs, AXIS_K);
+            } else {
+                straight_stage!(@turned $re, $im, 4, $l, $ms, $qs, k);
+            }
+        }
+    }};
+    // The butterfly at `$k` in every block, from the twiddles of q = 0.
+    (@turned $re:ident, $im:ident, $radix:literal, $l:literal, $ms:tt, $qs:tt, $k:expr) => {{
+        // Entry m − 1 holds the twiddle of (m, 0).
+        let w: [[f32; 2]; $radix - 1] = straight_stage!(@first $radix, $k * (STEP / FIFTH), $ms);
+        let mut base = $k;
+        while base < N {
+            let (r, i) = (
+                &mut $re[base..base + ($radix - 1) * $l + 1],
+                &mut $im[base..base + ($radix - 1) * $l + 1],
+            );
+            turned_butterfly!(r, i, $l, $radix, $ms, $qs, w);
+            base += SPAN;
+        }
+    }};
+    (@first $radix:literal, $k_fifths:expr, [$($m:tt)*]) => {
+        [$(FIFTH_TWIDDLES[fifth_index::<$radix>($m, 0, $k_fifths)]),*]
+    };
     // The butterfly at `$k` in every block.
     (@blocks $re:ident, $im:ident, $radix:literal, $l:literal, $ms:tt, $qs:tt, $k:expr) => {{
         // Row m − 1 holds the twiddles of m.
@@ -681,8 +815,8 @@ macro_rules! straight_stage {
 /// by term (see [`straight_butterfly`]).
 #[inline(always)]
 fn straight_stages(re: &mut [f32; N], im: &mut [f32; N]) {
-    straight_stage!(re, im, 4, 4, [1 2 3], [0 1 2 3]);
-    straight_stage!(re, im, 4, 16, [1 2 3], [0 1 2 3]);
+    straight_stage!(turned re, im, 4, 4, [1 2 3], [0 1 2 3]);
+    straight_stage!(turned re, im, 4, 16, [1 2 3], [0 1 2 3]);
     straight_stage!(re, im, 2, 64, [1], [0 1]);
     straight_stage!(re, im, 3, 128, [1 2], [0 1 2]);
     last_straight_stage(re, im);

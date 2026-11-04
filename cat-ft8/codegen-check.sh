@@ -142,7 +142,13 @@ builds=("a64 aarch64-unknown-linux-gnu - - - 1"
 # `f32` multiplies (`vmul.f32`; Thumb), at most the bound, and a function
 # with no such loop fails it likewise; `vmulhloopN` likewise of the
 # shortest such loop that also loads a halfword (`ldrh`, a `u16` table's
-# entry; no `ldrsh`);
+# entry; no `ldrsh`); `plainmulloopN` likewise of the shortest such loop
+# with no chained multiply-add (`vmla`, `vmls`, `vnmla`, `vnmls`), each
+# product taken once and combined by adds; `nomulloopN` counts the
+# instructions of the shortest loop with at least N `f32` adds (as
+# `fploopN`) and no `vmul.f32`, at most the bound, and a function with no
+# such loop fails it likewise; `vmuladdloopNxM` likewise of the shortest
+# loop with exactly N `vmul.f32` and at least M `f32` adds (as `fploop`);
 # `mulps` counts four-lane multiplies (`mulps`, with or without the VEX
 # `v`; x86), at least the bound;
 # `onelane` counts the instructions that name the one-lane transform's
@@ -241,9 +247,10 @@ checks=(
   # The row from the window's ring of quarters, each quarter's pair of
   # samples read without an array of the four built a block, the first
   # stage's blocks in the order of their inputs, each later stage's k = 0
-  # on its own (1 032; 1 128 in the order of the blocks; 758 without
-  # k = 0 on its own; the whole row, so a form that adds work anywhere in
-  # it can pass by removing it elsewhere: re-measure on such a change).
+  # on its own, the radix-4 stages' turned butterflies and their k = l/2
+  # on its own (1 011; 1 032 before the turned butterflies; 1 128 in the
+  # order of the blocks; the whole row, so a form that adds work anywhere
+  # in it can pass by removing it elsewhere: re-measure on such a change).
   "m33s 10finish_row insns 1040"
   # The same scoped to the first stage's loop: its eight `vmul.f32`, the
   # window products, and its read of `BLOCK_OF`, the row's one loop with a
@@ -251,12 +258,23 @@ checks=(
   # digit-reversal table, also read by `ldrh`).
   "m33s 10finish_row vmulhloop8 120"
   # Each later stage's k = 0 on its own, its twiddles constants: a radix-4
-  # stage's butterflies there with no multiply by 1 (84 instructions; the
-  # shortest loop of a radix-4 stage at other k, 95).
-  "m33s 10finish_row fploop34 90"
+  # stage's butterflies there with no multiply (84 instructions; without
+  # k = 0 on its own no loop of the row has 34 adds and no multiply).
+  "m33s 10finish_row nomulloop34 90"
+  # A radix-4 stage's butterflies at k other than 0 and l/2 from the
+  # twiddles of q = 0 turned (`turned_butterfly`): an input's four products
+  # taken once, twelve `vmul.f32` and no chained multiply-add (72; the form
+  # before, 24 multiplies and 103 and 95 instructions, and no loop of this
+  # kind).
+  "m33s 10finish_row plainmulloop12 76"
+  # And its k = l/2 on its own, its twiddles constants: eight multiplies
+  # and 42 adds (76; through the turned stage's loop with the twiddles
+  # read from the table, 24 multiplies, and no loop of eight with 40 adds:
+  # the first stage's has 34).
+  "m33s 10finish_row vmuladdloop8x40 80"
   # And the radix-3 stage's, the row's shortest loop with exactly eight
   # `vmul.f32` (53; at other k twelve, in 55; without it the shortest with
-  # eight is the first stage's).
+  # eight is a radix-4 stage's k = l/2, 76).
   "m33s 10finish_row vmulloop8 56"
   # The window as a ring: no slide of the window (a memmove of 11 520
   # bytes a row) in the front end's feeds.
@@ -412,11 +430,11 @@ for entry in "${checks[@]}"; do
     /^\.Lfunc_end[0-9]+:/ { p = 0; fcmp = 0; next }
     /^[A-Za-z_][^ \t]*:$/ { p = index($0, f) > 0; if (p) found++; delete at; fcmp = 0; next }
     !p { next }
-    metric ~ /^(sumloop|fploop|cvtloop|memsums|shortloop|mulloop|vmulloop|vmulhloop)/ && /^\.[A-Za-z0-9_$]+:/ {
+    metric ~ /^(sumloop|fploop|cvtloop|memsums|shortloop|mulloop|vmulloop|vmulhloop|plainmulloop|nomulloop|vmuladdloop)/ && /^\.[A-Za-z0-9_$]+:/ {
       sub(/:.*/, ""); at[$0] = k; atb[$0] = bytes; atf[$0] = fps; atc[$0] = cvs
-      atl[$0] = lds; atv[$0] = vs; atm[$0] = muls; atu[$0] = vmuls; ath[$0] = hws; next
+      atl[$0] = lds; atv[$0] = vs; atm[$0] = muls; atu[$0] = vmuls; ath[$0] = hws; atx[$0] = chains; next
     }
-    metric ~ /^(sumloop|fploop|cvtloop|memsums|shortloop|mulloop|vmulloop|vmulhloop)/ && /^\t[a-z]/ {
+    metric ~ /^(sumloop|fploop|cvtloop|memsums|shortloop|mulloop|vmulloop|vmulhloop|plainmulloop|nomulloop|vmuladdloop)/ && /^\t[a-z]/ {
       k++
       if ($1 ~ /^ldrb/) bytes++
       if ($1 ~ /^v(mla|mls|add|sub)\.f32$/) fps++
@@ -426,6 +444,7 @@ for entry in "${checks[@]}"; do
       if ($1 == "mulps") muls++
       if ($1 == "vmul.f32") vmuls++
       if ($1 ~ /^ldrh/) hws++
+      if ($1 ~ /^vn?ml[as]\.f32$/) chains++
       # A back branch: AArch64 and Thumb, or x86-64 (`j` and a condition).
       back = $1 ~ /^(b[a-z]*(\.[nw])?|b\.[a-z]+|cbn?z|tbn?z|j[a-z]+)$/ && ($NF in at)
       if (back && metric ~ /^sumloop/ && bytes - atb[$NF] == substr(metric, 8) + 0 &&
@@ -440,6 +459,15 @@ for entry in "${checks[@]}"; do
           (best == "" || k - at[$NF] < best)) best = k - at[$NF]
       if (back && metric ~ /^vmulhloop/ && vmuls - atu[$NF] == substr(metric, 10) + 0 &&
           hws > ath[$NF] && (best == "" || k - at[$NF] < best)) best = k - at[$NF]
+      if (back && metric ~ /^plainmulloop/ && vmuls - atu[$NF] == substr(metric, 13) + 0 &&
+          chains == atx[$NF] && (best == "" || k - at[$NF] < best)) best = k - at[$NF]
+      if (back && metric ~ /^nomulloop/ && fps - atf[$NF] >= substr(metric, 10) + 0 &&
+          vmuls == atu[$NF] && (best == "" || k - at[$NF] < best)) best = k - at[$NF]
+      if (back && metric ~ /^vmuladdloop/) {
+        split(substr(metric, 12), nm, "x")
+        if (vmuls - atu[$NF] == nm[1] + 0 && fps - atf[$NF] >= nm[2] + 0 &&
+            (best == "" || k - at[$NF] < best)) best = k - at[$NF]
+      }
       if (back && metric == "memsums" && lds > atl[$NF] && vs == atv[$NF]) n++
       if (back && metric == "shortloop" && (best == "" || k - at[$NF] < best)) best = k - at[$NF]
     }
@@ -477,8 +505,8 @@ for entry in "${checks[@]}"; do
     END {
       if (!found) print "missing"
       else if (only == "one" && found > 1) print "many"
-      else if (only == "each" && metric ~ /^(sumloop|fploop|cvtloop|shortloop|mulloop|vmulloop|vmulhloop|memsums)/) print "noteach"
-      else if (metric ~ /^(sumloop|fploop|cvtloop|shortloop|mulloop|vmulloop|vmulhloop)/) print (best == "" ? "noloop" : best)
+      else if (only == "each" && metric ~ /^(sumloop|fploop|cvtloop|shortloop|mulloop|vmulloop|vmulhloop|plainmulloop|nomulloop|vmuladdloop|memsums)/) print "noteach"
+      else if (metric ~ /^(sumloop|fploop|cvtloop|shortloop|mulloop|vmulloop|vmulhloop|plainmulloop|nomulloop|vmuladdloop)/) print (best == "" ? "noloop" : best)
       else if (only == "each") {
         least = nf[1] + 0
         for (i = 2; i <= found; i++) if (nf[i] + 0 < least) least = nf[i] + 0
@@ -517,6 +545,9 @@ for entry in "${checks[@]}"; do
       mulloop*) echo "FAIL $key $name: no loop with ${metric#mulloop} four-lane multiplies (not vectorised?)" ;;
       vmulloop*) echo "FAIL $key $name: no loop with exactly ${metric#vmulloop} f32 multiplies (moved or unrolled?)" ;;
       vmulhloop*) echo "FAIL $key $name: no loop with exactly ${metric#vmulhloop} f32 multiplies and a halfword load (moved or unrolled?)" ;;
+      plainmulloop*) echo "FAIL $key $name: no loop with exactly ${metric#plainmulloop} f32 multiplies and no chained multiply-add (moved or unrolled?)" ;;
+      nomulloop*) echo "FAIL $key $name: no loop with ${metric#nomulloop} f32 adds and no f32 multiply (moved or unrolled?)" ;;
+      vmuladdloop*) echo "FAIL $key $name: no loop with exactly ${metric#vmuladdloop} f32 multiplies x f32 adds (moved or unrolled?)" ;;
       shortloop) echo "FAIL $key $name: no loop" ;;
       *) echo "FAIL $key $name: no loop with ${metric#fploop} f32 adds (moved or unrolled?)" ;;
     esac
@@ -553,6 +584,9 @@ for entry in "${checks[@]}"; do
     mulloop*) what="instructions in the loop of ${metric#mulloop} four-lane multiplies (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     vmulloop*) what="instructions in the loop of ${metric#vmulloop} f32 multiplies (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     vmulhloop*) what="instructions in the loop of ${metric#vmulhloop} f32 multiplies and a halfword load (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    plainmulloop*) what="instructions in the loop of ${metric#plainmulloop} f32 multiplies and no chained multiply-add (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    nomulloop*) what="instructions in the loop of ${metric#nomulloop} f32 adds and no f32 multiply (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
+    vmuladdloop*) what="instructions in the loop of ${metric#vmuladdloop} f32 multiplies x adds (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     mulps) what="four-lane multiplies (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
     onelane) what="references to the one-lane transform (ceiling $bound)"; [ "$n" -le "$bound" ] && ok=1 || ok=0 ;;
     ldn) what="interleaving loads (floor $bound)"; [ "$n" -ge "$bound" ] && ok=1 || ok=0 ;;
