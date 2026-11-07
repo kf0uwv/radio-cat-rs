@@ -169,7 +169,9 @@ pub fn decode_frame(buf: &[u8]) -> Result<(FrameKind, &[u8], usize), FrameError>
     if kind == FrameKind::Control && len > MAX_CONTROL_BYTES {
         return Err(FrameError::TooLarge(len));
     }
-    if buf.len() < 5 + len {
+    // Compared without adding: on a 32-bit target `5 + len` overflows for
+    // the last few u32 lengths. `buf.len() >= 5` was checked above.
+    if buf.len() - 5 < len {
         return Err(FrameError::Incomplete);
     }
     Ok((kind, &buf[5..5 + len], 5 + len))
@@ -1328,10 +1330,11 @@ pub fn decode_spectrum_payload(payload: &[u8]) -> Option<cat_signal::SpectrumFra
     let ref_level_dbm = f32::from_be_bytes(payload[12..16].try_into().ok()?);
     let sequence = u64::from_be_bytes(payload[16..24].try_into().ok()?);
     let count = u32::from_be_bytes(payload[24..28].try_into().ok()?) as usize;
-    if payload.len() < 28 + count * 4 {
+    let end = floats_end(28, count)?;
+    if payload.len() < end {
         return None;
     }
-    let bins = payload[28..28 + count * 4]
+    let bins = payload[28..end]
         .chunks_exact(4)
         .map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
@@ -1342,6 +1345,13 @@ pub fn decode_spectrum_payload(payload: &[u8]) -> Option<cat_signal::SpectrumFra
         bins,
         sequence,
     })
+}
+
+/// Where `count` big-endian floats starting at `start` end, or `None` if
+/// that overflows `usize`. Lengths come off the wire as u32, and on a
+/// 32-bit target `start + count * 4` overflows from about 2^30.
+fn floats_end(start: usize, count: usize) -> Option<usize> {
+    count.checked_mul(4)?.checked_add(start)
 }
 
 /// Encode an audio frame: scope and spectrum together, one payload.
@@ -1383,11 +1393,13 @@ pub fn decode_audio_payload(payload: &[u8]) -> Option<cat_signal::AudioFrame> {
     let span_hz = u32::from_be_bytes(payload[16..20].try_into().ok()?);
     let samples = u32::from_be_bytes(payload[20..24].try_into().ok()?) as usize;
     let bins = u32::from_be_bytes(payload[24..28].try_into().ok()?) as usize;
-    if payload.len() < 28 + samples * 4 + bins * 4 {
+    let scope_end = floats_end(28, samples)?;
+    let end = floats_end(scope_end, bins)?;
+    if payload.len() < end {
         return None;
     }
-    let floats = |from: usize, count: usize| -> Vec<f32> {
-        payload[from..from + count * 4]
+    let floats = |from: usize, to: usize| -> Vec<f32> {
+        payload[from..to]
             .chunks_exact(4)
             .map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]]))
             .collect()
@@ -1395,13 +1407,13 @@ pub fn decode_audio_payload(payload: &[u8]) -> Option<cat_signal::AudioFrame> {
     Some(cat_signal::AudioFrame {
         scope: cat_signal::AudioScopeFrame {
             sample_rate_hz,
-            samples: floats(28, samples),
+            samples: floats(28, scope_end),
             sequence,
         },
         spectrum: cat_signal::AudioSpectrumFrame {
             start_hz,
             span_hz,
-            bins: floats(28 + samples * 4, bins),
+            bins: floats(scope_end, end),
             // The shared number, deliberately: both halves came from the
             // same block, and a console checks one against the other.
             sequence,
@@ -2031,6 +2043,53 @@ mod tests {
             .map(|(i, _)| i)
             .unwrap();
         assert_eq!(peak, 2, "the peak must not move across the wire");
+    }
+
+    // Lengths arrive as u32 and are widened to usize. On a 32-bit target
+    // `28 + count * 4` overflows from about 2^30 bins, and in release the
+    // wrapped sum passes the length check: a header claiming 1 << 30 bins
+    // decoded as an empty frame. These hold on every target; on 64-bit
+    // the payloads are simply short, so the 32-bit proof is `floats_end`.
+
+    #[test]
+    fn floats_end_refuses_both_overflows_on_any_target() {
+        assert_eq!(floats_end(28, 3), Some(40));
+        assert_eq!(floats_end(28, 0), Some(28));
+        // The multiply.
+        assert_eq!(floats_end(0, usize::MAX / 4 + 1), None);
+        // The add.
+        assert_eq!(floats_end(28, usize::MAX / 4), None);
+    }
+
+    #[test]
+    fn a_spectrum_header_claiming_a_huge_count_decodes_to_nothing() {
+        for count in [1u32 << 30, u32::MAX] {
+            let mut payload = encode_spectrum_payload(&frame());
+            payload.truncate(28);
+            payload[24..28].copy_from_slice(&count.to_be_bytes());
+            assert!(decode_spectrum_payload(&payload).is_none(), "{count}");
+        }
+    }
+
+    #[test]
+    fn an_audio_header_claiming_huge_counts_decodes_to_nothing() {
+        for (samples, bins) in [(1u32 << 29, 1u32 << 29), (u32::MAX, 0), (0, u32::MAX)] {
+            let mut payload = vec![0u8; 28];
+            payload[20..24].copy_from_slice(&samples.to_be_bytes());
+            payload[24..28].copy_from_slice(&bins.to_be_bytes());
+            assert!(decode_audio_payload(&payload).is_none(), "{samples} {bins}");
+        }
+    }
+
+    #[test]
+    fn a_huge_spectrum_frame_length_waits_on_every_target() {
+        // Not TooLarge: on 64-bit `5 + len` fits and the answer is
+        // Incomplete, and the same bytes must not decode differently per
+        // target. Capping data frames is a separate question.
+        let mut header = vec![FrameKind::Spectrum as u8];
+        header.extend_from_slice(&u32::MAX.to_be_bytes());
+        header.extend_from_slice(&[0; 8]);
+        assert_eq!(decode_frame(&header), Err(FrameError::Incomplete));
     }
 
     #[test]
