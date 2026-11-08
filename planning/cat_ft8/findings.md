@@ -18854,3 +18854,114 @@ s2 is now caught in every build, not only under group one.
   doc paragraph reflowed.
 - Release sections of all eight binaries are unchanged.
 
+
+## The Cortex-A76 queue timed, the belief propagation's one array, the level steps on every target and the gather reverted (O35, bit-identical, 2026-11-07)
+
+Base: 67e936a. The Cortex-A76 timed the candidates the earlier rounds
+left pending: slotcost host / host with one pass and small, 4 alternated
+cycles a group, one program at a time on core 3; every run 0x0 throughout,
+2 400 MHz in every sample, no under-voltage event (a run with any was
+voided and the cycle re-run from a fresh boot). Medians of 4; the slot is
+the sum of its stages (ms).
+
+### The A76 measurements
+
+| candidate (against) | host | host, one pass | small | stages |
+|---|---|---|---|---|
+| 67e936a (base) | 73.965–74.015 | 16.500 | 9.750 | — |
+| 7ec91b5 one gather (its parent 5043027) | +0.08% | +0.09% | +0.20% | sync +1.6% / +2.0% / +1.1% |
+| 0243ded (its parent 72810f6) | −0.05% | −0.06% | 0.00% | — |
+| O31b's layout (0243ded against da9f8e2) | −0.34% | −0.27% | −0.71% | feed −0.8% / −1.2% |
+| soft bits' rows once on every target (on 67e936a) | +0.35% | +0.42% | +0.67% | feed +0.9%, soft bits +0.8–1.1% |
+| gather written into the column scores (on 67e936a) | −0.01% | 0.00% | 0.00% | — |
+| belief propagation's one array (candidate on 67e936a) | −0.23% | −0.36% | −0.41% | BP −0.75% / −0.77% / −2.24% |
+| level steps on every target (candidate on 67e936a) | −0.19% | −0.27% | −0.41% | feed −0.7% / −0.7% / −0.8% |
+| paired sync search on the hosts | +2.85% | +4.27% | +6.77% | sync +65% / +68% / +70% |
+
+Kept: the one array and the level steps. Dropped: the soft bits' rows
+once and the paired search on the hosts (both slower), the gather written
+in (equal). 7ec91b5 reverted: its sync stage was slower beyond the runs'
+spreads on every slot.
+
+### This round's commits
+
+- 22ae9b2: revert of 7ec91b5 against the code as it is: the column scores
+  read the Costas arrays' rows in their own loop, the sent tones' offsets
+  as `usize`, no visitor and no `Option`. The paired running sums the
+  visitor also served are gone since, so only the hosts' column form
+  changes; the Cortex-M33 images do not compile it.
+- c418d96: the column scores one function, `costas_scores` (the
+  forwarder folded in).
+- 0c2e622: belief propagation's messages and totals in one array of
+  1 024 cells: the variable sums mask each edge index to the cells'
+  length, so the three loads need no bounds check. The scratch grows from
+  3 288 to 4 272 B (`CandidateScratch` 4 800 → 5 488 B on 64-bit hosts,
+  belief propagation's variant now the larger; the Cortex-M33's static
+  RAM +692 B).
+- 9e2d847: the front end's levels by steps on every target
+  (`level_by_steps`, out of line), the steps' table (1 024 B) counted in
+  `TABLE_BYTES` on every target; `level_of` and its helpers remain as the
+  tests' definition.
+- d1f351f: `SCALAR_FORMS`' list with what "vector" means, the paired
+  search's and the soft bits' measurements beside their code.
+- c87e9f7: ADR 0024 amended for the hosts' 49 645 B of static tables.
+
+### Results
+
+| measure | 67e936a | this round | change |
+|---|---|---|---|
+| A76 host slot (stages) | 73.985 (0.080) | 73.660 (0.060) | −0.44% |
+| A76 host, one pass | 16.500 (0.000) | 16.360 (0.010) | −0.85% |
+| A76 small slot | 9.750 (0.000) | 9.650 (0.010) | −1.03% |
+| A76 stages, host: feed, sync, belief propagation | 16.695, 3.130, 18.000 | 16.540, 3.080, 17.850 | −0.93%, −1.60%, −0.83% |
+| A76 stages, small: feed, sync, belief propagation | 5.540, 0.910, 2.230 | 5.500, 0.900, 2.180 | −0.72%, −1.10%, −2.24% |
+| x86-64 `perf stat` host and host with one pass (cycles, medians of 4) | 288.52 G (287.55–289.70) | 279.27 G (279.05–280.58) | −3.21% |
+| x86-64 small (cycles) | 84.12 G (83.81–84.51) | 80.05 G (79.80–80.20) | −4.84% |
+| x86-64 instructions host / small | 774.20 G / 252.55 G | 766.85 G / 249.69 G | −0.95% / −1.13% |
+| x86-64 stages, host: feed, sync, belief propagation (ms) | 9.805, 2.075, 15.185 | 8.035, 2.105, 15.260 | −18.1%, +1.4%, +0.5% |
+| x86-64 stages, small: feed, sync, belief propagation (ms) | 3.180, 0.600, 1.915 | 2.660, 0.600, 1.940 | −16.4%, 0.0%, +1.3% |
+| Cortex-M33 s0086 / s0407 small slot (setup excluded) | 116 505 852 / 112 130 688 | 115 598 630 / 111 349 378 | −0.78% / −0.70% |
+| Cortex-M33 s0086 / s0407 host image | 1 312 636 917 / 1 309 374 298 | 1 310 507 225 / 1 307 233 654 | −0.16% / −0.16% |
+| M33 belief propagation, s0086 small / host | 34 172 336 / 359 758 700 | 33 243 422 / 357 548 008 | −2.72% / −0.61% |
+| M33 flash (text) small, host | 114 298, 115 434 | 114 314, 115 450 | +16, +16 B |
+| M33 static RAM small, host | 201 592, 230 008 | 202 284, 230 700 | +692, +692 B |
+| M33 stack high water small, host | 10 384, 10 276 | the same | 0 |
+| host static tables (`static_table_bytes`) | 48 621 | 49 645 | +1 024 B |
+| x86-64 `cat-ft8-decode` .text / .rodata | 473 174 / 105 728 | 472 278 / 106 696 | −896 / +968 B |
+| AArch64 `cat-ft8-decode` .text / .rodata | 404 920 / 98 016 | 403 448 / 99 024 | −1 472 / +1 008 B |
+
+On x86-64 the one array costs belief propagation 0.4-1.5% (the small
+slot's ranges disjoint); the level steps' feed outweighs it. The x86-64
+runs were alternated on one core under the exclusive lock, but the
+machine's load average was 16-22 on 16 CPUs and the core's SMT sibling
+was not reserved: the alternation controls drift, the absolute sizes are
+less certain. The host sync stage's +1.4% is bimodal across rounds and
+inconclusive.
+
+The M33's soft bits and ordered-statistics stages count a few more
+instructions (+0.27%, +1.2% host) with the images' layout; its sync
+stage and front end are unchanged (the revert and the level steps do not
+change the M33's code).
+
+### Identity
+
+- x86-64: 73 800 records equal to 6b8013c's; the 95 491 lines of the
+  800 WAVs × 3 configurations × 3 modes equal but for three profile
+  fields, exactly: `candidate_scratch_bytes` 4 800 → 5 488,
+  `peak_bytes` + 688 and `static_table_bytes` 48 621 → 49 645, on each
+  of the 2 400 profile lines. The revert changes no output. A forced
+  difference fails each comparator (a record, a decode line, an allowed
+  field off by one).
+- Cortex-A76: the same records and WAV lines as x86-64, strictly.
+- Cortex-M33: 16/16 outputs equal to 042e82a's; encoder 45/45 equal to
+  70be604's.
+- Local CI 19/19 (codegen-check unchanged: no ceiling moved); every
+  ignored test is run by CI's filter or is a generator.
+
+### Not measured
+
+- Cortex-M33 cycles (emulated instruction counts only).
+- 32-bit x86 and 32-bit ARM, which take the forms without a vector unit
+  and are timed in neither form.
+- The ring of quarters on the hosts (it needs a first stage with lanes
+  that reads the quarters).
