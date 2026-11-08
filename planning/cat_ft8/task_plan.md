@@ -1,8 +1,8 @@
 # cat_ft8 — task plan
 
-Commit references: 0f0341c, 23742aa, 5903527, ec72aa0 and 043e7d8 are
-local measurement commits that were never published; the text records
-what each one held and what it measured.
+Commit references: 0f0341c, 23742aa, 5903527, ec72aa0 and 043e7d8 were
+local measurement commits and were never published; where these notes
+cite one, the text records what it held and what it measured.
 
 ## Goal
 
@@ -290,7 +290,7 @@ level, not above it.
 ### Steps (TDD, one at a time)
 
 D0. [x] ◆◆ Plan and ADR amendment accepted (with estimates) by architect
-    and user (2026-10-26).
+    and maintainer (2026-10-26).
 D1. [x] Deterministic numeric helpers: `log2` from IEEE bits plus a fixed
         polynomial, with a power floor (no subnormal reaches it); tests
         against `libm` (tolerance) and pinned bit patterns.
@@ -2329,7 +2329,7 @@ crowded (its multi-pass CRC-expectation check, the same in both runs)
 and sweep (its two-sided shift check; the 50% point moved 0.052 dB
 lower, an improvement). Applied mechanically: **FAIL**. Nothing merges;
 no retune, no second block; the reading of those two checks is the
-user's decision. (Forward pointer, added later: the maintainer's recorded decision
+maintainer's decision. (Forward pointer, added later: the maintainer's recorded decision
 of 2026-11-01 allows one second gated round on a fresh block; see
 "OSD-1 on the best candidates: second gated round" below.)
 The criteria are fixed in the commit that names the block, before any

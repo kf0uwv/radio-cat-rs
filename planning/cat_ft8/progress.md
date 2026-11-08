@@ -1,8 +1,8 @@
 # cat_ft8 — progress
 
-Commit references: 0f0341c, 23742aa, 5903527, ec72aa0 and 043e7d8 are
-local measurement commits that were never published; the text records
-what each one held and what it measured.
+Commit references: 0f0341c, 23742aa, 5903527, ec72aa0 and 043e7d8 were
+local measurement commits and were never published; where these notes
+cite one, the text records what it held and what it measured.
 
 ## Session: 2026-10-25 (encoder, first pass)
 
@@ -195,7 +195,7 @@ what each one held and what it measured.
 - Phase 2 (single-pass decoder) planned: task_plan.md "Phase 2" (steps
   D0–D11, checkpoints), ADR 0024 "Proposed amendment: single-pass
   decoder", sizing notes in findings.md. No decoder code written; waiting
-  for architect and user approval (D0).
+  for architect and maintainer approval (D0).
 - Architecture checks of the plan: approved with changes. Plan, ADR amendment
   and findings revised: row geometry and dt range with partial sync, band
   definition, text rendered in `finish` with the caller's call table,

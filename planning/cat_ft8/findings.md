@@ -1,8 +1,8 @@
 # cat_ft8 — findings
 
-Commit references: 0f0341c, 23742aa, 5903527, ec72aa0 and 043e7d8 are
-local measurement commits that were never published; the text records
-what each one held and what it measured.
+Commit references: 0f0341c, 23742aa, 5903527, ec72aa0 and 043e7d8 were
+local measurement commits and were never published; where these notes
+cite one, the text records what it held and what it measured.
 
 ## Sources
 
@@ -6447,7 +6447,7 @@ the plan. Neither failing check is one the plan states separately (the
 plan's own false-decode criterion is the count, 0, and its sweep
 criterion is one-sided), so whether these two tool verdicts were meant
 to gate is a reading of the plan, not a measurement; it is left to the
-user. Nothing merges on this result; no code is deleted; no retune and
+maintainer. Nothing merges on this result; no code is deleted; no retune and
 no second block.
 
 ## The two compare checks fixed (2026-11-01; tool only, no gate run)
