@@ -151,36 +151,28 @@ pub(crate) fn search_rows(
 /// Rows a start row's score reads: every symbol of every Costas array.
 const COSTAS_ROWS: usize = COSTAS_POSITIONS.len() * COSTAS.len();
 
-/// [`costas_score`] at every base bin `0..out.len()` of one start row, into
-/// `out` as cells ([`NONE`] where there is none): the same integer sums,
-/// added in another order (exact), the rows' levels summed down each column
-/// first, vectorised ([`costas_scores_by_columns`]). The search uses it
-/// where the target has a vector unit; without one it scores start rows in
-/// pairs ([`search_paired`]).
-fn costas_scores(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
-    costas_scores_by_columns(spec, start_row, out);
-}
-
-/// Base bins [`costas_scores_by_columns`] takes at a time. Not tuned: 64
-/// was the one size timed (findings O29).
+/// Base bins [`costas_scores`] takes at a time. Not tuned: 64 was the one
+/// size timed (findings O29).
 const COLUMN_CHUNK: usize = 64;
 
-/// [`costas_scores`] where the target has a vector unit. A row's eight
-/// tones' sum does not depend on the tone sent, so the levels of all the
-/// rows read (up to [`COSTAS_ROWS`]) are first added down each column, and
-/// each bin then takes eight of those column sums rather than eight levels
-/// a row: the score is 8 · Σ_rows level(b + 2·tone) − Σₜ column(b + 2t). A
-/// bin reads about 2 · 21 + 8 sums and levels instead of 21 · 9 levels
-/// (findings O29). The bins go [`COLUMN_CHUNK`] at a time, so the column
-/// and sent sums need only small arrays on the stack. They are `u16`: each
-/// is a sum of at most [`COSTAS_ROWS`] `u8` levels (checked at compile time
-/// beside the arrays); a bin's eight column sums and its score are added
-/// in `i32`. The rows are read in this function's own loop, their sent
-/// tones' offsets kept as `usize`: through a shared visitor with `u8`
-/// offsets the sync stage took 1.1-2.0% more time on the Cortex-A76
+/// [`costas_score`] at every base bin `0..out.len()` of one start row, into
+/// `out` as cells ([`NONE`] where there is none): the same integer sums,
+/// added in another order (exact). The search uses it where the target has
+/// a vector unit; without one it scores start rows in pairs
+/// ([`search_paired`]). A row's eight tones' sum does not depend on the
+/// tone sent, so the levels of all the rows read (up to [`COSTAS_ROWS`])
+/// are first added down each column, and each bin then takes eight of
+/// those column sums rather than eight levels a row: the score is
+/// 8 · Σ_rows level(b + 2·tone) − Σₜ column(b + 2t). A bin reads about
+/// 2 · 21 + 8 sums and levels instead of 21 · 9 levels, and the loops
+/// vectorise (findings O29). The bins go [`COLUMN_CHUNK`] at a time, so the
+/// column and sent sums need only small arrays on the stack. They are
+/// `u16`: each is a sum of at most [`COSTAS_ROWS`] `u8` levels (checked at
+/// compile time beside the arrays); a bin's eight column sums and its score
+/// are added in `i32`. The rows are read in this function's own loop
 /// (findings O35).
 #[inline(always)]
-fn costas_scores_by_columns(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
+fn costas_scores(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
     let cols = out.len();
     let rows = spec.len() as i32;
     let mut read: [&[u8]; COSTAS_ROWS] = [&[]; COSTAS_ROWS];
