@@ -30,8 +30,13 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # After a toolchain change, re-check the decoder's vectorised
+          # code: cat-ft8/codegen-check.sh, and the A76 timings it names.
           toolchain: "1.93"
-          components: rustfmt, clippy
+          # llvm-tools and the bare-metal target are for cat-ft8's no_std
+          # link check (ADR 0024).
+          components: rustfmt, clippy, llvm-tools
+          targets: thumbv8m.main-none-eabihf
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
@@ -101,6 +106,145 @@ jobs:
         # not otherwise build (ADR 0021).
         run: cargo test -p cat-morse --features serde
 
+      - name: cat-ft8 no_std core on a microcontroller target
+        # ADR 0024: the core is no_std, allocation-free and f32-only. The
+        # library builds and lints for thumbv8m; then embedded-check links a
+        # #![no_main] program with no allocator that packs, encodes,
+        # unpacks and synthesizes, prints its flash size, and fails if any
+        # f64 soft-float helper (__aeabi_d*, __*df3) is linked.
+        run: |
+          cargo build -p cat-ft8 --no-default-features --target thumbv8m.main-none-eabihf
+          cargo clippy -p cat-ft8 --no-default-features --target thumbv8m.main-none-eabihf -- -D warnings
+          CARGO_TARGET_DIR=target/embedded-check cat-ft8/embedded-check/check.sh
+
+      - name: cat-ft8 library on its minimum Rust (1.75)
+        # The crate's rust-version is 1.75; newer `core` methods (such as
+        # `f32::abs`, in `core` only from 1.85) must not slip into the
+        # no_std library. Tests and binaries may use the CI toolchain.
+        run: |
+          rustup toolchain install 1.75 --profile minimal
+          cargo +1.75 build -p cat-ft8 --no-default-features --lib
+
+      - name: cat-ft8 feature combinations and docs
+        # Default-off code is code CI does not otherwise build (ADR 0024):
+        # the profile feature (bench example) and the host build without
+        # std. Docs must have no broken links in either configuration.
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: |
+          cargo clippy -p cat-ft8 --all-targets --all-features -- -D warnings
+          cargo test -p cat-ft8 --features profile
+          cargo test -p cat-ft8 --no-default-features
+          cargo doc -p cat-ft8 --no-deps
+          cargo doc -p cat-ft8 --no-deps --no-default-features
+
+  ft8-bulk:
+    name: cat-ft8 bulk false-decode run (release)
+    runs-on: ubuntu-latest
+    # ADR 0024: thousands of slots with no signal (white noise, and noise
+    # with steady carriers) must give no decodes with either decoder
+    # configuration. Too slow for a debug build, so the test is #[ignore]d
+    # and runs here, in release, as its own job.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # After a toolchain change, re-check the decoder's vectorised
+          # code: cat-ft8/codegen-check.sh, and the A76 timings it names.
+          toolchain: "1.93"
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-ft8-bulk-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ft8-bulk-
+
+      - name: No decodes in noise or carriers
+        run: cargo test --release -p cat-ft8 --test decode_bulk -- --ignored --nocapture
+
+      - name: Library tests with the reference in groups of one (x86-64)
+        # The subtraction's reference layout of the targets without a
+        # vector unit (GROUP 1, the Cortex-M33's), which no host takes by
+        # itself; forced by a tests-only cfg, which also forces one lane in
+        # the FFT and with it the front end's window as a ring of quarters.
+        # It covers those forms only: CHAINS and belief propagation's
+        # VECTOR choices stay the host's, so this is not the M33's build on
+        # a host. In release, where code generation differs most from the
+        # tests' debug builds.
+        run: |
+          CARGO_TARGET_DIR=target/group-one RUSTFLAGS="--cfg cat_ft8_test_group_one" \
+            cargo test --release -p cat-ft8 --lib
+
+      - name: Front-end tests with the window's ring, debug (x86-64)
+        # The same cfg also gives the tests one lane in the FFT and so the
+        # front end's ring of quarters, the Cortex-M's form; in debug, so
+        # that the ring's debug assertions run (the release run above
+        # compiles them out).
+        run: |
+          CARGO_TARGET_DIR=target/group-one-debug RUSTFLAGS="--cfg cat_ft8_test_group_one" \
+            cargo test -p cat-ft8 --lib -- frontend
+
+      - name: Exhaustive f32 checks and wide comparisons (x86-64)
+        # Forms checked at every f32 of their domain, which the default
+        # tests only sample: among them the x86-64 floor without a
+        # conversion (exp2_neg, the waveform's phase increment) against
+        # truncation and the levels by steps against the logarithm; and
+        # decode_soft against its first form over 3 000 vectors.
+        # #[ignore]d like the bulk run; a few minutes together in release,
+        # two of them single-threaded. Every such test ends in
+        # `_everywhere`, or `_widely` for a wide sample.
+        run: cargo test --release -p cat-ft8 --lib -- --ignored _everywhere _widely
+
+  ft8-aarch64:
+    name: cat-ft8 on aarch64 (Linux)
+    runs-on: ubuntu-24.04-arm
+    # ADR 0024's determinism promise: the golden waveform hashes and the
+    # golden decode hashes (both configurations) must match the x86-64
+    # Linux and Windows jobs bit for bit on a second architecture.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # After a toolchain change, re-check the decoder's vectorised
+          # code: cat-ft8/codegen-check.sh, and the A76 timings it names.
+          toolchain: "1.93"
+          # For cat-ft8/codegen-check.sh's x86-64, 32-bit x86 and
+          # microcontroller assembly.
+          targets: x86_64-unknown-linux-gnu, thumbv8m.main-none-eabihf, thumbv7em-none-eabihf, i686-linux-android
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-aarch64-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-aarch64-
+
+      - name: cargo test (cat-ft8)
+        run: cargo test -p cat-ft8
+
+      - name: cargo test (cat-ft8, no std)
+        run: cargo test -p cat-ft8 --no-default-features
+
+      - name: cat-ft8 code generation (AArch64, x86-64, thumbv8m, thumbv7em and i686 assembly)
+        run: cat-ft8/codegen-check.sh
+
   windows-check:
     name: Windows (MSVC)
     runs-on: windows-latest
@@ -126,6 +270,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # After a toolchain change, re-check the decoder's vectorised
+          # code: cat-ft8/codegen-check.sh, and the A76 timings it names.
           toolchain: "1.93"
           components: clippy
 
@@ -156,6 +302,11 @@ jobs:
 
       - name: cargo test (cat-morse serde feature)
         run: cargo test -p cat-morse --features serde
+
+      - name: cargo test (cat-ft8 profile feature)
+        # The workspace test above already ran cat-ft8's golden waveform
+        # and decode hashes here: they must match the Linux job bit for bit.
+        run: cargo test -p cat-ft8 --features profile
 
       - name: cargo check (cat-signal-audio device layer, WASAPI)
         run: cargo check -p cat-signal-audio --features device --all-targets

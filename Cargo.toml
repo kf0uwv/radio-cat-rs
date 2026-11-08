@@ -19,6 +19,7 @@ members = [
     "cat-ui-egui",
     "cat-layout",
     "cat-morse",
+    "cat-ft8",
 ]
 resolver = "2"
 
