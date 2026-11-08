@@ -380,11 +380,7 @@ mod tests {
             + size_of_val(&crate::decode::bp::VAR_EDGES)
             + size_of_val(&crate::decode::bp::EDGE_VARS)
             + size_of_val(&crate::decode::tables::LEVEL_POWER)
-            + if crate::decode::math::SCALAR_FORMS {
-                size_of_val(&crate::decode::tables::LEVEL_STEPS)
-            } else {
-                0
-            }
+            + size_of_val(&crate::decode::tables::LEVEL_STEPS)
             + size_of_val(&crate::decode::osd::OSD_ROWS);
         assert_eq!(crate::decode::TABLE_BYTES, parts);
     }

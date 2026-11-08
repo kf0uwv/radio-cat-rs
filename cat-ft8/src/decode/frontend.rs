@@ -23,8 +23,10 @@
 //!   (tone 0) frequencies searched; the stored spectrum adds the 43.75 Hz
 //!   above the top base frequency and one guard bin.
 //! - **Levels.** Power in dB relative to a full-scale sine centred in a bin
-//!   (0 dB), from the in-crate `log2`, stored as 8-bit levels in 0.5 dB
-//!   steps over −127.5…0 dB.
+//!   (0 dB), stored as 8-bit levels in 0.5 dB steps over −127.5…0 dB:
+//!   each level by a guess from the power's bits and one compare with a
+//!   table of steps (`level_by_steps`), the same level as the in-crate
+//!   `log2` gives.
 //! - **Feeding.** [`Spectrogram::feed`] accepts blocks of any size; the
 //!   rows do not depend on the block sizes. Samples beyond the slot's
 //!   180 000 are not taken. Non-finite samples are replaced by 0.0 and
@@ -52,7 +54,9 @@
 //! sync search uses it then.
 
 use super::fft::{power_bins, spectrum, spectrum_of_quarters, FftBuffer, BINS, ONE_LANE, WINDOW};
-use super::math::{log2_power, POWER_FLOOR, SCALAR_FORMS};
+#[cfg(test)]
+use super::math::log2_power;
+use super::math::{POWER_FLOOR, SCALAR_FORMS};
 use super::tables::LEVEL_STEPS;
 use crate::{Error, SLOT_SAMPLES};
 
@@ -74,9 +78,11 @@ pub const BINS_ABOVE_BAND: usize = 15;
 const _: () = assert!(ROWS == 184);
 
 /// 10 · log10(2): dB per unit of log2 power.
+#[cfg(test)]
 const DB_PER_LOG2: f32 = 3.010_3;
 
 /// Rounds `x` (finite) to the nearest integer in `0..=max`, halves up.
+#[cfg(test)]
 #[inline]
 fn quantise(x: f32, max: u32) -> u32 {
     let y = x + 0.5;
@@ -90,7 +96,10 @@ fn quantise(x: f32, max: u32) -> u32 {
 }
 
 /// The spectrogram level of a `log2` power value: 0.5 dB steps, 255 at
-/// 0 dB (a full-scale sine centred in a bin), 0 at the floor.
+/// 0 dB (a full-scale sine centred in a bin), 0 at the floor. The
+/// definition [`level_by_steps`] is tested against (the front end's
+/// levels before the steps, findings O30b).
+#[cfg(test)]
 #[inline]
 pub(crate) fn level_of(l2: f32) -> u8 {
     quantise(l2 * (DB_PER_LOG2 * 2.0) + 255.0, 255) as u8
@@ -110,30 +119,32 @@ const LEVEL_GUESS_OFFSET: i64 = -559_801_149_968_876;
 
 /// The spectrogram level of a power value `p` (any `f32`),
 /// `level_of(log2_power(p))`, by a guess from the power's bits and one
-/// compare with [`LEVEL_STEPS`]: for the targets without a vector unit
-/// ([`levels_by_steps_out_of_line`]), where the logarithm's division and
-/// polynomial were most of the front end's work after the transform
-/// (findings O30).
+/// compare with [`LEVEL_STEPS`]: the front end's levels on every target
+/// ([`levels_by_steps_out_of_line`]). On the Cortex-M33 the logarithm's
+/// division and polynomial were most of the front end's work after the
+/// transform (findings O30); on the hosts too the steps measured faster
+/// (findings O30b, O35).
 ///
-/// The guess. After the same floor and cap as [`log2_power`], `bits` is a
-/// positive normal `f32`'s, exponent e and mantissa fraction m in [0, 1):
+/// The guess. After the same floor and cap as
+/// [`log2_power`](super::math::log2_power), `bits` is a positive normal
+/// `f32`'s, exponent e and mantissa fraction m in [0, 1):
 /// (bits − 127 · 2²³) / 2²³ is e + m, and log2 p is e + log2(1 + m). The
 /// line in the bits is below log2 by log2(1 + m) − m: never negative, 0 at
 /// m = 0, at most 0.0861 (at m = 1/ln 2 − 1), so 0 to 0.518 levels (×
 /// 6.0206). The offset takes 0.02 of a level more, so the line is the
-/// value [`level_of`] truncates (the level unrounded, plus a half) less
+/// value `level_of` truncates (the level unrounded, plus a half) less
 /// 0.02 to 0.54 of a level. Its floor, the guess, is never above the level
 /// and at most one below it (the clamps to 0..=255 on both sides keep
 /// that). The 0.02 covers what is not exact on the logarithm's side
-/// (its polynomial, the `f32` roundings in [`level_of`]) where the line is
+/// (its polynomial, the `f32` roundings in `level_of`) where the line is
 /// exact, at a power of two; the constants' own rounding is 2⁻⁴⁰ of a level.
 ///
 /// The step. `LEVEL_STEPS[guess]` is the bits of the least power whose
 /// level is above the guess, so one compare picks the guess or one more.
 /// That relies on the level rising with the power (and on positive `f32`s'
 /// bits being in the order of their values): true of the logarithm, but
-/// [`log2_power`] is a polynomial and roundings, so it is checked, not
-/// derived. The exhaustive test (`level_steps_give_every_level_everywhere`,
+/// [`log2_power`](super::math::log2_power) is a polynomial and roundings,
+/// so it is checked, not derived. The exhaustive test (`level_steps_give_every_level_everywhere`,
 /// every `f32`) checks the result, and with it both the bound and the
 /// order.
 #[inline(always)]
@@ -586,14 +597,7 @@ impl<'a> Spectrogram<'a> {
         let r = self.rows.count;
         let row = &mut self.rows.levels[r * width..(r + 1) * width];
         let levels = |i: usize, p: &[f32]| {
-            // The hosts' logarithm: see `levels_by_steps_out_of_line`.
-            if SCALAR_FORMS {
-                levels_by_steps_out_of_line(&mut row[i..i + p.len()], p);
-            } else {
-                for (level, &p) in row[i..i + p.len()].iter_mut().zip(p) {
-                    *level = level_of(log2_power(p));
-                }
-            }
+            levels_by_steps_out_of_line(&mut row[i..i + p.len()], p);
         };
         let (window, fft) = (&self.front.window, &mut self.front.fft);
         let first = self.rows.band.first_bin();
@@ -651,12 +655,9 @@ fn ring_quarters(window: &[f32; WINDOW], rows: usize) -> [&[f32; HOP]; QUARTERS]
 }
 
 /// Each power's level into `levels`, of the same length, by
-/// [`level_by_steps`]: the front end's row where the target has no vector
-/// unit ([`SCALAR_FORMS`]). The hosts keep `level_of(log2_power(p))` only
-/// so that their binaries stay as they were while the Cortex-A76 is not
-/// available for timing: on x86-64 the steps measured faster (the feed
-/// about 17% less wall-clock time), and the steps on every target, if the
-/// A76 agrees, are the next candidate (findings O30b). Out of line:
+/// [`level_by_steps`]: the front end's row on every target (on x86-64 the
+/// steps measured faster than `level_of(log2_power(p))`, the feed about
+/// 17% less wall-clock time; findings O30b). Out of line:
 /// inlined into the row, the transform beside it compiled to more
 /// instructions on the Cortex-M33 than the levels saved (findings O30).
 #[inline(never)]

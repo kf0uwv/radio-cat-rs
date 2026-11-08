@@ -261,8 +261,6 @@ pub(crate) const VECTOR: bool = cfg!(any(target_arch = "x86_64", target_arch = "
 ///   `scratch_width`): vector;
 /// - the bins' powers' indexed loop, out of line (`bin_powers`): vector;
 /// - a row's level counts four levels a word (`level_counts`): vector;
-/// - a row's levels by a guess and one step (`finish_row`, and the steps'
-///   table in `TABLE_BYTES`): pending A76;
 /// - the soft bits' rows looked up once a symbol (`soft_bits_at`): pending
 ///   A76.
 ///
