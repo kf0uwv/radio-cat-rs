@@ -60,16 +60,15 @@ pub enum CheckRule {
     MinSum,
 }
 
-/// Working storage for one decode (3 288 bytes). One per decoding thread;
+/// Working storage for one decode (4 272 bytes). One per decoding thread;
 /// every decode re-initialises it.
 #[derive(Debug, Clone)]
 pub struct BpScratch {
-    /// Each variable's total ([`Totals`]). A round reads them, then
-    /// replaces them with its sums.
-    total: Totals,
-    /// The check-to-variable messages, one per edge, laid out by check
-    /// degree in groups ([`place`]).
-    msg: [f32; EDGES],
+    /// The check-to-variable messages (one per edge, laid out by check
+    /// degree in groups, [`place`]) first, each variable's total
+    /// ([`Totals`]) in the last [`TOTALS`] cells ([`parts`]). A round
+    /// reads the totals, then replaces them with its sums.
+    cells: [f32; CELLS],
     /// The hard decisions of the last totals whose checks all held.
     hard: [u8; N],
     /// Message-passing rounds run by the last decode, whatever its result.
@@ -80,8 +79,7 @@ impl BpScratch {
     /// Zeroed storage (usable in a `static` initialiser).
     pub const fn new() -> Self {
         BpScratch {
-            total: [0.0; TOTALS],
-            msg: [0.0; EDGES],
+            cells: [0.0; CELLS],
             hard: [0; N],
             rounds: 0,
         }
@@ -262,14 +260,16 @@ pub fn decode_soft(
     scratch: &mut BpScratch,
 ) -> Result<BpDecode, BpFailure> {
     let BpScratch {
-        total,
-        msg,
+        cells,
         hard,
         rounds: rounds_run,
     } = scratch;
     *rounds_run = 0;
-    *variables_mut(total) = *llr;
-    *msg = [0.0; EDGES];
+    {
+        let (msg, total) = parts(cells);
+        *variables_mut(total) = *llr;
+        *msg = [0.0; EDGES];
+    }
     let hard_errors = |hard: &[u8; N]| {
         let n = hard
             .iter()
@@ -281,8 +281,8 @@ pub fn decode_soft(
     // Round 0 is the channel's own hard decisions.
     let mut round = 0;
     loop {
-        if checks_hold::<GROUP>(total) {
-            hard_decisions(variables(total), hard);
+        if checks_hold::<GROUP>(parts(cells).1) {
+            hard_decisions(variables(parts(cells).1), hard);
             let payload = accept(hard)?;
             return Ok(BpDecode {
                 payload,
@@ -296,9 +296,9 @@ pub fn decode_soft(
         round += 1;
         *rounds_run = round;
         if rule == CheckRule::SumProduct {
-            sum_product_round::<VECTOR, PASS_LANES, GROUP>(llr, total, msg);
+            sum_product_round::<VECTOR, PASS_LANES, GROUP>(llr, cells);
         } else {
-            min_sum_round::<VECTOR, GROUP>(llr, total, msg);
+            min_sum_round::<VECTOR, GROUP>(llr, cells);
         }
     }
 }
@@ -326,6 +326,30 @@ const LOW_CHECKS: usize = {
 const LOW_EDGES: usize = 6 * LOW_CHECKS;
 /// Edges of the parity-check graph (522).
 const EDGES: usize = LOW_EDGES + 7 * (M - LOW_CHECKS);
+/// The messages and the totals in one array: a power of two, so that
+/// [`sums`] can mask an edge's index into it and the index needs no bounds
+/// check.
+const CELLS: usize = 1024;
+/// Where the totals start in the cells: they end the array.
+const TOTAL_AT: usize = CELLS - TOTALS;
+const _: () = assert!(EDGES <= TOTAL_AT && CELLS.is_power_of_two());
+/// The cells' messages and totals.
+#[inline(always)]
+fn parts(cells: &mut [f32; CELLS]) -> (&mut [f32; EDGES], &mut Totals) {
+    let (front, back) = cells.split_at_mut(TOTAL_AT);
+    (
+        (&mut front[..EDGES]).try_into().unwrap(),
+        back.try_into().unwrap(),
+    )
+}
+
+/// [`parts`], to read.
+#[cfg(any(test, feature = "profile"))]
+#[inline(always)]
+fn parts_ref(cells: &[f32; CELLS]) -> (&[f32; EDGES], &Totals) {
+    let (front, back) = cells.split_at(TOTAL_AT);
+    (front[..EDGES].try_into().unwrap(), back.try_into().unwrap())
+}
 
 /// Checks of one degree whose edges are interleaved in the messages'
 /// layout ([`place`]): four where the round's loops vectorise, so that
@@ -418,9 +442,9 @@ fn tables<const G: usize>() -> (&'static [u8; EDGES], &'static [[u16; 3]; N]) {
 #[inline(never)]
 fn sum_product_round<const V: bool, const W: usize, const G: usize>(
     llr: &[f32; N],
-    total: &mut Totals,
-    msg: &mut [f32; EDGES],
+    cells: &mut [f32; CELLS],
 ) {
+    let (msg, total) = parts(cells);
     let (edge_vars, var_edges) = tables::<G>();
     if INPUT_BLOCK == 1 {
         for (m, &i) in msg.iter_mut().zip(edge_vars) {
@@ -434,7 +458,7 @@ fn sum_product_round<const V: bool, const W: usize, const G: usize>(
     products::<6, G>(t6);
     products::<7, G>(t7);
     each_value::<W>(msg, twice_atanh);
-    sums(llr, total, msg, var_edges);
+    sums(llr, cells, var_edges);
 }
 
 /// Edges whose inputs [`inputs`] takes together: eight on AArch64, one
@@ -615,11 +639,21 @@ const fn edge_vars(var_edges: &[[u16; 3]; N]) -> [u8; EDGES] {
 }
 
 /// The next totals, in place of the totals: each variable's soft bit plus
-/// its three checks' messages (at `var_edges`), added in check order.
+/// its three checks' messages (at `var_edges`), added in check order. The
+/// edge indices are masked to the cells' length; every one is below
+/// [`EDGES`] (`edge_vars` indexes an array of [`EDGES`] with each of them
+/// at compile time, so a larger one fails the build), and the mask changes
+/// none of them.
 #[inline(always)]
-fn sums(llr: &[f32; N], total: &mut Totals, msg: &[f32; EDGES], var_edges: &[[u16; 3]; N]) {
-    for ((x, &l), e) in variables_mut(total).iter_mut().zip(llr).zip(var_edges) {
-        *x = l + msg[usize::from(e[0])] + msg[usize::from(e[1])] + msg[usize::from(e[2])];
+fn sums(llr: &[f32; N], cells: &mut [f32; CELLS], var_edges: &[[u16; 3]; N]) {
+    const MASK: usize = CELLS - 1;
+    for (i, (&l, e)) in llr.iter().zip(var_edges).enumerate() {
+        debug_assert!(e.iter().all(|&k| usize::from(k) < EDGES));
+        let x = l
+            + cells[usize::from(e[0]) & MASK]
+            + cells[usize::from(e[1]) & MASK]
+            + cells[usize::from(e[2]) & MASK];
+        cells[TOTAL_AT + i] = x;
     }
 }
 
@@ -714,11 +748,8 @@ macro_rules! min_sum_check_bits {
 /// totals once every check has taken its inputs. Not inlined, so its frame
 /// is measured on its own.
 #[inline(never)]
-fn min_sum_round<const V: bool, const G: usize>(
-    llr: &[f32; N],
-    total: &mut Totals,
-    msg: &mut [f32; EDGES],
-) {
+fn min_sum_round<const V: bool, const G: usize>(llr: &[f32; N], cells: &mut [f32; CELLS]) {
+    let (msg, total) = parts(cells);
     let (edge_vars, var_edges) = tables::<G>();
     let (m6, m7) = msg.split_at_mut(LOW_EDGES);
     let (v6, v7) = edge_vars.split_at(LOW_EDGES);
@@ -729,7 +760,7 @@ fn min_sum_round<const V: bool, const G: usize>(
         min_sum_groups::<V, 6, G>(total, v6, m6);
         min_sum_groups::<V, 7, G>(total, v7, m7);
     }
-    sums(llr, total, msg, var_edges);
+    sums(llr, cells, var_edges);
 }
 
 /// [`min_sum_round`]'s checks of degree `D` in the layout of groups of
@@ -935,6 +966,20 @@ impl BpScratch {
     /// The totals after the last decode's final round (the channel's
     /// soft bits if it ran none), whatever its result.
     pub fn last_totals(&self) -> &[f32; N] {
-        variables(&self.total)
+        variables(self.total())
+    }
+}
+
+#[cfg(any(test, feature = "profile"))]
+impl BpScratch {
+    /// The cells' totals ([`parts_ref`]).
+    fn total(&self) -> &Totals {
+        parts_ref(&self.cells).1
+    }
+
+    /// The cells' messages ([`parts_ref`]).
+    #[cfg(test)]
+    fn msg(&self) -> &[f32; EDGES] {
+        parts_ref(&self.cells).0
     }
 }

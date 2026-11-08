@@ -541,8 +541,8 @@ fn rows_into<const G: usize>(rows: &[[f32; MAX_DEGREE]; M], msg: &mut [f32; EDGE
 /// array the last round left the totals in.
 fn state_hash(s: &BpScratch) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
-    let rows = rows_of::<GROUP>(&s.msg);
-    let words = variables(&s.total).iter().chain(rows.iter().flatten());
+    let rows = rows_of::<GROUP>(s.msg());
+    let words = variables(s.total()).iter().chain(rows.iter().flatten());
     for x in words {
         for b in x.to_bits().to_le_bytes() {
             h ^= u64::from(b);
@@ -774,11 +774,11 @@ fn the_sum_product_round_matches_the_check_by_check_form_bit_for_bit() {
             let mut got = padded(&total);
             let got_rows = if group == 1 {
                 rows_into::<1>(&given, &mut msg);
-                round(&next, &mut got, &mut msg);
+                on_cells(round, &next, &mut got, &mut msg);
                 rows_of::<1>(&msg)
             } else {
                 rows_into::<4>(&given, &mut msg);
-                round(&next, &mut got, &mut msg);
+                on_cells(round, &next, &mut got, &mut msg);
                 rows_of::<4>(&msg)
             };
             assert!(got[N..].iter().all(|x| x.is_nan()), "state {state}, {form}");
@@ -796,9 +796,25 @@ fn the_sum_product_round_matches_the_check_by_check_form_bit_for_bit() {
     }
 }
 
-/// A round: the soft bits, the totals (replaced by the next ones), the
-/// messages.
-type Round = fn(&[f32; N], &mut Totals, &mut [f32; EDGES]);
+/// A round: the soft bits, the cells (messages and totals, [`parts`]).
+type Round = fn(&[f32; N], &mut [f32; CELLS]);
+
+/// `round` on the totals and messages given apart: copied into cells whose
+/// other cells are NaN, and back. The cells between the messages and the
+/// totals stay NaN.
+fn on_cells(round: Round, llr: &[f32; N], total: &mut Totals, msg: &mut [f32; EDGES]) {
+    let mut cells = [f32::NAN; CELLS];
+    {
+        let (m, t) = parts(&mut cells);
+        *m = *msg;
+        *t = *total;
+    }
+    round(llr, &mut cells);
+    assert!(cells[EDGES..TOTAL_AT].iter().all(|x| x.is_nan()));
+    let (m, t) = parts(&mut cells);
+    *msg = *m;
+    *total = *t;
+}
 
 /// The min-sum round as first written (inside `decode_soft`, the inputs
 /// in a separate row), over rows by check: the reference the in-place
@@ -894,11 +910,11 @@ fn the_min_sum_round_matches_its_first_form_bit_for_bit() {
             let mut got = padded(&total);
             let got_rows = if group == 1 {
                 rows_into::<1>(&given, &mut msg);
-                round(&next, &mut got, &mut msg);
+                on_cells(round, &next, &mut got, &mut msg);
                 rows_of::<1>(&msg)
             } else {
                 rows_into::<4>(&given, &mut msg);
-                round(&next, &mut got, &mut msg);
+                on_cells(round, &next, &mut got, &mut msg);
                 rows_of::<4>(&msg)
             };
             assert!(got[N..].iter().all(|x| x.is_nan()), "state {state}, {form}");
@@ -996,10 +1012,7 @@ fn each_value_gives_the_same_bits_at_any_lane_count() {
 
 #[test]
 fn the_scratch_holds_one_message_per_edge() {
-    assert_eq!(
-        core::mem::size_of::<BpScratch>(),
-        4 * (TOTALS + EDGES) + N + 1 + 1
-    );
+    assert_eq!(core::mem::size_of::<BpScratch>(), 4 * CELLS + N + 1 + 1);
 }
 
 /// `decode_soft` as at its first exit-per-path form: round 0's test
@@ -1103,12 +1116,12 @@ fn decode_soft_against_its_first_form(vectors: usize) -> [usize; 6] {
                 assert_eq!(got, want, "{at}");
                 assert_eq!(scratch.rounds(), want_rounds, "{at}");
                 assert_eq!(
-                    variables(&scratch.total).map(f32::to_bits),
+                    variables(scratch.total()).map(f32::to_bits),
                     want_total.map(f32::to_bits),
                     "{at}"
                 );
                 assert_eq!(
-                    scratch.msg.map(f32::to_bits),
+                    scratch.msg().map(f32::to_bits),
                     want_msg.map(f32::to_bits),
                     "{at}"
                 );
