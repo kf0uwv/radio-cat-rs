@@ -151,55 +151,14 @@ pub(crate) fn search_rows(
 /// Rows a start row's score reads: every symbol of every Costas array.
 const COSTAS_ROWS: usize = COSTAS_POSITIONS.len() * COSTAS.len();
 
-/// The rows one start row's scores read, for [`costas_scores`]: calls `f`
-/// with the levels of each symbol of every Costas array of `start_row` that
-/// lies in `spec`'s filled rows, in order, and its sent tone as a bin
-/// offset (2 · tone). Returns the scale, 6 / the arrays present (2 or 3:
-/// × 3 or × 2, exact), or `None` if fewer than two arrays are present (no
-/// score, as [`costas_score`]).
-// A visitor rather than an array of the rows: the Cortex-M33's search,
-// before it paired start rows, took each row's running sums as it read the
-// row, and an array of the rows grew its images by 196 B of code (findings
-// O29b). Its one caller now, [`costas_scores_by_columns`], keeps the rows
-// in arrays of its own.
-#[inline(always)]
-fn gather<'a>(
-    spec: &'a Rows<'_>,
-    start_row: i32,
-    mut f: impl FnMut(&'a [u8], usize),
-) -> Option<i32> {
-    let rows = spec.len() as i32;
-    let mut present = 0i32;
-    for &pos in COSTAS_POSITIONS.iter() {
-        let first = start_row + 2 * pos as i32;
-        let last = first + 2 * (COSTAS.len() as i32 - 1);
-        if first < 0 || last >= rows {
-            continue;
-        }
-        for (j, &tone) in COSTAS.iter().enumerate() {
-            // `None` is unreachable (rows below `rows_filled` are filled);
-            // as `costas_score`, no score.
-            f(
-                spec.row((first + 2 * j as i32) as usize)?,
-                2 * usize::from(tone),
-            );
-        }
-        present += 1;
-    }
-    (present >= 2).then(|| 6 / present)
-}
-
 /// [`costas_score`] at every base bin `0..out.len()` of one start row, into
 /// `out` as cells ([`NONE`] where there is none): the same integer sums,
-/// added in another order (exact), from the rows [`gather`] reads, their
-/// levels summed down each column first, vectorised
-/// ([`costas_scores_by_columns`]). The search uses it where the target has
-/// a vector unit; without one it scores start rows in pairs
-/// ([`search_paired`]).
+/// added in another order (exact), the rows' levels summed down each column
+/// first, vectorised ([`costas_scores_by_columns`]). The search uses it
+/// where the target has a vector unit; without one it scores start rows in
+/// pairs ([`search_paired`]).
 fn costas_scores(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
-    if costas_scores_by_columns(spec, start_row, out).is_none() {
-        out.fill(cell_of(NONE));
-    }
+    costas_scores_by_columns(spec, start_row, out);
 }
 
 /// Base bins [`costas_scores_by_columns`] takes at a time. Not tuned: 64
@@ -216,21 +175,44 @@ const COLUMN_CHUNK: usize = 64;
 /// and sent sums need only small arrays on the stack. They are `u16`: each
 /// is a sum of at most [`COSTAS_ROWS`] `u8` levels (checked at compile time
 /// beside the arrays); a bin's eight column sums and its score are added
-/// in `i32`. `None` as [`gather`].
+/// in `i32`. The rows are read in this function's own loop, their sent
+/// tones' offsets kept as `usize`: through a shared visitor with `u8`
+/// offsets the sync stage took 1.1-2.0% more time on the Cortex-A76
+/// (findings O35).
 #[inline(always)]
-fn costas_scores_by_columns(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) -> Option<()> {
+fn costas_scores_by_columns(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCell]) {
     let cols = out.len();
+    let rows = spec.len() as i32;
     let mut read: [&[u8]; COSTAS_ROWS] = [&[]; COSTAS_ROWS];
-    let mut sent_at = [0u8; COSTAS_ROWS];
+    let mut sent_at = [0usize; COSTAS_ROWS];
     let mut n = 0;
-    let scale = gather(spec, start_row, |row, at| {
-        // Tone 7's level at the last bin is the row's last one used.
-        read[n] = &row[..cols + 14];
-        // At most 2 · 7.
-        debug_assert!(at <= usize::from(u8::MAX));
-        sent_at[n] = at as u8;
-        n += 1;
-    })?;
+    let mut present = 0i32;
+    for &pos in COSTAS_POSITIONS.iter() {
+        let first = start_row + 2 * pos as i32;
+        let last = first + 2 * (COSTAS.len() as i32 - 1);
+        if first < 0 || last >= rows {
+            continue;
+        }
+        for (j, &tone) in COSTAS.iter().enumerate() {
+            let Some(row) = spec.row((first + 2 * j as i32) as usize) else {
+                // Unreachable (rows below `rows_filled` are filled); as
+                // `costas_score`, no score.
+                out.fill(cell_of(NONE));
+                return;
+            };
+            // Tone 7's level at the last bin is the row's last one used.
+            read[n] = &row[..cols + 14];
+            sent_at[n] = 2 * usize::from(tone);
+            n += 1;
+        }
+        present += 1;
+    }
+    if present < 2 {
+        out.fill(cell_of(NONE));
+        return;
+    }
+    // 6 / n with n = 2 or 3: × 3 or × 2, exact.
+    let scale = 6 / present;
     let (read, sent_at) = (&read[..n], &sent_at[..n]);
     // A column or sent sum adds at most `COSTAS_ROWS` levels of a `u8`.
     const _: () = assert!(COSTAS_ROWS as u32 * u8::MAX as u32 <= u16::MAX as u32);
@@ -240,7 +222,6 @@ fn costas_scores_by_columns(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCel
         let mut column = [0u16; COLUMN_CHUNK + 14];
         let mut sent = [0u16; COLUMN_CHUNK];
         for (row, &at) in read.iter().zip(sent_at) {
-            let at = usize::from(at);
             for (x, &v) in column[..len + 14]
                 .iter_mut()
                 .zip(&row[first..first + len + 14])
@@ -259,7 +240,6 @@ fn costas_scores_by_columns(spec: &Rows<'_>, start_row: i32, out: &mut [ScoreCel
             *cell = cell_of((8 * i32::from(sent[b]) - all) * scale);
         }
     }
-    Some(())
 }
 
 /// The sync score of a candidate at `start_row`, base bin `base`, or
@@ -516,7 +496,7 @@ pub(crate) fn search_paired(
 /// one alone. Where fewer than two arrays are present, [`NONE`].
 // Every row read is below `spec.len()`, so `Rows::row` is `Some`; were one
 // `None`, neither start row would have a score (`NONE` in both), as
-// `gather` leaves none. `spec` by reference, as the search before pairs
+// `costas_scores` leaves none. `spec` by reference, as the search before pairs
 // took it: by value (a `Copy` view of the rows) the Cortex-M33's running
 // sums kept their loop (codegen-check `sumloop6`) and the sync stage its
 // count, but the small slot rose 0.38% (s0086, in the feed): findings
