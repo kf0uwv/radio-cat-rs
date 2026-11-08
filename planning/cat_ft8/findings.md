@@ -18910,16 +18910,16 @@ spreads on every slot.
 
 | measure | 67e936a | this round | change |
 |---|---|---|---|
-| A76 host slot (stages) | 73.985 (0.080) | 73.660 (0.060) | −0.44% |
-| A76 host, one pass | 16.500 (0.000) | 16.360 (0.010) | −0.85% |
+| A76 host slot (stages) | 73.970 (0.150) | 73.685 (0.060) | −0.39% |
+| A76 host, one pass | 16.505 (0.020) | 16.360 (0.010) | −0.88% |
 | A76 small slot | 9.750 (0.000) | 9.650 (0.010) | −1.03% |
-| A76 stages, host: feed, sync, belief propagation | 16.695, 3.130, 18.000 | 16.540, 3.080, 17.850 | −0.93%, −1.60%, −0.83% |
+| A76 stages, host: feed, sync, belief propagation | 16.695, 3.130, 18.000 | 16.535, 3.080, 17.850 | −0.96%, −1.60%, −0.83% |
 | A76 stages, small: feed, sync, belief propagation | 5.540, 0.910, 2.230 | 5.500, 0.900, 2.180 | −0.72%, −1.10%, −2.24% |
 | x86-64 `perf stat` host and host with one pass (cycles, medians of 4) | 288.52 G (287.55–289.70) | 279.27 G (279.05–280.58) | −3.21% |
 | x86-64 small (cycles) | 84.12 G (83.81–84.51) | 80.05 G (79.80–80.20) | −4.84% |
 | x86-64 instructions host / small | 774.20 G / 252.55 G | 766.85 G / 249.69 G | −0.95% / −1.13% |
 | x86-64 stages, host: feed, sync, belief propagation (ms) | 9.805, 2.075, 15.185 | 8.035, 2.105, 15.260 | −18.1%, +1.4%, +0.5% |
-| x86-64 stages, small: feed, sync, belief propagation (ms) | 3.180, 0.600, 1.915 | 2.660, 0.600, 1.940 | −16.4%, 0.0%, +1.3% |
+| x86-64 stages, small: feed, sync, belief propagation (ms) | 3.185, 0.600, 1.915 | 2.660, 0.600, 1.940 | −16.5%, 0.0%, +1.3% |
 | Cortex-M33 s0086 / s0407 small slot (setup excluded) | 116 505 852 / 112 130 688 | 115 598 630 / 111 349 378 | −0.78% / −0.70% |
 | Cortex-M33 s0086 / s0407 host image | 1 312 636 917 / 1 309 374 298 | 1 310 507 225 / 1 307 233 654 | −0.16% / −0.16% |
 | M33 belief propagation, s0086 small / host | 34 172 336 / 359 758 700 | 33 243 422 / 357 548 008 | −2.72% / −0.61% |
@@ -18930,12 +18930,18 @@ spreads on every slot.
 | x86-64 `cat-ft8-decode` .text / .rodata | 473 174 / 105 728 | 472 278 / 106 696 | −896 / +968 B |
 | AArch64 `cat-ft8-decode` .text / .rodata | 404 920 / 98 016 | 403 448 / 99 024 | −1 472 / +1 008 B |
 
-On x86-64 the one array costs belief propagation 0.4-1.5% (the small
-slot's ranges disjoint); the level steps' feed outweighs it. The x86-64
-runs were alternated on one core under the exclusive lock, but the
-machine's load average was 16-22 on 16 CPUs and the core's SMT sibling
-was not reserved: the alternation controls drift, the absolute sizes are
-less certain. The host sync stage's +1.4% is bimodal across rounds and
+The A76 rows are this branch's commits as listed (16 runs). The x86-64
+and Cortex-M33 rows were measured on an earlier build of the same
+changes whose only code difference is register allocation in the sync
+selection's closure (the column scores' forwarder not yet folded in);
+every other function's instructions are equal.
+
+On x86-64 the one array costs belief propagation +0.5% on the host slot
+and +1.3% on the small slot (medians; the small slot's ranges disjoint);
+the level steps' feed outweighs it. The x86-64 runs were alternated on
+one core of a busy machine (other work running, SMT sibling not
+reserved): the alternation controls drift, the absolute sizes are less
+certain. The host sync stage's +1.4% is bimodal across rounds and
 inconclusive.
 
 The M33's soft bits and ordered-statistics stages count a few more
@@ -18952,7 +18958,9 @@ change the M33's code).
   of the 2 400 profile lines. The revert changes no output. A forced
   difference fails each comparator (a record, a decode line, an allowed
   field off by one).
-- Cortex-A76: the same records and WAV lines as x86-64, strictly.
+- Cortex-A76: the same records and WAV lines as x86-64, strictly, checked
+  with this branch's own binaries (host, one pass and small: 24 600 records
+  each, 0 differ; 95 491 WAV lines, 0 differ).
 - Cortex-M33: 16/16 outputs equal to 042e82a's; encoder 45/45 equal to
   70be604's.
 - Local CI 19/19 (codegen-check unchanged: no ceiling moved); every
