@@ -1,5 +1,9 @@
 # cat_ft8 — progress
 
+Commit references: 0f0341c, 23742aa, 5903527, ec72aa0 and 043e7d8 are
+local measurement commits that were never published; the text records
+what each one held and what it measured.
+
 ## Session: 2026-10-25 (encoder, first pass)
 
 - Read: CLAUDE.md, ADR 0021 (cat-morse) and its crate as the model,
@@ -18,7 +22,7 @@
 ## Session: 2026-10-25 (fix round)
 
 - Process: the plan for the encoder was written after the code, so the
-  first check of this change came after the code. The user approved the
+  first check of this change came after the code. The maintainer approved the
   fix-round plan (task_plan.md, "Fix round") on 2026-10-25 before any
   fix-round code was written.
 - Step 1 done: task_plan.md fix-round steps, findings.md created.
@@ -72,7 +76,7 @@
 
 ## Session: 2026-10-25 (cleanup addendum)
 
-- The user's approval of the fix-round plan covers this cleanup (follow-up
+- The maintainer's approval of the fix-round plan covers this cleanup (follow-up
   review findings, all small). Addendum steps C1–C15 written in
   task_plan.md before any code.
 - Dates: entries earlier written one day ahead corrected to 2026-10-25
@@ -209,7 +213,7 @@
 
 ## Session: 2026-10-26 (D0)
 
-- The user approved the Phase 2 plan with the final edits (2026-10-26)
+- The maintainer approved the Phase 2 plan with the final edits (2026-10-26)
   and decided both open questions: QEMU (MPS2 Cortex-M33 model) now for
   instruction counts, no microcontroller speed claims until measured on a
   board chosen later; on a 256 KiB part, the small configuration plus a
@@ -452,7 +456,7 @@
 
 - Checks of the whole decoder consolidated into fix list sections
   A (required, results identical), B (simplicity, results identical)
-  and C (optimisation passes, later). The user approved A and B followed
+  and C (optimisation passes, later). The maintainer approved A and B followed
   by C on 2026-10-27. D12 plan written into the task plan before code;
   C waits for a re-check.
 - D12 done, one item at a time; after each, every test (golden waveform
@@ -509,7 +513,7 @@
 
 ## Session: 2026-10-27 (C: optimisation passes)
 
-- D12/D12a committed as eight commits (8f4876d..deff523). The user
+- D12/D12a committed as eight commits (8f4876d..deff523). The maintainer
   approved section C (up to five optimisation passes, results
   identical); plan written before any change.
 - Baseline (deff523, loop-aligned build, 40 crowded slots × 2,
@@ -575,7 +579,7 @@
 
 - CRLF fix for the two generated-table tests committed (d768627) after
   the Windows CI run failed on them.
-- Phase 3 plan approved by the user (2026-10-27), revised as the
+- Phase 3 plan approved by the maintainer (2026-10-27), revised as the
   architects asked: order E0 → E1 → E3 with E2 and E4 measurement-only;
   a checkpoint after every step (E0 reviewed before E1); paired results
   saved per slot and per message; crowded compared per message;
@@ -724,7 +728,7 @@
   suppression (S2), a pass count with paired acceptance (S3); the
   additive API (`subtract`, `start_pass`, `DecodeList::next_pass`,
   `DecodeConfig::passes`), fixed subtraction order, acceptance bars,
-  memory, risks and five decisions for the user. Stopped at the S0
+  memory, risks and five decisions for the maintainer. Stopped at the S0
   checkpoint for approval.
 - S0 review fixes, bench (results identical): `paired_bench` split into
   `examples/paired_bench/`; per-point verdict, sweep bootstrap and
@@ -756,7 +760,7 @@
 
 ## Session: 2026-10-28 (subtraction and further passes, S2)
 
-- Plan approved by the user; S2 started (subtracting one signal,
+- Plan approved by the maintainer; S2 started (subtracting one signal,
   integer-sample starts). Pass 1 untouched.
 - `decode::subtract` added to the core (`src/decode/subtract.rs`, with an
   in-crate `atan2_turns` in `math.rs`): fine time from adjacent symbols'
@@ -1484,12 +1488,12 @@
   old run, pass counts printed, gate unit tests. gosd1: off/off and on/on
   PASS; off/on PASS with `--gain` (exploratory). 56 earlier comparisons,
   re-paired by text, unchanged; 280 self-comparisons PASS.
-- Second round draft: the user's decision recorded (one retry; the OSD
+- Second round draft: the maintainer's decision recorded (one retry; the OSD
   code deleted if it fails), new hashed scripts and inputs (corpus copied
   into the cache), the A76 baseline now 0x0 (any bit voids a run).
 - Gate 2 closure fixes (scripts out of tree, hashed in the plan): the
   A76 0x0 pre-check, a voided run = no result (one repeat after a reboot
-  by the user; a second void = no verdict), `CODE` in the hashed
+  by the maintainer; a second void = no verdict), `CODE` in the hashed
   `gate2.env`, the base binary pinned, the WAV count checked, `env.sh`
   hashed, every script logs its and the manifests' sha256; the paired
   CRC gate's residual risk disclosed; the replay table corrected.

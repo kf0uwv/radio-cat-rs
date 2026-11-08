@@ -1,5 +1,9 @@
 # cat_ft8 — findings
 
+Commit references: 0f0341c, 23742aa, 5903527, ec72aa0 and 043e7d8 are
+local measurement commits that were never published; the text records
+what each one held and what it measured.
+
 ## Sources
 
 - QEX July/August 2020 paper: message types (Table 1), field tags
@@ -163,7 +167,7 @@ Operation-count estimates for a Cortex-M33-class part at about 150 MHz:
 - Belief propagation: 25 rounds × 522 edges × 2 directions × ~20 cycles
   ≈ 0.5 M cycles per candidate; 140 candidates ≈ 0.5 s.
 
-No QEMU is installed on the development host (the user will install it;
+No QEMU is installed on the development host (the maintainer will install it;
 work does not wait for it). QEMU gives instruction counts, not timing;
 timing needs a development board, chosen later. QEMU counts are needed
 from D2 (FFT per hop) and D3 (front end per 80 ms hop), and again at D4–D6
@@ -194,7 +198,7 @@ decode); until then those figures stay estimates.
 - Clipping: the −128…0 dB range (both widths) floors input noise below
   about −80 dBFS RMS; 16 bits do not change that. Inputs that quiet are
   rare (16-bit audio's own dither is near −101 dBFS) but possible.
-- QEMU instruction counts are still to come (the user is installing it):
+- QEMU instruction counts are still to come (the maintainer is installing it):
   first for `feed` per hop (now), then D4–D6 and D10–D11.
 
 ## D3 checkpoint decisions and follow-ups (2026-10-26)
@@ -5260,7 +5264,7 @@ subtraction commits alone (e3f5444) change no output.
      tests: the two rounds', the pinned state and the decode-level
      reference.
    - Its A76 binaries are byte-identical to those of the candidate
-     commit that was measured (5903527, on a side branch from 94ae1b8).
+     commit that was measured (5903527, a local commit on 94ae1b8, not published).
 
 ### Decision table
 
@@ -6601,7 +6605,7 @@ marked decode (reported).
 fresh evidence is the `hosd2` records and the A76 runs on its slots; the
 WAV, M33, flash, RAM and stack criteria reproduce `gosd1`'s (no code
 changed). The `gosd1` FAIL stays recorded; this result is the one retry
-the user allowed.
+the maintainer allowed.
 
 ## OSD-1 in the HOST preset (2026-11-01, 748f34d)
 

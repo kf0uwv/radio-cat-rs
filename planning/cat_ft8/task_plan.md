@@ -1,5 +1,9 @@
 # cat_ft8 — task plan
 
+Commit references: 0f0341c, 23742aa, 5903527, ec72aa0 and 043e7d8 are
+local measurement commits that were never published; the text records
+what each one held and what it measured.
+
 ## Goal
 
 A new workspace crate `cat-ft8`: FT8 implemented from the published
@@ -14,7 +18,7 @@ Phase 1 (encoder) committed on `feat/cat-ft8`; ADR 0024 accepted
 2026-10-26. Phase 2 (single-pass decoder): D1–D10 committed (D11, the
 comparison with an external reference decoder, is not part of this
 repository's CI). Review of the whole decoder done; fix round D12 (A and
-B, results identical) approved by the user 2026-10-27, then up to five
+B, results identical) approved by the maintainer 2026-10-27, then up to five
 optimisation passes (C). Phase 3 (single-pass changes that alter
 results, E0–E4) done. Phase 4 (subtraction and further passes): plan
 approved; S0 and S2 done (stopped at Checkpoint S2); S1 not needed (S2
@@ -193,7 +197,7 @@ stack, rate and cost figures replaced them on 2026-10-27). Sizing notes are in f
 time, test first; each task ends with tests, clippy (four
 configurations), fmt, docs, the bare-metal link check (from D2 on, grown
 each step) and a progress entry. Architect checkpoints are marked ◆;
-the user decides at ◆◆.
+the maintainer decides at ◆◆.
 
 ### Scope
 
@@ -501,10 +505,10 @@ D11. [x] Measurement against an external reference decoder on synthetic
          with measured values.
          Done 2026-10-27: run outside this repository (an external
          benchmark on synthetic slots); figures in the ADR.
-    ◆◆ Results to the user; then optimisation passes under the existing
+    ◆◆ Results to the maintainer; then optimisation passes under the existing
        rules (results identical, at most five).
 
-### Decisions by the user (2026-10-26, at approval)
+### Decisions by the maintainer (2026-10-26, at approval)
 
 1. **Microcontroller timing:** QEMU (an MPS2 Cortex-M33 model) for
    instruction counts now; no microcontroller speed claims until measured
@@ -632,7 +636,7 @@ smaller K; multi-pass API additions.
 
 ## Phase 3: single-pass improvements that change results — APPROVED (2026-10-27)
 
-Status: **approved by the user on 2026-10-27**, revised as the architects
+Status: **approved by the maintainer on 2026-10-27**, revised as the architects
 asked. Order: E0 → E1 → E3; E2 and E4 are measurements only in this
 phase. A checkpoint follows every step; E0 is reviewed before E1 starts.
 
@@ -818,13 +822,13 @@ E4. [x] **Continuing past a CRC-failing codeword — measurement only.**
         codeword passes the 14-bit CRC about once in 16 384). Any
         implementation is a later, separate decision with a much larger
         empty-set run.
-    ◆ Checkpoint E4; ◆◆ results to the user.
+    ◆ Checkpoint E4; ◆◆ results to the maintainer.
 
 ## Phase 4: subtraction and further passes — APPROVED (2026-10-27, revised)
 
 Status: **S0, S2 (with its fix round) and S3 done; S1 not needed; at
 Checkpoint S3** (2026-10-28). (Before S2: S0 done, results identical, and revised after
-review; S1–S3 then awaited the user's approval, given 2026-10-28.) No subtraction code is in the decoder.
+review; S1–S3 then awaited the maintainer's approval, given 2026-10-28.) No subtraction code is in the decoder.
 The ADR amendment draft is in ADR 0024 ("Amendment (draft): subtraction
 and further passes"). Revision: the bench was split and its reports
 fixed (findings, "Bench split, and no-candidate misses told apart"), a
@@ -994,7 +998,7 @@ S0. [x] **Clean-up and the subtraction ceiling** (results identical).
         the oracle passes, and the wider crowded set measured. Findings:
         "Misses by cause", "Subtraction ceiling", "Bench split, and
         no-candidate misses told apart", "Wider crowded set, measured".
-    ◆ Checkpoint S0: this plan to the user for approval.
+    ◆ Checkpoint S0: this plan to the maintainer for approval.
 S2. [x] **Subtracting one signal** (integer-sample starts).
         - Change: `decode::subtract` as above: from the decode's tones,
           frequency and time offset, a fine time estimate (rounded to a
@@ -1094,7 +1098,7 @@ S3. [x] **Further passes, with paired acceptance.**
           single, sweep interval unmoved); oracle share +1 / +2 98.9% /
           98.2% crowded main, 96.9% / 94.8% wide main; worst 40-signal
           slot 213.7 ms, mean 197.5 ms. Pass 1 identical.
-    ◆ Checkpoint S3 (2026-10-28); ◆◆ results to the user.
+    ◆ Checkpoint S3 (2026-10-28); ◆◆ results to the maintainer.
 
 ### Acceptance bars (in this repository)
 
@@ -2297,7 +2301,7 @@ codeword breaks it at dH 26.
 
 ## OSD-1 fix round (2026-10-31; option off, identical)
 
-Follow-ups to c3b7dd7..2980198, as decided by the user; no gate run. Code: `unpack` compiled once behind a generic shim (own commit);
+Follow-ups to c3b7dd7..2980198, as decided by the maintainer; no gate run. Code: `unpack` compiled once behind a generic shim (own commit);
 belief propagation's round count in `Work::Osd`'s payload; no `Decode`
 origin field, the bench marks OSD-1 decodes from the `Stage::Osd`
 callback; `hard_errors` documented; `TABLE_BYTES` by `size_of`, `N <
@@ -2325,13 +2329,13 @@ crowded (its multi-pass CRC-expectation check, the same in both runs)
 and sweep (its two-sided shift check; the 50% point moved 0.052 dB
 lower, an improvement). Applied mechanically: **FAIL**. Nothing merges;
 no retune, no second block; the reading of those two checks is the
-user's decision. (Forward pointer, added later: the user's recorded decision
+user's decision. (Forward pointer, added later: the maintainer's recorded decision
 of 2026-11-01 allows one second gated round on a fresh block; see
 "OSD-1 on the best candidates: second gated round" below.)
 The criteria are fixed in the commit that names the block, before any
 record of it exists, and applied mechanically: if any fails, nothing
 merges; no retune and no second block. (Forward pointer, added later: superseded for one
-round by the user's recorded decision; see the second gated round
+round by the maintainer's recorded decision; see the second gated round
 below.)
 
 **Status of the evidence.** The sizing's "supplement" verdict is
@@ -2609,8 +2613,8 @@ set verdicts, both from checks that do not measure what the round asked:
   lower ([−0.070, −0.038]), an improvement, which the symmetric ±0.05 dB
   check rejects; the round's criterion was "not worse".
 
-**A second block: the user's decision (recorded).** The plan at
-7408489 said "no retune and no second block". On 2026-11-01 the user,
+**A second block: the maintainer's decision (recorded).** The plan at
+7408489 said "no retune and no second block". On 2026-11-01 the maintainer,
 asked directly whether that line may be superseded for one second gated
 round on a fresh block, chose **"Allow one retry"**, with the condition
 that **if this round fails, the OSD code is deleted**. This draft
@@ -2708,8 +2712,8 @@ supply and are valid under the old rule, as recorded.
 **A voided A76 run** (any throttle bit during it, or no samples) is
 **no result — not a fail.** It may be repeated **once**, into a new
 directory (`gate2_pi.sh retry`), after a reboot of the bench, with the
-void recorded in the findings. A reboot needs the user (no `sudo`
-here): on a void the run stops and is reported, and the user is asked.
+void recorded in the findings. A reboot is the maintainer's
+call: on a void the run stops and is reported, and the maintainer is asked.
 **A second void leaves the round incomplete**: reported, **no verdict**.
 `gate2_pi.sh` also refuses to start a benchmark while `get_throttled`
 reads anything but 0x0.
@@ -2741,7 +2745,7 @@ round's result there is the FAIL recorded above.
 No change to T, the candidate count, the bars, the ceilings, the
 definitions or anything else. Run once, as written; no retune and no
 third block on this subset. **If it fails, the OSD code is deleted**
-(the user's condition above).
+(the maintainer's condition above).
 
 ## O23: the subtraction's reference polynomial, bit-identical (2026-11-03)
 
