@@ -250,7 +250,10 @@ pub(crate) const VECTOR: bool = cfg!(any(target_arch = "x86_64", target_arch = "
 /// end. `!VECTOR` is the Cortex-M33 measured, and also 32-bit x86 and
 /// 32-bit ARM, whose results are the same by construction (each fork gives
 /// the same values either way) but which are timed in neither form. The
-/// forks it gates, each with why the hosts keep the other side:
+/// forks it gates, each with why the hosts keep the other side. "Vector"
+/// means the hosts keep the form whose loops the compiler vectorises, as
+/// measured on x86-64 (and on the Cortex-A76 where it was available) in the
+/// round that added the fork; that round's findings give the numbers.
 ///
 /// - the subtraction's reference layout, a group of one (`GROUP`): vector;
 /// - the time search's sums one lane at a time (`correlation`): vector;
@@ -258,11 +261,12 @@ pub(crate) const VECTOR: bool = cfg!(any(target_arch = "x86_64", target_arch = "
 ///   vector;
 /// - the generator's fused overlap runs (`FUSED_SUM`): vector;
 /// - the sync search's paired running sums (`search_rows`,
-///   `scratch_width`): vector;
+///   `scratch_width`): vector (on the hosts too, findings O35);
 /// - the bins' powers' indexed loop, out of line (`bin_powers`): vector;
 /// - a row's level counts four levels a word (`level_counts`): vector;
-/// - the soft bits' rows looked up once a symbol (`soft_bits_at`): pending
-///   A76.
+/// - the soft bits' rows looked up once a symbol (`soft_bits_at`): a
+///   per-target choice, not a vector/scalar split; the hosts' one lookup a
+///   tone measured faster on the Cortex-A76 (findings O35).
 ///
 /// (`CHAINS`, the grouped running sum and the other `VECTOR` choices, such
 /// as belief propagation's, keep the host's.)

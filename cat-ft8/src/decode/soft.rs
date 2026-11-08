@@ -260,7 +260,9 @@ fn symbol_from_rows_once(
 /// rows are looked up once for its eight tones
 /// ([`symbol_from_rows_once`]: the soft bits 12% fewer instructions on the
 /// Cortex-M33, findings O34); the hosts look them up for each tone, as
-/// before, until the Cortex-A76 has timed the change.
+/// before: with the rows once the Cortex-A76's host slot took 0.35% more
+/// time and its small slot 0.67% more (findings O35). A per-target
+/// choice, not a vector/scalar split: neither form needs a vector unit.
 pub fn soft_bits_at(
     spec: &Spectrogram<'_>,
     candidate: &Candidate,
@@ -274,9 +276,7 @@ pub fn soft_bits_at(
     let bins = straddle(i32::from(candidate.base), frac_bin);
     fill_and_scale(target, llr, |k, v| {
         let centre = i32::from(candidate.start_row) + 2 * k as i32;
-        // Temporary, pending the Cortex-A76's timing of this form on the
-        // hosts; not a vector/scalar split: neither form depends on a
-        // vector unit.
+        // The per-target choice in the doc above.
         if SCALAR_FORMS {
             return symbol_from_rows_once(spec, centre, &rows, &bins, stored, v);
         }

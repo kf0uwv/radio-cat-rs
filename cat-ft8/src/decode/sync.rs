@@ -423,7 +423,9 @@ impl HasScore for Candidate {
 // neighbour from three rows' slices, with no row index taken mod 5 a
 // neighbour. On the Cortex-M33 (rustc 1.93.0, opt-level "s") the sync
 // stage took 32.9% fewer instructions and the small slot 4.0% fewer
-// (s0086; findings O33), for about 1.2 KB of code.
+// (s0086; findings O33), for about 1.2 KB of code. On the hosts the paired
+// search took 2.8% more of the Cortex-A76's host slot and 6.8% more of its
+// small slot, the sync stage 65-70% more (findings O35).
 
 /// Score rows the paired search keeps: rows q − 1 to q + 1 for the local
 /// maxima of row q, and the q + 2 and q + 3 scored with q and q + 1.
